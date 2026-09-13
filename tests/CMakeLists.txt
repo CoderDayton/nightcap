@@ -107,6 +107,18 @@ target_link_libraries(texture_memory_policy_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(device_memory_profile_test device_memory_profile_test.cc)
+target_link_libraries(device_memory_profile_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(display_size_test display_size_test.cc)
+target_link_libraries(display_size_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -894,6 +906,8 @@ gtest_discover_tests(external_launch_broker_test)
 gtest_discover_tests(webview_helper_launcher_test)
 gtest_discover_tests(webview_helper_policy_test)
 gtest_discover_tests(webview_roblox_cookie_test)
+gtest_discover_tests(device_memory_profile_test)
+gtest_discover_tests(display_size_test)
 gtest_discover_tests(startup_state_machine_test)
 gtest_discover_tests(game_session_coordinator_test)
 gtest_discover_tests(owned_pthread_test)
