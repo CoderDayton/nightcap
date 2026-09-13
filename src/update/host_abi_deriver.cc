@@ -14,6 +14,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
@@ -1300,82 +1301,96 @@ std::optional<Json> DeriveRuntimeCompatibility(
     *error = "reference FMOD string constructor contract changed";
     return std::nullopt;
   }
-  const auto string_constructor = FindUniqueSemanticSignatureMatch(
-      reference, candidate, disassembler,
-      {"fmod-string-constructor", old.string_constructor, 32, false, 3},
-      error);
-  const auto info_method = FindUniqueSemanticSignatureMatch(
-      reference, candidate, disassembler,
-      {"fmod-output-info", old.info_method, 18, false, 3}, error);
-  const auto select_method = FindUniqueSemanticSignatureMatch(
-      reference, candidate, disassembler,
-      {"fmod-output-select", old.select_method, 18, false, 3}, error);
-  if (!string_constructor.has_value() || !info_method.has_value() ||
-      !select_method.has_value()) {
-    return std::nullopt;
-  }
-  const auto count_matches = FindSignatureMatches(
-      reference, candidate, disassembler,
-      {"fmod-output-count", old.count_method, 24, false, 3}, true, error);
-  const auto current_matches = FindSignatureMatches(
-      reference, candidate, disassembler,
-      {"fmod-output-current", old.current_method, 24, false, 3}, true,
-      error);
-  if (!count_matches.has_value() || !current_matches.has_value()) {
-    return std::nullopt;
-  }
-  std::set<std::uint64_t> count_candidates;
-  std::set<std::uint64_t> current_candidates;
-  for (const SignatureMatch& match : *count_matches)
-    count_candidates.insert(match.rva);
-  for (const SignatureMatch& match : *current_matches)
-    current_candidates.insert(match.rva);
-  if (count_candidates.empty() || current_candidates.empty()) {
-    *error = "FMOD count/current method signatures have no candidates";
-    return std::nullopt;
-  }
-  const auto relocations = candidate.RelativeRelocations(error);
-  if (!relocations.has_value()) return std::nullopt;
-  std::vector<FmodRuntimeAnchors> candidates;
-  for (const auto& [offset, addend] : *relocations) {
-    if (addend != info_method->rva || offset < kInfoIndex * 8) continue;
-    const std::uint64_t vtable = offset - kInfoIndex * 8;
-    const auto count = relocations->find(vtable + kCountIndex * 8);
-    const auto current = relocations->find(vtable + kCurrentIndex * 8);
-    const auto select = relocations->find(vtable + kSelectIndex * 8);
-    std::string relro_error;
-    if (vtable % 8 != 0 || count == relocations->end() ||
-        current == relocations->end() || select == relocations->end() ||
-        count_candidates.find(count->second) == count_candidates.end() ||
-        current_candidates.find(current->second) == current_candidates.end() ||
-        count->second == current->second ||
-        select->second != select_method->rva ||
-        !candidate.RequireRelro(vtable, kVtableBytes, &relro_error)) {
-      continue;
+  // The FMOD output-device bridge is optional at runtime. A candidate whose
+  // FMOD output methods cannot be matched is derived without the bridge.
+  std::string fmod_error;
+  const auto bridge = [&]() -> std::optional<Json> {
+    const auto string_constructor = FindUniqueSemanticSignatureMatch(
+        reference, candidate, disassembler,
+        {"fmod-string-constructor", old.string_constructor, 32, false, 3},
+        &fmod_error);
+    const auto info_method = FindUniqueSemanticSignatureMatch(
+        reference, candidate, disassembler,
+        {"fmod-output-info", old.info_method, 18, false, 3}, &fmod_error);
+    const auto select_method = FindUniqueSemanticSignatureMatch(
+        reference, candidate, disassembler,
+        {"fmod-output-select", old.select_method, 18, false, 3}, &fmod_error);
+    if (!string_constructor.has_value() || !info_method.has_value() ||
+        !select_method.has_value()) {
+      return std::nullopt;
     }
-    candidates.push_back({vtable, string_constructor->rva, count->second,
-                          info_method->rva, current->second,
-                          select_method->rva});
+    const auto count_matches = FindSignatureMatches(
+        reference, candidate, disassembler,
+        {"fmod-output-count", old.count_method, 24, false, 3}, true,
+        &fmod_error);
+    const auto current_matches = FindSignatureMatches(
+        reference, candidate, disassembler,
+        {"fmod-output-current", old.current_method, 24, false, 3}, true,
+        &fmod_error);
+    if (!count_matches.has_value() || !current_matches.has_value()) {
+      return std::nullopt;
+    }
+    std::set<std::uint64_t> count_candidates;
+    std::set<std::uint64_t> current_candidates;
+    for (const SignatureMatch& match : *count_matches)
+      count_candidates.insert(match.rva);
+    for (const SignatureMatch& match : *current_matches)
+      current_candidates.insert(match.rva);
+    if (count_candidates.empty() || current_candidates.empty()) {
+      fmod_error = "FMOD count/current method signatures have no candidates";
+      return std::nullopt;
+    }
+    const auto relocations = candidate.RelativeRelocations(&fmod_error);
+    if (!relocations.has_value()) return std::nullopt;
+    std::vector<FmodRuntimeAnchors> candidates;
+    for (const auto& [offset, addend] : *relocations) {
+      if (addend != info_method->rva || offset < kInfoIndex * 8) continue;
+      const std::uint64_t vtable = offset - kInfoIndex * 8;
+      const auto count = relocations->find(vtable + kCountIndex * 8);
+      const auto current = relocations->find(vtable + kCurrentIndex * 8);
+      const auto select = relocations->find(vtable + kSelectIndex * 8);
+      std::string relro_error;
+      if (vtable % 8 != 0 || count == relocations->end() ||
+          current == relocations->end() || select == relocations->end() ||
+          count_candidates.find(count->second) == count_candidates.end() ||
+          current_candidates.find(current->second) ==
+              current_candidates.end() ||
+          count->second == current->second ||
+          select->second != select_method->rva ||
+          !candidate.RequireRelro(vtable, kVtableBytes, &relro_error)) {
+        continue;
+      }
+      candidates.push_back({vtable, string_constructor->rva, count->second,
+                            info_method->rva, current->second,
+                            select_method->rva});
+    }
+    if (candidates.size() != 1U) {
+      fmod_error = "FMOD output vtable matched " +
+                   std::to_string(candidates.size()) + " candidate locations";
+      return std::nullopt;
+    }
+    const FmodRuntimeAnchors& derived = candidates.front();
+    if (!HasFmodStringConstructorContract(candidate,
+                                          derived.string_constructor)) {
+      fmod_error = "candidate FMOD string constructor contract changed";
+      return std::nullopt;
+    }
+    return Json{
+        {"vtable_rva", FormatRva(derived.vtable)},
+        {"string_constructor_rva", FormatRva(derived.string_constructor)},
+        {"count_method_rva", FormatRva(derived.count_method)},
+        {"info_method_rva", FormatRva(derived.info_method)},
+        {"current_method_rva", FormatRva(derived.current_method)},
+        {"select_method_rva", FormatRva(derived.select_method)},
+    };
+  }();
+  if (!bridge.has_value()) {
+    std::fprintf(stderr,
+                 "[native-updater] FMOD output-device bridge omitted: %s\n",
+                 fmod_error.c_str());
+    return result;
   }
-  if (candidates.size() != 1U) {
-    *error = "FMOD output vtable matched " +
-             std::to_string(candidates.size()) + " candidate locations";
-    return std::nullopt;
-  }
-  const FmodRuntimeAnchors& derived = candidates.front();
-  if (!HasFmodStringConstructorContract(candidate,
-                                        derived.string_constructor)) {
-    *error = "candidate FMOD string constructor contract changed";
-    return std::nullopt;
-  }
-  result["fmod_output_device_bridge"] = {
-      {"vtable_rva", FormatRva(derived.vtable)},
-      {"string_constructor_rva", FormatRva(derived.string_constructor)},
-      {"count_method_rva", FormatRva(derived.count_method)},
-      {"info_method_rva", FormatRva(derived.info_method)},
-      {"current_method_rva", FormatRva(derived.current_method)},
-      {"select_method_rva", FormatRva(derived.select_method)},
-  };
+  result["fmod_output_device_bridge"] = *bridge;
   return result;
 }
 
