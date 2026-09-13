@@ -1544,9 +1544,15 @@ extern "C" bool mocktail_window_has_presented_frame() {
   return HasPresentedFrame();
 }
 
-extern "C" int mocktail_window_width() { return GetWidth(); }
+extern "C" int mocktail_window_width() {
+  const auto surface = g_window_surface_lifecycle.Snapshot();
+  return surface.generation != 0 ? static_cast<int>(surface.width) : GetWidth();
+}
 
-extern "C" int mocktail_window_height() { return GetHeight(); }
+extern "C" int mocktail_window_height() {
+  const auto surface = g_window_surface_lifecycle.Snapshot();
+  return surface.generation != 0 ? static_cast<int>(surface.height) : GetHeight();
+}
 
 extern "C" void* mocktail_gl_proc_address(const char* name) {
   return GetGLProcAddress(name);
@@ -2204,9 +2210,11 @@ bool PumpEvents() {
           }
         }
         g_state.native_window = observed_native_window;
-        if (pixel_width > 0 && pixel_height > 0) {
-          g_state.width = pixel_width;
-          g_state.height = pixel_height;
+        const WindowSurfaceSnapshot surface =
+            g_window_surface_lifecycle.Snapshot();
+        if (surface.available) {
+          g_state.width = static_cast<int>(surface.width);
+          g_state.height = static_cast<int>(surface.height);
         }
         if ((event.type == SDL_EVENT_WINDOW_RESIZED ||
              event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
