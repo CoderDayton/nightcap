@@ -470,6 +470,27 @@ target_link_libraries(vulkan_text_overlay_compositor_test PRIVATE
 )
 mocktail_apply_compile_options(vulkan_text_overlay_compositor_test)
 
+add_executable(etc2_decoder_test
+  etc2_decoder_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+)
+target_include_directories(etc2_decoder_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main)
+mocktail_apply_compile_options(etc2_decoder_test)
+
+add_executable(vulkan_etc2_emulation_test
+  vulkan_etc2_emulation_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+)
+target_include_directories(vulkan_etc2_emulation_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(vulkan_etc2_emulation_test PRIVATE GTest::gtest_main)
+mocktail_apply_compile_options(vulkan_etc2_emulation_test)
+
 add_executable(video_driver_policy_test
   video_driver_policy_test.cc
 )
@@ -885,6 +906,8 @@ gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
+gtest_discover_tests(device_memory_profile_test)
+gtest_discover_tests(display_size_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
@@ -906,8 +929,6 @@ gtest_discover_tests(external_launch_broker_test)
 gtest_discover_tests(webview_helper_launcher_test)
 gtest_discover_tests(webview_helper_policy_test)
 gtest_discover_tests(webview_roblox_cookie_test)
-gtest_discover_tests(device_memory_profile_test)
-gtest_discover_tests(display_size_test)
 gtest_discover_tests(startup_state_machine_test)
 gtest_discover_tests(game_session_coordinator_test)
 gtest_discover_tests(owned_pthread_test)
@@ -929,6 +950,8 @@ gtest_discover_tests(input_pump_pacer_test)
 gtest_discover_tests(vulkan_surface_recovery_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
+gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(video_driver_policy_test)
 gtest_discover_tests(window_surface_lifecycle_test)
 gtest_discover_tests(window_creation_policy_test)

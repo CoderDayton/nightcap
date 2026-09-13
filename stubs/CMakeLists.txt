@@ -106,6 +106,8 @@ target_link_libraries(stub_glesv2 PRIVATE dl)
 add_library(stub_vulkan SHARED
   ${CMAKE_SOURCE_DIR}/src/graphics/bionic_vulkan_loader_adapter.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_text_overlay_compositor.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
 )
 configure_stub(stub_vulkan "libvulkan.so")
 target_include_directories(stub_vulkan PRIVATE ${CMAKE_SOURCE_DIR}/include)
