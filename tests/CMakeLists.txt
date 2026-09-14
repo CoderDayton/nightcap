@@ -480,16 +480,30 @@ target_include_directories(etc2_decoder_test PRIVATE
 target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main Threads::Threads)
 mocktail_apply_compile_options(etc2_decoder_test)
 
+pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
+
+add_executable(texture_override_test
+  texture_override_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(texture_override_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(texture_override_test PRIVATE GTest::gtest_main
+  PkgConfig::LIBPNG)
+mocktail_apply_compile_options(texture_override_test)
+
 add_executable(vulkan_etc2_emulation_test
   vulkan_etc2_emulation_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 target_include_directories(vulkan_etc2_emulation_test PRIVATE
   ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(vulkan_etc2_emulation_test PRIVATE GTest::gtest_main
-  Threads::Threads)
+  Threads::Threads PkgConfig::LIBPNG)
 mocktail_apply_compile_options(vulkan_etc2_emulation_test)
 
 add_executable(video_driver_policy_test

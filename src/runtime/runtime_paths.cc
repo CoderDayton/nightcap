@@ -603,7 +603,9 @@ bool ExportRuntimePathEnvironment(const RuntimePaths& paths,
          SetEnvironmentDefault("MOCKTAIL_ANDROID_CACHE_HOST_ROOT",
                                paths.android_cache_root(), error) &&
          SetEnvironmentDefault("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH",
-                               paths.vulkan_shader_cache_file(), error);
+                               paths.vulkan_shader_cache_file(), error) &&
+         SetEnvironmentDefault("MOCKTAIL_TEXTURE_OVERRIDE_DIR",
+                               paths.config_root() / "textures", error);
 }
 
 bool PrepareManagedPayloadWorkingDirectory(const RuntimePaths& paths,
