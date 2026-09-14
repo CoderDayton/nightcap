@@ -44,6 +44,8 @@ using mocktail::webview::CaptchaEventType;
 using mocktail::webview::EvaluateNavigationUri;
 using mocktail::webview::ExtractExecuteRobloxCommand;
 using mocktail::webview::ExtractRobloxWkHybridCommand;
+using mocktail::webview::IsBrowserLoginUrl;
+using mocktail::webview::IsEssentialWebResource;
 using mocktail::webview::ParseCaptchaEvent;
 using mocktail::webview::UriPolicyResult;
 
@@ -94,11 +96,16 @@ struct SurfaceState {
     g_weak_ref_init(&window, G_OBJECT(surface_window));
   }
 
-  ~SurfaceState() { g_weak_ref_clear(&window); }
+  ~SurfaceState() {
+    if (retry_source != 0) g_source_remove(retry_source);
+    g_weak_ref_clear(&window);
+  }
 
   AppState* app = nullptr;
   GWeakRef window;
   bool primary = false;
+  guint retry_source = 0;
+  unsigned int resource_retries = 0;
 };
 
 struct CallbackConfirmation {
@@ -347,26 +354,6 @@ bool IsRobloxCookieDomain(const char* domain) {
          value == "www.roblox.com";
 }
 
-bool IsBrowserLoginUrl(std::string_view url) {
-  std::string_view normalized = url;
-  if (normalized.compare(0, 23, "https://www.roblox.com/") == 0) {
-    normalized.remove_prefix(23);
-  } else if (normalized.compare(0, 19, "https://roblox.com/") == 0) {
-    normalized.remove_prefix(19);
-  } else if (normalized.compare(0, 4, "www:") == 0) {
-    normalized.remove_prefix(4);
-  } else if (!normalized.empty() && normalized.front() == '/') {
-    normalized.remove_prefix(1);
-  }
-  constexpr std::string_view kLogin = "login";
-  return (normalized.compare(0, kLogin.size(), kLogin) == 0 ||
-          normalized.compare(0, kLogin.size(), "Login") == 0) &&
-         (normalized.size() == kLogin.size() ||
-          normalized[kLogin.size()] == '/' ||
-          normalized[kLogin.size()] == '?' ||
-          normalized[kLogin.size()] == '#');
-}
-
 void FinishRobloxCookieQuery(GObject* source, GAsyncResult* result,
                              gpointer user_data) {
   auto* state = static_cast<AppState*>(user_data);
@@ -589,7 +576,7 @@ void BeginTermination(AppState* state, const char* reason) {
     g_object_ref(item->data);
   }
   for (GList* item = windows; item != nullptr; item = item->next) {
-    gtk_window_close(GTK_WINDOW(item->data));
+    gtk_window_destroy(GTK_WINDOW(item->data));
   }
   g_list_free_full(windows, g_object_unref);
   g_application_quit(G_APPLICATION(state->application));
@@ -836,12 +823,113 @@ void UpdateDomainTitle(WebKitWebView* web_view, SurfaceState* surface) {
   }
 }
 
+void SetLoadErrorVisible(WebKitWebView* web_view, bool visible) {
+  auto* banner = GTK_REVEALER(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-load-error"));
+  if (banner != nullptr) {
+    if (visible && !gtk_revealer_get_reveal_child(banner)) {
+      std::cerr << "[webview] showing page load error with retry action\n";
+    }
+    gtk_revealer_set_reveal_child(banner, visible);
+  }
+}
+
+bool ScheduleResourceRetry(WebKitWebView* web_view, const char* uri,
+                            const GError* error) {
+  // Retry an interrupted verification resource load once, before Roblox's
+  // challenge timeout. Certificate failures and verification responses are
+  // left to the page and the user; every retry still validates TLS normally.
+  if (uri == nullptr ||
+      !(g_error_matches(error, G_TLS_ERROR, G_TLS_ERROR_NOT_TLS) ||
+        g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED) ||
+        g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT))) {
+    return false;
+  }
+  const std::string_view url(uri);
+  const std::string_view path = url.substr(0, url.find_first_of("?#"));
+  constexpr std::string_view kMetadataPath = "/captcha/v1/metadata";
+  const bool captcha_metadata =
+      path.size() >= kMetadataPath.size() &&
+      path.substr(path.size() - kMetadataPath.size()) == kMetadataPath;
+  if (!(path.size() >= 3 && path.substr(path.size() - 3) == ".js") &&
+      !(path.size() >= 4 && path.substr(path.size() - 4) == ".css") &&
+      !captcha_metadata) {
+    return false;
+  }
+  auto* surface = static_cast<SurfaceState*>(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-surface-state"));
+  if (surface == nullptr || surface->app->terminating) return false;
+  if (surface->retry_source != 0) return true;
+  if (surface->resource_retries != 0) return false;
+  ++surface->resource_retries;
+  std::cerr << "[webview] interrupted page resource; retrying page once\n";
+  surface->retry_source = g_timeout_add(
+      500,
+      [](gpointer data) -> gboolean {
+        auto* view = WEBKIT_WEB_VIEW(data);
+        auto* surface = static_cast<SurfaceState*>(
+            g_object_get_data(G_OBJECT(view), "mocktail-surface-state"));
+        surface->retry_source = 0;
+        if (!surface->app->terminating) {
+          webkit_web_view_reload_bypass_cache(view);
+        }
+        return G_SOURCE_REMOVE;
+      },
+      web_view);
+  return surface->retry_source != 0;
+}
+
+void OnResourceFailed(WebKitWebResource* resource, GError* error,
+                       gpointer user_data) {
+  const auto policy = EvaluateNavigationUri(webkit_web_resource_get_uri(resource));
+  std::cerr << "[webview] resource failed host=" << policy.host
+            << " domain=" << BoundedLogToken(
+                   error ? g_quark_to_string(error->domain) : nullptr, "unknown")
+            << " code=" << (error ? error->code : 0) << '\n';
+  if (!g_error_matches(error, WEBKIT_NETWORK_ERROR,
+                        WEBKIT_NETWORK_ERROR_CANCELLED) &&
+      IsEssentialWebResource(webkit_web_resource_get_uri(resource))) {
+    auto* web_view = WEBKIT_WEB_VIEW(user_data);
+    if (!ScheduleResourceRetry(web_view, webkit_web_resource_get_uri(resource),
+                                error)) {
+      SetLoadErrorVisible(web_view, true);
+    }
+  }
+}
+
+void OnResourceFinished(WebKitWebResource* resource, gpointer user_data) {
+  auto* response = webkit_web_resource_get_response(resource);
+  if (!response || webkit_uri_response_get_status_code(response) < 400) return;
+  const auto policy = EvaluateNavigationUri(webkit_web_resource_get_uri(resource));
+  std::cerr << "[webview] resource HTTP error host=" << policy.host
+            << " status=" << webkit_uri_response_get_status_code(response) << '\n';
+  if (IsEssentialWebResource(webkit_web_resource_get_uri(resource))) {
+    SetLoadErrorVisible(WEBKIT_WEB_VIEW(user_data), true);
+  }
+}
+
+void OnResourceStarted(WebKitWebView* web_view, WebKitWebResource* resource,
+                       WebKitURIRequest*, gpointer) {
+  g_signal_connect_object(resource, "failed", G_CALLBACK(OnResourceFailed),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  g_signal_connect_object(resource, "finished", G_CALLBACK(OnResourceFinished),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+}
+
 void OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent event,
                    gpointer user_data) {
   const UriPolicyResult policy =
       EvaluateNavigationUri(webkit_web_view_get_uri(web_view));
   std::cerr << "[webview] load stage=" << LoadEventName(event)
             << " scheme=" << policy.scheme << " host=" << policy.host << '\n';
+  if (event == WEBKIT_LOAD_STARTED) {
+    auto* surface = static_cast<SurfaceState*>(user_data);
+    if (surface->retry_source != 0) {
+      g_source_remove(surface->retry_source);
+      surface->retry_source = 0;
+    }
+    SetLoadErrorVisible(web_view, false);
+  }
   if (event == WEBKIT_LOAD_COMMITTED || event == WEBKIT_LOAD_FINISHED) {
     UpdateDomainTitle(web_view, static_cast<SurfaceState*>(user_data));
     auto* surface = static_cast<SurfaceState*>(user_data);
@@ -863,6 +951,10 @@ gboolean OnLoadFailed(WebKitWebView* web_view, WebKitLoadEvent event,
                                    : g_quark_to_string(error->domain),
                                "unknown")
             << " code=" << (error == nullptr ? 0 : error->code) << '\n';
+  if (!g_error_matches(error, WEBKIT_NETWORK_ERROR,
+                        WEBKIT_NETWORK_ERROR_CANCELLED)) {
+    SetLoadErrorVisible(web_view, true);
+  }
   return FALSE;
 }
 
@@ -1139,6 +1231,14 @@ void OnReadyToShow(WebKitWebView* web_view, gpointer user_data) {
   }
 }
 
+void OnWindowMapped(GtkWidget*, gpointer) {
+  std::cerr << "[webview] window mapped\n";
+}
+
+void OnWindowUnmapped(GtkWidget*, gpointer) {
+  std::cerr << "[webview] window unmapped\n";
+}
+
 void OnWebViewClose(WebKitWebView* web_view, gpointer user_data) {
   auto* surface = static_cast<SurfaceState*>(user_data);
   if (surface->primary) {
@@ -1156,6 +1256,37 @@ gboolean OnWindowCloseRequest(GtkWindow* window, gpointer user_data) {
   auto* surface = static_cast<SurfaceState*>(user_data);
   if (surface->primary && !surface->app->terminating) {
     BeginTermination(surface->app, "primary WebView window closed");
+  }
+  return FALSE;
+}
+
+void ReloadWebPage(WebKitWebView* web_view) {
+  if (webkit_web_view_get_uri(web_view) != nullptr) {
+    auto* surface = static_cast<SurfaceState*>(
+        g_object_get_data(G_OBJECT(web_view), "mocktail-surface-state"));
+    if (surface != nullptr) {
+      if (surface->retry_source != 0) {
+        g_source_remove(surface->retry_source);
+        surface->retry_source = 0;
+      }
+      surface->resource_retries = 0;
+    }
+    std::cerr << "[webview] page reload requested\n";
+    webkit_web_view_reload_bypass_cache(web_view);
+  }
+}
+
+void OnReloadClicked(GtkButton*, gpointer user_data) {
+  ReloadWebPage(WEBKIT_WEB_VIEW(user_data));
+}
+
+gboolean OnReloadKeyPressed(GtkEventControllerKey*, guint keyval, guint,
+                            GdkModifierType state, gpointer user_data) {
+  if (keyval == GDK_KEY_F5 ||
+      ((state & GDK_CONTROL_MASK) != 0 &&
+       (keyval == GDK_KEY_r || keyval == GDK_KEY_R))) {
+    ReloadWebPage(WEBKIT_WEB_VIEW(user_data));
+    return TRUE;
   }
   return FALSE;
 }
@@ -1184,6 +1315,21 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
 
   GtkWidget* window = gtk_application_window_new(app->application);
   gtk_window_set_title(GTK_WINDOW(window), "Roblox");
+  GtkWidget* header = gtk_header_bar_new();
+  GtkWidget* reload = gtk_button_new_from_icon_name("view-refresh-symbolic");
+  gtk_widget_set_tooltip_text(reload, "Reload page (Ctrl+R or F5)");
+  gtk_accessible_update_property(GTK_ACCESSIBLE(reload),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Reload page", -1);
+  gtk_header_bar_pack_start(GTK_HEADER_BAR(header), reload);
+  gtk_window_set_titlebar(GTK_WINDOW(window), header);
+  g_signal_connect_object(reload, "clicked", G_CALLBACK(OnReloadClicked),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  GtkEventController* keys = gtk_event_controller_key_new();
+  gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+  g_signal_connect_object(keys, "key-pressed", G_CALLBACK(OnReloadKeyPressed),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  gtk_widget_add_controller(window, keys);
   gtk_window_set_default_size(GTK_WINDOW(window),
                               related_view == nullptr ? 1100 : 900,
                               related_view == nullptr ? 760 : 720);
@@ -1200,7 +1346,30 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
       }
     }
   }
-  gtk_window_set_child(GTK_WINDOW(window), GTK_WIDGET(web_view));
+  GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  GtkWidget* error_banner = gtk_revealer_new();
+  GtkWidget* error_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_set_margin_start(error_content, 12);
+  gtk_widget_set_margin_end(error_content, 12);
+  gtk_widget_set_margin_top(error_content, 8);
+  gtk_widget_set_margin_bottom(error_content, 8);
+  GtkWidget* error_message = gtk_label_new(
+      "Couldn't load the page. Check your connection and try again.");
+  gtk_label_set_wrap(GTK_LABEL(error_message), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(error_message), 0);
+  gtk_widget_set_hexpand(error_message, TRUE);
+  GtkWidget* retry = gtk_button_new_with_label("Retry");
+  g_signal_connect_object(retry, "clicked", G_CALLBACK(OnReloadClicked),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  gtk_box_append(GTK_BOX(error_content), error_message);
+  gtk_box_append(GTK_BOX(error_content), retry);
+  gtk_revealer_set_child(GTK_REVEALER(error_banner), error_content);
+  gtk_box_append(GTK_BOX(content), error_banner);
+  gtk_widget_set_vexpand(GTK_WIDGET(web_view), TRUE);
+  gtk_box_append(GTK_BOX(content), GTK_WIDGET(web_view));
+  gtk_window_set_child(GTK_WINDOW(window), content);
+  g_object_set_data_full(G_OBJECT(web_view), "mocktail-load-error",
+                         g_object_ref(error_banner), g_object_unref);
 
   auto* surface =
       new SurfaceState(app, GTK_WINDOW(window), related_view == nullptr);
@@ -1236,6 +1405,8 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   webkit_user_script_unref(bridge_script);
 
   ConfigureWebView(web_view, app);
+  g_signal_connect(web_view, "resource-load-started",
+                   G_CALLBACK(OnResourceStarted), nullptr);
   g_signal_connect(web_view, "load-changed", G_CALLBACK(OnLoadChanged),
                    surface);
   g_signal_connect(web_view, "load-failed", G_CALLBACK(OnLoadFailed), surface);
@@ -1251,6 +1422,8 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   g_signal_connect(web_view, "close", G_CALLBACK(OnWebViewClose), surface);
   g_signal_connect(window, "close-request", G_CALLBACK(OnWindowCloseRequest),
                    surface);
+  g_signal_connect(window, "map", G_CALLBACK(OnWindowMapped), nullptr);
+  g_signal_connect(window, "unmap", G_CALLBACK(OnWindowUnmapped), nullptr);
   return web_view;
 }
 

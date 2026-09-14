@@ -623,21 +623,22 @@ Status RobloxExperienceComposition::CloseWebSurface() {
     if (web_surface_route_ == WebSurfaceRoute::kNone) {
       return Status::Ok();
     }
-    process = web_surface_process_;
+    process = std::move(web_surface_process_);
+    web_surface_process_generation_ = 0;
     exit_observer = std::move(web_surface_logical_exit_observer_);
     web_surface_route_ = WebSurfaceRoute::kNone;
     web_surface_logical_generation_ = 0;
   }
-  const bool hidden =
-      process == nullptr || !process->running() || process->SetVisible(false);
+  // A closed challenge must stop executing. Reusing its hidden document lets
+  // late callbacks from the old attempt reach the next login attempt. The APK
+  // removes its WebView fragment here and creates a new one on the next open.
+  const bool closed =
+      process == nullptr || !process->running() || process->RequestClose();
   if (exit_observer.valid()) {
     exit_observer.on_exit(exit_observer.context.get());
   }
-  if (!hidden) {
-    if (process != nullptr) {
-      (void)process->RequestClose();
-    }
-    return Unavailable("could not hide reusable Roblox web surface");
+  if (!closed) {
+    return Unavailable("could not close Roblox web surface");
   }
   return Status::Ok();
 }

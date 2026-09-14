@@ -126,6 +126,10 @@ void PromptFirstLaunchSignIn(
       environment.Get("MOCKTAIL_SKIP_FIRST_LAUNCH_LOGIN") == "1") {
     return;
   }
+  if (environment.Get("MOCKTAIL_NATIVE_LOGIN") != "0") {
+    std::cout << "  [auth] native sign-in selected; opening Roblox welcome screen\n";
+    return;
+  }
 
   std::filesystem::path helper;
   const char* helper_override = std::getenv("MOCKTAIL_WEBVIEW_HELPER");
