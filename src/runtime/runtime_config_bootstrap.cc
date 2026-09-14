@@ -64,7 +64,9 @@ graphics:
   # display, unlimited, or any positive integer; fixed values are forwarded to
   # DFIntTaskSchedulerTargetFps without a whitelist.
   # frame_rate_limit: -1
-  # Optional presentation synchronization override: auto, on, or off.
+  # Optional presentation synchronization override: auto, on, or off. auto
+  # presents through the lowest-latency synchronized mode the driver offers
+  # unless frame_rate_limit is unlimited.
   # vsync: off
 
 performance:

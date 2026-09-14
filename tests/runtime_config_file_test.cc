@@ -139,7 +139,9 @@ TEST(RuntimeConfigBootstrapTest,
            "# DFIntTaskSchedulerTargetFps without a whitelist.\n  "
            "# frame_rate_limit: -1",
            "# Optional presentation synchronization override: auto, on, or "
-           "off.\n  # vsync: off",
+           "off. auto\n  # presents through the lowest-latency synchronized "
+           "mode the driver offers\n  # unless frame_rate_limit is unlimited.\n"
+           "  # vsync: off",
            "# physical CPU core. A place's Lua/main thread can still remain "
            "serial.\n  multithreaded_rendering: false",
            "# sizes and coalesces midphase work. Supported: auto, latency, "

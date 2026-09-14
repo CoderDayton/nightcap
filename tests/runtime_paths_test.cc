@@ -585,9 +585,12 @@ TEST(RuntimePathsTest, ExportsXdgBackedAndroidPathsAndCreatesParents) {
       "MOCKTAIL_ANDROID_CACHE_HOST_ROOT");
   const ScopedProcessEnvironment shader_cache(
       "MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH");
+  const ScopedProcessEnvironment texture_overrides(
+      "MOCKTAIL_TEXTURE_OVERRIDE_DIR");
   ASSERT_EQ(unsetenv("MOCKTAIL_RUNTIME_ROOT"), 0);
   ASSERT_EQ(unsetenv("MOCKTAIL_ANDROID_CACHE_HOST_ROOT"), 0);
   ASSERT_EQ(unsetenv("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH"), 0);
+  ASSERT_EQ(unsetenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR"), 0);
 
   const MapEnvironment environment({
       {"HOME", temporary.path().string()},
@@ -605,6 +608,8 @@ TEST(RuntimePathsTest, ExportsXdgBackedAndroidPathsAndCreatesParents) {
                paths.android_cache_root().c_str());
   EXPECT_STREQ(std::getenv("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH"),
                paths.vulkan_shader_cache_file().c_str());
+  EXPECT_STREQ(std::getenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
+               (paths.config_root() / "textures").c_str());
   EXPECT_TRUE(std::filesystem::is_directory(paths.android_runtime_root()));
   EXPECT_TRUE(std::filesystem::is_directory(paths.android_cache_root()));
   EXPECT_TRUE(std::filesystem::is_directory(

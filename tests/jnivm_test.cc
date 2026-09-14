@@ -2675,5 +2675,30 @@ TEST_F(JniVmTest, MainGameActivityReturnsNativeHelperAndTracksCallbacks) {
   EXPECT_EQ(env->GetBooleanField(helper, is_engine_initialized), JNI_TRUE);
 }
 
+TEST_F(JniVmTest, NativeQuoteInterfaceReportsKeystoreUnavailable) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass cls = env->FindClass("com/roblox/engine/jni/NativeQuoteInterface");
+  ASSERT_NE(cls, nullptr);
+  jmethodID method =
+      env->GetStaticMethodID(cls, "requestResponse", "([B)[B");
+  ASSERT_NE(method, nullptr);
+
+  jbyteArray challenge = env->NewByteArray(32);
+  ASSERT_NE(challenge, nullptr);
+  auto result = static_cast<jbyteArray>(
+      env->CallStaticObjectMethod(cls, method, challenge));
+  ASSERT_NE(result, nullptr);
+
+  const jsize length = env->GetArrayLength(result);
+  ASSERT_GT(length, 2);
+  std::vector<jbyte> bytes(static_cast<std::size_t>(length));
+  env->GetByteArrayRegion(result, 0, length, bytes.data());
+  EXPECT_EQ(bytes[0], 1);
+  EXPECT_EQ(bytes[1], 0);
+  const std::string message(reinterpret_cast<const char*>(bytes.data() + 2),
+                            static_cast<std::size_t>(length - 2));
+  EXPECT_NE(message.find("AndroidKeyStore"), std::string::npos);
+}
+
 } // namespace
 } // namespace jnivm

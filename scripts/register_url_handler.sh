@@ -140,7 +140,8 @@ desktop_source="$(ResolveRegularFile "${desktop_source}" "desktop template")"
 [[ "$(grep -Fxc '[Desktop Entry]' "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'Type=Application' "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'Icon=space.bigrat.mocktail' "${desktop_source}")" == 1 &&
-   "$(grep -Fxc 'Exec=mocktail %u' "${desktop_source}")" == 1 &&
+   "$(grep -Fxc 'Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 mocktail %u' \
+       "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;' \
        "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'X-Mocktail-Managed=true' "${desktop_source}")" == 1 &&
@@ -173,7 +174,8 @@ temporary="$(mktemp "${applications_dir}/.${DESKTOP_ID}.XXXXXX.desktop")"
 trap 'rm -f -- "${temporary}"' EXIT
 while IFS= read -r line || [[ -n "${line}" ]]; do
   if [[ "${line}" == Exec=* ]]; then
-    printf 'Exec=%s %%u\n' "${mocktail_executable}"
+    printf 'Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 %s %%u\n' \
+      "${mocktail_executable}"
     if [[ -n "${launch_working_directory}" ]]; then
       printf 'Path=%s\n' "${launch_working_directory}"
     fi

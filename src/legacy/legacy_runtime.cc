@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +57,8 @@
 #include "libc_shim/libc_shim.h"
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
+#include "runtime/device_memory_profile.h"
+#include "runtime/display_size.h"
 #include "runtime/environment.h"
 #include "runtime/discord_rpc.h"
 #include "runtime/jnivm_platform_web_callbacks.h"
@@ -70,6 +73,7 @@
 #include "runtime/roblox_text_input_jni_bridge.h"
 #include "runtime/runtime_config.h"
 #include "runtime/runtime_paths.h"
+#include "runtime/texture_memory_policy.h"
 #include "services/client_settings_service.h"
 #include "services/http_client.h"
 #include "window/window.h"
@@ -2393,6 +2397,23 @@ void InstallNativeGlJavaImplementation(JNIEnv* env, jclass native_gl_java_class)
 
 jobject BuildPlatformParams(JNIEnv* env, jobject surface, bool is_headless);
 
+mocktail::runtime::DisplaySize HostDisplaySize() {
+  return mocktail::runtime::ParseDisplaySize(
+      std::getenv(mocktail::runtime::kDisplaySizeEnvironment));
+}
+
+// Live window pixels once the host window exists; the initial window size
+// handoff otherwise.
+mocktail::runtime::DisplaySize HostWindowPixelSize() {
+  const mocktail::window::WindowViewportSnapshot viewport =
+      mocktail::window::GetWindowViewportSnapshot();
+  if (viewport.valid()) {
+    return {viewport.pixel_width, viewport.pixel_height};
+  }
+  return mocktail::runtime::ParseDisplaySize(
+      std::getenv(mocktail::runtime::kWindowSizeEnvironment));
+}
+
 jobject BuildDeviceParams(JNIEnv* env) {
   jobject params = NewObject(env, "com/roblox/engine/jni/model/DeviceParams");
   if (!params) {
@@ -2414,27 +2435,42 @@ jobject BuildDeviceParams(JNIEnv* env) {
   SetStringField(env, params, "appVersion", app_version.c_str());
   SetStringField(env, params, "country", "US");
   SetStringField(env, params, "manufacturer", manufacturer.c_str());
-  SetStringField(env, params, "displayResolution", "1280x720");
+  const mocktail::runtime::DisplaySize display_size =
+      mocktail::runtime::ParseDisplaySize(
+          std::getenv(mocktail::runtime::kDisplaySizeEnvironment));
+  const std::string display_resolution = std::to_string(display_size.width) +
+                                         "x" +
+                                         std::to_string(display_size.height);
+  SetStringField(env, params, "displayResolution", display_resolution.c_str());
   SetStringField(env, params, "networkType", "wifi");
   SetStringField(env, params, "deviceSku", device_sku.c_str());
   SetStringField(env, params, "socModel", soc_model.c_str());
   SetStringField(env, params, "appBuildVariant", "googleProdRelease");
   SetStringField(env, params, "testDeviceName", device_name.c_str());
 
-  const bool is_low_ram = !IsEnabled("MOCKTAIL_DISABLE_LOW_RAM_DEVICE");
-  SetIntField(env, params, "deviceTotalMemoryMB", is_low_ram ? 2048 : 4096);
-  SetIntField(env, params, "displayPhysicalWidthPixels", 1280);
-  SetIntField(env, params, "displayPhysicalHeightPixels", 720);
-  SetIntField(env, params, "memoryClass", is_low_ram ? 256 : 512);
-  SetIntField(env, params, "largeMemoryClass", is_low_ram ? 512 : 1024);
+  // MOCKTAIL_DISABLE_LOW_RAM_DEVICE forces the normal-RAM profile even when
+  // the host total cannot be read or is below 4 GiB.
+  std::uint64_t host_memory_bytes = mocktail::runtime::DetectHostMemoryBytes();
+  if (IsEnabled("MOCKTAIL_DISABLE_LOW_RAM_DEVICE")) {
+    host_memory_bytes =
+        std::max<std::uint64_t>(host_memory_bytes, 4096ULL * 1024ULL * 1024ULL);
+  }
+  const mocktail::runtime::DeviceMemoryProfile memory =
+      mocktail::runtime::BuildDeviceMemoryProfile(host_memory_bytes);
+  SetIntField(env, params, "deviceTotalMemoryMB", memory.total_memory_mb);
+  SetIntField(env, params, "displayPhysicalWidthPixels", display_size.width);
+  SetIntField(env, params, "displayPhysicalHeightPixels",
+              display_size.height);
+  SetIntField(env, params, "memoryClass", memory.memory_class_mb);
+  SetIntField(env, params, "largeMemoryClass", memory.large_memory_class_mb);
   SetLongField(env, params, "lowMemoryKillerBackgroundAppThreshold",
-               is_low_ram ? 256 : 0);
+               memory.low_memory_killer_background_threshold);
   SetLongField(env, params, "lowMemoryKillerForegroundAppThreshold",
-               is_low_ram ? 512 : 0);
+               memory.low_memory_killer_foreground_threshold);
   SetBooleanField(env, params, "cpu64Bit", JNI_TRUE);
   SetBooleanField(env, params, "isChrome", JNI_FALSE);
   SetBooleanField(env, params, "isLowRamDevice",
-                  is_low_ram ? JNI_TRUE : JNI_FALSE);
+                  memory.low_ram_device ? JNI_TRUE : JNI_FALSE);
   return params;
 }
 
@@ -2534,8 +2570,9 @@ jobject BuildAppBridgeInitParams(JNIEnv* env, jstring client_settings,
   SetStringField(env, params, "locale", "en_us");
   SetRobloxServiceUrlFields(env, params);
 
-  SetIntField(env, params, "screenWidth", 1280);
-  SetIntField(env, params, "screenHeight", 720);
+  const mocktail::runtime::DisplaySize init_display = HostDisplaySize();
+  SetIntField(env, params, "screenWidth", init_display.width);
+  SetIntField(env, params, "screenHeight", init_display.height);
   SetIntField(env, params, "densityDpi", 160);
   SetIntField(env, params, "sdkVersion", 33);
   jboolean headless = is_headless ? JNI_TRUE : JNI_FALSE;
@@ -2569,13 +2606,19 @@ jobject BuildPlatformParams(JNIEnv* env, jobject surface, bool is_headless) {
   SetStringField(env, params, "deviceName", platform_device_name.c_str());
   SetStringField(env, params, "locale", "en_us");
   SetStringField(env, params, "assetFolderPath", DefaultAssetPath().c_str());
-  SetIntField(env, params, "width", 1280);
-  SetIntField(env, params, "height", 720);
-  SetIntField(env, params, "screenWidth", 1280);
-  SetIntField(env, params, "screenHeight", 720);
+  const mocktail::runtime::DisplaySize platform_window = HostWindowPixelSize();
+  const mocktail::runtime::DisplaySize platform_display = HostDisplaySize();
+  SetIntField(env, params, "width", platform_window.width);
+  SetIntField(env, params, "height", platform_window.height);
+  SetIntField(env, params, "screenWidth", platform_display.width);
+  SetIntField(env, params, "screenHeight", platform_display.height);
   SetIntField(env, params, "densityDpi", 160);
-  SetIntField(env, params, "viewportWidthMm", 203);
-  SetIntField(env, params, "viewportHeightMm", 114);
+  SetIntField(env, params, "viewportWidthMm",
+              mocktail::runtime::PixelsToMillimetersAt160Dpi(
+                  platform_window.width));
+  SetIntField(env, params, "viewportHeightMm",
+              mocktail::runtime::PixelsToMillimetersAt160Dpi(
+                  platform_window.height));
   const mocktail::window::WindowViewportSnapshot viewport =
       mocktail::window::GetWindowViewportSnapshot();
   SetFloatField(env, params, "dpiScale", viewport.dpi_scale);
@@ -2684,10 +2727,12 @@ jobject BuildStartAppParams(JNIEnv* env, jstring app_params,
   SetStringField(env, params, "deviceName", start_device_name.c_str());
   SetStringField(env, params, "locale", "en_us");
   SetRobloxServiceUrlFields(env, params);
-  SetIntField(env, params, "width", 1280);
-  SetIntField(env, params, "height", 720);
-  SetIntField(env, params, "screenWidth", 1280);
-  SetIntField(env, params, "screenHeight", 720);
+  const mocktail::runtime::DisplaySize start_window = HostWindowPixelSize();
+  const mocktail::runtime::DisplaySize start_display = HostDisplaySize();
+  SetIntField(env, params, "width", start_window.width);
+  SetIntField(env, params, "height", start_window.height);
+  SetIntField(env, params, "screenWidth", start_display.width);
+  SetIntField(env, params, "screenHeight", start_display.height);
   SetIntField(env, params, "densityDpi", 160);
   SetIntField(env, params, "sdkVersion", 33);
   SetIntField(env, params, "placeId", 0);
@@ -2815,8 +2860,9 @@ jobject BuildMockSurface(JNIEnv* env) {
   if (!surface) {
     return nullptr;
   }
-  SetIntField(env, surface, "width", 1280);
-  SetIntField(env, surface, "height", 720);
+  const mocktail::runtime::DisplaySize surface_size = HostWindowPixelSize();
+  SetIntField(env, surface, "width", surface_size.width);
+  SetIntField(env, surface, "height", surface_size.height);
   SetBooleanField(env, surface, "valid", JNI_TRUE);
   SetBooleanField(env, surface, "isValid", JNI_TRUE);
   return surface;
@@ -3913,7 +3959,10 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
         on_surface_created(env, game_activity, handle, surface);
       }
       if (run_lifecycle_callbacks && on_surface_changed) {
-        on_surface_changed(env, game_activity, handle, surface, 4, 1280, 720);
+        const mocktail::runtime::DisplaySize changed_size =
+            HostWindowPixelSize();
+        on_surface_changed(env, game_activity, handle, surface, 4,
+                           changed_size.width, changed_size.height);
       }
       if (run_lifecycle_callbacks && on_surface_redraw_needed) {
         on_surface_redraw_needed(env, game_activity, handle, surface);
@@ -4084,8 +4133,9 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
       ShouldRunStartupStep("MOCKTAIL_UPDATE_APP_UI_SIZES", false)) {
     env = ensure_env();
     std::cout << "  [engine] updateAppUISizes\n" << std::flush;
-    context->native_update_app_ui_sizes(env, native_gl_class, 1280, 720, 0, 0,
-                                        0);
+    const mocktail::runtime::DisplaySize ui_size = HostWindowPixelSize();
+    context->native_update_app_ui_sizes(env, native_gl_class, ui_size.width,
+                                        ui_size.height, 0, 0, 0);
     std::cout << "  [engine] updateAppUISizes returned\n" << std::flush;
   }
 
@@ -4724,6 +4774,38 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     } else {
       std::cout << "  [window] Window ready; waiting for Roblox frames\n"
                 << std::flush;
+    }
+  }
+  if (window_initialised) {
+    auto* sdl_window =
+        static_cast<SDL_Window*>(mocktail::window::GetBackendWindow());
+    const SDL_DisplayID display =
+        sdl_window != nullptr ? SDL_GetDisplayForWindow(sdl_window) : 0;
+    const SDL_DisplayMode* mode =
+        display != 0 ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    if (mode != nullptr && mode->w > 0 && mode->h > 0) {
+      // SDL display modes are in desktop units; pixel_density maps them to
+      // physical pixels.
+      const float density = mode->pixel_density > 0.0f ? mode->pixel_density
+                                                       : 1.0f;
+      const std::string display_size =
+          std::to_string(std::lround(mode->w * density)) + "x" +
+          std::to_string(std::lround(mode->h * density));
+      setenv(mocktail::runtime::kDisplaySizeEnvironment, display_size.c_str(),
+             1);
+      std::cout << "  [window] host display " << display_size << " pixels\n"
+                << std::flush;
+    }
+  }
+  if (window_initialised) {
+    const mocktail::window::WindowViewportSnapshot viewport =
+        mocktail::window::GetWindowViewportSnapshot();
+    if (viewport.valid()) {
+      const std::string window_size = std::to_string(viewport.pixel_width) +
+                                      "x" +
+                                      std::to_string(viewport.pixel_height);
+      setenv(mocktail::runtime::kWindowSizeEnvironment, window_size.c_str(),
+             1);
     }
   }
   const SDL_SystemTheme system_theme =

@@ -119,6 +119,18 @@ target_link_libraries(texture_memory_policy_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(device_memory_profile_test device_memory_profile_test.cc)
+target_link_libraries(device_memory_profile_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(display_size_test display_size_test.cc)
+target_link_libraries(display_size_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -476,6 +488,42 @@ target_link_libraries(vulkan_text_overlay_compositor_test PRIVATE
   ${CMAKE_DL_LIBS}
 )
 mocktail_apply_compile_options(vulkan_text_overlay_compositor_test)
+
+add_executable(etc2_decoder_test
+  etc2_decoder_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+)
+target_include_directories(etc2_decoder_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main Threads::Threads)
+mocktail_apply_compile_options(etc2_decoder_test)
+
+pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
+
+add_executable(texture_override_test
+  texture_override_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(texture_override_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(texture_override_test PRIVATE GTest::gtest_main
+  PkgConfig::LIBPNG)
+mocktail_apply_compile_options(texture_override_test)
+
+add_executable(vulkan_etc2_emulation_test
+  vulkan_etc2_emulation_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(vulkan_etc2_emulation_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(vulkan_etc2_emulation_test PRIVATE GTest::gtest_main
+  Threads::Threads PkgConfig::LIBPNG)
+mocktail_apply_compile_options(vulkan_etc2_emulation_test)
 
 add_executable(video_driver_policy_test
   video_driver_policy_test.cc
@@ -894,6 +942,8 @@ gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
+gtest_discover_tests(device_memory_profile_test)
+gtest_discover_tests(display_size_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
@@ -937,6 +987,8 @@ gtest_discover_tests(input_pump_pacer_test)
 gtest_discover_tests(vulkan_surface_recovery_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
+gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(video_driver_policy_test)
 gtest_discover_tests(window_surface_lifecycle_test)
 gtest_discover_tests(window_creation_policy_test)

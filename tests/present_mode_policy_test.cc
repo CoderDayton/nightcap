@@ -7,8 +7,11 @@ namespace graphics {
 namespace {
 
 TEST(PresentModePolicyTest, DerivesDisplayAndUnlimitedDefaults) {
+  // The unmanaged default keeps Roblox's frame cap but still selects the
+  // lowest-latency synchronized present mode instead of the engine's FIFO.
   EXPECT_EQ(ResolvePresentModePolicy("auto", "-1"),
-            PresentModePolicy::kHostDefault);
+            PresentModePolicy::kVsync);
+  EXPECT_EQ(ResolvePresentModePolicy("auto", ""), PresentModePolicy::kVsync);
   EXPECT_EQ(ResolvePresentModePolicy("auto", "display"),
             PresentModePolicy::kVsync);
   EXPECT_EQ(ResolvePresentModePolicy("auto", "60"),

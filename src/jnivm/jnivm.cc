@@ -23,6 +23,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "runtime/display_size.h"
+
 namespace jnivm {
 
 void Class::RegisterMethod(const std::string& method_name,
@@ -562,13 +564,25 @@ bool ResolvedDarkTheme() {
 }
 
 jint IntResultForName(const char* name) {
-  if (std::strcmp(name, "getScreenWidth") == 0 ||
-      std::strcmp(name, "getWidth") == 0) {
-    return 1280;
+  if (std::strcmp(name, "getScreenWidth") == 0) {
+    return mocktail::runtime::ParseDisplaySize(
+               std::getenv(mocktail::runtime::kDisplaySizeEnvironment))
+        .width;
   }
-  if (std::strcmp(name, "getScreenHeight") == 0 ||
-      std::strcmp(name, "getHeight") == 0) {
-    return 720;
+  if (std::strcmp(name, "getScreenHeight") == 0) {
+    return mocktail::runtime::ParseDisplaySize(
+               std::getenv(mocktail::runtime::kDisplaySizeEnvironment))
+        .height;
+  }
+  if (std::strcmp(name, "getWidth") == 0) {
+    return mocktail::runtime::ParseDisplaySize(
+               std::getenv(mocktail::runtime::kWindowSizeEnvironment))
+        .width;
+  }
+  if (std::strcmp(name, "getHeight") == 0) {
+    return mocktail::runtime::ParseDisplaySize(
+               std::getenv(mocktail::runtime::kWindowSizeEnvironment))
+        .height;
   }
   if (std::strcmp(name, "getDensityDpi") == 0) {
     return 160;
@@ -2275,8 +2289,11 @@ jobject MakeDeviceStaticParamsObject() {
     pseudo_object->object_fields["soc_model"] =
         MakeString(identity.soc_model.c_str());
     pseudo_object->boolean_fields["cpu64Bit"] = JNI_TRUE;
-    pseudo_object->int_fields["screenWidth"] = 1280;
-    pseudo_object->int_fields["screenHeight"] = 720;
+    const mocktail::runtime::DisplaySize host_display =
+        mocktail::runtime::ParseDisplaySize(
+            std::getenv(mocktail::runtime::kDisplaySizeEnvironment));
+    pseudo_object->int_fields["screenWidth"] = host_display.width;
+    pseudo_object->int_fields["screenHeight"] = host_display.height;
     pseudo_object->int_fields["screenDensityDpi"] = 160;
     pseudo_object->int_fields["apiVersion"] = 33;
     pseudo_object->int_fields["sdkVersion"] = 33;
@@ -2446,14 +2463,17 @@ void EnsureAndroidObjectGraph() {
   SetObjectFieldRaw(decor_view, "holder", surface_holder);
   SetObjectFieldRaw(decor_view, "surface", surface);
   SetObjectFieldRaw(decor_view, "display", display);
-  SetIntFieldRaw(decor_view, "width", 1280);
-  SetIntFieldRaw(decor_view, "height", 720);
+  const mocktail::runtime::DisplaySize host_window =
+      mocktail::runtime::ParseDisplaySize(
+          std::getenv(mocktail::runtime::kWindowSizeEnvironment));
+  SetIntFieldRaw(decor_view, "width", host_window.width);
+  SetIntFieldRaw(decor_view, "height", host_window.height);
 
   SetObjectFieldRaw(surface_view, "holder", surface_holder);
   SetObjectFieldRaw(surface_view, "surface", surface);
   SetObjectFieldRaw(surface_view, "rootView", root_view);
-  SetIntFieldRaw(surface_view, "width", 1280);
-  SetIntFieldRaw(surface_view, "height", 720);
+  SetIntFieldRaw(surface_view, "width", host_window.width);
+  SetIntFieldRaw(surface_view, "height", host_window.height);
 
   SetObjectFieldRaw(surface_holder, "surface", surface);
   SetObjectFieldRaw(surface_holder, "surfaceFrame",
@@ -2461,11 +2481,14 @@ void EnsureAndroidObjectGraph() {
   SetBooleanFieldRaw(surface, "valid", JNI_TRUE);
   SetBooleanFieldRaw(surface, "isValid", JNI_TRUE);
 
-  SetIntFieldRaw(display, "width", 1280);
-  SetIntFieldRaw(display, "height", 720);
+  const mocktail::runtime::DisplaySize host_display =
+      mocktail::runtime::ParseDisplaySize(
+          std::getenv(mocktail::runtime::kDisplaySizeEnvironment));
+  SetIntFieldRaw(display, "width", host_display.width);
+  SetIntFieldRaw(display, "height", host_display.height);
   SetIntFieldRaw(display, "rotation", 0);
-  SetIntFieldRaw(display_metrics, "widthPixels", 1280);
-  SetIntFieldRaw(display_metrics, "heightPixels", 720);
+  SetIntFieldRaw(display_metrics, "widthPixels", host_display.width);
+  SetIntFieldRaw(display_metrics, "heightPixels", host_display.height);
   SetIntFieldRaw(display_metrics, "densityDpi", 160);
   SetFloatFieldRaw(display_metrics, "density", 1.0f);
   SetFloatFieldRaw(display_metrics, "scaledDensity", 1.0f);
@@ -2476,9 +2499,11 @@ void EnsureAndroidObjectGraph() {
                              : PlatformIdentity{};
   SetIntFieldRaw(configuration, "orientation", 2);
   SetIntFieldRaw(configuration, "densityDpi", 160);
-  SetIntFieldRaw(configuration, "screenWidthDp", 1280);
-  SetIntFieldRaw(configuration, "screenHeightDp", 720);
-  SetIntFieldRaw(configuration, "smallestScreenWidthDp", 720);
+  // Density is 1.0, so dp equals window pixels.
+  SetIntFieldRaw(configuration, "screenWidthDp", host_window.width);
+  SetIntFieldRaw(configuration, "screenHeightDp", host_window.height);
+  SetIntFieldRaw(configuration, "smallestScreenWidthDp",
+                 std::min(host_window.width, host_window.height));
   SetIntFieldRaw(configuration, "touchscreen", identity.touch_enabled ? 3 : 1);
   SetIntFieldRaw(configuration, "keyboard", identity.keyboard_enabled ? 2 : 1);
   SetIntFieldRaw(configuration, "keyboardHidden",
@@ -3839,8 +3864,30 @@ jobjectArray MakeObjectArray(jsize len, jobject init) {
   return ref;
 }
 
+// NativeQuoteInterface.requestResponse([B)[B reply when no Android Keystore
+// exists: status byte 1, attestation-available byte 0, then the error text.
+// A real device with a keystore answers [1, 1, chain] instead.
+jbyteArray MakeQuoteUnavailableResponse() {
+  static const char kMessage[] =
+      "java.security.KeyStoreException: AndroidKeyStore is not available";
+  const std::size_t message_length = sizeof(kMessage) - 1;
+  jbyteArray result = MakeByteArray(static_cast<jsize>(2 + message_length));
+  PseudoArray* array = ArrayFromRef(result);
+  if (array == nullptr || array->bytes.size() != 2 + message_length) {
+    return nullptr;
+  }
+  array->bytes[0] = 1;
+  array->bytes[1] = 0;
+  std::memcpy(array->bytes.data() + 2, kMessage, message_length);
+  return result;
+}
+
 jobject StaticObjectResultForMethod(jmethodID method_id) {
   const char* name = MethodName(method_id);
+  if (std::strcmp(name, "requestResponse") == 0 &&
+      std::strcmp(MethodSignature(method_id), "([B)[B") == 0) {
+    return MakeQuoteUnavailableResponse();
+  }
   const PlatformIdentity identity = CurrentPlatformIdentity();
   jobject android_object = AndroidObjectForMethod(name);
   if (android_object) {
@@ -4952,10 +4999,15 @@ jobject CreateAndroidConfiguration(JNIEnv* env) {
   SetIntFieldRaw(configuration, "navigation", 1);
   SetIntFieldRaw(configuration, "navigationHidden", 1);
   SetIntFieldRaw(configuration, "orientation", 2);
-  SetIntFieldRaw(configuration, "screenHeightDp", 720);
+  // Density is 1.0, so dp equals window pixels.
+  const mocktail::runtime::DisplaySize config_window =
+      mocktail::runtime::ParseDisplaySize(
+          std::getenv(mocktail::runtime::kWindowSizeEnvironment));
+  SetIntFieldRaw(configuration, "screenHeightDp", config_window.height);
   SetIntFieldRaw(configuration, "screenLayout", 0);
-  SetIntFieldRaw(configuration, "screenWidthDp", 1280);
-  SetIntFieldRaw(configuration, "smallestScreenWidthDp", 720);
+  SetIntFieldRaw(configuration, "screenWidthDp", config_window.width);
+  SetIntFieldRaw(configuration, "smallestScreenWidthDp",
+                 std::min(config_window.width, config_window.height));
   SetIntFieldRaw(configuration, "touchscreen", identity.touch_enabled ? 3 : 1);
   SetIntFieldRaw(configuration, "uiMode", 0);
   return configuration;
