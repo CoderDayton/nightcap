@@ -59,7 +59,8 @@ export PATH="${test_root}/bin:${PATH}"
 
 readonly installed_desktop="${XDG_DATA_HOME}/applications/space.bigrat.mocktail.desktop"
 [[ -f "${installed_desktop}" && ! -L "${installed_desktop}" ]]
-grep -Fxq "Exec=${mocktail_binary} %u" "${installed_desktop}"
+grep -Fxq "Exec=env SDL_VIDEODRIVER=wayland,x11 ${mocktail_binary} %u" \
+  "${installed_desktop}"
 grep -Fxq \
   'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;' \
   "${installed_desktop}"
@@ -84,7 +85,8 @@ cp -- "${mocktail_binary}" "${fixture_project}/build/mocktail"
 "${fixture_project}/scripts/register_url_handler.sh" --install-only \
   --executable "${fixture_project}/build/mocktail" \
   --desktop-file "${desktop_source}" >/dev/null
-grep -Fxq "Exec=${fixture_project}/build/mocktail %u" \
+grep -Fxq \
+  "Exec=env SDL_VIDEODRIVER=wayland,x11 ${fixture_project}/build/mocktail %u" \
   "${installed_desktop}"
 grep -Fxq "Path=${fixture_project}" "${installed_desktop}"
 
