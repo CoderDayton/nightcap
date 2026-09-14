@@ -28,10 +28,9 @@ PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
   if (frame_rate_value == "unlimited") {
     return PresentModePolicy::kUnthrottled;
   }
-  if (frame_rate_value.empty() || frame_rate_value == "-1") {
-    return PresentModePolicy::kHostDefault;
-  }
-  // Display or any fixed scheduler target keeps synchronized presentation.
+  // Every synchronized target, including the unmanaged Roblox cap, presents
+  // through the lowest-latency vsync mode the host offers. Roblox's own FIFO
+  // request queues up to two rendered frames before they reach the display.
   return PresentModePolicy::kVsync;
 }
 
