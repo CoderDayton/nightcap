@@ -742,6 +742,8 @@ target_link_libraries(bionic_pthread_create_runtime_test PRIVATE
 )
 target_link_options(bionic_pthread_create_runtime_test PRIVATE
   "-Wl,--wrap=pthread_create"
+  "-Wl,--wrap=pthread_setschedparam"
+  "-Wl,--wrap=sched_setscheduler"
 )
 
 add_executable(bionic_sysconf_test bionic_sysconf_test.cc)

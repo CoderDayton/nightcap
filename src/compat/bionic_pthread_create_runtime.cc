@@ -1,6 +1,7 @@
 #include "compat/bionic_pthread_create_runtime.h"
 
 #include <errno.h>
+#include <stdio.h>
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,24 @@ struct ThreadStartContext {
 };
 
 std::atomic<NativeThreadInitializer> g_thread_initializer{nullptr};
+
+// Roblox requests maximum-priority FIFO for its Main thread. On hosts with
+// RLIMIT_RTPRIO=99 this succeeds and later trips the finite RLIMIT_RTTIME.
+bool RejectRealtimeScheduling(int policy) noexcept {
+  const int base_policy = policy & ~SCHED_RESET_ON_FORK;
+  if (base_policy != SCHED_FIFO && base_policy != SCHED_RR) {
+    return false;
+  }
+  static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+  if (!logged.test_and_set(std::memory_order_relaxed)) {
+    const int saved_errno = errno;
+    fprintf(stderr, "  [scheduler] denied guest real-time scheduling (policy=%d): "
+                    "keeping host scheduling to prevent RLIMIT_RTTIME SIGXCPU\n",
+            policy);
+    errno = saved_errno;
+  }
+  return true;
+}
 
 size_t HostStackSizeForGuest(size_t guest_stack_size) noexcept {
 #if defined(__GLIBC__)
@@ -98,6 +117,9 @@ int CopySupportedThreadAttributes(const pthread_attr_t& source,
     result = pthread_attr_getschedpolicy(&source, &scheduler_policy);
     if (result == 0) {
       result = pthread_attr_getschedparam(&source, &scheduler_parameters);
+    }
+    if (result == 0 && RejectRealtimeScheduling(scheduler_policy)) {
+      return EPERM;
     }
     if (result == 0) {
       result = pthread_attr_setschedpolicy(destination, scheduler_policy);
@@ -273,4 +295,21 @@ extern "C" int mocktail_bionic_pthread_create(pthread_t* thread,
                                                void* argument) {
   return mocktail::compat::CreateBionicPthread(thread, attr, start_routine,
                                                argument);
+}
+
+extern "C" int mocktail_bionic_pthread_setschedparam(
+    pthread_t thread, int policy, const struct sched_param* parameters) {
+  if (mocktail::compat::RejectRealtimeScheduling(policy)) {
+    return EPERM;
+  }
+  return pthread_setschedparam(thread, policy, parameters);
+}
+
+extern "C" int mocktail_bionic_sched_setscheduler(
+    pid_t tid, int policy, const struct sched_param* parameters) {
+  if (mocktail::compat::RejectRealtimeScheduling(policy)) {
+    errno = EPERM;
+    return -1;
+  }
+  return sched_setscheduler(tid, policy, parameters);
 }

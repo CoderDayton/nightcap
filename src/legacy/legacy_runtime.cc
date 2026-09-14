@@ -5161,7 +5161,6 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       "pthread_kill",
       "pthread_exit",
       "pthread_getschedparam",
-      "pthread_setschedparam",
       "pthread_key_create",
       "pthread_key_delete",
       "pthread_getspecific",
@@ -5479,6 +5478,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   linker::RegisterSymbol(
       "pthread_create",
       reinterpret_cast<void*>(mocktail_bionic_pthread_create));
+  linker::RegisterSymbol(
+      "pthread_setschedparam",
+      reinterpret_cast<void*>(mocktail_bionic_pthread_setschedparam));
+  linker::RegisterSymbol(
+      "sched_setscheduler",
+      reinterpret_cast<void*>(mocktail_bionic_sched_setscheduler));
   linker::RegisterSymbol("abort", reinterpret_cast<void*>(mocktail_abort));
   linker::RegisterSymbol("__stack_chk_fail", reinterpret_cast<void*>(mocktail_recover_stack_chk_fail));
   (void)registered;

@@ -2,6 +2,8 @@
 #define MOCKTAIL_COMPAT_BIONIC_PTHREAD_CREATE_RUNTIME_H_
 
 #include <pthread.h>
+#include <sched.h>
+#include <sys/types.h>
 
 #include <cstddef>
 
@@ -28,5 +30,11 @@ extern "C" int mocktail_bionic_pthread_create(pthread_t* thread,
                                                const pthread_attr_t* attr,
                                                void* (*start_routine)(void*),
                                                void* argument);
+
+// Guest real-time scheduling is denied to avoid the host RLIMIT_RTTIME watchdog.
+extern "C" int mocktail_bionic_pthread_setschedparam(
+    pthread_t thread, int policy, const struct sched_param* parameters);
+extern "C" int mocktail_bionic_sched_setscheduler(
+    pid_t tid, int policy, const struct sched_param* parameters);
 
 #endif  // MOCKTAIL_COMPAT_BIONIC_PTHREAD_CREATE_RUNTIME_H_
