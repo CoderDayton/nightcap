@@ -189,6 +189,13 @@ target_link_libraries(supported_launch_policy_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(process_launch_policy_test process_launch_policy_test.cc)
+target_link_libraries(process_launch_policy_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(process_launch_policy_test)
+
 add_executable(platform_cache_migration_test
   platform_cache_migration_test.cc
 )
@@ -885,6 +892,7 @@ gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
+gtest_discover_tests(process_launch_policy_test)
 gtest_discover_tests(platform_cache_migration_test)
 gtest_discover_tests(roblox_desktop_app_policy_test)
 gtest_discover_tests(browser_tracker_service_test)

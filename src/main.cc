@@ -35,6 +35,8 @@
 #include "runtime/payload_update_preflight.h"
 #include "runtime/performance_policy.h"
 #include "runtime/platform_cache_migration.h"
+#include "runtime/process_diagnostics.h"
+#include "runtime/process_launch_policy.h"
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
@@ -251,6 +253,12 @@ int main(int argc, char* argv[]) {
         command_line.options.program_name);
     return EXIT_SUCCESS;
   }
+  // Normalize inherited process state before bootstrap or helpers can create
+  // threads. Keep research/canary resource limits under their caller's control.
+  const std::string process_launch_diagnostics =
+      command_line.options.mode == mocktail::runtime::CommandMode::kRun
+          ? mocktail::runtime::ApplyInteractiveProcessLaunchPolicy()
+          : std::string{};
   std::string command_line_error;
   if (!mocktail::runtime::ApplySupportedLaunchPolicy(
           command_line.options.mode == mocktail::runtime::CommandMode::kRun,
@@ -456,6 +464,10 @@ int main(int argc, char* argv[]) {
       std::cerr << "  [session] automatic logging unavailable: "
                 << session_log.error() << '\n';
     }
+    std::cout << process_launch_diagnostics << std::flush;
+    mocktail::runtime::InstallCpuLimitDiagnostics();
+    mocktail::runtime::LogProcessDiagnostics(
+        mocktail::runtime::ProcessDiagnosticStage::kStartup);
   }
   if (config_bootstrap.created()) {
     std::cout << "  [runtime] created first-run configuration: "
@@ -1024,8 +1036,18 @@ int main(int argc, char* argv[]) {
   }
   failure_dialog.SetMessage(
       "Roblox closed unexpectedly because of an internal error.");
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    mocktail::runtime::LogProcessDiagnostics(
+        mocktail::runtime::ProcessDiagnosticStage::kNativeRuntime);
+  }
   int runtime_status =
       mocktail::legacy::Run(command_line.options, std::move(dependencies));
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    mocktail::runtime::LogProcessDiagnostics(
+        mocktail::runtime::ProcessDiagnosticStage::kShutdown);
+    std::cerr << "[diagnostic] native runtime exit_status=" << runtime_status
+              << '\n';
+  }
   const mocktail::Status launch_broker_shutdown_status =
       external_launch_broker.Shutdown();
   if (!launch_broker_shutdown_status.ok()) {
