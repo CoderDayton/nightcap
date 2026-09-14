@@ -115,6 +115,7 @@ pkg_check_modules(LIBPLACEBO REQUIRED IMPORTED_TARGET libplacebo)
 target_link_libraries(stub_vulkan PRIVATE
   Mocktail::SdlVulkanWsi
   PkgConfig::LIBPLACEBO
+  Threads::Threads
   dl
 )
 

@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <pthread.h>
+
+#include <atomic>
 #include <limits>
+#include <vector>
 
 namespace mocktail::graphics {
 namespace {
@@ -207,10 +211,17 @@ std::size_t EtcDecodedTexelBytes(EtcFormat format) {
   }
 }
 
-bool DecodeEtcImage(EtcFormat format, const std::uint8_t* source,
-                    std::size_t source_bytes, std::uint32_t width,
-                    std::uint32_t height, std::uint8_t* destination,
-                    std::size_t destination_bytes) {
+namespace {
+
+// Blocks per band handed to one worker: about a 256x256 texel image.
+constexpr std::uint64_t kBlocksPerBand = 16384;
+// Batches smaller than a 1024x1024 texel image decode on the caller.
+constexpr std::uint64_t kParallelMinimumBlocks = 65536;
+
+bool ImageFits(EtcFormat format, const std::uint8_t* source,
+               std::size_t source_bytes, std::uint32_t width,
+               std::uint32_t height, const std::uint8_t* destination,
+               std::size_t destination_bytes) {
   if (source == nullptr || destination == nullptr || width == 0 ||
       height == 0) {
     return false;
@@ -218,16 +229,129 @@ bool DecodeEtcImage(EtcFormat format, const std::uint8_t* source,
   const std::uint64_t blocks_wide = (static_cast<std::uint64_t>(width) + 3) / 4;
   const std::uint64_t blocks_high =
       (static_cast<std::uint64_t>(height) + 3) / 4;
-  const std::size_t texel_bytes = EtcDecodedTexelBytes(format);
-  const std::size_t block_bytes = EtcBlockBytes(format);
-  if (blocks_wide * blocks_high * block_bytes > source_bytes ||
-      static_cast<std::uint64_t>(width) * height * texel_bytes >
-          destination_bytes) {
-    return false;
+  return blocks_wide * blocks_high * EtcBlockBytes(format) <= source_bytes &&
+         static_cast<std::uint64_t>(width) * height *
+                 EtcDecodedTexelBytes(format) <=
+             destination_bytes;
+}
+
+}  // namespace
+
+bool DecodeEtcImage(EtcFormat format, const std::uint8_t* source,
+                    std::size_t source_bytes, std::uint32_t width,
+                    std::uint32_t height, std::uint8_t* destination,
+                    std::size_t destination_bytes) {
+  return DecodeEtcImageBlockRows(format, source, source_bytes, width, height, 0,
+                                 (height + 3) / 4, destination,
+                                 destination_bytes);
+}
+
+namespace {
+
+struct DecodeBand {
+  EtcDecodeJob* job;
+  std::uint32_t first_block_row;
+  std::uint32_t block_row_count;
+};
+
+struct DecodeBandQueue {
+  std::vector<DecodeBand> bands;
+  std::atomic<std::size_t> next{0};
+
+  void Run() {
+    for (;;) {
+      const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
+      if (index >= bands.size()) {
+        return;
+      }
+      const DecodeBand& band = bands[index];
+      const EtcDecodeJob& job = *band.job;
+      DecodeEtcImageBlockRows(job.format, job.source, job.source_bytes,
+                              job.width, job.height, band.first_block_row,
+                              band.block_row_count, job.destination,
+                              job.destination_bytes);
+    }
+  }
+};
+
+void* RunDecodeBandQueue(void* queue) {
+  static_cast<DecodeBandQueue*>(queue)->Run();
+  return nullptr;
+}
+
+}  // namespace
+
+void DecodeEtcJobs(EtcDecodeJob* jobs, std::size_t count,
+                   unsigned worker_count) {
+  if (jobs == nullptr) {
+    return;
+  }
+  DecodeBandQueue queue;
+  std::vector<DecodeBand>& bands = queue.bands;
+  std::uint64_t total_blocks = 0;
+  for (std::size_t index = 0; index < count; ++index) {
+    EtcDecodeJob& job = jobs[index];
+    job.ok = ImageFits(job.format, job.source, job.source_bytes, job.width,
+                       job.height, job.destination, job.destination_bytes);
+    if (!job.ok) {
+      continue;
+    }
+    const std::uint32_t blocks_wide = (job.width + 3) / 4;
+    const std::uint32_t blocks_high = (job.height + 3) / 4;
+    const std::uint32_t rows_per_band = static_cast<std::uint32_t>(
+        std::max<std::uint64_t>(1, kBlocksPerBand / blocks_wide));
+    for (std::uint32_t row = 0; row < blocks_high; row += rows_per_band) {
+      bands.push_back(
+          {&job, row, std::min(rows_per_band, blocks_high - row)});
+    }
+    total_blocks += static_cast<std::uint64_t>(blocks_wide) * blocks_high;
   }
 
+  const std::size_t threads =
+      total_blocks < kParallelMinimumBlocks
+          ? 1
+          : std::min<std::size_t>(std::max(worker_count, 1U), bands.size());
+  std::vector<pthread_t> workers;
+  workers.reserve(threads > 0 ? threads - 1 : 0);
+  for (std::size_t index = 1; index < threads; ++index) {
+    pthread_t worker;
+    // The caller decodes whatever workers that failed to start leave behind.
+    if (pthread_create(&worker, nullptr, RunDecodeBandQueue, &queue) != 0) {
+      break;
+    }
+    workers.push_back(worker);
+  }
+  queue.Run();
+  for (pthread_t worker : workers) {
+    pthread_join(worker, nullptr);
+  }
+}
+
+bool DecodeEtcImageBlockRows(EtcFormat format, const std::uint8_t* source,
+                             std::size_t source_bytes, std::uint32_t width,
+                             std::uint32_t height,
+                             std::uint32_t first_block_row,
+                             std::uint32_t block_row_count,
+                             std::uint8_t* destination,
+                             std::size_t destination_bytes) {
+  if (!ImageFits(format, source, source_bytes, width, height, destination,
+                 destination_bytes)) {
+    return false;
+  }
+  const std::uint64_t blocks_wide = (static_cast<std::uint64_t>(width) + 3) / 4;
+  const std::uint64_t blocks_high =
+      (static_cast<std::uint64_t>(height) + 3) / 4;
+  if (static_cast<std::uint64_t>(first_block_row) + block_row_count >
+      blocks_high) {
+    return false;
+  }
+  const std::size_t texel_bytes = EtcDecodedTexelBytes(format);
+  const std::size_t block_bytes = EtcBlockBytes(format);
+
   std::array<std::uint8_t, 64> rgba{};
-  for (std::uint64_t by = 0; by < blocks_high; ++by) {
+  const std::uint64_t end_block_row =
+      static_cast<std::uint64_t>(first_block_row) + block_row_count;
+  for (std::uint64_t by = first_block_row; by < end_block_row; ++by) {
     for (std::uint64_t bx = 0; bx < blocks_wide; ++bx) {
       const std::uint8_t* block =
           source + (by * blocks_wide + bx) * block_bytes;

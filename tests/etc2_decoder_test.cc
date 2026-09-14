@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cstdint>
+#include <iterator>
+#include <random>
 #include <vector>
 
 namespace mocktail::graphics {
@@ -175,6 +177,79 @@ TEST(Etc2DecoderTest, DecodesPartialAndMultipleBlocks) {
   ExpectRgba(texels, 5, 0, 0, {11, 255, 147, 255});
   ExpectRgba(texels, 5, 1, 0, {0, 255, 136, 255});
   ExpectRgba(texels, 5, 4, 0, {134, 134, 134, 255});
+}
+
+std::vector<std::uint8_t> RandomBlocks(EtcFormat format, std::uint32_t width,
+                                       std::uint32_t height,
+                                       std::uint32_t seed) {
+  std::mt19937 rng(seed);
+  std::vector<std::uint8_t> source(((width + 3) / 4) * ((height + 3) / 4) *
+                                   EtcBlockBytes(format));
+  for (std::uint8_t& byte : source) {
+    byte = static_cast<std::uint8_t>(rng());
+  }
+  return source;
+}
+
+TEST(Etc2DecoderTest, DecodesBlockRowBandsLikeWholeImage) {
+  const std::uint32_t width = 13;
+  const std::uint32_t height = 10;
+  const auto source = RandomBlocks(EtcFormat::kEtc2Rgba8, width, height, 1);
+  const auto whole = Decode(EtcFormat::kEtc2Rgba8, source, width, height);
+
+  std::vector<std::uint8_t> banded(whole.size(), 0xAB);
+  ASSERT_TRUE(DecodeEtcImageBlockRows(EtcFormat::kEtc2Rgba8, source.data(),
+                                      source.size(), width, height, 1, 2,
+                                      banded.data(), banded.size()));
+  ASSERT_TRUE(DecodeEtcImageBlockRows(EtcFormat::kEtc2Rgba8, source.data(),
+                                      source.size(), width, height, 0, 1,
+                                      banded.data(), banded.size()));
+  EXPECT_EQ(banded, whole);
+
+  EXPECT_FALSE(DecodeEtcImageBlockRows(EtcFormat::kEtc2Rgba8, source.data(),
+                                       source.size(), width, height, 2, 2,
+                                       banded.data(), banded.size()));
+}
+
+TEST(Etc2DecoderTest, DecodesJobsOnWorkersLikeSerialDecode) {
+  struct Case {
+    EtcFormat format;
+    std::uint32_t width;
+    std::uint32_t height;
+  };
+  const Case cases[] = {{EtcFormat::kEtc2Rgb8, 1030, 770},
+                        {EtcFormat::kEtc2Rgba8, 517, 1024},
+                        {EtcFormat::kEacRg11, 300, 301},
+                        {EtcFormat::kEtc2Rgb8A1, 3, 5}};
+  std::vector<std::vector<std::uint8_t>> sources;
+  std::vector<std::vector<std::uint8_t>> expected;
+  std::vector<std::vector<std::uint8_t>> outputs;
+  std::vector<EtcDecodeJob> jobs;
+  for (std::size_t index = 0; index < std::size(cases); ++index) {
+    const Case& c = cases[index];
+    sources.push_back(RandomBlocks(c.format, c.width, c.height,
+                                   static_cast<std::uint32_t>(index + 2)));
+    expected.push_back(Decode(c.format, sources.back(), c.width, c.height));
+    outputs.emplace_back(expected.back().size(), 0xAB);
+  }
+  for (std::size_t index = 0; index < std::size(cases); ++index) {
+    const Case& c = cases[index];
+    jobs.push_back({c.format, sources[index].data(), sources[index].size(),
+                    c.width, c.height, outputs[index].data(),
+                    outputs[index].size()});
+  }
+  std::vector<std::uint8_t> short_output(4 * 4 * 4 - 1, 0xAB);
+  jobs.push_back({EtcFormat::kEtc2Rgb8, sources[0].data(), sources[0].size(),
+                  4, 4, short_output.data(), short_output.size()});
+
+  DecodeEtcJobs(jobs.data(), jobs.size(), 4);
+
+  for (std::size_t index = 0; index < std::size(cases); ++index) {
+    EXPECT_TRUE(jobs[index].ok) << index;
+    EXPECT_EQ(outputs[index], expected[index]) << index;
+  }
+  EXPECT_FALSE(jobs.back().ok);
+  EXPECT_EQ(short_output, std::vector<std::uint8_t>(4 * 4 * 4 - 1, 0xAB));
 }
 
 TEST(Etc2DecoderTest, RejectsShortBuffers) {

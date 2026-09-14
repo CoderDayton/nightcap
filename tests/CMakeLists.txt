@@ -477,7 +477,7 @@ add_executable(etc2_decoder_test
 target_include_directories(etc2_decoder_test PRIVATE
   ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main)
+target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main Threads::Threads)
 mocktail_apply_compile_options(etc2_decoder_test)
 
 add_executable(vulkan_etc2_emulation_test
@@ -488,7 +488,8 @@ add_executable(vulkan_etc2_emulation_test
 target_include_directories(vulkan_etc2_emulation_test PRIVATE
   ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(vulkan_etc2_emulation_test PRIVATE GTest::gtest_main)
+target_link_libraries(vulkan_etc2_emulation_test PRIVATE GTest::gtest_main
+  Threads::Threads)
 mocktail_apply_compile_options(vulkan_etc2_emulation_test)
 
 add_executable(video_driver_policy_test

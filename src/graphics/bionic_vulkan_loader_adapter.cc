@@ -1036,10 +1036,23 @@ struct FpsWaitTrace {
   std::atomic<std::uint64_t> total_ns{0};
   std::atomic<std::uint64_t> max_ns{0};
   std::atomic<std::uint64_t> window_start_ns{0};
+  // Longest time between consecutive call starts; for present, a frame time.
+  std::atomic<std::uint64_t> max_gap_ns{0};
+  std::atomic<std::uint64_t> last_start_ns{0};
 
   void Record(std::uint64_t start_ns) {
     if (name == nullptr || start_ns == 0) {
       return;
+    }
+    const std::uint64_t previous_start =
+        last_start_ns.exchange(start_ns, std::memory_order_relaxed);
+    if (previous_start != 0 && start_ns > previous_start) {
+      const std::uint64_t gap_ns = start_ns - previous_start;
+      std::uint64_t max_gap = max_gap_ns.load(std::memory_order_relaxed);
+      while (gap_ns > max_gap &&
+             !max_gap_ns.compare_exchange_weak(max_gap, gap_ns,
+                                               std::memory_order_relaxed)) {
+      }
     }
     const std::uint64_t wait_ns = MonotonicNanos() - start_ns;
     total_ns.fetch_add(wait_ns, std::memory_order_relaxed);
@@ -1061,14 +1074,18 @@ struct FpsWaitTrace {
     const std::uint64_t total = total_ns.exchange(0, std::memory_order_relaxed);
     const std::uint64_t peak = max_ns.exchange(0, std::memory_order_relaxed);
     const std::uint64_t count = samples.exchange(0, std::memory_order_relaxed);
+    const std::uint64_t gap_peak =
+        max_gap_ns.exchange(0, std::memory_order_relaxed);
     window_start_ns.store(start_ns, std::memory_order_relaxed);
     if (count == 0) {
       return;
     }
-    std::fprintf(stderr, "  [fps] %s n=%llu avg=%llu us max=%llu us\n", name,
-                 static_cast<unsigned long long>(count),
+    std::fprintf(stderr,
+                 "  [fps] %s n=%llu avg=%llu us max=%llu us gap_max=%llu us\n",
+                 name, static_cast<unsigned long long>(count),
                  static_cast<unsigned long long>(total / count / 1000ULL),
-                 static_cast<unsigned long long>(peak / 1000ULL));
+                 static_cast<unsigned long long>(peak / 1000ULL),
+                 static_cast<unsigned long long>(gap_peak / 1000ULL));
   }
 };
 

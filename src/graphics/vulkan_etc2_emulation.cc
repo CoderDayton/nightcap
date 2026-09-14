@@ -7,6 +7,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -93,6 +94,14 @@ bool EmulationDisabledByEnvironment() {
 
 bool ShouldLog(std::atomic<unsigned>* counter, unsigned limit) {
   return counter->fetch_add(1, std::memory_order_relaxed) < limit;
+}
+
+// Decode threads for one submit, the submitting thread included. Half the
+// host's hardware threads, at most 8, leave cores for the game's own threads.
+unsigned DecodeWorkerCount() {
+  static const unsigned count =
+      std::min(8U, std::max(1U, std::thread::hardware_concurrency() / 2));
+  return count;
 }
 
 struct HostDevice {
@@ -292,6 +301,10 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
   std::unordered_map<VkCommandBuffer, CommandRecord> commands;
   std::atomic<bool> has_commands{false};
+  // Heap buffers reused across submits; they only grow.
+  std::mutex scratch_mutex;
+  std::vector<std::uint8_t> scratch_source;
+  std::vector<std::uint8_t> scratch_decoded;
 
   const HostDevice* Find(VkDevice device) {
     std::lock_guard<std::mutex> lock(devices_mutex);
@@ -786,39 +799,109 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
       }
     }
   }
+  // Mapped Vulkan memory is uncached or write-combined, which makes the
+  // decoder's scattered byte reads and writes tens of times slower than on
+  // heap memory. Compressed bytes are streamed into a heap scratch buffer,
+  // decoded heap to heap, and the result streamed into the staging buffer.
+  // Vulkan forbids mapping one memory object twice, so each unmapped source
+  // memory is mapped once for the whole batch and unmapped after copying.
+  struct TemporaryMapping {
+    const HostDevice* dev = nullptr;
+    std::uint8_t* data = nullptr;
+  };
+  std::unordered_map<VkDeviceMemory, TemporaryMapping> temporary;
+  struct Copy {
+    const std::uint8_t* source = nullptr;
+    VkDeviceSize compressed = 0;
+    VkDeviceSize decoded = 0;
+  };
+  std::vector<Copy> copies;
+  std::vector<const PendingUpload*> copied_uploads;
+  VkDeviceSize compressed_total = 0;
+  VkDeviceSize decoded_total = 0;
   for (const Work& item : work) {
     const PendingUpload& upload = item.upload;
-    const HostDevice* dev = state_->Find(upload.device);
-    std::uint8_t* source = item.source;
+    const std::uint8_t* source = item.source;
     if (source == nullptr) {
-      void* data = nullptr;
-      if (dev == nullptr || dev->map_memory == nullptr ||
-          dev->map_memory(dev->device, item.memory, 0, VK_WHOLE_SIZE, 0,
-                          &data) != VK_SUCCESS) {
-        LogFailure("could not map an unmapped upload source");
-        continue;
+      auto found = temporary.find(item.memory);
+      if (found == temporary.end()) {
+        const HostDevice* dev = state_->Find(upload.device);
+        void* data = nullptr;
+        if (dev == nullptr || dev->map_memory == nullptr ||
+            dev->map_memory(dev->device, item.memory, 0, VK_WHOLE_SIZE, 0,
+                            &data) != VK_SUCCESS) {
+          LogFailure("could not map an unmapped upload source");
+          continue;
+        }
+        found = temporary
+                    .emplace(item.memory,
+                             TemporaryMapping{
+                                 dev, static_cast<std::uint8_t*>(data)})
+                    .first;
       }
-      source = static_cast<std::uint8_t*>(data) + item.memory_offset;
+      source = found->second.data + item.memory_offset;
     }
+    copies.push_back({source, upload.compressed, upload.decoded});
+    copied_uploads.push_back(&upload);
+    compressed_total += upload.compressed;
+    decoded_total += upload.decoded;
+  }
+
+  std::lock_guard<std::mutex> scratch_lock(state_->scratch_mutex);
+  std::vector<std::uint8_t>& scratch_source = state_->scratch_source;
+  std::vector<std::uint8_t>& scratch_decoded = state_->scratch_decoded;
+  if (scratch_source.size() < compressed_total) {
+    scratch_source.resize(compressed_total);
+  }
+  if (scratch_decoded.size() < decoded_total) {
+    scratch_decoded.resize(decoded_total);
+  }
+  std::vector<EtcDecodeJob> jobs;
+  VkDeviceSize compressed_offset = 0;
+  VkDeviceSize decoded_offset = 0;
+  for (std::size_t index = 0; index < copies.size(); ++index) {
+    const Copy& copy = copies[index];
+    const PendingUpload& upload = *copied_uploads[index];
+    std::uint8_t* source = scratch_source.data() + compressed_offset;
+    std::uint8_t* decoded = scratch_decoded.data() + decoded_offset;
+    std::memcpy(source, copy.source, copy.compressed);
     const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
     const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
     for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
-      if (!DecodeEtcImage(upload.format, source + layer * compressed_layer,
-                          compressed_layer, upload.width, upload.height,
-                          upload.target + layer * decoded_layer,
-                          decoded_layer)) {
-        LogFailure("could not decode an upload layer");
-      }
+      EtcDecodeJob job;
+      job.format = upload.format;
+      job.source = source + layer * compressed_layer;
+      job.source_bytes = compressed_layer;
+      job.width = upload.width;
+      job.height = upload.height;
+      job.destination = decoded + layer * decoded_layer;
+      job.destination_bytes = decoded_layer;
+      jobs.push_back(job);
     }
-    if (item.source == nullptr && dev != nullptr &&
-        dev->unmap_memory != nullptr) {
-      dev->unmap_memory(dev->device, item.memory);
-    }
+    compressed_offset += copy.compressed;
+    decoded_offset += copy.decoded;
     if (ShouldLog(&g_decode_logs, 4)) {
       std::fprintf(stderr,
                    "  [vulkan] ETC2 upload decoded %ux%u layers=%u\n",
                    upload.width, upload.height, upload.layers);
     }
+  }
+  for (const auto& [memory, mapping] : temporary) {
+    if (mapping.dev->unmap_memory != nullptr) {
+      mapping.dev->unmap_memory(mapping.dev->device, memory);
+    }
+  }
+  DecodeEtcJobs(jobs.data(), jobs.size(), DecodeWorkerCount());
+  for (const EtcDecodeJob& job : jobs) {
+    if (!job.ok) {
+      LogFailure("could not decode an upload layer");
+    }
+  }
+  decoded_offset = 0;
+  for (const PendingUpload* upload : copied_uploads) {
+    std::memcpy(upload->target, scratch_decoded.data() + decoded_offset,
+                upload->decoded);
+    decoded_offset += upload->decoded;
   }
 }
 

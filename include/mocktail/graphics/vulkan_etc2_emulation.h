@@ -89,7 +89,8 @@ class VulkanEtc2Emulation final {
                           const VkCommandBuffer* secondaries);
 
   // Decodes every upload recorded into these command buffers and the
-  // secondary command buffers they execute.
+  // secondary command buffers they execute. Large batches decode on worker
+  // threads; this returns once every upload is decoded.
   void PrepareSubmit(const VkCommandBuffer* command_buffers,
                      std::uint32_t count);
   // Destroys the staging buffers owned by a command buffer that is no longer
