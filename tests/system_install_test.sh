@@ -48,7 +48,7 @@ fi
 
 [[ -f "${desktop}" ]]
 grep -Fq 'Name=Mocktail' "${desktop}"
-grep -Fxq 'Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u' "${desktop}"
+grep -Fxq 'Exec=env SDL_VIDEODRIVER=wayland,x11 /usr/bin/mocktail %u' "${desktop}"
 grep -Fq 'Icon=space.bigrat.mocktail' "${desktop}"
 [[ -f "${metainfo}" ]]
 grep -Fq '<id>space.bigrat.mocktail</id>' "${metainfo}"
