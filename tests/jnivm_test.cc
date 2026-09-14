@@ -13,6 +13,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 namespace jnivm {
 namespace {
 
@@ -375,6 +379,142 @@ TEST_F(JniVmTest, JavaVmPointerIsNotNull) {
 TEST_F(JniVmTest, JniEnvPointerIsNotNull) {
   EXPECT_NE(vm_->GetJNIEnv(), nullptr);
 }
+
+#if defined(__x86_64__)
+constexpr unsigned int kAudioFpMode = (1U << 15) | (1U << 6);
+
+class ScopedMxcsr final {
+ public:
+  ScopedMxcsr() : saved_(_mm_getcsr()) {}
+  ~ScopedMxcsr() { _mm_setcsr(saved_); }
+
+ private:
+  unsigned int saved_;
+};
+
+// Volatile input ensures the multiply executes in SSE with the current MXCSR,
+// rather than being constant-folded using the compiler's default FP model.
+float MultiplyAudioSample(volatile float* sample, float gain) {
+  return _mm_cvtss_f32(_mm_mul_ss(_mm_set_ss(*sample), _mm_set_ss(gain)));
+}
+
+TEST_F(JniVmTest, FmodMixerFlushesSubnormalAudioWithoutChangingParentThread) {
+  ScopedMxcsr restore;
+  _mm_setcsr(0x1f80);  // IEEE defaults; FTZ/DAZ disabled.
+  JavaVM* java_vm = vm_->GetJavaVM();
+  std::thread mixer([java_vm]() {
+    ScopedMxcsr restore_worker;
+    volatile float tail = 0x1p-140f;
+    volatile float quiet_normal = 0x1p-126f;
+    volatile float audible = 0.25f;
+    EXPECT_GT(MultiplyAudioSample(&tail, 1.0f), 0.0f);
+    EXPECT_GT(MultiplyAudioSample(&quiet_normal, 0.5f), 0.0f);
+    const unsigned int before = _mm_getcsr();
+    char name[] = "FMOD mixer thread";
+    JavaVMAttachArgs args{JNI_VERSION_1_6, name, nullptr};
+    void* env = nullptr;
+    ASSERT_EQ(java_vm->AttachCurrentThread(&env, &args), JNI_OK);
+    EXPECT_EQ(_mm_getcsr(), before | kAudioFpMode);
+    EXPECT_EQ(MultiplyAudioSample(&tail, 1.0f), 0.0f);
+    EXPECT_EQ(MultiplyAudioSample(&quiet_normal, 0.5f), 0.0f);
+    EXPECT_EQ(MultiplyAudioSample(&audible, 0.5f), 0.125f);
+    // Reattaching with no name must not lose the mixer's saved FP state.
+    ASSERT_EQ(java_vm->AttachCurrentThread(&env, nullptr), JNI_OK);
+    EXPECT_EQ(_mm_getcsr() & kAudioFpMode, kAudioFpMode);
+    ASSERT_EQ(java_vm->DetachCurrentThread(), JNI_OK);
+    EXPECT_EQ(_mm_getcsr() & kAudioFpMode, before & kAudioFpMode);
+    EXPECT_GT(MultiplyAudioSample(&tail, 1.0f), 0.0f);
+  });
+  mixer.join();
+  EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+}
+
+TEST_F(JniVmTest, FmodDaemonThreadsRestoreExistingModesAndOtherControls) {
+  ScopedMxcsr restore;
+  JavaVM* java_vm = vm_->GetJavaVM();
+  for (const char* name : {"FMOD mixer thread", "FMOD feeder thread",
+                           "FMOD Convolution thread", "FMOD Worker Thread"}) {
+    for (const unsigned int mode : {0U, 1U << 6, 1U << 15, kAudioFpMode}) {
+      _mm_setcsr(0x1f80 | mode | _MM_ROUND_DOWN);
+      const unsigned int before = _mm_getcsr();
+      JavaVMAttachArgs args{JNI_VERSION_1_6, const_cast<char*>(name), nullptr};
+      void* env = nullptr;
+      ASSERT_EQ(java_vm->AttachCurrentThreadAsDaemon(&env, &args), JNI_OK);
+      EXPECT_EQ(_mm_getcsr(), before | kAudioFpMode);
+      // Guest changes to other controls/status must survive detach.
+      _mm_setcsr((_mm_getcsr() & ~_MM_ROUND_MASK) | _MM_ROUND_UP | 0x20U);
+      const unsigned int after_guest = _mm_getcsr();
+      ASSERT_EQ(java_vm->DetachCurrentThread(), JNI_OK);
+      EXPECT_EQ(_mm_getcsr(), (after_guest & ~kAudioFpMode) | mode);
+    }
+  }
+}
+
+TEST_F(JniVmTest, OrdinaryJniThreadsKeepIeeeFloatingPointBehavior) {
+  ScopedMxcsr restore;
+  _mm_setcsr(0x1f80);
+  JavaVM* java_vm = vm_->GetJavaVM();
+  for (const char* name : {"Main", "RBX Worker", "FMOD mixer thread extra",
+                           "FMOD file thread", "", static_cast<const char*>(nullptr)}) {
+    JavaVMAttachArgs args{JNI_VERSION_1_6, const_cast<char*>(name), nullptr};
+    void* env = nullptr;
+    ASSERT_EQ(java_vm->AttachCurrentThread(&env, &args), JNI_OK);
+    EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+    // JNI ignores new names when a thread is already attached.
+    args.name = const_cast<char*>("FMOD mixer thread");
+    ASSERT_EQ(java_vm->AttachCurrentThread(&env, &args), JNI_OK);
+    EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+    ASSERT_EQ(java_vm->DetachCurrentThread(), JNI_OK);
+  }
+  void* env = nullptr;
+  ASSERT_EQ(java_vm->AttachCurrentThread(&env, nullptr), JNI_OK);
+  EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+  EXPECT_EQ(java_vm->DetachCurrentThread(), JNI_OK);
+}
+
+TEST_F(JniVmTest, RejectedFmodAttachDoesNotChangeFloatingPointMode) {
+  ScopedMxcsr restore;
+  _mm_setcsr(0x1f80);
+  JavaVM* java_vm = vm_->GetJavaVM();
+  char name[] = "FMOD mixer thread";
+  JavaVMAttachArgs args{JNI_VERSION_1_6, name, nullptr};
+  EXPECT_EQ(java_vm->AttachCurrentThread(nullptr, &args), JNI_EINVAL);
+  EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+  JavaVM foreign = {java_vm->functions};
+  void* env = nullptr;
+  EXPECT_EQ(foreign.AttachCurrentThread(&env, &args), JNI_EINVAL);
+  EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+}
+
+TEST_F(JniVmTest, ChangingVmRestoresFmodFloatingPointMode) {
+  ScopedMxcsr restore;
+  _mm_setcsr(0x1f80);
+  JavaVM* java_vm = vm_->GetJavaVM();
+  char name[] = "FMOD mixer thread";
+  JavaVMAttachArgs args{JNI_VERSION_1_6, name, nullptr};
+  void* env = nullptr;
+  ASSERT_EQ(java_vm->AttachCurrentThread(&env, &args), JNI_OK);
+  {
+    VM temporary;
+    // Merely constructing/destroying another VM must not change this thread.
+  }
+  EXPECT_EQ(_mm_getcsr() & kAudioFpMode, kAudioFpMode);
+  {
+    VM other;
+    ASSERT_EQ(other.GetJavaVM()->AttachCurrentThread(&env, nullptr), JNI_OK);
+    EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+  }
+  ASSERT_EQ(java_vm->AttachCurrentThread(&env, &args), JNI_OK);
+  {
+    VM other;
+    ASSERT_NE(other.GetJNIEnv(), nullptr);
+    EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+  }
+  ASSERT_EQ(java_vm->AttachCurrentThread(&env, &args), JNI_OK);
+  vm_.reset();
+  EXPECT_EQ(_mm_getcsr(), 0x1f80U);
+}
+#endif
 
 TEST_F(JniVmTest, DiscardedTemporaryVmKeepsOriginalUsable) {
   JavaVM* java_vm = vm_->GetJavaVM();

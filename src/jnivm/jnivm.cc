@@ -1,5 +1,7 @@
 #include "jnivm/jnivm.h"
 
+#include "mocktail/audio/fmod_thread_floating_point.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -56,6 +58,7 @@ namespace {
 thread_local JNIEnv* g_thread_local_env = nullptr;
 thread_local JNIEnv g_thread_env_storage = {};
 thread_local VM* g_thread_vm_instance = nullptr;
+thread_local mocktail::audio::FmodThreadFloatingPointMode g_thread_audio_fp_mode;
 thread_local std::vector<std::vector<jobject>> g_local_frames;
 
 std::recursive_mutex g_jni_state_mutex;
@@ -4970,6 +4973,7 @@ VM::~VM() {
     g_live_vms.erase(std::remove(g_live_vms.begin(), g_live_vms.end(), this),
                     g_live_vms.end());
     if (g_thread_vm_instance == this) {
+      g_thread_audio_fp_mode.Restore();
       g_thread_vm_instance = nullptr;
       g_thread_local_env = nullptr;
       g_thread_env_storage.functions = nullptr;
@@ -6323,6 +6327,7 @@ JNIEnv* VM::GetJNIEnv() {
     }
     return g_thread_local_env;
   }
+  g_thread_audio_fp_mode.Restore();
   g_thread_vm_instance = this;
   g_thread_env_storage.functions = &native_interface_;
   g_thread_local_env = &g_thread_env_storage;
@@ -6372,7 +6377,7 @@ std::shared_ptr<Class> VM::FindClass(const std::string& class_name) const {
 
 void VM::InitJNIFunctionTables() {
   invoke_interface_.AttachCurrentThread =
-      [](JavaVM* vm, void** env, void* /*args*/) -> jint {
+      [](JavaVM* vm, void** env, void* args) -> jint {
     if (JniVmTraceEnabled()) {
       std::cout << "  [JNI] AttachCurrentThread enter vm=" << vm
                 << " env_out=" << env << '\n';
@@ -6389,6 +6394,7 @@ void VM::InitJNIFunctionTables() {
       return JNI_EINVAL;
     }
     if (g_thread_vm_instance != owner || !IsThreadLocalEnvValid()) {
+      g_thread_audio_fp_mode.Restore();
       g_thread_vm_instance = owner;
       if (!owner->jni_env_) {
         owner->jni_env_ = &owner->jni_env_storage_;
@@ -6398,6 +6404,12 @@ void VM::InitJNIFunctionTables() {
           owner->jni_env_->functions ? owner->jni_env_->functions
                                     : &owner->native_interface_;
       g_thread_local_env = &g_thread_env_storage;
+      const auto* attach_args = static_cast<const JavaVMAttachArgs*>(args);
+      if (attach_args != nullptr &&
+          g_thread_audio_fp_mode.Enable(attach_args->name)) {
+        std::fprintf(stderr, "  [mocktail][audio] %s: enabled FTZ/DAZ\n",
+                     attach_args->name);
+      }
     }
     // Reattaching to the same VM must retain any guest JNI table wrapper.
     *env = g_thread_local_env;
@@ -6421,6 +6433,7 @@ void VM::InitJNIFunctionTables() {
     if (g_thread_vm_instance != owner || !IsThreadLocalEnvValid()) {
       return JNI_EDETACHED;
     }
+    g_thread_audio_fp_mode.Restore();
     g_thread_local_env = nullptr;
     g_thread_vm_instance = nullptr;
     g_thread_env_storage.functions = nullptr;

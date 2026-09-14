@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "audio/roblox_output_device_bridge_internal.h"
+#include "audio/native_input_capture.h"
 #include "linker/linker.h"
 #include "mocktail/audio/sdl_audio_capture.h"
 #include "mocktail/audio/sdl_audio_sink.h"
@@ -105,7 +106,7 @@ bool SetVtableWritable(std::uintptr_t* vtable, std::size_t select_index,
   }
   const std::uintptr_t page_size = static_cast<std::uintptr_t>(page_size_value);
   const std::uintptr_t first =
-      reinterpret_cast<std::uintptr_t>(vtable + kOutputCountVtableIndex);
+      reinterpret_cast<std::uintptr_t>(vtable + 4);
   const std::uintptr_t last =
       reinterpret_cast<std::uintptr_t>(vtable + select_index + 1);
   if (last <= first) {
@@ -128,6 +129,16 @@ std::uintptr_t FunctionAddress(Function function) {
 }
 
 }  // namespace
+
+// ABI verified for Roblox 2.738.1397. Keep capture separate from the menu
+// profile: relocating query methods alone does not establish a recording ABI.
+namespace {
+constexpr std::array<std::size_t, 6> kCaptureSlots{4, 13, 14, 15, 16, 17};
+constexpr std::array<std::uintptr_t, 6> kCaptureRvas{
+    0x320c630, 0x320bcf6, 0x320d4b4, 0x320dd94, 0x320b844, 0x320e49a};
+}  // namespace
+
+RobloxOutputDeviceBridge::RobloxOutputDeviceBridge() = default;
 
 namespace internal {
 
@@ -215,6 +226,10 @@ Status RobloxOutputDeviceBridge::Install(const compat::BuildProfile& profile) {
         "another Roblox output-device bridge owns the process");
   }
   profile_ = *profile.fmod_output_device_bridge;
+  capture_profile_supported_ =
+      profile.elf_build_id == "5f0704edd9064f566ee3d6df2bd2fabbcc709f03" &&
+      profile_.vtable_rva == 0x6cd3ce0 &&
+      profile_.vtable_layout_version == 2 && profile_.has_input_devices();
   if (!linker::SetAndroidLibraryLoadObserver(&ObserveAndroidLibrary, this)) {
     g_active_bridge.store(nullptr, std::memory_order_release);
     profile_ = {};
@@ -240,6 +255,8 @@ void RobloxOutputDeviceBridge::Shutdown() {
                    "  [audio-menu] failed to restore FmodAudioDevice "
                    "vtable protection\n");
     }
+    g_native_capture.store(nullptr, std::memory_order_release);
+    capture_.reset();
     active_ = false;
     devices_.clear();
     input_devices_.clear();
@@ -408,9 +425,9 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
     return FailedPrecondition("FMOD output-device vtable range overflows");
   }
   const std::uintptr_t first_slot_rva =
-      profile_.vtable_rva + kOutputCountVtableIndex * sizeof(std::uintptr_t);
+      profile_.vtable_rva + 4 * sizeof(std::uintptr_t);
   const std::size_t slot_range_size =
-      (kSelectOutputVtableIndex - kOutputCountVtableIndex + 1) *
+      (kSelectOutputVtableIndex - 4 + 1) *
       sizeof(std::uintptr_t);
   if (!IsRelroImageRange(library_base_, first_slot_rva, slot_range_size) ||
       !IsExecutableImageRange(library_base_, profile_.string_constructor_rva,
@@ -442,6 +459,29 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
           constructor_code, kStringConstructorContractSize)) {
     return FailedPrecondition(
         "FmodAudioDevice string ABI contract validation failed");
+  }
+
+  if (capture_profile_supported_) {
+    for (std::size_t i = 0; i < kCaptureSlots.size(); ++i) {
+      if (!IsExecutableImageRange(library_base_, kCaptureRvas[i], 1) ||
+          vtable_[kCaptureSlots[i]] != library_base_ + kCaptureRvas[i])
+        return FailedPrecondition("native input capture vtable ABI mismatch");
+      original_capture_methods_[i] = vtable_[kCaptureSlots[i]];
+    }
+    if (!IsExecutableImageRange(library_base_, 0x3213154, 1) ||
+        !IsExecutableImageRange(library_base_, 0x1dc4cd0, 1) ||
+        !IsRelroImageRange(library_base_, 0x6cd4550, 24))
+      return FailedPrecondition("native input capture sink ABI outside image");
+    capture_ = std::make_unique<NativeInputCapture>(
+        NativeInputCapture::SinkAbi{
+            library_base_ + 0x6cd4550,
+            reinterpret_cast<NativeInputCapture::DeliverPcm>(
+                library_base_ + 0x3213154),
+            reinterpret_cast<NativeInputCapture::Destroy>(
+                library_base_ + 0x1dc4cd0),
+            reinterpret_cast<NativeInputCapture::OriginalLatency>(
+                library_base_ + kCaptureRvas[1])},
+        !input_devices_.empty());
   }
 
   original_methods_ = {
@@ -478,6 +518,18 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
     for (std::size_t i = 0; i < indexes.size(); ++i)
       __atomic_store_n(&vtable_[indexes[i]], methods[i], __ATOMIC_RELEASE);
   }
+  if (capture_) {
+    g_native_capture.store(capture_.get(), std::memory_order_release);
+    const std::array<std::uintptr_t, 6> methods{
+        FunctionAddress(&NativeInputCapture::Format),
+        FunctionAddress(&NativeInputCapture::Latency),
+        FunctionAddress(&NativeInputCapture::Start),
+        FunctionAddress(&NativeInputCapture::Stop),
+        FunctionAddress(&NativeInputCapture::Poll),
+        FunctionAddress(&NativeInputCapture::Recording)};
+    for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
+      __atomic_store_n(&vtable_[kCaptureSlots[i]], methods[i], __ATOMIC_RELEASE);
+  }
   if (!SetVtableWritable(vtable_, kSelectOutputVtableIndex, false)) {
     __atomic_store_n(&vtable_[kOutputCountVtableIndex], original_methods_[0],
                      __ATOMIC_RELEASE);
@@ -492,6 +544,13 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
       for (std::size_t i = 0; i < indexes.size(); ++i)
         __atomic_store_n(&vtable_[indexes[i]], original_methods_[4 + i],
                          __ATOMIC_RELEASE);
+    }
+    if (capture_) {
+      for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
+        __atomic_store_n(&vtable_[kCaptureSlots[i]], original_capture_methods_[i],
+                         __ATOMIC_RELEASE);
+      g_native_capture.store(nullptr, std::memory_order_release);
+      capture_.reset();
     }
     (void)SetVtableWritable(vtable_, kSelectOutputVtableIndex, false);
     return Status::Error(StatusCode::kPlatformError,
@@ -519,6 +578,11 @@ bool RobloxOutputDeviceBridge::RestoreVtableLocked() {
     const auto indexes = profile_.input_vtable_indexes();
     for (std::size_t i = 0; i < indexes.size(); ++i)
       __atomic_store_n(&vtable_[indexes[i]], original_methods_[4 + i],
+                       __ATOMIC_RELEASE);
+  }
+  if (capture_) {
+    for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
+      __atomic_store_n(&vtable_[kCaptureSlots[i]], original_capture_methods_[i],
                        __ATOMIC_RELEASE);
   }
   return SetVtableWritable(vtable_, kSelectOutputVtableIndex, false);
