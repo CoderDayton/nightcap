@@ -3861,8 +3861,30 @@ jobjectArray MakeObjectArray(jsize len, jobject init) {
   return ref;
 }
 
+// NativeQuoteInterface.requestResponse([B)[B reply when no Android Keystore
+// exists: status byte 1, attestation-available byte 0, then the error text.
+// A real device with a keystore answers [1, 1, chain] instead.
+jbyteArray MakeQuoteUnavailableResponse() {
+  static const char kMessage[] =
+      "java.security.KeyStoreException: AndroidKeyStore is not available";
+  const std::size_t message_length = sizeof(kMessage) - 1;
+  jbyteArray result = MakeByteArray(static_cast<jsize>(2 + message_length));
+  PseudoArray* array = ArrayFromRef(result);
+  if (array == nullptr || array->bytes.size() != 2 + message_length) {
+    return nullptr;
+  }
+  array->bytes[0] = 1;
+  array->bytes[1] = 0;
+  std::memcpy(array->bytes.data() + 2, kMessage, message_length);
+  return result;
+}
+
 jobject StaticObjectResultForMethod(jmethodID method_id) {
   const char* name = MethodName(method_id);
+  if (std::strcmp(name, "requestResponse") == 0 &&
+      std::strcmp(MethodSignature(method_id), "([B)[B") == 0) {
+    return MakeQuoteUnavailableResponse();
+  }
   const PlatformIdentity identity = CurrentPlatformIdentity();
   jobject android_object = AndroidObjectForMethod(name);
   if (android_object) {
