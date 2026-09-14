@@ -14,6 +14,25 @@ the Linux side.
 Mocktail is an independent community project. It is not affiliated with Roblox
 Corporation or VinegarHQ and does not distribute the Roblox client.
 
+## About this fork
+
+This is a fork of [komaruworld/mocktail](https://github.com/komaruworld/mocktail)
+with extra fixes for playing on a PC:
+
+- **Lower input lag.** Frames are shown as soon as they are ready instead of
+  waiting in a queue.
+- **Sharper textures.** Small textures are upscaled, and you can replace any
+  texture with your own PNG in `~/.config/mocktail/textures`.
+- **ETC2 textures on any GPU.** Games that use compressed mobile textures now
+  render correctly on desktop GPUs, without stutter.
+- **No more error 319 kicks.** Servers no longer drop you shortly after
+  joining.
+- **Correct device info.** Roblox sees your real RAM and screen size.
+- **Better desktop launcher.** Runs on Wayland and always finds the installed
+  binary.
+
+Everything else works the same as upstream.
+
 ## How it works
 
 ```
@@ -117,10 +136,13 @@ caused by `Color3` errors in the newer SDUI page. An explicit
   "DFIntExample": "120"
 }
 ```
-## FAQ
+## Settings
 
-To see the most Frequently Asked Question go check [FAQ.md](FAQ.md)
+Edit `~/.config/mocktail/config.yaml`. Useful options:
 
+- `graphics.frame_rate_limit: display` to unlock FPS to your monitor's rate.
+- `graphics.vsync: off` for the lowest lag, at the cost of tearing.
+- `graphics.backend: opengl` if Vulkan does not work on your GPU.
 
 ## Building
 
