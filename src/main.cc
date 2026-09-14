@@ -29,6 +29,7 @@
 #include "runtime/environment.h"
 #include "runtime/external_launch_broker.h"
 #include "runtime/failure_dialog.h"
+#include "runtime/fleasion.h"
 #include "runtime/game_mode.h"
 #include "runtime/graphics_launch_policy.h"
 #include "runtime/memory_limit.h"
@@ -468,6 +469,38 @@ int main(int argc, char* argv[]) {
     mocktail::runtime::InstallCpuLimitDiagnostics();
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kStartup);
+  }
+  if (runtime_config.config.fleasion_enabled()) {
+    const auto fleasion = mocktail::runtime::PrepareFleasion(
+        runtime_config.config, environment, paths);
+    if (!fleasion ||
+        setenv("MOCKTAIL_CA_BUNDLE", fleasion.bundle.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_FLEASION_BASE_CA_BUNDLE", fleasion.base_bundle.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_FLEASION_GENERATED_BUNDLE", fleasion.bundle.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_FLEASION_CA_CERTIFICATE", fleasion.certificate.c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot prepare Fleasion: "
+                << (!fleasion ? fleasion.error : "cannot export certificate paths") << '\n';
+      return EXIT_FAILURE;
+    }
+    if (const auto& proxy = runtime_config.config.network_proxy(); proxy &&
+        (setenv("MOCKTAIL_HTTP_PROXY_HOST", proxy->host.c_str(), 1) != 0 ||
+         setenv("MOCKTAIL_HTTP_PROXY_PORT", std::to_string(proxy->port).c_str(), 1) != 0 ||
+         setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy->scheme.c_str(), 1) != 0)) {
+      std::cerr << "[FATAL] Cannot export Fleasion proxy\n";
+      return EXIT_FAILURE;
+    }
+    runtime_config = mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
+    if (!runtime_config) {
+      std::cerr << "[FATAL] Cannot apply Fleasion: " << runtime_config.error << '\n';
+      return EXIT_FAILURE;
+    }
+    std::cout << "  [fleasion] mode=" << runtime_config.config.fleasion_proxy_mode()
+              << " certificate=" << fleasion.certificate
+              << " trust_bundle=" << fleasion.bundle << '\n';
+    if (runtime_config.config.network_proxy()) {
+      std::cout << "  [fleasion] proxy=" << mocktail::runtime::BuildNetworkProxyUrl(
+          *runtime_config.config.network_proxy()) << "; start Fleasion before Roblox\n";
+    }
   }
   if (config_bootstrap.created()) {
     std::cout << "  [runtime] created first-run configuration: "

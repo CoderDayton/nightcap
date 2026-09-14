@@ -16,6 +16,18 @@ target_link_libraries(runtime_config_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(fleasion_probe fleasion_probe.cc)
+target_link_libraries(fleasion_probe PRIVATE Mocktail::Services libc_shim)
+mocktail_apply_compile_options(fleasion_probe)
+find_program(MOCKTAIL_TEST_PYTHON python3)
+find_program(MOCKTAIL_TEST_OPENSSL openssl)
+if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
+  add_test(NAME FleasionIntegrationTest.ProxyAndTrust
+    COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/fleasion_integration_test.py
+            $<TARGET_FILE:fleasion_probe> ${MOCKTAIL_TEST_OPENSSL})
+  set_tests_properties(FleasionIntegrationTest.ProxyAndTrust PROPERTIES TIMEOUT 45)
+endif()
+
 add_executable(runtime_config_file_test runtime_config_file_test.cc)
 target_link_libraries(runtime_config_file_test PRIVATE
   Mocktail::Runtime

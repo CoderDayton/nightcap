@@ -1040,6 +1040,54 @@ TEST(RuntimeConfigFileTest, RejectsMalformedYaml) {
   EXPECT_NE(loaded.error.find("invalid YAML"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, FleasionRoutesThroughConfiguredLoopbackPort) {
+  TemporaryDirectory temporary;
+  const auto file = temporary.Write(
+      "integrations:\n  fleasion:\n    enabled: true\n    proxy_mode: env\n"
+      "    proxy_port: 59443\n    ca_certificate: /tmp/fleasion-ca.crt\n");
+  auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.fleasion_enabled());
+  ASSERT_TRUE(loaded.config.network_proxy());
+  EXPECT_EQ(loaded.config.network_proxy()->host, "127.0.0.1");
+  EXPECT_EQ(loaded.config.network_proxy()->port, 59443);
+  EXPECT_EQ(*loaded.config.fleasion_ca_certificate(), "/tmp/fleasion-ca.crt");
+  loaded = LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_FLEASION_ENABLED", "0"}}), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.fleasion_enabled());
+  EXPECT_FALSE(loaded.config.network_proxy());
+}
+
+TEST(RuntimeConfigFileTest, FleasionRejectsInvalidConfigurationAndProxyConflicts) {
+  TemporaryDirectory temporary;
+  for (const char* setting : {"proxy_port: 0", "proxy_port: 65536", "proxy_port: 123x",
+                              "proxy_mode: invalid", "ca_certificate: relative.pem"}) {
+    const auto file = temporary.Write(std::string(
+        "integrations:\n  fleasion:\n    enabled: true\n    ") + setting + "\n");
+    EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment(), file)) << setting;
+  }
+  const auto file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n");
+  EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_USE_SYSTEM_PROXY", "1"}}), file));
+  EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_HTTP_PROXY_HOST", "other"},
+                                                {"MOCKTAIL_HTTP_PROXY_PORT", "3128"}}), file));
+}
+
+TEST(RuntimeConfigFileTest, FleasionEnvironmentRoundTripsAndHostsModeDoesNotSetProxy) {
+  TemporaryDirectory temporary;
+  const auto file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n"
+                                     "    proxy_mode: hosts\n");
+  const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.network_proxy());
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  const auto resolved = RuntimeConfig::FromEnvironment(ProcessEnvironment());
+  EXPECT_TRUE(resolved.fleasion_enabled());
+  EXPECT_TRUE(resolved.fleasion_valid());
+  EXPECT_EQ(resolved.fleasion_proxy_mode(), "hosts");
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(RuntimeConfig::FromEnvironment(MapEnvironment()), &error));
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

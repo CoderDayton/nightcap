@@ -188,6 +188,10 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "network.proxy_host",
       "network.proxy_port",
       "network.ca_bundle",
+      "integrations.fleasion.enabled",
+      "integrations.fleasion.proxy_mode",
+      "integrations.fleasion.proxy_port",
+      "integrations.fleasion.ca_certificate",
       "integrations.discord_rpc.enabled",
       "integrations.discord_rpc.show_place_name",
       "integrations.discord_rpc.show_elapsed_time",
@@ -483,6 +487,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
            std::pair<std::string_view, std::string_view>(
                "integrations.discord_rpc.enabled",
                "MOCKTAIL_DISCORD_RPC_ENABLED"),
+           {"integrations.fleasion.enabled", "MOCKTAIL_FLEASION_ENABLED"},
            {"integrations.discord_rpc.show_place_name",
             "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME"},
            {"integrations.discord_rpc.show_elapsed_time",
@@ -502,6 +507,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)[std::string(variable)] = parsed ? "1" : "0";
+  }
+  for (const auto& [key, variable] : {
+           std::pair<std::string_view, std::string_view>(
+               "integrations.fleasion.proxy_mode", "MOCKTAIL_FLEASION_PROXY_MODE"),
+           {"integrations.fleasion.proxy_port", "MOCKTAIL_FLEASION_PROXY_PORT"},
+           {"integrations.fleasion.ca_certificate", "MOCKTAIL_FLEASION_CA_CERTIFICATE"},
+       }) {
+    if (const auto configured = value(key))
+      (*environment)[std::string(variable)] = *configured;
   }
   if (const auto application_id =
           value("integrations.discord_rpc.application_id");
@@ -751,6 +765,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "GameMode policy is invalid";
   } else if (!result.config.performance().physics_worker_mode_valid) {
     result.error = "physics worker policy is invalid";
+  } else if (!result.config.fleasion_valid()) {
+    result.error = "Fleasion configuration is invalid: use proxy_mode env or hosts, "
+                   "a port from 1 to 65535, an absolute CA certificate path, and "
+                   "no conflicting system/fixed proxy";
   } else if (!result.config.ca_bundle_valid()) {
     result.error = "CA bundle path is invalid";
   } else if (!result.config.discord_rpc_valid()) {
@@ -761,6 +779,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
 
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error) {
+  if (!config.fleasion_valid()) {
+    if (error != nullptr) *error = "cannot export invalid Fleasion configuration";
+    return false;
+  }
   if (!config.device_profile_valid()) {
     if (error != nullptr) {
       *error = "cannot export an invalid device profile";
@@ -908,6 +930,20 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_TEXT_UNKNOWN_PLACE",
                           config.discord_rpc().text.unknown_place, error);
   if (!base_exported) {
+    return false;
+  }
+  if (!SetEnvironmentValue("MOCKTAIL_FLEASION_ENABLED",
+                           config.fleasion_enabled() ? "1" : "0", error) ||
+      !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_MODE",
+                           config.fleasion_proxy_mode(), error) ||
+      !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_PORT",
+                           std::to_string(config.fleasion_proxy_port()), error))
+    return false;
+  if (config.fleasion_ca_certificate()) {
+    if (!SetEnvironmentValue("MOCKTAIL_FLEASION_CA_CERTIFICATE",
+                             config.fleasion_ca_certificate()->string(), error))
+      return false;
+  } else if (!UnsetEnvironmentValue("MOCKTAIL_FLEASION_CA_CERTIFICATE", error)) {
     return false;
   }
   if (config.ca_bundle().has_value()) {

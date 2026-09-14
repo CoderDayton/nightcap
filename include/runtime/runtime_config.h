@@ -119,6 +119,13 @@ class RuntimeConfig {
   }
   bool ca_bundle_valid() const { return ca_bundle_valid_; }
   bool use_system_proxy() const { return use_system_proxy_; }
+  bool fleasion_enabled() const { return fleasion_enabled_; }
+  bool fleasion_valid() const { return fleasion_valid_; }
+  const std::string& fleasion_proxy_mode() const { return fleasion_proxy_mode_; }
+  int fleasion_proxy_port() const { return fleasion_proxy_port_; }
+  const std::optional<std::filesystem::path>& fleasion_ca_certificate() const {
+    return fleasion_ca_certificate_;
+  }
   const DiscordRpcConfig& discord_rpc() const { return discord_rpc_; }
   bool discord_rpc_valid() const { return discord_rpc_valid_; }
 
@@ -152,6 +159,11 @@ class RuntimeConfig {
   std::string audio_input_device_ = "default";
   bool audio_input_device_valid_ = true;
   bool use_system_proxy_ = false;
+  bool fleasion_enabled_ = false;
+  bool fleasion_valid_ = true;
+  std::string fleasion_proxy_mode_ = "env";
+  int fleasion_proxy_port_ = 58443;
+  std::optional<std::filesystem::path> fleasion_ca_certificate_;
   std::optional<NetworkProxyConfig> network_proxy_;
   std::optional<std::filesystem::path> ca_bundle_;
   bool ca_bundle_valid_ = true;

@@ -287,6 +287,35 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   config.use_system_proxy_ =
       LegacyEnabled(environment, "MOCKTAIL_USE_SYSTEM_PROXY");
   config.network_proxy_ = ReadNetworkProxy(environment);
+  config.fleasion_enabled_ = ReadBoolean(
+      environment, "MOCKTAIL_FLEASION_ENABLED", false, &config.fleasion_valid_);
+  config.fleasion_proxy_mode_ = environment.GetOr("MOCKTAIL_FLEASION_PROXY_MODE", "env");
+  const auto fleasion_proxy = ParseNetworkProxyConfig(
+      "127.0.0.1", environment.GetOr("MOCKTAIL_FLEASION_PROXY_PORT", "58443"));
+  if (!fleasion_proxy || (config.fleasion_proxy_mode_ != "env" &&
+                         config.fleasion_proxy_mode_ != "hosts")) {
+    config.fleasion_valid_ = false;
+  } else {
+    config.fleasion_proxy_port_ = fleasion_proxy->port;
+  }
+  if (const auto certificate = environment.Get("MOCKTAIL_FLEASION_CA_CERTIFICATE")) {
+    config.fleasion_ca_certificate_ = *certificate;
+    if (certificate->empty() || !config.fleasion_ca_certificate_->is_absolute())
+      config.fleasion_valid_ = false;
+  }
+  if (config.fleasion_enabled_) {
+    if (config.use_system_proxy_) config.fleasion_valid_ = false;
+    if (config.fleasion_proxy_mode_ == "env" && fleasion_proxy) {
+      if (config.network_proxy_ &&
+          (config.network_proxy_->host != fleasion_proxy->host ||
+           config.network_proxy_->port != fleasion_proxy->port ||
+           config.network_proxy_->scheme != "http"))
+        config.fleasion_valid_ = false;
+      config.network_proxy_ = fleasion_proxy;
+    } else if (config.network_proxy_) {
+      config.fleasion_valid_ = false;
+    }
+  }
   if (const std::optional<std::string> ca_bundle =
           environment.Get("MOCKTAIL_CA_BUNDLE");
       ca_bundle.has_value()) {

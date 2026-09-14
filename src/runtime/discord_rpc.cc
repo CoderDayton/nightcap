@@ -422,7 +422,11 @@ std::optional<Json> GetRobloxJson(std::string url) {
     if (proxy.has_value()) {
       proxy_url = BuildNetworkProxyUrl(*proxy);
       curl_easy_setopt(curl, CURLOPT_PROXY, proxy_url.c_str());
+      curl_easy_setopt(curl, CURLOPT_NOPROXY, "");
     }
+  }
+  if (const char* ca_bundle = std::getenv("MOCKTAIL_CA_BUNDLE")) {
+    curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
   }
   const CURLcode status = curl_easy_perform(curl);
   long http_status = 0;
