@@ -747,6 +747,8 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkFreeMemory)
   MOCKTAIL_VK_PROC(vkDestroyBuffer)
   MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage)
+  MOCKTAIL_VK_PROC(vkCmdCopyImage)
+  MOCKTAIL_VK_PROC(vkCmdCopyImage2)
   MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage2)
   MOCKTAIL_VK_PROC(vkCmdExecuteCommands)
 #undef MOCKTAIL_VK_PROC
@@ -761,6 +763,7 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceImageFormatProperties2KHR,
                     vkGetPhysicalDeviceImageFormatProperties2)
   MOCKTAIL_VK_ALIAS(vkBindBufferMemory2KHR, vkBindBufferMemory2)
+  MOCKTAIL_VK_ALIAS(vkCmdCopyImage2KHR, vkCmdCopyImage2)
   MOCKTAIL_VK_ALIAS(vkMapMemory2KHR, vkMapMemory2)
   MOCKTAIL_VK_ALIAS(vkUnmapMemory2KHR, vkUnmapMemory2)
   MOCKTAIL_VK_ALIAS(vkCmdCopyBufferToImage2KHR, vkCmdCopyBufferToImage2)
@@ -787,6 +790,8 @@ bool IsEtc2DeviceProc(const char* name) {
       "vkUnmapMemory2",         "vkUnmapMemory2KHR",
       "vkFreeMemory",           "vkDestroyBuffer",
       "vkCmdCopyBufferToImage", "vkCmdCopyBufferToImage2",
+      "vkCmdCopyImage",         "vkCmdCopyImage2",
+      "vkCmdCopyImage2KHR",
       "vkCmdCopyBufferToImage2KHR", "vkCmdExecuteCommands",
   };
   return NameInList(name, kNames, sizeof(kNames) / sizeof(kNames[0]));
@@ -2236,7 +2241,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures(
     return;
   }
   host(physical_device, features);
-  if (Etc2EmulatedPhysicalDevice(physical_device)) {
+  if (Etc2EmulatedPhysicalDevice(physical_device) &&
+      mocktail::graphics::Etc2SupportAdvertised()) {
     features->textureCompressionETC2 = VK_TRUE;
   }
 }
@@ -2249,7 +2255,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(
     return;
   }
   host(physical_device, features);
-  if (Etc2EmulatedPhysicalDevice(physical_device)) {
+  if (Etc2EmulatedPhysicalDevice(physical_device) &&
+      mocktail::graphics::Etc2SupportAdvertised()) {
     features->features.textureCompressionETC2 = VK_TRUE;
   }
 }
@@ -2442,6 +2449,24 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage(
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage2(
     VkCommandBuffer command_buffer, const VkCopyBufferToImageInfo2* info) {
   State().etc2.CmdCopyBufferToImage2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(
+    VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t region_count,
+    const VkImageCopy* regions) {
+  State().etc2.CmdCopyImage(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, source_layout, destination, destination_layout, region_count,
+      regions);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage2(VkCommandBuffer command_buffer,
+                                           const VkCopyImageInfo2* info) {
+  State().etc2.CmdCopyImage2(
       HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
       info);
 }

@@ -30,6 +30,21 @@ bool Etc2UploadByteCounts(EtcFormat format, const VkExtent3D& extent,
                           std::uint32_t layer_count, VkDeviceSize* compressed,
                           VkDeviceSize* decoded);
 
+// Whether emulated ETC2 is reported to the application as a supported
+// feature, from the MOCKTAIL_ADVERTISE_ETC2 value: "0" hides it, anything
+// else (or unset) reports it. Hidden ETC2 still decodes ETC2 images the
+// application creates; it only steers the application toward other formats.
+bool Etc2SupportAdvertised(const char* value);
+bool Etc2SupportAdvertised();
+
+// Factor applied to emulated ETC2 colour images no larger than
+// kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
+// 1 (default) leaves them alone; 2..8 create them that many times larger and
+// resample every upload, so a texture override can carry more detail than
+// the original. Values out of range are clamped.
+inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
+std::uint32_t SmallTextureUpscale(const char* value);
+
 // Reports ETC2/EAC support on hosts without native ETC2 (desktop GPUs) and
 // stores those textures decoded. Images are created with the host format;
 // each staged upload into one is redirected to a host-visible staging buffer
@@ -84,6 +99,12 @@ class VulkanEtc2Emulation final {
                             const VkBufferImageCopy* regions);
   void CmdCopyBufferToImage2(VkDevice device, VkCommandBuffer command_buffer,
                              const VkCopyBufferToImageInfo2* info);
+  void CmdCopyImage(VkDevice device, VkCommandBuffer command_buffer,
+                    VkImage source, VkImageLayout source_layout,
+                    VkImage destination, VkImageLayout destination_layout,
+                    std::uint32_t region_count, const VkImageCopy* regions);
+  void CmdCopyImage2(VkDevice device, VkCommandBuffer command_buffer,
+                     const VkCopyImageInfo2* info);
   void CmdExecuteCommands(VkDevice device, VkCommandBuffer command_buffer,
                           std::uint32_t count,
                           const VkCommandBuffer* secondaries);

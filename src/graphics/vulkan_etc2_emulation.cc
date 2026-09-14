@@ -1,5 +1,7 @@
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
 
+#include "mocktail/graphics/texture_override.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -92,6 +94,31 @@ bool EmulationDisabledByEnvironment() {
   return disabled;
 }
 
+}  // namespace
+
+bool Etc2SupportAdvertised(const char* value) {
+  return value == nullptr || std::strcmp(value, "0") != 0;
+}
+
+bool Etc2SupportAdvertised() {
+  static const bool advertised =
+      Etc2SupportAdvertised(std::getenv("MOCKTAIL_ADVERTISE_ETC2"));
+  return advertised;
+}
+
+std::uint32_t SmallTextureUpscale(const char* value) {
+  if (value == nullptr || value[0] < '0' || value[0] > '9') {
+    return 1;
+  }
+  const long parsed = std::strtol(value, nullptr, 10);
+  if (parsed < 1) {
+    return 1;
+  }
+  return parsed > 8 ? 8 : static_cast<std::uint32_t>(parsed);
+}
+
+namespace {
+
 bool ShouldLog(std::atomic<unsigned>* counter, unsigned limit) {
   return counter->fetch_add(1, std::memory_order_relaxed) < limit;
 }
@@ -121,6 +148,9 @@ struct HostDevice {
   PFN_vkDestroyBuffer destroy_buffer = nullptr;
   PFN_vkCmdCopyBufferToImage copy_buffer_to_image = nullptr;
   PFN_vkCmdCopyBufferToImage2 copy_buffer_to_image2 = nullptr;
+  PFN_vkCmdCopyImage copy_image = nullptr;
+  PFN_vkCmdCopyImage2 copy_image2 = nullptr;
+  PFN_vkCmdBlitImage blit_image = nullptr;
   PFN_vkCmdExecuteCommands execute_commands = nullptr;
   PFN_vkCreateBuffer create_buffer = nullptr;
   PFN_vkAllocateMemory allocate_memory = nullptr;
@@ -151,7 +181,23 @@ struct Mapping {
 struct ImageRecord {
   VkDevice device = VK_NULL_HANDLE;
   Etc2EmulatedFormat format;
+  // Host image dimensions are the application's times this factor.
+  std::uint32_t scale = 1;
+  // Application-side level-0 extent; mip extents derive from it.
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  // Replacement pixels chosen from the level-0 upload; smaller mip levels
+  // are resampled from it.
+  std::shared_ptr<const RgbaImage> override;
+  // Decoded level-0 texels of a scaled image; every host mip is resampled
+  // from them so the texture keeps its detail at every draw size.
+  std::shared_ptr<const RgbaImage> base;
 };
+
+bool IsColorFormat(EtcFormat format) {
+  return format == EtcFormat::kEtc2Rgb8 || format == EtcFormat::kEtc2Rgb8A1 ||
+         format == EtcFormat::kEtc2Rgba8;
+}
 
 struct Staging {
   VkDevice device = VK_NULL_HANDLE;
@@ -167,9 +213,23 @@ struct PendingUpload {
   VkDeviceSize decoded = 0;
   VkDeviceSize target_offset = 0;
   EtcFormat format = EtcFormat::kEtc2Rgb8;
+  VkImage image = VK_NULL_HANDLE;
+  std::uint32_t mip_level = 0;
+  // Application-side region; `decoded` covers width x height texels.
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint32_t layers = 0;
+  std::uint32_t scale = 1;
+  // Texels of the region inside the application mip (block-rounded
+  // regions overhang it) and the host region they map to, which takes
+  // `target_bytes`.
+  std::uint32_t source_width = 0;
+  std::uint32_t source_height = 0;
+  std::uint32_t target_width = 0;
+  std::uint32_t target_height = 0;
+  // The region covers the whole application mip.
+  bool full_mip = false;
+  VkDeviceSize target_bytes = 0;
   std::uint8_t* target = nullptr;
 };
 
@@ -255,36 +315,140 @@ void DestroyStaging(const HostDevice& dev, const Staging& staging) {
   }
 }
 
+// Maps one axis of an application region at `mip` onto the host image of a
+// scaled record. A region reaching the application mip's edge reaches the
+// host mip's edge; block-rounded overhang is dropped rather than scaled.
+// `texels` receives the application texels inside the mip.
+bool ScaledAxis(std::uint32_t base, std::uint32_t scale, std::uint32_t mip,
+                std::int32_t offset, std::uint32_t extent,
+                std::uint32_t* texels, std::uint32_t* host_start,
+                std::uint32_t* host_end) {
+  const std::uint32_t app_mip = std::max<std::uint32_t>(1, base >> mip);
+  const std::uint32_t host_mip =
+      std::max<std::uint32_t>(1, (base * scale) >> mip);
+  if (offset < 0 || static_cast<std::uint32_t>(offset) >= app_mip) {
+    return false;
+  }
+  const std::uint32_t app_end =
+      std::min(app_mip, static_cast<std::uint32_t>(offset) + extent);
+  const std::uint32_t start = static_cast<std::uint32_t>(offset) * scale;
+  const std::uint32_t end =
+      app_end == app_mip ? host_mip : std::min(host_mip, app_end * scale);
+  if (end <= start) {
+    return false;
+  }
+  *texels = app_end - static_cast<std::uint32_t>(offset);
+  *host_start = start;
+  *host_end = end;
+  return true;
+}
+
+// Host-side bounds of an application region on one image; unscaled images
+// keep the region as given.
+bool HostRegion(const ImageRecord* record, std::uint32_t mip,
+                VkOffset3D offset, VkExtent3D extent, VkOffset3D* start,
+                VkOffset3D* end) {
+  if (record == nullptr || record->scale <= 1) {
+    *start = offset;
+    *end = {offset.x + static_cast<std::int32_t>(extent.width),
+            offset.y + static_cast<std::int32_t>(extent.height),
+            offset.z + static_cast<std::int32_t>(extent.depth)};
+    return true;
+  }
+  std::uint32_t texels = 0;
+  std::uint32_t x0 = 0;
+  std::uint32_t x1 = 0;
+  std::uint32_t y0 = 0;
+  std::uint32_t y1 = 0;
+  if (!ScaledAxis(record->width, record->scale, mip, offset.x, extent.width,
+                  &texels, &x0, &x1) ||
+      !ScaledAxis(record->height, record->scale, mip, offset.y,
+                  extent.height, &texels, &y0, &y1)) {
+    return false;
+  }
+  *start = {static_cast<std::int32_t>(x0), static_cast<std::int32_t>(y0), 0};
+  *end = {static_cast<std::int32_t>(x1), static_cast<std::int32_t>(y1), 1};
+  return true;
+}
+
 template <typename Region>
-bool PlanRegions(const Etc2EmulatedFormat& format, VkDevice device,
-                 VkBuffer source, std::uint32_t count, const Region* regions,
-                 std::vector<Region>* rewritten,
+bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
+                 VkImage destination, std::uint32_t count,
+                 const Region* regions, std::vector<Region>* rewritten,
                  std::vector<PendingUpload>* uploads, VkDeviceSize* total) {
   *total = 0;
   if (regions == nullptr || count == 0) {
     return false;
   }
+  const std::uint32_t scale = record.scale;
   for (std::uint32_t index = 0; index < count; ++index) {
     const Region& region = regions[index];
     PendingUpload upload;
-    if (!Etc2UploadByteCounts(format.etc_format, region.imageExtent,
+    if (!Etc2UploadByteCounts(record.format.etc_format, region.imageExtent,
                               region.imageSubresource.layerCount,
                               &upload.compressed, &upload.decoded)) {
+      return false;
+    }
+    if (scale > 1 && region.imageSubresource.layerCount != 1) {
       return false;
     }
     upload.device = device;
     upload.source = source;
     upload.source_offset = region.bufferOffset;
     upload.target_offset = *total;
-    upload.format = format.etc_format;
+    upload.format = record.format.etc_format;
+    upload.image = destination;
+    upload.mip_level = region.imageSubresource.mipLevel;
     upload.width = region.imageExtent.width;
     upload.height = region.imageExtent.height;
     upload.layers = region.imageSubresource.layerCount;
+    upload.scale = scale;
+    upload.source_width = upload.width;
+    upload.source_height = upload.height;
+    upload.target_width = upload.width;
+    upload.target_height = upload.height;
+    upload.target_bytes = upload.decoded;
     Region copy = region;
     copy.bufferOffset = *total;
+    copy.bufferRowLength = 0;
+    copy.bufferImageHeight = 0;
+    if (scale > 1) {
+      const std::uint32_t mip = region.imageSubresource.mipLevel;
+      const auto axis = [&](std::uint32_t base, std::int32_t offset,
+                            std::uint32_t extent, std::uint32_t* source,
+                            std::uint32_t* target, std::int32_t* host_offset,
+                            std::uint32_t* host_extent) {
+        std::uint32_t start = 0;
+        std::uint32_t end = 0;
+        if (!ScaledAxis(base, scale, mip, offset, extent, source, &start,
+                        &end)) {
+          return false;
+        }
+        *target = end - start;
+        *host_offset = static_cast<std::int32_t>(start);
+        *host_extent = end - start;
+        return true;
+      };
+      if (!axis(record.width, region.imageOffset.x, region.imageExtent.width,
+                &upload.source_width, &upload.target_width,
+                &copy.imageOffset.x, &copy.imageExtent.width) ||
+          !axis(record.height, region.imageOffset.y,
+                region.imageExtent.height, &upload.source_height,
+                &upload.target_height, &copy.imageOffset.y,
+                &copy.imageExtent.height)) {
+        return false;
+      }
+      upload.target_bytes = static_cast<VkDeviceSize>(upload.target_width) *
+                            upload.target_height *
+                            EtcDecodedTexelBytes(record.format.etc_format);
+      upload.full_mip =
+          region.imageOffset.x == 0 && region.imageOffset.y == 0 &&
+          upload.source_width == std::max<std::uint32_t>(1, record.width >> mip) &&
+          upload.source_height == std::max<std::uint32_t>(1, record.height >> mip);
+    }
     rewritten->push_back(copy);
     uploads->push_back(upload);
-    *total += upload.decoded;
+    *total += upload.target_bytes;
   }
   return true;
 }
@@ -305,6 +469,98 @@ struct VulkanEtc2Emulation::State {
   std::mutex scratch_mutex;
   std::vector<std::uint8_t> scratch_source;
   std::vector<std::uint8_t> scratch_decoded;
+  TextureOverrides overrides = TextureOverrides::FromEnvironment();
+  const std::uint32_t upscale =
+      SmallTextureUpscale(std::getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"));
+
+  // Level-0 colour uploads are hashed, dumped and matched against override
+  // files; the match is kept on the image so its mip levels follow.
+  std::shared_ptr<const RgbaImage> FindOverride(const PendingUpload& upload,
+                                                const std::uint8_t* compressed,
+                                                const std::uint8_t* decoded) {
+    if (!overrides.enabled() || upload.layers != 1 ||
+        !IsColorFormat(upload.format)) {
+      return nullptr;
+    }
+    std::shared_ptr<const RgbaImage> replacement;
+    if (upload.mip_level == 0) {
+      const std::uint64_t hash = HashBytes(compressed, upload.compressed);
+      overrides.Dump(hash, upload.width, upload.height, decoded);
+      replacement = overrides.Lookup(hash);
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto record = images.find(upload.image);
+      if (record != images.end()) {
+        record->second.override = replacement;
+      }
+    } else {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto record = images.find(upload.image);
+      if (record != images.end()) {
+        replacement = record->second.override;
+      }
+    }
+    return replacement;
+  }
+
+  // Writes the host-side texels of one upload: the override or the decoded
+  // texels, resampled to the host region size.
+  void EmitUpload(const PendingUpload& upload, const std::uint8_t* compressed,
+                  const std::uint8_t* decoded) {
+    const std::shared_ptr<const RgbaImage> replacement =
+        FindOverride(upload, compressed, decoded);
+    if (replacement != nullptr) {
+      ResampleRgba(*replacement, upload.target_width, upload.target_height,
+                   upload.target);
+    } else if (upload.scale > 1) {
+      std::shared_ptr<const RgbaImage> base;
+      if (upload.full_mip) {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto record = images.find(upload.image);
+        if (record != images.end()) {
+          if (upload.mip_level == 0) {
+            auto level0 = std::make_shared<RgbaImage>();
+            level0->width = upload.source_width;
+            level0->height = upload.source_height;
+            level0->pixels.assign(decoded, decoded + upload.decoded);
+            if (upload.source_width != upload.width ||
+                upload.source_height != upload.height) {
+              level0->pixels.clear();
+              for (std::uint32_t y = 0; y < upload.source_height; ++y) {
+                const std::uint8_t* row =
+                    decoded + static_cast<std::size_t>(y) * upload.width * 4;
+                level0->pixels.insert(level0->pixels.end(), row,
+                                      row + upload.source_width * 4);
+              }
+            }
+            record->second.base = level0;
+          }
+          base = record->second.base;
+        }
+      }
+      if (base != nullptr) {
+        ResampleRgba(*base, upload.target_width, upload.target_height,
+                     upload.target);
+        return;
+      }
+      const std::uint8_t* source = decoded;
+      std::vector<std::uint8_t> cropped;
+      if (upload.source_width != upload.width ||
+          upload.source_height != upload.height) {
+        const std::size_t row = static_cast<std::size_t>(upload.source_width) * 4;
+        cropped.resize(row * upload.source_height);
+        for (std::uint32_t y = 0; y < upload.source_height; ++y) {
+          std::memcpy(cropped.data() + y * row,
+                      decoded + static_cast<std::size_t>(y) * upload.width * 4,
+                      row);
+        }
+        source = cropped.data();
+      }
+      ResampleRgba(source, upload.source_width, upload.source_height,
+                   upload.target_width, upload.target_height, upload.target);
+    } else {
+      std::memcpy(upload.target, decoded, upload.decoded);
+    }
+  }
 
   const HostDevice* Find(VkDevice device) {
     std::lock_guard<std::mutex> lock(devices_mutex);
@@ -316,8 +572,13 @@ struct VulkanEtc2Emulation::State {
     return nullptr;
   }
 
+  bool BlitScaledCopy(const HostDevice& dev, VkCommandBuffer command_buffer,
+                      VkImage source, VkImageLayout source_layout,
+                      VkImage destination, VkImageLayout destination_layout,
+                      std::uint32_t count, const VkImageCopy* regions);
+
   bool LookupImage(const HostDevice& dev, VkImage image,
-                   Etc2EmulatedFormat* format) {
+                   ImageRecord* record) {
     if (!dev.emulated) {
       return false;
     }
@@ -326,7 +587,7 @@ struct VulkanEtc2Emulation::State {
     if (found == images.end()) {
       return false;
     }
-    *format = found->second.format;
+    *record = found->second;
     return true;
   }
 
@@ -402,6 +663,10 @@ void VulkanEtc2Emulation::RegisterDevice(
       get, device, "vkCmdCopyBufferToImage");
   dev->copy_buffer_to_image2 = DeviceProc<PFN_vkCmdCopyBufferToImage2>(
       get, device, "vkCmdCopyBufferToImage2", "vkCmdCopyBufferToImage2KHR");
+  dev->copy_image = DeviceProc<PFN_vkCmdCopyImage>(get, device, "vkCmdCopyImage");
+  dev->copy_image2 = DeviceProc<PFN_vkCmdCopyImage2>(
+      get, device, "vkCmdCopyImage2", "vkCmdCopyImage2KHR");
+  dev->blit_image = DeviceProc<PFN_vkCmdBlitImage>(get, device, "vkCmdBlitImage");
   dev->execute_commands =
       DeviceProc<PFN_vkCmdExecuteCommands>(get, device, "vkCmdExecuteCommands");
   dev->create_buffer =
@@ -479,11 +744,27 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   host_info.format = format.host_format;
   host_info.flags &= ~static_cast<VkImageCreateFlags>(
       VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+  std::uint32_t scale = 1;
+  if (state_->upscale > 1 && IsColorFormat(format.etc_format) &&
+      create_info->imageType == VK_IMAGE_TYPE_2D &&
+      create_info->arrayLayers == 1 && create_info->extent.depth == 1 &&
+      create_info->extent.width <= kSmallTextureMaxExtent &&
+      create_info->extent.height <= kSmallTextureMaxExtent) {
+    scale = state_->upscale;
+    host_info.extent.width *= scale;
+    host_info.extent.height *= scale;
+  }
   const VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (result == VK_SUCCESS && image != nullptr) {
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
-      state_->images[*image] = {device, format};
+      state_->images[*image] = {device,
+                                format,
+                                scale,
+                                create_info->extent.width,
+                                create_info->extent.height,
+                                nullptr,
+                                nullptr};
     }
     if (ShouldLog(&g_image_logs, 4)) {
       std::fprintf(stderr,
@@ -652,8 +933,8 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
   if (dev == nullptr || dev->copy_buffer_to_image == nullptr) {
     return;
   }
-  Etc2EmulatedFormat format;
-  if (!state_->LookupImage(*dev, destination, &format)) {
+  ImageRecord record;
+  if (!state_->LookupImage(*dev, destination, &record)) {
     dev->copy_buffer_to_image(command_buffer, source, destination, layout,
                               region_count, regions);
     return;
@@ -663,8 +944,8 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
   VkDeviceSize total = 0;
   Staging staging;
   std::uint8_t* mapped = nullptr;
-  if (!PlanRegions(format, device, source, region_count, regions, &rewritten,
-                   &uploads, &total)) {
+  if (!PlanRegions(record, device, source, destination, region_count, regions,
+                   &rewritten, &uploads, &total)) {
     LogFailure("skipped an upload with an unsupported region");
     return;
   }
@@ -688,8 +969,8 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
       info == nullptr) {
     return;
   }
-  Etc2EmulatedFormat format;
-  if (!state_->LookupImage(*dev, info->dstImage, &format)) {
+  ImageRecord record;
+  if (!state_->LookupImage(*dev, info->dstImage, &record)) {
     dev->copy_buffer_to_image2(command_buffer, info);
     return;
   }
@@ -698,8 +979,9 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
   VkDeviceSize total = 0;
   Staging staging;
   std::uint8_t* mapped = nullptr;
-  if (!PlanRegions(format, device, info->srcBuffer, info->regionCount,
-                   info->pRegions, &rewritten, &uploads, &total)) {
+  if (!PlanRegions(record, device, info->srcBuffer, info->dstImage,
+                   info->regionCount, info->pRegions, &rewritten, &uploads,
+                   &total)) {
     LogFailure("skipped an upload with an unsupported region");
     return;
   }
@@ -715,6 +997,95 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
   host_info.srcBuffer = staging.buffer;
   host_info.pRegions = rewritten.data();
   dev->copy_buffer_to_image2(command_buffer, &host_info);
+}
+
+// Copies touching a scaled image become blits, so both sides land on their
+// own host bounds. Returns false when no image involved is scaled.
+bool VulkanEtc2Emulation::State::BlitScaledCopy(
+    const HostDevice& dev, VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t count,
+    const VkImageCopy* regions) {
+  ImageRecord source_record;
+  ImageRecord destination_record;
+  const bool source_scaled =
+      LookupImage(dev, source, &source_record) && source_record.scale > 1;
+  const bool destination_scaled =
+      LookupImage(dev, destination, &destination_record) &&
+      destination_record.scale > 1;
+  if ((!source_scaled && !destination_scaled) || dev.blit_image == nullptr ||
+      regions == nullptr) {
+    return false;
+  }
+  std::vector<VkImageBlit> blits;
+  blits.reserve(count);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    const VkImageCopy& region = regions[index];
+    VkImageBlit blit{};
+    blit.srcSubresource = region.srcSubresource;
+    blit.dstSubresource = region.dstSubresource;
+    if (!HostRegion(source_scaled ? &source_record : nullptr,
+                    region.srcSubresource.mipLevel, region.srcOffset,
+                    region.extent, &blit.srcOffsets[0], &blit.srcOffsets[1]) ||
+        !HostRegion(destination_scaled ? &destination_record : nullptr,
+                    region.dstSubresource.mipLevel, region.dstOffset,
+                    region.extent, &blit.dstOffsets[0], &blit.dstOffsets[1])) {
+      LogFailure("skipped an image copy with an unsupported region");
+      return true;
+    }
+    blits.push_back(blit);
+  }
+  const bool same_scale = source_scaled && destination_scaled &&
+                          source_record.scale == destination_record.scale;
+  dev.blit_image(command_buffer, source, source_layout, destination,
+                 destination_layout, static_cast<std::uint32_t>(blits.size()),
+                 blits.data(), same_scale ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+  return true;
+}
+
+void VulkanEtc2Emulation::CmdCopyImage(
+    VkDevice device, VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t region_count,
+    const VkImageCopy* regions) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->copy_image == nullptr) {
+    return;
+  }
+  if (dev->emulated && state_->upscale > 1 &&
+      state_->BlitScaledCopy(*dev, command_buffer, source, source_layout,
+                             destination, destination_layout, region_count,
+                             regions)) {
+    return;
+  }
+  dev->copy_image(command_buffer, source, source_layout, destination,
+                  destination_layout, region_count, regions);
+}
+
+void VulkanEtc2Emulation::CmdCopyImage2(VkDevice device,
+                                        VkCommandBuffer command_buffer,
+                                        const VkCopyImageInfo2* info) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->copy_image2 == nullptr || info == nullptr) {
+    return;
+  }
+  if (dev->emulated && state_->upscale > 1 && info->pRegions != nullptr) {
+    std::vector<VkImageCopy> regions;
+    regions.reserve(info->regionCount);
+    for (std::uint32_t index = 0; index < info->regionCount; ++index) {
+      const VkImageCopy2& region = info->pRegions[index];
+      regions.push_back({region.srcSubresource, region.srcOffset,
+                         region.dstSubresource, region.dstOffset,
+                         region.extent});
+    }
+    if (state_->BlitScaledCopy(*dev, command_buffer, info->srcImage,
+                               info->srcImageLayout, info->dstImage,
+                               info->dstImageLayout, info->regionCount,
+                               regions.data())) {
+      return;
+    }
+  }
+  dev->copy_image2(command_buffer, info);
 }
 
 void VulkanEtc2Emulation::CmdExecuteCommands(
@@ -897,10 +1268,12 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
       LogFailure("could not decode an upload layer");
     }
   }
+  compressed_offset = 0;
   decoded_offset = 0;
   for (const PendingUpload* upload : copied_uploads) {
-    std::memcpy(upload->target, scratch_decoded.data() + decoded_offset,
-                upload->decoded);
+    state_->EmitUpload(*upload, scratch_source.data() + compressed_offset,
+                       scratch_decoded.data() + decoded_offset);
+    compressed_offset += upload->compressed;
     decoded_offset += upload->decoded;
   }
 }
