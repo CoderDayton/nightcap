@@ -55,6 +55,7 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="1.0.4" date="2026-09-11"/>
     <release version="1.0.3" date="2026-08-16">
       <description>
         <ul>
