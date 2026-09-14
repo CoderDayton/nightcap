@@ -103,6 +103,31 @@ TEST(RobloxOutputDeviceBridgeTest, DeviceListSelectorKeepsArgumentsAndCountSlotE
   EXPECT_FALSE(compat::HasFmodDeviceListsSelectContract(relocated));
 }
 
+TEST(RobloxOutputDeviceBridgeTest, ValidatesInputSlotsForBothLayouts) {
+  constexpr std::uintptr_t base = 0x10000000;
+  for (int layout : {1, 2}) {
+    auto profile = TestProfile();
+    profile.vtable_layout_version = layout;
+    profile.input_method_rvas = {0x7000, 0x8000, 0x9000, 0xa000};
+    std::array<std::uintptr_t, 20> vtable{};
+    vtable[5] = base + profile.count_method_rva;
+    vtable[6] = base + profile.info_method_rva;
+    vtable[profile.current_vtable_index()] = base + profile.current_method_rva;
+    vtable[profile.select_vtable_index()] = base + profile.select_method_rva;
+    const auto indexes = profile.input_vtable_indexes();
+    for (std::size_t i = 0; i < 4; ++i)
+      vtable[indexes[i]] = base + profile.input_method_rvas[i];
+    ASSERT_TRUE(internal::HasExpectedFmodOutputDeviceVtable(vtable.data(), base,
+                                                            profile));
+    for (const auto index : indexes) {
+      ++vtable[index];
+      EXPECT_FALSE(internal::HasExpectedFmodOutputDeviceVtable(vtable.data(),
+                                                               base, profile));
+      --vtable[index];
+    }
+  }
+}
+
 TEST(RobloxOutputDeviceBridgeTest, EnforcesSingleProcessOwner) {
   compat::BuildProfile profile;
   profile.elf_build_id = "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21";

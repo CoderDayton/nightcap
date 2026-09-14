@@ -1,6 +1,8 @@
 #ifndef MOCKTAIL_COMPAT_BUILD_PROFILE_H_
 #define MOCKTAIL_COMPAT_BUILD_PROFILE_H_
 
+#include <array>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -25,6 +27,15 @@ struct FmodOutputDeviceBridgeProfile {
   std::uintptr_t select_method_rva = 0;
   // Roblox 2.738 inserted device-list methods before the current/select slots.
   int vtable_layout_version = 1;
+
+  // Optional exact-build input count/info/current/select methods.
+  std::array<std::uintptr_t, 4> input_method_rvas{};
+  bool has_input_devices() const { return input_method_rvas[0] != 0; }
+  std::array<std::size_t, 4> input_vtable_indexes() const {
+    return vtable_layout_version == 2
+               ? std::array<std::size_t, 4>{9, 10, 12, 18}
+               : std::array<std::size_t, 4>{8, 9, 10, 16};
+  }
 
   bool valid_vtable_layout() const {
     return vtable_layout_version == 1 || vtable_layout_version == 2;

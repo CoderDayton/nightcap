@@ -555,6 +555,10 @@ class DeviceListsRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
         "current_method_rva": "0x320c6c6",
         "select_method_rva": "0x320bf78",
         "vtable_layout_version": 2,
+        "input_count_method_rva": "0x320ccf6",
+        "input_info_method_rva": "0x320cd04",
+        "input_current_method_rva": "0x320d152",
+        "input_select_method_rva": "0x320bd18",
     }
 
     def derive(self, reference, candidate):
@@ -590,6 +594,29 @@ class DeviceListsRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
             with mock.patch.object(ANALYZER, "relative_relocation_map", duplicated):
                 with self.assertRaisesRegex(ANALYZER.AnalyzerError, "matched 2 candidate"):
                     self.derive(reference, candidate)
+
+    def test_cached_reference_can_omit_new_input_anchors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = [Path(temporary) / name for name in ("old.json", "new.json")]
+            build_id = DEVICE_LISTS_PAYLOAD_ID.split("-", 1)[1]
+            for index, path in enumerate(paths):
+                bridge = dict(self.EXPECTED_BRIDGE)
+                if index == 0:
+                    bridge = {k: v for k, v in bridge.items() if not k.startswith("input_")}
+                path.write_text(json.dumps({"schema_version": 1, "profiles": [{
+                    "elf_build_id": build_id,
+                    "allow_host_abi_bridges": True,
+                    "fmod_output_device_bridge": bridge,
+                }]}))
+            for ordered in (paths, paths[::-1]):
+                loaded = ANALYZER.load_reference_runtime_profile(ordered, build_id)
+                self.assertEqual(loaded["fmod_output_device_bridge"]["input_select_method_rva"],
+                                 0x320bd18)
+            changed = json.loads(paths[0].read_text())
+            changed["profiles"][0]["fmod_output_device_bridge"]["vtable_layout_version"] = 1
+            paths[0].write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ANALYZER.AnalyzerError, "disagree"):
+                ANALYZER.load_reference_runtime_profile(paths, build_id)
 
     def test_device_list_profile_can_be_used_as_a_reference(self):
         with tempfile.TemporaryDirectory() as temporary:

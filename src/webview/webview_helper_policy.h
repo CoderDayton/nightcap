@@ -35,6 +35,9 @@ struct UriPolicyResult {
 // An explicit WebKit sandbox setting takes precedence over host defaults.
 bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
                                 const char* sandbox_override);
+// Match WebKit's WEBKIT_DISABLE_COMPOSITING_MODE override semantics.
+bool ShouldDisableWebViewHardwareAcceleration(
+    bool wayland_display, const char* compositing_override);
 const char* AndroidBridgeSource();
 std::string BuildRobloxAndroidUserAgent();
 std::string BoundedLogToken(const char* value, std::string_view fallback);

@@ -266,6 +266,21 @@ TEST(PerformancePolicyTest, RejectsConflictingOrMalformedOverrides) {
             std::string::npos);
 }
 
+TEST(PerformancePolicyTest, HostAudioMenuUsesBridgedDeviceQueries) {
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(MergeAudioDeviceMenuClientSettingsOverrides(
+      R"({"FFlagDebugUseWebRtcAudioDevices":"True","FFlagRemoteAudioDeviceSync":"True","unrelated":123})",
+      &merged, &error));
+  const auto parsed = nlohmann::json::parse(merged);
+  EXPECT_EQ(parsed.at("FFlagDebugUseWebRtcAudioDevices"), "False");
+  EXPECT_EQ(parsed.at("FFlagRemoteAudioDeviceSync"), "False");
+  EXPECT_EQ(parsed.at("unrelated"), 123);
+  EXPECT_FALSE(parsed.contains("DFFlagVoiceChatSkipPermissionCheckForTests"));
+  EXPECT_FALSE(
+      MergeAudioDeviceMenuClientSettingsOverrides("[]", &merged, &error));
+}
+
 TEST(PerformancePolicyTest, PermissionProtocolDoesNotUseTheTestBypass) {
   std::string merged;
   std::string error;

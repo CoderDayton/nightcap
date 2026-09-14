@@ -367,6 +367,26 @@ bool MergeRuntimeClientSettingsOverrides(const FrameRatePolicy& frame_rate,
                                                  merged_json, error);
 }
 
+bool MergeAudioDeviceMenuClientSettingsOverrides(std::string_view base_json,
+                                                 std::string *merged_json,
+                                                 std::string *error) {
+  if (merged_json == nullptr)
+    return false;
+  auto overrides = nlohmann::json::parse(base_json.empty() ? "{}" : base_json,
+                                         nullptr, false, true);
+  if (overrides.is_discarded() || !overrides.is_object()) {
+    if (error)
+      *error = "audio device menu overrides must be a JSON object";
+    return false;
+  }
+  // Use the profiled FMOD count/info/select interface for device enumeration.
+  // RemoteAudioDeviceSync instead uses the unbridged device-list virtuals.
+  overrides["FFlagDebugUseWebRtcAudioDevices"] = "False";
+  overrides["FFlagRemoteAudioDeviceSync"] = "False";
+  *merged_json = overrides.dump();
+  return true;
+}
+
 bool MergeAudioCaptureClientSettingsOverrides(bool microphone_enabled,
                                               std::string_view base_json,
                                               std::string* merged_json,

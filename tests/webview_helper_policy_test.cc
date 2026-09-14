@@ -118,6 +118,22 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitSandboxEnvironment) {
   }
 }
 
+TEST(WebViewHelperPolicyTest, UsesSoftwareCompositingOnlyForWaylandByDefault) {
+  EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(true, nullptr));
+  EXPECT_FALSE(ShouldDisableWebViewHardwareAcceleration(false, nullptr));
+}
+
+TEST(WebViewHelperPolicyTest, HonorsExplicitCompositingEnvironment) {
+  for (bool wayland_display : {false, true}) {
+    EXPECT_FALSE(
+        ShouldDisableWebViewHardwareAcceleration(wayland_display, "0"));
+    for (const char* value : {"1", "", "false"}) {
+      EXPECT_TRUE(
+          ShouldDisableWebViewHardwareAcceleration(wayland_display, value));
+    }
+  }
+}
+
 TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
   const UriPolicyResult roblox =
       EvaluateNavigationUri("https://www.roblox.com/login");

@@ -8,6 +8,10 @@
 #include <unistd.h>
 #include <webkit/webkit.h>
 
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/wayland/gdkwayland.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -75,6 +79,7 @@ struct AppState {
   bool cookie_install_in_flight = false;
   bool browser_login_mode = false;
   bool initial_load_started = false;
+  bool disable_hardware_acceleration = false;
 };
 
 struct CookieInstallContext {
@@ -906,6 +911,10 @@ gboolean OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecision* decision,
 
 void ConfigureWebView(WebKitWebView* web_view, const AppState* app) {
   WebKitSettings* settings = webkit_web_view_get_settings(web_view);
+  if (app->disable_hardware_acceleration) {
+    webkit_settings_set_hardware_acceleration_policy(
+        settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+  }
   webkit_settings_set_enable_javascript(settings, TRUE);
   webkit_settings_set_enable_page_cache(settings, TRUE);
   webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
@@ -1248,6 +1257,21 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
 void Activate(GtkApplication* application, gpointer user_data) {
   auto* state = static_cast<AppState*>(user_data);
   state->application = application;
+  bool wayland_display = false;
+#ifdef GDK_WINDOWING_WAYLAND
+  wayland_display = GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default());
+#endif
+  // Auth/challenge pages can finish loading while accelerated WebKit surfaces
+  // remain blank on wlroots/Mesa. Use software compositing for these small
+  // helper windows, including popups, without changing the game's renderer.
+  // Inspect GTK's actual display: an XWayland helper may inherit WAYLAND_DISPLAY.
+  state->disable_hardware_acceleration =
+      mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
+          wayland_display, std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
+  std::cerr << "[webview] display=" << (wayland_display ? "wayland" : "other")
+            << " compositing="
+            << (state->disable_hardware_acceleration ? "software" : "default")
+            << '\n';
   if (!InitializeNetworkSession(state)) {
     state->startup_failed = true;
     g_application_quit(G_APPLICATION(application));

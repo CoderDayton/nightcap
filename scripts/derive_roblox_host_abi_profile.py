@@ -1333,7 +1333,11 @@ def load_reference_runtime_profile(
                 }
                 if (
                     not isinstance(bridge, dict)
-                    or set(bridge) not in (fields, fields | {"vtable_layout_version"})
+                    or not fields <= set(bridge)
+                    or set(bridge) - fields - {"vtable_layout_version"} - {
+                        "input_count_method_rva", "input_info_method_rva",
+                        "input_current_method_rva", "input_select_method_rva",
+                    }
                     or profile.get("allow_host_abi_bridges") is not True
                 ):
                     raise AnalyzerError(
@@ -1350,10 +1354,24 @@ def load_reference_runtime_profile(
                 if layout != 1:
                     discovered["fmod_output_device_bridge"]["vtable_layout_version"] = layout
             for field, value in discovered.items():
-                if field in result and result[field] != value:
-                    raise AnalyzerError(
-                        f"reference compatibility manifests disagree on {field}"
-                    )
+                if field in result:
+                    previous = result[field]
+                    if field == "fmod_output_device_bridge":
+                        input_fields = {
+                            "input_count_method_rva", "input_info_method_rva",
+                            "input_current_method_rva", "input_select_method_rva",
+                        }
+                        compatible = ((set(previous) ^ set(value)) <= input_fields and
+                            all(previous[key] == value[key]
+                                for key in previous.keys() & value.keys()))
+                        if compatible:
+                            value = {**previous, **value}
+                    else:
+                        compatible = previous == value
+                    if not compatible:
+                        raise AnalyzerError(
+                            f"reference compatibility manifests disagree on {field}"
+                        )
                 result[field] = value
     return result
 
@@ -1492,6 +1510,30 @@ def derive_fmod_output_device_bridge(
     }
     if layout != 1:
         result["vtable_layout_version"] = layout
+    input_fields = (
+        "input_count_method_rva", "input_info_method_rva",
+        "input_current_method_rva", "input_select_method_rva",
+    )
+    if any(field in source for field in input_fields):
+        if not all(field in source for field in input_fields):
+            raise AnalyzerError("reference FMOD input profile is incomplete")
+        source_slots = (9, 10, 12, 18) if source_layout == 2 else (8, 9, 10, 16)
+        target_slots = (9, 10, 12, 18) if layout == 2 else (8, 9, 10, 16)
+        for field, old_slot, new_slot, length in zip(
+            input_fields, source_slots, target_slots, (4, 16, 12, 16)
+        ):
+            if reference_relocations.get(source_vtable + old_slot * 8) != source[field]:
+                raise AnalyzerError("reference FMOD input slot changed")
+            target = relocations.get(vtable + new_slot * 8)
+            matches = find_signature_matches(
+                reference, candidate,
+                SignatureSpec(field, source[field], length, minimum_anchor_bytes=3),
+                allow_multiple_candidates=True,
+            )
+            if target is None or target not in {match.rva for match in matches}:
+                raise AnalyzerError(f"candidate FMOD input contract changed: {field}")
+            candidate.require_code_rva(target)
+            result[field] = format_rva(target)
     return result
 
 

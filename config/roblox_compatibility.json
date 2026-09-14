@@ -79,7 +79,11 @@
         "count_method_rva": "0x32d0ee0",
         "info_method_rva": "0x32d0f80",
         "current_method_rva": "0x32d0f30",
-        "select_method_rva": "0x32d0cb4"
+        "select_method_rva": "0x32d0cb4",
+        "input_count_method_rva": "0x32d12dc",
+        "input_info_method_rva": "0x32d12ea",
+        "input_current_method_rva": "0x32d13a6",
+        "input_select_method_rva": "0x32d0a56"
       },
       "reason": "Verified 2026-09-06: exact Build-ID profile passed two isolated no-recovery Tier C Vulkan canaries and real game sessions, including fullscreen state synchronization and host FMOD output-device interposition; legacy executable patches and signal recovery remain disabled."
     }

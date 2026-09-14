@@ -123,6 +123,14 @@ bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
           kernel_version.find("freebsd.org") != std::string_view::npos);
 }
 
+bool ShouldDisableWebViewHardwareAcceleration(
+    bool wayland_display, const char* compositing_override) {
+  if (compositing_override != nullptr) {
+    return std::string_view(compositing_override) != "0";
+  }
+  return wayland_display;
+}
+
 const char* AndroidBridgeSource() { return kBridgeSource; }
 
 std::string BuildRobloxAndroidUserAgent() {

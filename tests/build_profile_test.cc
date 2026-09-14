@@ -1,6 +1,7 @@
 #include "compat/build_profile.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <unistd.h>
 
@@ -151,6 +152,49 @@ TEST(BuildProfileTest, RejectsInvalidManifest) {
 
   EXPECT_FALSE(result);
   EXPECT_FALSE(result.error.empty());
+}
+
+TEST(BuildProfileTest, RejectsPartialInputProfilesAndUpgradesCachedLayouts) {
+  nlohmann::json document;
+  {
+    std::ifstream input(kManifestPath);
+    input >> document;
+  }
+  auto &entry = document["profiles"].back();
+  auto &bridge = entry["fmod_output_device_bridge"];
+  char path[] = "/tmp/mocktail-input-profile-XXXXXX";
+  int fd = mkstemp(path);
+  ASSERT_GE(fd, 0);
+  close(fd);
+  const auto read = [&] {
+    {
+      std::ofstream output(path);
+      output << document;
+    }
+    return FindBuildProfile(path, entry["elf_build_id"].get<std::string>());
+  };
+  bridge.erase("input_count_method_rva");
+  EXPECT_FALSE(read());
+  for (const auto *name : {"input_info_method_rva", "input_current_method_rva",
+                           "input_select_method_rva"})
+    bridge.erase(name);
+  auto result = read();
+  ASSERT_TRUE(result && result.profile);
+  EXPECT_TRUE(result.profile->fmod_output_device_bridge->has_input_devices());
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->input_method_rvas[0],
+            0x32d12dcU);
+  entry["elf_build_id"] = "5f0704edd9064f566ee3d6df2bd2fabbcc709f03";
+  bridge["vtable_rva"] = "0x6cd3ce0";
+  bridge["vtable_layout_version"] = 2;
+  result = read();
+  ASSERT_TRUE(result && result.profile);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->input_method_rvas[3],
+            0x320bd18U);
+  bridge["vtable_rva"] = "0x1000";
+  result = read();
+  ASSERT_TRUE(result && result.profile);
+  EXPECT_FALSE(result.profile->fmod_output_device_bridge->has_input_devices());
+  unlink(path);
 }
 
 TEST(BuildProfileTest, ParsesOnlyKnownFmodVtableLayouts) {

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -21,6 +22,7 @@
 
 #include "audio/roblox_output_device_bridge_internal.h"
 #include "linker/linker.h"
+#include "mocktail/audio/sdl_audio_capture.h"
 #include "mocktail/audio/sdl_audio_sink.h"
 
 namespace mocktail::audio {
@@ -146,8 +148,17 @@ bool HasExpectedFmodOutputDeviceVtable(
     const compat::FmodOutputDeviceBridgeProfile& profile) {
   const std::size_t kCurrentOutputVtableIndex = profile.current_vtable_index();
   const std::size_t kSelectOutputVtableIndex = profile.select_vtable_index();
-  return vtable != nullptr && image_base != 0 && profile.valid_vtable_layout() &&
-         vtable[kOutputCountVtableIndex] ==
+  if (vtable == nullptr || image_base == 0 || !profile.valid_vtable_layout())
+    return false;
+  if (profile.has_input_devices()) {
+    const auto indexes = profile.input_vtable_indexes();
+    for (std::size_t i = 0; i < indexes.size(); ++i) {
+      if (profile.input_method_rvas[i] == 0 ||
+          vtable[indexes[i]] != image_base + profile.input_method_rvas[i])
+        return false;
+    }
+  }
+  return vtable[kOutputCountVtableIndex] ==
              image_base + profile.count_method_rva &&
          vtable[kOutputInfoVtableIndex] ==
              image_base + profile.info_method_rva &&
@@ -231,6 +242,8 @@ void RobloxOutputDeviceBridge::Shutdown() {
     }
     active_ = false;
     devices_.clear();
+    input_devices_.clear();
+    selected_input_index_ = 0;
     string_constructor_ = nullptr;
     library_base_ = 0;
     vtable_ = nullptr;
@@ -322,6 +335,37 @@ Status RobloxOutputDeviceBridge::Activate(std::uintptr_t image_base) {
     return FailedPrecondition("configured SDL audio output disappeared");
   }
 
+  input_devices_.clear();
+  selected_input_index_ = 0;
+  const char *input_target = std::getenv("MOCKTAIL_AUDIO_INPUT_DEVICE");
+  if (profile_.has_input_devices() &&
+      (input_target == nullptr ||
+       std::string_view(input_target) != "disabled")) {
+    std::vector<SdlRecordingDevice> recording_devices;
+    status = ListSdlRecordingDevices(&recording_devices);
+    if (!status.ok())
+      return status;
+    if (recording_devices.size() + 1 > kMaximumMenuDevices)
+      return InvalidArgument("host exposes too many audio input devices");
+    std::uint32_t selected = 0;
+    std::string selected_name;
+    status = GetConfiguredSdlRecordingDevice(&selected, &selected_name);
+    if (!status.ok())
+      return status;
+    input_devices_.push_back({0, "System Default", "mocktail:input:default"});
+    for (const auto &device : recording_devices) {
+      if (device.name.empty() || device.name.size() > kMaximumDeviceNameBytes)
+        return InvalidArgument("SDL audio input name is empty or too long");
+      input_devices_.push_back(
+          {device.id, device.name,
+           "input:" + internal::MakeOutputDeviceGuid(device.id, device.name)});
+      if (device.id == selected)
+        selected_input_index_ = static_cast<int>(input_devices_.size() - 1);
+    }
+    if (selected != 0 && selected_input_index_ == 0)
+      return FailedPrecondition("configured SDL audio input disappeared");
+  }
+
   library_base_ = image_base;
   vtable_ = reinterpret_cast<std::uintptr_t*>(image_base + profile_.vtable_rva);
   string_constructor_ =
@@ -329,6 +373,8 @@ Status RobloxOutputDeviceBridge::Activate(std::uintptr_t image_base) {
   status = PatchVtableLocked();
   if (!status.ok()) {
     devices_.clear();
+    input_devices_.clear();
+    selected_input_index_ = 0;
     string_constructor_ = nullptr;
     library_base_ = 0;
     vtable_ = nullptr;
@@ -341,6 +387,14 @@ Status RobloxOutputDeviceBridge::Activate(std::uintptr_t image_base) {
                devices_.size(), devices_[selected_index_].name.c_str());
   for (const MenuDevice& device : devices_) {
     std::fprintf(stderr, "    [audio-menu] %s\n", device.name.c_str());
+  }
+  if (profile_.has_input_devices()) {
+    std::fprintf(stderr,
+                 "  [audio-menu] exposed %zu host input routes; selected=%s\n",
+                 input_devices_.size(),
+                 input_devices_.empty()
+                     ? "disabled"
+                     : input_devices_[selected_input_index_].name.c_str());
   }
   return Status::Ok();
 }
@@ -368,6 +422,15 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
     return FailedPrecondition(
         "FMOD output-device profile points outside verified image ranges");
   }
+  if (profile_.has_input_devices()) {
+    for (const auto rva : profile_.input_method_rvas) {
+      if (rva == 0 ||
+          rva > std::numeric_limits<std::uintptr_t>::max() - library_base_ ||
+          !IsExecutableImageRange(library_base_, rva, 1))
+        return FailedPrecondition(
+            "FMOD input profile points outside executable image");
+    }
+  }
   if (!internal::HasExpectedFmodOutputDeviceVtable(vtable_, library_base_,
                                                    profile_)) {
     return FailedPrecondition(
@@ -387,6 +450,11 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
       vtable_[kCurrentOutputVtableIndex],
       vtable_[kSelectOutputVtableIndex],
   };
+  if (profile_.has_input_devices()) {
+    const auto indexes = profile_.input_vtable_indexes();
+    for (std::size_t i = 0; i < indexes.size(); ++i)
+      original_methods_[4 + i] = vtable_[indexes[i]];
+  }
   if (!SetVtableWritable(vtable_, kSelectOutputVtableIndex, true)) {
     return Status::Error(StatusCode::kPlatformError,
                          "cannot make FmodAudioDevice vtable writable");
@@ -400,6 +468,16 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
                    FunctionAddress(&GetCurrentOutputDevice), __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kSelectOutputVtableIndex],
                    FunctionAddress(&SetCurrentOutputDevice), __ATOMIC_RELEASE);
+  if (profile_.has_input_devices()) {
+    const auto indexes = profile_.input_vtable_indexes();
+    const std::array<std::uintptr_t, 4> methods = {
+        FunctionAddress(&GetInputDeviceCount),
+        FunctionAddress(&GetInputDeviceInfo),
+        FunctionAddress(&GetCurrentInputDevice),
+        FunctionAddress(&SetCurrentInputDevice)};
+    for (std::size_t i = 0; i < indexes.size(); ++i)
+      __atomic_store_n(&vtable_[indexes[i]], methods[i], __ATOMIC_RELEASE);
+  }
   if (!SetVtableWritable(vtable_, kSelectOutputVtableIndex, false)) {
     __atomic_store_n(&vtable_[kOutputCountVtableIndex], original_methods_[0],
                      __ATOMIC_RELEASE);
@@ -409,6 +487,12 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
                      __ATOMIC_RELEASE);
     __atomic_store_n(&vtable_[kSelectOutputVtableIndex], original_methods_[3],
                      __ATOMIC_RELEASE);
+    if (profile_.has_input_devices()) {
+      const auto indexes = profile_.input_vtable_indexes();
+      for (std::size_t i = 0; i < indexes.size(); ++i)
+        __atomic_store_n(&vtable_[indexes[i]], original_methods_[4 + i],
+                         __ATOMIC_RELEASE);
+    }
     (void)SetVtableWritable(vtable_, kSelectOutputVtableIndex, false);
     return Status::Error(StatusCode::kPlatformError,
                          "cannot restore FmodAudioDevice RELRO protection");
@@ -431,6 +515,12 @@ bool RobloxOutputDeviceBridge::RestoreVtableLocked() {
                    __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kSelectOutputVtableIndex], original_methods_[3],
                    __ATOMIC_RELEASE);
+  if (profile_.has_input_devices()) {
+    const auto indexes = profile_.input_vtable_indexes();
+    for (std::size_t i = 0; i < indexes.size(); ++i)
+      __atomic_store_n(&vtable_[indexes[i]], original_methods_[4 + i],
+                       __ATOMIC_RELEASE);
+  }
   return SetVtableWritable(vtable_, kSelectOutputVtableIndex, false);
 }
 
@@ -471,22 +561,51 @@ void RobloxOutputDeviceBridge::SetCurrentOutputDevice(void* self, int index) {
   }
 }
 
-int RobloxOutputDeviceBridge::DeviceCount() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return active_ ? static_cast<int>(devices_.size()) : 0;
+int RobloxOutputDeviceBridge::GetInputDeviceCount(void *) {
+  auto *bridge = g_active_bridge.load(std::memory_order_acquire);
+  return bridge ? bridge->DeviceCount(true) : 0;
 }
 
-void* RobloxOutputDeviceBridge::DeviceInfo(void* result, int index) {
+void *RobloxOutputDeviceBridge::GetInputDeviceInfo(void *result, void *,
+                                                   int index) {
+  auto *bridge = g_active_bridge.load(std::memory_order_acquire);
+  if (bridge)
+    return bridge->DeviceInfo(result, index, true);
+  if (result)
+    std::memset(result, 0, kGuestDeviceInfoSize);
+  return result;
+}
+
+int RobloxOutputDeviceBridge::GetCurrentInputDevice(void *) {
+  auto *bridge = g_active_bridge.load(std::memory_order_acquire);
+  return bridge ? bridge->CurrentDevice(true) : 0;
+}
+
+void RobloxOutputDeviceBridge::SetCurrentInputDevice(void *, int index) {
+  auto *bridge = g_active_bridge.load(std::memory_order_acquire);
+  if (bridge)
+    bridge->SelectDevice(index, true);
+}
+
+int RobloxOutputDeviceBridge::DeviceCount(bool input) {
+  const auto &devices = input ? input_devices_ : devices_;
+  std::lock_guard<std::mutex> lock(mutex_);
+  return active_ ? static_cast<int>(devices.size()) : 0;
+}
+
+void *RobloxOutputDeviceBridge::DeviceInfo(void *result, int index,
+                                           bool input) {
+  const auto &devices = input ? input_devices_ : devices_;
   if (result == nullptr) {
     return nullptr;
   }
   std::memset(result, 0, kGuestDeviceInfoSize);
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_ || index < 0 ||
-      static_cast<std::size_t>(index) >= devices_.size()) {
+      static_cast<std::size_t>(index) >= devices.size()) {
     return result;
   }
-  const MenuDevice& device = devices_[static_cast<std::size_t>(index)];
+  const MenuDevice &device = devices[static_cast<std::size_t>(index)];
   ConstructGuestString(result, device.name);
   ConstructGuestString(static_cast<std::uint8_t*>(result) + kGuestStringSize,
                        device.guid);
@@ -494,29 +613,33 @@ void* RobloxOutputDeviceBridge::DeviceInfo(void* result, int index) {
   return result;
 }
 
-int RobloxOutputDeviceBridge::CurrentDevice() {
+int RobloxOutputDeviceBridge::CurrentDevice(bool input) {
   std::lock_guard<std::mutex> lock(mutex_);
-  return active_ ? selected_index_ : 0;
+  return active_ ? (input ? selected_input_index_ : selected_index_) : 0;
 }
 
-void RobloxOutputDeviceBridge::SelectDevice(int index) {
+void RobloxOutputDeviceBridge::SelectDevice(int index, bool input) {
+  const auto &devices = input ? input_devices_ : devices_;
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_ || index < 0 ||
-      static_cast<std::size_t>(index) >= devices_.size()) {
+      static_cast<std::size_t>(index) >= devices.size()) {
     return;
   }
-  const MenuDevice& device = devices_[static_cast<std::size_t>(index)];
+  const MenuDevice &device = devices[static_cast<std::size_t>(index)];
   std::string resolved_name;
   const Status status =
-      SwitchSdlPlaybackDevice(device.playback_device_id, &resolved_name);
+      input
+          ? SwitchSdlRecordingDevice(device.playback_device_id, &resolved_name)
+          : SwitchSdlPlaybackDevice(device.playback_device_id, &resolved_name);
   if (!status.ok()) {
-    std::fprintf(stderr, "  [audio-menu] cannot select host output '%s': %s\n",
-                 device.name.c_str(), status.message().c_str());
+    std::fprintf(stderr, "  [audio-menu] cannot select host %s '%s': %s\n",
+                 input ? "input" : "output", device.name.c_str(),
+                 status.message().c_str());
     return;
   }
-  selected_index_ = index;
-  std::fprintf(stderr, "  [audio-menu] selected host output=%s\n",
-               resolved_name.c_str());
+  (input ? selected_input_index_ : selected_index_) = index;
+  std::fprintf(stderr, "  [audio-menu] selected host %s=%s\n",
+               input ? "input" : "output", resolved_name.c_str());
 }
 
 void RobloxOutputDeviceBridge::ConstructGuestString(

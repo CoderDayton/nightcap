@@ -885,6 +885,21 @@ int main(int argc, char* argv[]) {
                 << fullscreen_status.message() << '\n';
       return EXIT_FAILURE;
     }
+    if (compatibility.profile.fmod_output_device_bridge &&
+        compatibility.profile.fmod_output_device_bridge->has_input_devices()) {
+      std::string menu_settings;
+      const char *settings =
+          std::getenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON");
+      if (!mocktail::runtime::MergeAudioDeviceMenuClientSettingsOverrides(
+              settings ? settings : "{}", &menu_settings,
+              &command_line_error) ||
+          setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
+                 menu_settings.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot configure host audio device menu: "
+                  << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+    }
     const mocktail::Status output_device_status =
         output_device_bridge.Install(compatibility.profile);
     if (!output_device_status.ok()) {
