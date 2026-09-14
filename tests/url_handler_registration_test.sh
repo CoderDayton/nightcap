@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 

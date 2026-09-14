@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "runtime/runtime_config_bootstrap.h"
 
 #include <fcntl.h>

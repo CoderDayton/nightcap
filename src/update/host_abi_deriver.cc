@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "update/host_abi_deriver.h"
 
 #define JSON_NOEXCEPTION 1

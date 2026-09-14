@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 // Android Vulkan loader ABI -> host Vulkan loader + SDL3 WSI.
 
 #include <dlfcn.h>

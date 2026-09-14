@@ -1,3 +1,4 @@
+<!-- Modified by vii from komaruworld/mocktail. See "About this fork" below. -->
 # Mocktail
 
 [![CI](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml/badge.svg)](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml)

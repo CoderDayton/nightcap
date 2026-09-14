@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "jnivm/jnivm.h"
 
 #include <gtest/gtest.h>

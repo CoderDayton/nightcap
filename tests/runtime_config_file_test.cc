@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "runtime/runtime_config_file.h"
 
 #include <gtest/gtest.h>

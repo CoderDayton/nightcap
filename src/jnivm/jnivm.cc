@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "jnivm/jnivm.h"
 
 #include "mocktail/audio/fmod_thread_floating_point.h"

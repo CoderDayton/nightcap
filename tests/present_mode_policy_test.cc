@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "mocktail/graphics/present_mode_policy.h"
 
 #include <gtest/gtest.h>

@@ -1,5 +1,6 @@
 # Build
 /build/
+/build-test/
 /build_*/
 /build-flatpak/
 /build-anylinux*/
