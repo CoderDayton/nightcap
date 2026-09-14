@@ -201,6 +201,13 @@ make build
 ./build/mocktail
 ```
 
+To run the same checks as CI before each commit and push, install
+[lefthook](https://github.com/evilmartians/lefthook) and run once:
+
+```bash
+lefthook install
+```
+
 ## Known limitations
 
 Mocktail does not currently work with `hardened_malloc`. Using

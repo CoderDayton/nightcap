@@ -1,0 +1,23 @@
+# Local git hooks. Install once with: lefthook install
+# Mirrors the "Repository contracts" job in .github/workflows/ci.yml.
+
+pre-commit:
+  parallel: true
+  commands:
+    shell-syntax:
+      glob: "{scripts,tests,packaging}/**/*.sh"
+      run: for f in {staged_files}; do bash -n "$f" || exit 1; done
+    json:
+      glob: "{config,packaging}/**/*.json"
+      run: for f in {staged_files}; do jq empty "$f" || exit 1; done
+    desktop-entry:
+      glob: "*.desktop"
+      run: desktop-file-validate {staged_files}
+
+pre-push:
+  commands:
+    packaging-contracts:
+      run: >-
+        bash tests/managed_payload_build_contract_test.sh . &&
+        bash tests/flatpak_packaging_test.sh . &&
+        bash tests/native_packaging_test.sh .
