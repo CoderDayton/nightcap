@@ -35,7 +35,8 @@ side by side.
   binary.
 
 Everything else works the same as upstream. See the
-[roadmap](docs/ROADMAP.md) for what is coming next.
+[roadmap](docs/ROADMAP.md) for what is coming next and the
+[changelog](CHANGELOG.md) for what each release changed.
 
 ## Install with Flatpak
 

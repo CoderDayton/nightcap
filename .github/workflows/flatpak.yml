@@ -160,6 +160,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Download Flatpak
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -174,13 +177,16 @@ jobs:
           set -Eeuo pipefail
           tag="${GITHUB_REF_NAME}"
           (cd release && sha256sum Nightcap-x86_64.flatpak > Nightcap-x86_64.flatpak.sha256)
+          ./scripts/release_notes.sh "$tag" > release/notes.md
           # The Release workflow creates the same release; whichever job
           # arrives second sees "already exists" and continues.
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "Nightcap $tag" --generate-notes ||
+              --title "Nightcap $tag" --notes-file release/notes.md ||
               gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
           fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
+            --title "Nightcap $tag" --notes-file release/notes.md
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
             release/Nightcap-x86_64.flatpak \
             release/Nightcap-x86_64.flatpak.sha256
