@@ -34,7 +34,8 @@ side by side.
 - **Better desktop launcher.** Runs on Wayland and always finds the installed
   binary.
 
-Everything else works the same as upstream.
+Everything else works the same as upstream. See the
+[roadmap](docs/ROADMAP.md) for what is coming next.
 
 ## Install with Flatpak
 
