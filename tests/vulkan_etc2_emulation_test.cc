@@ -50,12 +50,13 @@ TEST(VulkanEtc2EmulationTest, AdvertisesEtc2UnlessSwitchedOff) {
 }
 
 TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
-  EXPECT_EQ(SmallTextureUpscale(nullptr), 1u);
-  EXPECT_EQ(SmallTextureUpscale(""), 1u);
+  EXPECT_EQ(SmallTextureUpscale(nullptr), 4u);
+  EXPECT_EQ(SmallTextureUpscale(""), 4u);
+  EXPECT_EQ(SmallTextureUpscale("abc"), 4u);
   EXPECT_EQ(SmallTextureUpscale("0"), 1u);
-  EXPECT_EQ(SmallTextureUpscale("4"), 4u);
+  EXPECT_EQ(SmallTextureUpscale("1"), 1u);
+  EXPECT_EQ(SmallTextureUpscale("2"), 2u);
   EXPECT_EQ(SmallTextureUpscale("99"), 8u);
-  EXPECT_EQ(SmallTextureUpscale("abc"), 1u);
 }
 
 TEST(VulkanEtc2EmulationTest, IgnoresOtherFormats) {

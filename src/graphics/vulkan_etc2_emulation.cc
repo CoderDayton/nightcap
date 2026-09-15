@@ -108,7 +108,7 @@ bool Etc2SupportAdvertised() {
 
 std::uint32_t SmallTextureUpscale(const char* value) {
   if (value == nullptr || value[0] < '0' || value[0] > '9') {
-    return 1;
+    return kDefaultSmallTextureUpscale;
   }
   const long parsed = std::strtol(value, nullptr, 10);
   if (parsed < 1) {

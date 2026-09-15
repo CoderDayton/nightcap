@@ -39,10 +39,12 @@ bool Etc2SupportAdvertised();
 
 // Factor applied to emulated ETC2 colour images no larger than
 // kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
-// 1 (default) leaves them alone; 2..8 create them that many times larger and
-// resample every upload, so a texture override can carry more detail than
-// the original. Values out of range are clamped.
+// 1 leaves them alone; 2..8 create them that many times larger and resample
+// every upload, so a texture override can carry more detail than the
+// original. Unset or non-numeric values use kDefaultSmallTextureUpscale;
+// numeric values out of range are clamped.
 inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
+inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
 std::uint32_t SmallTextureUpscale(const char* value);
 
 // Reports ETC2/EAC support on hosts without native ETC2 (desktop GPUs) and

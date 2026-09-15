@@ -4,7 +4,7 @@ Type=Application
 Name=Nightcap
 GenericName=Roblox Player
 Comment=Play Roblox on Linux
-Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 mocktail %u
+Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u
 Icon=space.bigrat.mocktail
 StartupWMClass=space.bigrat.mocktail
 Categories=Game;

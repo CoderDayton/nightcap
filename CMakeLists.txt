@@ -732,8 +732,8 @@ install(FILES
 install(CODE "
   file(READ \"${CMAKE_SOURCE_DIR}/packaging/space.bigrat.mocktail.desktop\"
        MOCKTAIL_DESKTOP_ENTRY)
-  string(REPLACE \"Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 mocktail %u\"
-         \"Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail %u\"
+  string(REPLACE \"Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u\"
+         \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail %u\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
   file(WRITE \"${CMAKE_BINARY_DIR}/space.bigrat.mocktail.desktop\"
        \"\${MOCKTAIL_DESKTOP_ENTRY}\")
