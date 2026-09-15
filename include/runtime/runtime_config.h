@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #ifndef MOCKTAIL_RUNTIME_RUNTIME_CONFIG_H_
 #define MOCKTAIL_RUNTIME_RUNTIME_CONFIG_H_
 
@@ -55,7 +56,7 @@ struct DiscordRpcTextConfig {
 };
 
 struct DiscordRpcConfig {
-  bool enabled = false;
+  bool enabled = true;
   bool show_place_name = true;
   bool show_elapsed_time = true;
   bool join_enabled = true;

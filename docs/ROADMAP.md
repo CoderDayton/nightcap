@@ -34,13 +34,10 @@ Done when a mouse feels like a mouse and a plugged-in controller just works.
 
 ## 3. Discord Rich Presence
 
-Upstream ships Discord RPC, off by default, behind
-`integrations.discord_rpc.enabled` (see the [FAQ](../FAQ.md)). It shows the
-experience name, elapsed time, and a join button when the server is public.
+Upstream ships Discord RPC. Nightcap turns it on by default; see the
+[FAQ](../FAQ.md) to switch it off. It shows the experience name, elapsed
+time, the experience icon, and a join button when the server is public.
 
-- Turn it on by default. It never reads a Discord token, so the privacy cost
-  is only the experience name, which the player already shares in Roblox.
-- Show the experience icon as the large image instead of a static logo.
 - Show the current server region and player count when Roblox exposes them.
 - Make the join button work for private servers the player has a link for.
 - A Discord tab in the settings window to toggle each field.
@@ -73,6 +70,7 @@ proves it.
 - No more error 319 kicks after joining a server.
 - Roblox sees the real host RAM and screen size.
 - Desktop launcher that works on Wayland and finds the installed binary.
+- Discord Rich Presence on by default.
 - Own app ID `io.github.CoderDayton.nightcap`, so Nightcap installs next to
   upstream.
 - AppImage and signed Flatpak releases on every `v*` tag, with the Flatpak

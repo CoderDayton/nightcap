@@ -17,7 +17,8 @@ namespace runtime {
 namespace {
 
 constexpr std::string_view kDefaultRuntimeConfig =
-    R"yaml(# Mocktail configuration.
+    R"yaml(# Modified by vii from komaruworld/mocktail. See README "About this fork".
+# Mocktail configuration.
 # The file is created once with mode 0600. Mocktail never replaces your edits.
 
 # Integer: configuration schema version. Only version 1 is supported.
@@ -107,9 +108,9 @@ integrations:
     # or ~/.config/Fleasion/proxy_ca/ca.crt. Never select ca.key.
     # ca_certificate: /home/user/.config/Fleasion/proxy_ca/ca.crt
   discord_rpc:
-    # Boolean (default: false): publish Mocktail activity to Discord Desktop.
+    # Boolean (default: true): publish Nightcap activity to Discord Desktop.
     # This never signs in to Discord and never reads an account token.
-    enabled: false
+    enabled: true
     # Boolean (default: true): show the current Roblox experience name.
     show_place_name: true
     # Boolean (default: true): show how long the current session has run.

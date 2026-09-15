@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "runtime/runtime_config.h"
 #include "runtime/system_proxy.h"
 
@@ -74,13 +75,13 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_FALSE(config.fleasion_enabled());
   EXPECT_TRUE(config.fleasion_valid());
   EXPECT_FALSE(config.network_proxy().has_value());
-  EXPECT_FALSE(config.discord_rpc().enabled);
+  EXPECT_TRUE(config.discord_rpc().enabled);
   EXPECT_TRUE(config.discord_rpc().show_place_name);
   EXPECT_TRUE(config.discord_rpc().show_elapsed_time);
   EXPECT_TRUE(config.discord_rpc().join_enabled);
   EXPECT_TRUE(config.discord_rpc().public_servers_only);
   EXPECT_EQ(config.discord_rpc().join_button_label, "Join Server");
-  EXPECT_EQ(config.discord_rpc().application_id, "1537088975720812655");
+  EXPECT_EQ(config.discord_rpc().application_id, "1549428231927500843");
   EXPECT_EQ(config.discord_rpc().text.browsing, "Browsing experiences");
   EXPECT_EQ(config.discord_rpc().text.joining, "Joining an experience");
   EXPECT_EQ(config.discord_rpc().text.playing, "{place_name}");

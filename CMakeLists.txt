@@ -61,7 +61,7 @@ set(MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST
   CACHE FILEPATH
   "Fallback signing trust manifest used outside an installed runtime"
 )
-set(MOCKTAIL_DISCORD_APPLICATION_ID "1537088975720812655" CACHE STRING
+set(MOCKTAIL_DISCORD_APPLICATION_ID "1549428231927500843" CACHE STRING
   "Discord application ID baked into Mocktail Rich Presence releases"
 )
 string(LENGTH "${MOCKTAIL_DISCORD_APPLICATION_ID}"

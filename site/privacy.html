@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Nightcap Privacy Policy</title>
+  <link rel="icon" href="nightcap.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body><main>
+  <h1>Privacy Policy</h1>
+  <p>Nightcap is a Linux runtime for the Roblox Android client. This policy covers Nightcap itself and its Discord application. Roblox and Discord have their own policies for the data they handle.</p>
+
+  <h2>What Nightcap collects</h2>
+  <p>Nothing. Nightcap has no server. It does not collect, store, or send telemetry, analytics, crash reports, or account data to the Nightcap project.</p>
+
+  <h2>What stays on your machine</h2>
+  <ul>
+    <li>Configuration in <code>~/.config/mocktail/</code></li>
+    <li>Session logs and support bundles in <code>~/.local/state/mocktail/</code></li>
+    <li>Roblox login session under <code>~/.local/share/mocktail/</code></li>
+    <li>Roblox cache, downloaded payloads, and shader cache under <code>~/.cache/mocktail/</code></li>
+  </ul>
+  <p>Flatpak installs keep the same layout under <code>~/.var/app/io.github.CoderDayton.nightcap/</code>.</p>
+
+  <h2>Discord Rich Presence</h2>
+  <p>When Rich Presence is on, Nightcap sends the current experience name, its public icon URL, elapsed time, and an optional public server join code to the Discord desktop client on the same machine over a local socket. Discord displays this on your profile under its own privacy settings. Nightcap never signs in to Discord, never reads a Discord token, and never contacts Discord's servers.</p>
+  <p>Set <code>integrations.discord_rpc.enabled: false</code> in <code>config.yaml</code> to turn it off.</p>
+
+  <h2>Roblox</h2>
+  <p>Nightcap talks to Roblox's services exactly as the Roblox client would. That traffic is covered by the Roblox Privacy Policy.</p>
+
+  <h2>Contact</h2>
+  <p>Open an issue at <a class="source" href="https://github.com/CoderDayton/nightcap/issues">github.com/CoderDayton/nightcap/issues</a>.</p>
+
+  <p class="links">
+    <a href="index.html">Home</a>
+    <a href="terms.html">Terms of Service</a>
+    <a href="https://github.com/CoderDayton/nightcap">Source code</a>
+  </p>
+</main></body>
+</html>

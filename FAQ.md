@@ -1,27 +1,36 @@
 <!-- Modified by vii from komaruworld/mocktail. See README "About this fork". -->
 # FAQ
 
-## How do I enable Discord RPC?
+## How do I turn Discord RPC off?
 
-RPC is disabled by default. Launch Nightcap once to create the config, then
-close it. Open `config.yaml`:
+RPC is on by default. It never signs in to Discord and never reads an
+account token. To turn it off, launch Nightcap once to create the config,
+then close it. Open `config.yaml`:
 
 - Native / AppImage: `~/.config/mocktail/config.yaml`
 - Flatpak: `~/.var/app/io.github.CoderDayton.nightcap/config/mocktail/config.yaml`
 
 For native installs, a custom `$XDG_CONFIG_HOME` replaces `~/.config`.
 
-Set `enabled` to `true` under `integrations.discord_rpc`. If the block is
+Set `enabled` to `false` under `integrations.discord_rpc`. If the block is
 missing, add it under the existing `integrations` section:
 
 ```yaml
 integrations:
   discord_rpc:
-    enabled: true
+    enabled: false
 ```
 
-Save the file, open Discord Desktop, and restart Nightcap. Set `enabled`
-back to `false` to disable RPC.
+Save the file and restart Nightcap. Set `enabled` back to `true` to turn
+RPC on again.
+
+## Can Discord count Nightcap as Roblox play time or quests?
+
+No. Discord only credits play time and quests to games its own scanner
+detects, and Rich Presence never counts. On Linux the scanner only matches
+games with a Linux entry in Discord's list. Roblox has none, so no process
+name Nightcap could use would be detected. Only Roblox or Discord can change
+that.
 
 ## Where can I find logs for a bug report?
 

@@ -70,3 +70,5 @@ EOF
 
 install -m 0644 -- "${PROJECT_DIR}/site/index.html" "${OUTPUT}/index.html"
 install -m 0644 -- "${PROJECT_DIR}/site/styles.css" "${OUTPUT}/styles.css"
+install -m 0644 -- "${PROJECT_DIR}/site/terms.html" "${OUTPUT}/terms.html"
+install -m 0644 -- "${PROJECT_DIR}/site/privacy.html" "${OUTPUT}/privacy.html"

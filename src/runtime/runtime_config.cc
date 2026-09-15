@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "runtime/runtime_config.h"
 
 #include <algorithm>
@@ -325,7 +326,7 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   }
   bool discord_booleans_valid = true;
   config.discord_rpc_.enabled = ReadBoolean(
-      environment, "MOCKTAIL_DISCORD_RPC_ENABLED", false,
+      environment, "MOCKTAIL_DISCORD_RPC_ENABLED", true,
       &discord_booleans_valid);
   config.discord_rpc_.show_place_name = ReadBoolean(
       environment, "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME", true,

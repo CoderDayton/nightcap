@@ -10,6 +10,16 @@ GitHub are taken from the matching section here.
 
 - FAQ covering Discord RPC, log locations, and VR, adapted from upstream.
 
+### Changed
+
+- Values in `fflags.json` now win over the performance preset instead of
+  stopping the launch. Startup prints each key it kept.
+- Discord Rich Presence uses Nightcap's own Discord application, so it shows
+  as "Playing Nightcap". Terms and privacy pages for it live on the
+  project site.
+- Discord Rich Presence is on by default. Set
+  `integrations.discord_rpc.enabled: false` to turn it off.
+
 ## [0.1.0] - 2026-09-15
 
 First Nightcap release, forked from komaruworld/mocktail.

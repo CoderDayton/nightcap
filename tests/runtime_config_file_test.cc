@@ -156,9 +156,9 @@ TEST(RuntimeConfigBootstrapTest,
            "startup.\n  output_device: default",
            "# between boots; prefer the exact device name when it is unique.\n"
            "  input_device: default",
-           "# Boolean (default: false): publish Mocktail activity to Discord "
+           "# Boolean (default: true): publish Nightcap activity to Discord "
            "Desktop.\n    # This never signs in to Discord and never reads an "
-           "account token.\n    enabled: false",
+           "account token.\n    enabled: true",
            "# Boolean (default: true): show the current Roblox experience "
            "name.\n    show_place_name: true",
            "# Boolean (default: true): show how long the current session has "
