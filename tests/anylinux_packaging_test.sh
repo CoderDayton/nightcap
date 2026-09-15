@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 
@@ -86,7 +87,7 @@ fi
    "$4" == /usr/lib/mocktail/mocktail_updater &&
    "$5" == /usr/lib/mocktail && "$6" == /usr/share/mocktail &&
    "$7" == /usr/bin/bash ]]
-[[ "${DESKTOP}" == /usr/share/applications/space.bigrat.mocktail.desktop ]]
+[[ "${DESKTOP}" == /usr/share/applications/io.github.CoderDayton.nightcap.desktop ]]
 [[ "${MAIN_BIN}" == mocktail && "${STRACE_MODE}" == 1 ]]
 [[ "${STRACE_BINARY}" == mocktail && "${STRACE_FLAGS}" == --help ]]
 [[ -z "${NO_STRIP:-}" ]]

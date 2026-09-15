@@ -1,70 +1,49 @@
 <!doctype html>
+<!-- Modified by vii from komaruworld/mocktail. See README "About this fork". -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Mocktail for Linux</title>
+  <title>Nightcap for Linux</title>
+  <link rel="icon" href="nightcap.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body><main>
-  <img src="../packaging/space.bigrat.mocktail.svg" alt="Mocktail logo">
-  <h1>Mocktail</h1>
-  <p>Play Roblox on Linux. Use the stable Flathub release, or try the latest nightly build from main.</p>
-  <a class="button" href="https://flathub.org/apps/space.bigrat.mocktail">Stable on Flathub</a>
-  <a class="button secondary" href="https://mocktail.bigrat.space/mocktail.flatpakref">Nightly build</a>
+  <img src="nightcap.svg" alt="Nightcap logo">
+  <h1>Nightcap</h1>
+  <p>Play Roblox on Linux like it was made for your PC. Nightcap is Mocktail, tuned to feel fast and look sharp.</p>
+  <a class="button" href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage">Download AppImage</a>
+  <a class="button secondary" href="nightcap.flatpakref">Install with Flatpak</a>
   <div class="commands">
-    <p>Stable</p>
-    <code>flatpak install flathub space.bigrat.mocktail</code>
-    <p>Nightly</p>
-    <code>flatpak install --user https://mocktail.bigrat.space/mocktail.flatpakref</code>
+    <p>AppImage</p>
+    <code>chmod +x Nightcap-x86_64.AppImage
+./Nightcap-x86_64.AppImage</code>
+    <p>Flatpak</p>
+    <code>flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
+flatpak run io.github.CoderDayton.nightcap</code>
+    <p>Build from source</p>
+    <code>git clone --recurse-submodules https://github.com/CoderDayton/nightcap.git
+cd nightcap &amp;&amp; make build
+./build/mocktail</code>
   </div>
-  <h2>AUR packages</h2>
-  <p>Available from the AUR. Choose one package:</p>
-  <p class="links">
-    <a href="https://aur.archlinux.org/packages/mocktail">mocktail</a>
-    <a href="https://aur.archlinux.org/packages/mocktail-bin">mocktail-bin</a>
-    <a href="https://aur.archlinux.org/packages/mocktail-git">mocktail-git</a>
-  </p>
-  <code>yay -S mocktail
-yay -S mocktail-bin
-yay -S mocktail-git</code>
-  <h2>DNF repository</h2>
-  <p>Stable and nightly packages for Fedora 44. Choose one package.</p>
-  <code>sudo curl -fsSL https://mocktail.bigrat.space/rpm/mocktail.repo -o /etc/yum.repos.d/mocktail.repo</code>
-  <div class="commands">
-    <p>Stable</p>
-    <code>sudo dnf install mocktail</code>
-    <p>Nightly</p>
-    <code>sudo dnf install mocktail-nightly</code>
-  </div>
-  <h2>APT repository</h2>
-  <p>Stable and nightly packages for Ubuntu 26.04. Choose one package.</p>
-  <code>sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSL https://mocktail.bigrat.space/mocktail-packages.gpg -o /etc/apt/keyrings/mocktail.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/mocktail.gpg] https://mocktail.bigrat.space/apt mocktail main" | sudo tee /etc/apt/sources.list.d/mocktail.list &gt;/dev/null
-sudo apt update</code>
-  <div class="commands">
-    <p>Stable</p>
-    <code>sudo apt install mocktail</code>
-    <p>Nightly</p>
-    <code>sudo apt install mocktail-nightly</code>
-  </div>
+  <h2>What's different</h2>
+  <ul>
+    <li>Lower input lag. Frames are shown as soon as they are ready.</li>
+    <li>Sharper textures, with your own PNG overrides if you want them.</li>
+    <li>ETC2 textures render correctly on desktop GPUs.</li>
+    <li>No more error 319 kicks after joining a server.</li>
+    <li>Roblox sees your real RAM and screen size.</li>
+  </ul>
   <h2>Direct downloads</h2>
-  <p>Prebuilt packages for Linux x86_64.</p>
-  <p class="download-label">Stable</p>
+  <p>Prebuilt builds for Linux x86_64.</p>
   <p class="links">
-    <a href="https://github.com/komaruworld/mocktail/releases/latest/download/Mocktail-x86_64.AppImage">AppImage</a>
-    <a href="https://mocktail.bigrat.space/downloads/mocktail.deb">DEB</a>
-    <a href="https://mocktail.bigrat.space/downloads/mocktail.rpm">RPM</a>
+    <a href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage">AppImage</a>
+    <a href="Nightcap-x86_64.flatpak">Flatpak bundle</a>
+    <a href="nightcap-flatpak.gpg">Signing key</a>
   </p>
-  <p class="download-label">Nightly</p>
-  <p class="links">
-    <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.AppImage">AppImage</a>
-    <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.deb">DEB</a>
-    <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.rpm">RPM</a>
-  </p>
-  <p><a class="source" href="https://github.com/komaruworld/mocktail">Source code</a></p>
-  <p>Mocktail is an independent community project and is not affiliated with Roblox Corporation.</p>
+  <p><a class="source" href="https://github.com/CoderDayton/nightcap">Source code</a> ·
+     <a class="source" href="https://github.com/komaruworld/mocktail">Upstream Mocktail</a></p>
+  <p>Nightcap is an independent community project and is not affiliated with Roblox Corporation.</p>
 </main></body>
 </html>

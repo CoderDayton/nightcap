@@ -33,14 +33,14 @@ cat >"${test_root}/bin/xdg-mime" <<'EOF'
 case "${1:-}" in
   default)
     printf '%s\n' "$*" >>"${XDG_MIME_CALLS:?}"
-    [[ "$2" == space.bigrat.mocktail.desktop ]]
+    [[ "$2" == io.github.CoderDayton.nightcap.desktop ]]
     [[ "$3" == x-scheme-handler/roblox ]]
     [[ "$4" == x-scheme-handler/roblox-player ]]
     touch "${XDG_MIME_SELECTED:?}"
     ;;
   query)
     [[ -f "${XDG_MIME_SELECTED:?}" ]] || exit 0
-    printf '%s\n' space.bigrat.mocktail.desktop
+    printf '%s\n' io.github.CoderDayton.nightcap.desktop
     ;;
   *) exit 2 ;;
 esac
@@ -58,7 +58,7 @@ export PATH="${test_root}/bin:${PATH}"
   --executable "${mocktail_binary}" --desktop-file "${desktop_source}" \
   >/dev/null
 
-readonly installed_desktop="${XDG_DATA_HOME}/applications/space.bigrat.mocktail.desktop"
+readonly installed_desktop="${XDG_DATA_HOME}/applications/io.github.CoderDayton.nightcap.desktop"
 [[ -f "${installed_desktop}" && ! -L "${installed_desktop}" ]]
 grep -Fxq "Exec=env SDL_VIDEODRIVER=wayland,x11 ${mocktail_binary} %u" \
   "${installed_desktop}"
@@ -69,7 +69,7 @@ grep -Fxq 'X-Mocktail-Managed=true' "${installed_desktop}"
 grep -Fxq -- "-q ${XDG_DATA_HOME}/applications" \
   "${DESKTOP_DATABASE_CALLS}"
 grep -Fxq \
-  'default space.bigrat.mocktail.desktop x-scheme-handler/roblox x-scheme-handler/roblox-player' \
+  'default io.github.CoderDayton.nightcap.desktop x-scheme-handler/roblox x-scheme-handler/roblox-player' \
   "${XDG_MIME_CALLS}"
 
 rm -f "${XDG_MIME_SELECTED}"

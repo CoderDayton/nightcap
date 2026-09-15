@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
 
 readonly project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly source_icon="${project_root}/packaging/space.bigrat.mocktail.svg"
+readonly source_icon="${project_root}/packaging/io.github.CoderDayton.nightcap.svg"
 readonly output_root="${project_root}/packaging/icons/hicolor"
-readonly icon_name="space.bigrat.mocktail.png"
+readonly icon_name="io.github.CoderDayton.nightcap.png"
 readonly icon_sizes=(16 22 24 32 36 48 64 72 96 128 192 256 512)
 
 if ! command -v magick >/dev/null 2>&1; then

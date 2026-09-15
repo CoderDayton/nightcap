@@ -6,7 +6,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly DESKTOP_ID="space.bigrat.mocktail.desktop"
+readonly DESKTOP_ID="io.github.CoderDayton.nightcap.desktop"
 readonly ROBLOX_SCHEME="x-scheme-handler/roblox"
 readonly ROBLOX_PLAYER_SCHEME="x-scheme-handler/roblox-player"
 
@@ -140,7 +140,7 @@ desktop_source="$(ResolveRegularFile "${desktop_source}" "desktop template")"
 
 [[ "$(grep -Fxc '[Desktop Entry]' "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'Type=Application' "${desktop_source}")" == 1 &&
-   "$(grep -Fxc 'Icon=space.bigrat.mocktail' "${desktop_source}")" == 1 &&
+   "$(grep -Fxc 'Icon=io.github.CoderDayton.nightcap' "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u' \
        "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;' \

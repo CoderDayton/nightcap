@@ -1,3 +1,4 @@
+/* Modified by vii from komaruworld/mocktail. See README "About this fork". */
 :root {
   font: 17px/1.55 system-ui, sans-serif;
   color-scheme: dark;
@@ -5,8 +6,8 @@
 
 body {
   margin: 0;
-  background: #0d1117;
-  color: #e6edf3;
+  background: #14122b;
+  color: #ece8ff;
 }
 
 main {
@@ -30,8 +31,13 @@ h2 {
   font-size: 1.15rem;
 }
 
-p {
-  color: #9da7b3;
+p,
+li {
+  color: #b3aad6;
+}
+
+ul {
+  padding-left: 1.2rem;
 }
 
 a.button {
@@ -39,14 +45,14 @@ a.button {
   margin: 16px 8px 16px 0;
   padding: 12px 18px;
   border-radius: 9px;
-  background: #238636;
+  background: #6c4fd1;
   color: white;
   font-weight: 700;
   text-decoration: none;
 }
 
 a.secondary {
-  background: #21262d;
+  background: #2f2a6b;
 }
 
 .commands {
@@ -56,7 +62,7 @@ a.secondary {
 .commands p,
 .download-label {
   margin: 14px 0 5px;
-  color: #e6edf3;
+  color: #ece8ff;
   font-size: .82rem;
   font-weight: 700;
   letter-spacing: .04em;
@@ -67,9 +73,9 @@ code {
   display: block;
   padding: 14px;
   overflow-wrap: anywhere;
-  border: 1px solid #30363d;
+  border: 1px solid #3a3470;
   border-radius: 6px;
-  background: #161b22;
+  background: #1d1a3d;
   white-space: pre-wrap;
 }
 
@@ -80,9 +86,9 @@ code {
 .links a {
   display: inline-block;
   margin: 0 14px 6px 0;
-  color: #e6edf3;
+  color: #a78bfa;
 }
 
 a.source {
-  color: #e6edf3;
+  color: #a78bfa;
 }

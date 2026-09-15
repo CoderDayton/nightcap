@@ -3,13 +3,13 @@
 <!-- Copyright 2026 Mocktail Project Authors -->
 <!-- SPDX-License-Identifier: CC0-1.0 -->
 <component type="desktop-application">
-  <id>space.bigrat.mocktail</id>
+  <id>io.github.CoderDayton.nightcap</id>
   <name>Nightcap</name>
   <summary>Play Roblox on Linux</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0</project_license>
-  <developer id="space.bigrat">
-    <name>Mocktail Project Authors</name>
+  <developer id="io.github.coderdayton">
+    <name>vii</name>
   </developer>
   <branding>
     <color type="primary" scheme_preference="light">#CEB3EF</color>
@@ -39,7 +39,7 @@
       <caption>Play DOORS on Linux</caption>
     </screenshot>
   </screenshots>
-  <launchable type="desktop-id">space.bigrat.mocktail.desktop</launchable>
+  <launchable type="desktop-id">io.github.CoderDayton.nightcap.desktop</launchable>
   <content_rating type="oars-1.1">
     <content_attribute id="violence-cartoon">moderate</content_attribute>
     <content_attribute id="violence-fantasy">moderate</content_attribute>

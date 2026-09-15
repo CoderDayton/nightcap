@@ -5,8 +5,8 @@ Name=Nightcap
 GenericName=Roblox Player
 Comment=Play Roblox on Linux
 Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u
-Icon=space.bigrat.mocktail
-StartupWMClass=space.bigrat.mocktail
+Icon=io.github.CoderDayton.nightcap
+StartupWMClass=io.github.CoderDayton.nightcap
 Categories=Game;
 Terminal=false
 MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;

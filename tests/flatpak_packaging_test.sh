@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 
 set -Eeuo pipefail
 
 readonly ROOT="${1:?source root is required}"
-readonly MANIFEST="${ROOT}/packaging/flatpak/space.bigrat.mocktail.json"
+readonly MANIFEST="${ROOT}/packaging/flatpak/io.github.CoderDayton.nightcap.json"
 readonly BUILD_HELPER="${ROOT}/scripts/build_flatpak.sh"
 readonly PAGES_HELPER="${ROOT}/scripts/assemble_flatpak_pages.sh"
 readonly GITHUB_CI="${ROOT}/.github/workflows/flatpak.yml"
@@ -25,7 +26,7 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as source:
     manifest = json.load(source)
 
-assert manifest["app-id"] == "space.bigrat.mocktail"
+assert manifest["app-id"] == "io.github.CoderDayton.nightcap"
 assert manifest["runtime"] == "org.gnome.Platform"
 assert manifest["runtime-version"] == "50"
 assert manifest["sdk"] == "org.gnome.Sdk"
@@ -129,24 +130,14 @@ grep -Fq 'CleanupStaleBuilderMounts' "${BUILD_HELPER}" ||
   Fail 'obsolete GitLab CI configuration is still present'
 grep -Fq 'name: Flatpak' "${GITHUB_CI}" ||
   Fail 'GitHub Actions workflow has no stable display name'
-validates_main=false
-if grep -Fq 'branches: [main]' "${GITHUB_CI}"; then
-  validates_main=true
-elif grep -Fq 'workflow_run:' "${GITHUB_CI}" &&
-     grep -Fq 'workflows: [Native packages]' "${GITHUB_CI}" &&
-     grep -Fq "head_branch == 'main'" "${GITHUB_CI}"; then
-  validates_main=true
-fi
-[[ "${validates_main}" == true ]] ||
-  Fail 'GitHub Actions does not validate the main branch'
+grep -Fq "tags: ['v*']" "${GITHUB_CI}" ||
+  Fail 'GitHub Actions does not publish on release tags'
 grep -Fq 'pull_request:' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not validate pull requests'
 grep -Fq 'workflow_dispatch:' "${GITHUB_CI}" ||
   Fail 'GitHub Actions cannot be started manually'
 grep -Fq "'assets/screenshots/**'" "${GITHUB_CI}" ||
   Fail 'Flatpak workflow does not react to screenshot changes'
-grep -Fq "'packaging/discord-join.html'" "${GITHUB_CI}" ||
-  Fail 'Flatpak workflow does not publish Discord join-page changes'
 grep -Fq 'contents: read' "${GITHUB_CI}" ||
   Fail 'GitHub Actions permissions are not read-only'
 grep -Fq 'submodules: recursive' "${GITHUB_CI}" ||
@@ -159,7 +150,7 @@ grep -Fq -- '--install-deps-from=flathub' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not install manifest dependencies from Flathub'
 grep -Fq -- '--default-branch=stable' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not produce the stable Flatpak branch'
-grep -Fq 'Mocktail-x86_64.flatpak' "${GITHUB_CI}" ||
+grep -Fq 'Nightcap-x86_64.flatpak' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not build the installable Flatpak bundle'
 grep -Fq 'actions/upload-artifact@' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not publish the Flatpak artifact'
@@ -183,7 +174,7 @@ dry_run="$(
 )"
 grep -Fq './scripts/build_flatpak.sh' <<<"${dry_run}" ||
   Fail 'make flatpak does not invoke the guarded Flatpak builder'
-grep -Fq -- '--manifest packaging/flatpak/space.bigrat.mocktail.json' \
+grep -Fq -- '--manifest packaging/flatpak/io.github.CoderDayton.nightcap.json' \
   <<<"${dry_run}" || Fail 'make flatpak lost the canonical manifest'
 grep -Fq -- '--jobs 4' <<<"${dry_run}" ||
   Fail 'make flatpak does not cap local build parallelism'
@@ -210,33 +201,25 @@ grep -Fq 'flatpak-builder is unavailable' "${TEMP_DIR}/stderr" ||
   Fail 'helper did not explain how to install flatpak-builder'
 
 mkdir -p -- "${TEMP_DIR}/repo/objects"
-mkdir -p -- \
-  "${TEMP_DIR}/native-repositories/apt" \
-  "${TEMP_DIR}/native-repositories/rpm" \
-  "${TEMP_DIR}/native-repositories/downloads"
-printf 'bundle\n' >"${TEMP_DIR}/Mocktail-x86_64.flatpak"
-printf 'public-key\n' >"${TEMP_DIR}/mocktail-flatpak.gpg"
-printf 'public-key\n' \
-  >"${TEMP_DIR}/native-repositories/mocktail-packages.gpg"
+printf 'bundle\n' >"${TEMP_DIR}/Nightcap-x86_64.flatpak"
+printf 'public-key\n' >"${TEMP_DIR}/nightcap-flatpak.gpg"
 "${PAGES_HELPER}" \
   "${TEMP_DIR}/repo" \
-  "${TEMP_DIR}/Mocktail-x86_64.flatpak" \
-  "${TEMP_DIR}/mocktail-flatpak.gpg" \
-  "${TEMP_DIR}/public" \
-  "${TEMP_DIR}/native-repositories"
-grep -Fq 'Url=https://mocktail.bigrat.space/repo/' \
-  "${TEMP_DIR}/public/mocktail.flatpakrepo" ||
+  "${TEMP_DIR}/Nightcap-x86_64.flatpak" \
+  "${TEMP_DIR}/nightcap-flatpak.gpg" \
+  "${TEMP_DIR}/public"
+grep -Fq 'Url=https://coderdayton.github.io/nightcap/repo/' \
+  "${TEMP_DIR}/public/nightcap.flatpakrepo" ||
   Fail 'published Flatpak repository URL is incorrect'
-grep -Fq 'Name=space.bigrat.mocktail' \
-  "${TEMP_DIR}/public/mocktail.flatpakref" ||
+grep -Fq 'Name=io.github.CoderDayton.nightcap' \
+  "${TEMP_DIR}/public/nightcap.flatpakref" ||
   Fail 'published Flatpak ref has the wrong application ID'
+grep -Fq 'GPGKey=' "${TEMP_DIR}/public/nightcap.flatpakref" ||
+  Fail 'published Flatpak ref is not pinned to the signing key'
 grep -Fq 'flatpak install --user' "${TEMP_DIR}/public/index.html" ||
   Fail 'Pages landing page has no direct installation command'
-grep -Fq 'roblox://experiences/start' "${TEMP_DIR}/public/join.html" ||
-  Fail 'Pages output has no Discord join bridge'
-[[ -d "${TEMP_DIR}/public/apt" &&
-   -d "${TEMP_DIR}/public/rpm" &&
-   -d "${TEMP_DIR}/public/downloads" ]] ||
-  Fail 'Pages output has no native package repositories'
+[[ -f "${TEMP_DIR}/public/Nightcap-x86_64.flatpak" &&
+   -f "${TEMP_DIR}/public/.nojekyll" ]] ||
+  Fail 'Pages output is missing the bundle or the .nojekyll marker'
 
 printf 'Flatpak packaging contract test passed\n'

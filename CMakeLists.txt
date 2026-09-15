@@ -730,20 +730,20 @@ install(FILES
 # launches from sessions whose PATH lacks the install prefix. Uses the prefix
 # given at install time, not the configure-time one.
 install(CODE "
-  file(READ \"${CMAKE_SOURCE_DIR}/packaging/space.bigrat.mocktail.desktop\"
+  file(READ \"${CMAKE_SOURCE_DIR}/packaging/io.github.CoderDayton.nightcap.desktop\"
        MOCKTAIL_DESKTOP_ENTRY)
   string(REPLACE \"Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u\"
          \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail %u\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
-  file(WRITE \"${CMAKE_BINARY_DIR}/space.bigrat.mocktail.desktop\"
+  file(WRITE \"${CMAKE_BINARY_DIR}/io.github.CoderDayton.nightcap.desktop\"
        \"\${MOCKTAIL_DESKTOP_ENTRY}\")
-  file(INSTALL \"${CMAKE_BINARY_DIR}/space.bigrat.mocktail.desktop\"
+  file(INSTALL \"${CMAKE_BINARY_DIR}/io.github.CoderDayton.nightcap.desktop\"
        DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/applications\")
 ")
-install(FILES packaging/space.bigrat.mocktail.metainfo.xml
+install(FILES packaging/io.github.CoderDayton.nightcap.metainfo.xml
   DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo"
 )
-install(FILES packaging/space.bigrat.mocktail.svg
+install(FILES packaging/io.github.CoderDayton.nightcap.svg
   DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
 )
 set(MOCKTAIL_HICOLOR_ICON_SIZES
@@ -752,7 +752,7 @@ set(MOCKTAIL_HICOLOR_ICON_SIZES
 # Generated icons are committed, so ImageMagick is not a build dependency.
 foreach(icon_size IN LISTS MOCKTAIL_HICOLOR_ICON_SIZES)
   install(FILES
-      "packaging/icons/hicolor/${icon_size}x${icon_size}/apps/space.bigrat.mocktail.png"
+      "packaging/icons/hicolor/${icon_size}x${icon_size}/apps/io.github.CoderDayton.nightcap.png"
     DESTINATION
       "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${icon_size}x${icon_size}/apps"
   )

@@ -1,3 +1,4 @@
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 .DEFAULT_GOAL := all
 .PHONY: all build release debug test apk install register-url-handler release-runtime portable portable-test standalone appimage flatpak run-flatpak run run-smoke run-unlimited run-game run-input run-resize run-network auto-run run-gles run-angle update-roblox update-auto update-auto-launch payload-status payload-rollback support-bundle clean submodules help
 
@@ -19,7 +20,7 @@ ANYLINUX_PACKAGER ?= quick-sharun
 ANYLINUX_APPIMAGETOOL ?= appimagetool
 PREFIX ?= /usr
 FLATPAK_BUILD_DIR ?= build-flatpak
-FLATPAK_MANIFEST ?= packaging/flatpak/space.bigrat.mocktail.json
+FLATPAK_MANIFEST ?= packaging/flatpak/io.github.CoderDayton.nightcap.json
 FLATPAK_JOBS ?= 4
 
 define build_native_runtime
@@ -55,7 +56,7 @@ install: ## Install an already-built dynamic runtime (use: sudo make install)
 register-url-handler: build ## Select this build for Roblox website links
 	@./scripts/register_url_handler.sh --set-default \
 		--executable "$(abspath $(BINARY))" \
-		--desktop-file "$(abspath packaging/space.bigrat.mocktail.desktop)"
+		--desktop-file "$(abspath packaging/io.github.CoderDayton.nightcap.desktop)"
 
 test: ## Build and run all unit tests
 	$(call build_native_runtime,Debug,ON)
@@ -91,7 +92,7 @@ flatpak: ## Build and install the local x86-64 Flatpak
 		--jobs "$(FLATPAK_JOBS)"
 
 run-flatpak: ## Run the installed Flatpak
-	@flatpak run space.bigrat.mocktail
+	@flatpak run io.github.CoderDayton.nightcap
 
 run: export MOCKTAIL_AUTO_EXIT_AFTER_PRESENT_MS = 0
 run: build ## Run the native binary interactively until the window is closed

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 
@@ -8,7 +9,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 
 BUILD_DIR="${PROJECT_ROOT}/build-flatpak"
-MANIFEST="${PROJECT_ROOT}/packaging/flatpak/space.bigrat.mocktail.json"
+MANIFEST="${PROJECT_ROOT}/packaging/flatpak/io.github.CoderDayton.nightcap.json"
 JOBS="${MOCKTAIL_FLATPAK_JOBS:-4}"
 
 Usage() {

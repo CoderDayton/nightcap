@@ -4,7 +4,6 @@
 [![CI](https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml/badge.svg)](https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/CoderDayton/nightcap?style=flat&logo=github)](https://github.com/CoderDayton/nightcap/stargazers)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Discord](https://img.shields.io/discord/1543955607869063269?label=discord)](https://discord.gg/rhgpfcmFSD)
 
 Nightcap is Mocktail, tuned for playing on a real PC. It runs the Android
 `x86_64` Roblox client on Linux, including a Linux userspace hosted by
@@ -17,13 +16,16 @@ Corporation or VinegarHQ and does not distribute the Roblox client.
 ## About this fork
 
 Nightcap is a fork of [komaruworld/mocktail](https://github.com/komaruworld/mocktail)
-with extra fixes for playing on a PC. The program, config paths, and desktop
-entry keep the `mocktail` name so upstream fixes still apply cleanly.
+with extra fixes for playing on a PC. The program and config paths keep the
+`mocktail` name so upstream fixes still apply cleanly. The app ID is
+`io.github.CoderDayton.nightcap`, so Nightcap and upstream can be installed
+side by side.
 
 - **Lower input lag.** Frames are shown as soon as they are ready instead of
   waiting in a queue.
-- **Sharper textures.** Small textures are upscaled, and you can replace any
-  texture with your own PNG in `~/.config/mocktail/textures`.
+- **Sharper textures.** Small textures are upscaled 4x by default, and you
+  can replace any texture with your own PNG in `~/.config/mocktail/textures`.
+  Set `MOCKTAIL_SMALL_TEXTURE_UPSCALE=1` to turn the upscale off.
 - **ETC2 textures on any GPU.** Games that use compressed mobile textures now
   render correctly on desktop GPUs, without stutter.
 - **No more error 319 kicks.** Servers no longer drop you shortly after
@@ -34,7 +36,16 @@ entry keep the `mocktail` name so upstream fixes still apply cleanly.
 
 Everything else works the same as upstream.
 
-## Install
+## Install with Flatpak
+
+```bash
+flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
+flatpak run io.github.CoderDayton.nightcap
+```
+
+Updates arrive through `flatpak update`. Nightcap is not on Flathub yet.
+
+## AppImage
 
 Grab the AppImage from the
 [latest release](https://github.com/CoderDayton/nightcap/releases/latest),
@@ -45,8 +56,9 @@ chmod +x Nightcap-x86_64.AppImage
 ./Nightcap-x86_64.AppImage
 ```
 
-Or build it from source using the steps under [Building](#building). For
-Flatpak, AUR, DEB, and RPM packages of the unmodified upstream, see
+Or build and install it from source using the steps under
+[Building](#building). There are no AUR, DEB, or RPM packages of Nightcap.
+Upstream ships those for unmodified Mocktail, see
 [komaruworld/mocktail](https://github.com/komaruworld/mocktail#readme).
 
 ## How it works
@@ -56,24 +68,24 @@ Roblox APK -> signature and ABI checks -> Bionic + JNI -> SDL3 + Vulkan/OpenGL
 ```
 
 The APK is checked before any native code is loaded. It is downloaded on first
-launch and is not bundled with Mocktail. The last working copy is kept in case
+launch and is not bundled with Nightcap. The last working copy is kept in case
 an update fails.
 
 <details>
 <summary>Screenshots</summary>
 
-![Roblox home in Mocktail](assets/screenshots/flatpak-home.png)
+![Roblox home in Nightcap](assets/screenshots/flatpak-home.png)
 
-![Roblox gameplay in Mocktail](assets/screenshots/flatpak-gameplay-tower.png)
+![Roblox gameplay in Nightcap](assets/screenshots/flatpak-gameplay-tower.png)
 
-![Roblox experience in Mocktail](assets/screenshots/flatpak-gameplay-lobby.png)
+![Roblox experience in Nightcap](assets/screenshots/flatpak-gameplay-lobby.png)
 
 </details>
 
 ## FFlag overrides
 
 Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
-`~/.config/mocktail/fflags.json`). Mocktail applies it on the next launch.
+`~/.config/mocktail/fflags.json`). Nightcap applies it on the next launch.
 
 PC profiles use the legacy Charts page by default to avoid the blank screen
 caused by `Color3` errors in the newer SDUI page. An explicit
@@ -96,7 +108,7 @@ Edit `~/.config/mocktail/config.yaml`. Useful options:
 ## Building
 
 Linux `x86_64` is supported. Experimental FreeBSD 15.1 Linuxulator support has
-been tested with an `x86_64` Fedora 44 userspace. On FreeBSD, Mocktail runs
+been tested with an `x86_64` Fedora 44 userspace. On FreeBSD, Nightcap runs
 inside Linuxulator; it is not a native FreeBSD binary. Building requires CMake
 3.20+, Git, pkg-config, LLD, binutils, a C++17 compiler, SDL 3.4+, SDL3_ttf,
 Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, minizip,
@@ -144,10 +156,20 @@ sudo dnf install gcc-c++ cmake git ninja-build pkgconf-pkg-config lld \
 
 ```bash
 git clone --recurse-submodules https://github.com/CoderDayton/nightcap.git
-cd mocktail
+cd nightcap
 make build
 ./build/mocktail
 ```
+
+To install it for your user, with an app menu entry and Roblox link handling:
+
+```bash
+make install PREFIX=~/.local
+```
+
+Use `sudo make install` instead to install system-wide under `/usr`. To make
+Roblox website links open the build tree copy without installing, run
+`make register-url-handler`.
 
 To run the same checks as CI before each commit and push, install
 [lefthook](https://github.com/evilmartians/lefthook) and run once:
@@ -158,9 +180,9 @@ lefthook install
 
 ## Known limitations
 
-Mocktail does not currently work with `hardened_malloc`. Using
-`hardened_malloc` may cause Mocktail to fail to start or crash during runtime.
-Run Mocktail without `hardened_malloc` enabled.
+Nightcap does not currently work with `hardened_malloc`. Using
+`hardened_malloc` may cause Nightcap to fail to start or crash during runtime.
+Run Nightcap without `hardened_malloc` enabled.
 
 ## License
 

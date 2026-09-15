@@ -1,3 +1,4 @@
+<!-- Modified by vii from komaruworld/mocktail. See the top-level README "About this fork". -->
 # FreeBSD Linuxulator
 
 FreeBSD Linuxulator support is experimental. I tested it on FreeBSD
@@ -15,7 +16,7 @@ tested source revision is `aadd58dddcbc78f4d5594827b46b5633552b15ce`. Run
 the following commands as root.
 
 ```sh
-fetch -o /root/linuxulator.patch https://raw.githubusercontent.com/komaruworld/mocktail/main/packaging/freebsd/linuxulator.patch
+fetch -o /root/linuxulator.patch https://raw.githubusercontent.com/CoderDayton/nightcap/main/packaging/freebsd/linuxulator.patch
 cd /usr/src
 git apply /root/linuxulator.patch
 make -j2 kernel-toolchain
@@ -40,11 +41,10 @@ After reboot, verify the result from the Fedora userspace. It must print
 chroot /compat/linux stat -f -c %t /proc
 ```
 
-## Run Mocktail
+## Run Nightcap
 
-You can simply run the Mocktail AppImage from the
-[latest release](https://github.com/komaruworld/mocktail/releases/latest) or
-[nightly build](https://github.com/komaruworld/mocktail/releases/tag/continuous)
+You can simply run the Nightcap AppImage from the
+[latest release](https://github.com/CoderDayton/nightcap/releases/latest)
 inside the Fedora userspace.
 
 ## Audio
@@ -72,11 +72,11 @@ ctl.!default {
 EOF
 ```
 
-Launch Mocktail with the ALSA audio driver.
+Launch Nightcap with the ALSA audio driver.
 
 ```sh
-SDL_AUDIO_DRIVER=alsa ./Mocktail-x86_64.AppImage
+SDL_AUDIO_DRIVER=alsa ./Nightcap-x86_64.AppImage
 ```
 
-Mocktail cannot override this check because Roblox reads `/proc` directly. The
+Nightcap cannot override this check because Roblox reads `/proc` directly. The
 Linuxulator patch fixes the value before Roblox sees it.

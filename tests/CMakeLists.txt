@@ -1059,7 +1059,7 @@ add_test(
   NAME UrlHandlerRegistrationTest.ExplicitPerUserDefault
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/url_handler_registration_test.sh
           ${CMAKE_SOURCE_DIR}/scripts/register_url_handler.sh
-          ${CMAKE_SOURCE_DIR}/packaging/space.bigrat.mocktail.desktop
+          ${CMAKE_SOURCE_DIR}/packaging/io.github.CoderDayton.nightcap.desktop
 )
 
 add_test(

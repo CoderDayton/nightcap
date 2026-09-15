@@ -19,9 +19,9 @@ else
   readonly runtime="${install_root}/usr/lib/mocktail"
 fi
 readonly data="${install_root}/usr/share/mocktail"
-readonly desktop="${install_root}/usr/share/applications/space.bigrat.mocktail.desktop"
-readonly metainfo="${install_root}/usr/share/metainfo/space.bigrat.mocktail.metainfo.xml"
-readonly icon="${install_root}/usr/share/icons/hicolor/scalable/apps/space.bigrat.mocktail.svg"
+readonly desktop="${install_root}/usr/share/applications/io.github.CoderDayton.nightcap.desktop"
+readonly metainfo="${install_root}/usr/share/metainfo/io.github.CoderDayton.nightcap.metainfo.xml"
+readonly icon="${install_root}/usr/share/icons/hicolor/scalable/apps/io.github.CoderDayton.nightcap.svg"
 
 [[ -x "${binary}" ]]
 [[ -x "${runtime}/mocktail_updater" ]]
@@ -50,12 +50,12 @@ fi
 [[ -f "${desktop}" ]]
 grep -Fq 'Name=Nightcap' "${desktop}"
 grep -Fxq 'Exec=env SDL_VIDEODRIVER=wayland,x11 /usr/bin/mocktail %u' "${desktop}"
-grep -Fq 'Icon=space.bigrat.mocktail' "${desktop}"
+grep -Fq 'Icon=io.github.CoderDayton.nightcap' "${desktop}"
 [[ -f "${metainfo}" ]]
-grep -Fq '<id>space.bigrat.mocktail</id>' "${metainfo}"
+grep -Fq '<id>io.github.CoderDayton.nightcap</id>' "${metainfo}"
 [[ -f "${icon}" ]]
 for icon_size in 16 22 24 32 36 48 64 72 96 128 192 256 512; do
-  raster_icon="${install_root}/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/space.bigrat.mocktail.png"
+  raster_icon="${install_root}/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/io.github.CoderDayton.nightcap.png"
   [[ -f "${raster_icon}" ]]
   file "${raster_icon}" | grep -Fq "${icon_size} x ${icon_size}"
 done

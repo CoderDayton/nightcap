@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -920,25 +921,25 @@ BuildAppImage() {
   ln -s "share/mocktail-bundle/run.sh" "${APPDIR}/usr/mocktail"
   install -m 0755 -- "${PROJECT_ROOT}/packaging/AppRun" "${APPDIR}/AppRun"
   install -m 0644 -- \
-    "${PROJECT_ROOT}/packaging/space.bigrat.mocktail.desktop" \
-    "${APPDIR}/space.bigrat.mocktail.desktop"
+    "${PROJECT_ROOT}/packaging/io.github.CoderDayton.nightcap.desktop" \
+    "${APPDIR}/io.github.CoderDayton.nightcap.desktop"
   install -m 0644 -- \
-    "${PROJECT_ROOT}/packaging/space.bigrat.mocktail.desktop" \
-    "${APPDIR}/usr/share/applications/space.bigrat.mocktail.desktop"
+    "${PROJECT_ROOT}/packaging/io.github.CoderDayton.nightcap.desktop" \
+    "${APPDIR}/usr/share/applications/io.github.CoderDayton.nightcap.desktop"
   install -m 0644 -- \
-    "${PROJECT_ROOT}/packaging/space.bigrat.mocktail.svg" \
-    "${APPDIR}/space.bigrat.mocktail.svg"
+    "${PROJECT_ROOT}/packaging/io.github.CoderDayton.nightcap.svg" \
+    "${APPDIR}/io.github.CoderDayton.nightcap.svg"
   install -m 0644 -- \
-    "${PROJECT_ROOT}/packaging/space.bigrat.mocktail.svg" \
-    "${APPDIR}/usr/share/icons/hicolor/scalable/apps/space.bigrat.mocktail.svg"
+    "${PROJECT_ROOT}/packaging/io.github.CoderDayton.nightcap.svg" \
+    "${APPDIR}/usr/share/icons/hicolor/scalable/apps/io.github.CoderDayton.nightcap.svg"
   for icon_path in \
-      "${PROJECT_ROOT}"/packaging/icons/hicolor/*x*/apps/space.bigrat.mocktail.png; do
+      "${PROJECT_ROOT}"/packaging/icons/hicolor/*x*/apps/io.github.CoderDayton.nightcap.png; do
     [[ -f "${icon_path}" ]] || Die "hicolor icon set is incomplete"
     icon_relative_path="${icon_path#"${PROJECT_ROOT}/packaging/icons/hicolor/"}"
     install -D -m 0644 -- "${icon_path}" \
       "${APPDIR}/usr/share/icons/hicolor/${icon_relative_path}"
   done
-  ln -s space.bigrat.mocktail.svg "${APPDIR}/.DirIcon"
+  ln -s io.github.CoderDayton.nightcap.svg "${APPDIR}/.DirIcon"
   mkdir -p -- "$(dirname -- "${APPIMAGE_OUTPUT}")"
   ARCH=x86_64 appimagetool "${APPDIR}" "${APPIMAGE_OUTPUT}"
   rm -rf -- "${APPDIR}"

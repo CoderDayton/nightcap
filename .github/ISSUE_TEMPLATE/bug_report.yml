@@ -1,5 +1,6 @@
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 name: Bug report
-description: Report a reproducible problem in Mocktail
+description: Report a reproducible problem in Nightcap
 title: "[Bug]: "
 labels:
   - bug
@@ -75,7 +76,7 @@ body:
       value: |
         Latest log:
 
-        - Flatpak: `~/.var/app/space.bigrat.mocktail/.local/state/mocktail/logs/latest.log`
+        - Flatpak: `~/.var/app/io.github.CoderDayton.nightcap/.local/state/mocktail/logs/latest.log`
         - Other installs: `~/.local/state/mocktail/logs/latest.log`
 
         Older logs are in the `sessions` directory next to `latest.log`.

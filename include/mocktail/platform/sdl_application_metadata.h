@@ -9,7 +9,7 @@ namespace platform {
 
 inline constexpr char kMocktailApplicationName[] = "Nightcap";
 inline constexpr char kMocktailApplicationIdentifier[] =
-    "space.bigrat.mocktail";
+    "io.github.CoderDayton.nightcap";
 
 // Configures the stable compositor identity before SDL initializes. The
 // identifier matches the installed desktop file and icon name so Wayland and

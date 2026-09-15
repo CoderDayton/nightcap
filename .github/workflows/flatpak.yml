@@ -1,9 +1,9 @@
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 name: Flatpak
 
 on:
-  workflow_run:
-    workflows: [Native packages]
-    types: [completed]
+  push:
+    tags: ['v*']
   pull_request:
     paths:
       - '.github/workflows/flatpak.yml'
@@ -15,13 +15,11 @@ on:
       - 'config/**'
       - 'include/**'
       - 'packaging/flatpak/**'
-      - 'packaging/discord-join.html'
       - 'packaging/icons/**'
-      - 'packaging/space.bigrat.mocktail.desktop'
-      - 'packaging/space.bigrat.mocktail.metainfo.xml'
-      - 'packaging/space.bigrat.mocktail.svg'
+      - 'packaging/io.github.CoderDayton.nightcap.desktop'
+      - 'packaging/io.github.CoderDayton.nightcap.metainfo.xml'
+      - 'packaging/io.github.CoderDayton.nightcap.svg'
       - 'scripts/assemble_flatpak_pages.sh'
-      - 'scripts/assemble_native_repositories.sh'
       - 'site/**'
       - 'src/**'
       - 'stubs/**'
@@ -29,60 +27,27 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
-  group: flatpak-${{ github.event.workflow_run.head_sha || github.ref }}
-  cancel-in-progress: true
+  group: flatpak-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   flatpak:
     name: Flatpak build
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event != 'pull_request' &&
-      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      MOCKTAIL_PUBLISH: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-      MOCKTAIL_SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      # Publish on release tags and on manual runs from main. Pull requests
+      # only verify that the manifest still builds.
+      MOCKTAIL_PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           submodules: recursive
-
-      - name: Download package repositories
-        if: env.MOCKTAIL_PUBLISH == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          run_id="${{ github.event.workflow_run.id }}"
-          if [[ -z "$run_id" ]]; then
-            run_id="$(gh run list \
-              --workflow packages.yml \
-              --branch main \
-              --event push \
-              --status success \
-              --limit 1 \
-              --json databaseId \
-              --jq '.[0].databaseId')"
-          fi
-          [[ -n "$run_id" ]]
-          gh run download "$run_id" \
-            --name Mocktail-native-repositories \
-            --dir native-repositories
-          [[ -d native-repositories/apt && \
-             -d native-repositories/rpm && \
-             -d native-repositories/downloads && \
-             -s native-repositories/mocktail-packages.gpg ]]
 
       - name: Install Flatpak builder
         shell: bash
@@ -99,22 +64,23 @@ jobs:
           FLATPAK_GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
         run: |
           set -Eeuo pipefail
-          git update-ref refs/heads/main "$MOCKTAIL_SOURCE_SHA"
+          # The manifest builds the local checkout from refs/heads/main.
+          git update-ref refs/heads/main "$GITHUB_SHA"
           builder_signing=()
           bundle_keys=()
           if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
             [[ -n "$FLATPAK_GPG_PRIVATE_KEY" && \
                -n "$FLATPAK_GPG_KEY_ID" ]]
-            install -d -m 0700 "$RUNNER_TEMP/mocktail-gnupg"
+            install -d -m 0700 "$RUNNER_TEMP/nightcap-gnupg"
             printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | \
-              gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" --import
-            gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" \
-              --export "$FLATPAK_GPG_KEY_ID" >mocktail-flatpak.gpg
+              gpg --batch --homedir "$RUNNER_TEMP/nightcap-gnupg" --import
+            gpg --batch --homedir "$RUNNER_TEMP/nightcap-gnupg" \
+              --export "$FLATPAK_GPG_KEY_ID" >nightcap-flatpak.gpg
             builder_signing=(
               "--gpg-sign=$FLATPAK_GPG_KEY_ID"
-              "--gpg-homedir=$RUNNER_TEMP/mocktail-gnupg"
+              "--gpg-homedir=$RUNNER_TEMP/nightcap-gnupg"
             )
-            bundle_keys=(--gpg-keys=mocktail-flatpak.gpg)
+            bundle_keys=(--gpg-keys=nightcap-flatpak.gpg)
           fi
           flatpak-builder \
             --arch=x86_64 \
@@ -127,34 +93,33 @@ jobs:
             --repo=repo \
             "${builder_signing[@]}" \
             build-flatpak-ci \
-            packaging/flatpak/space.bigrat.mocktail.json
+            packaging/flatpak/io.github.CoderDayton.nightcap.json
           if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
             flatpak build-update-repo \
               --generate-static-deltas \
               --static-delta-jobs=2 \
               --prune \
               --gpg-sign="$FLATPAK_GPG_KEY_ID" \
-              --gpg-homedir="$RUNNER_TEMP/mocktail-gnupg" \
+              --gpg-homedir="$RUNNER_TEMP/nightcap-gnupg" \
               repo
           fi
           flatpak build-bundle \
             --arch=x86_64 \
             "${bundle_keys[@]}" \
             repo \
-            Mocktail-x86_64.flatpak \
-            space.bigrat.mocktail \
+            Nightcap-x86_64.flatpak \
+            io.github.CoderDayton.nightcap \
             stable
           if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
             ./scripts/assemble_flatpak_pages.sh \
-              repo Mocktail-x86_64.flatpak mocktail-flatpak.gpg \
-              public native-repositories
+              repo Nightcap-x86_64.flatpak nightcap-flatpak.gpg public
           fi
 
       - name: Upload Flatpak
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Mocktail-x86_64-flatpak
-          path: Mocktail-x86_64.flatpak
+          name: Nightcap-x86_64-flatpak
+          path: Nightcap-x86_64.flatpak
           if-no-files-found: error
           retention-days: 14
 
@@ -170,13 +135,7 @@ jobs:
 
   deploy-pages:
     name: Publish Flatpak repository
-    if: >-
-      (github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event != 'pull_request' &&
-      github.event.workflow_run.head_branch == 'main') ||
-      (github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: flatpak
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -191,3 +150,37 @@ jobs:
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+
+  release:
+    name: Attach bundle to GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download Flatpak
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Nightcap-x86_64-flatpak
+          path: release
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag="${GITHUB_REF_NAME}"
+          (cd release && sha256sum Nightcap-x86_64.flatpak > Nightcap-x86_64.flatpak.sha256)
+          # The Release workflow creates the same release; whichever job
+          # arrives second sees "already exists" and continues.
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "Nightcap $tag" --generate-notes ||
+              gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            release/Nightcap-x86_64.flatpak \
+            release/Nightcap-x86_64.flatpak.sha256

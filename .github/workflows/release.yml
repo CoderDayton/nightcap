@@ -142,9 +142,12 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           mv release/Mocktail-x86_64.AppImage release/Nightcap-x86_64.AppImage
           (cd release && sha256sum Nightcap-x86_64.AppImage > Nightcap-x86_64.AppImage.sha256)
+          # The Flatpak workflow creates the same release; whichever job
+          # arrives second sees "already exists" and continues.
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "Nightcap $tag" --generate-notes
+              --title "Nightcap $tag" --generate-notes ||
+              gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
           fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
             release/Nightcap-x86_64.AppImage \

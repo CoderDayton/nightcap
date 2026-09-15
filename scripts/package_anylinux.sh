@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 
@@ -152,8 +153,8 @@ AnyLinuxDeploy() {
   local -a deployment_environment=(
     "APPDIR=${app_dir}" "MAIN_BIN=mocktail" "LIB_DIR=/usr/lib"
     "TMPDIR=${ANYLINUX_WORK}/tmp"
-    "DESKTOP=/usr/share/applications/space.bigrat.mocktail.desktop"
-    "ICON=/usr/share/icons/hicolor/scalable/apps/space.bigrat.mocktail.svg"
+    "DESKTOP=/usr/share/applications/io.github.CoderDayton.nightcap.desktop"
+    "ICON=/usr/share/icons/hicolor/scalable/apps/io.github.CoderDayton.nightcap.svg"
     "DEPLOY_DATADIR=0" "DEPLOY_LOCALE=0" "DEPLOY_VULKAN=0"
     "STRACE_MODE=1" "STRACE_BINARY=mocktail" "STRACE_FLAGS=--help"
     "STRACE_TIME=1"

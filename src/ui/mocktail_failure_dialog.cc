@@ -170,7 +170,7 @@ bool InitializeUi(UiStyle style) {
   if (display == nullptr) {
     return false;
   }
-  gtk_window_set_default_icon_name("space.bigrat.mocktail");
+  gtk_window_set_default_icon_name("io.github.CoderDayton.nightcap");
   adw_style_manager_set_color_scheme(adw_style_manager_get_default(),
                                      ADW_COLOR_SCHEME_FORCE_DARK);
   adw_style_manager_set_color_scheme(adw_style_manager_get_for_display(display),
