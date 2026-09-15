@@ -18,10 +18,11 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-// Keep the Vulkan shader workaround narrowly scoped. TextureManager2 is left
-// enabled so the runtime can use its normal texture path and mip selection.
+// TextureManager2 selects its mobile MipPackStream path on Android Vulkan and
+// can keep world textures at low-resolution mips. TM1 preserves full texture
+// fidelity until that path is compatible with the host Vulkan adapter.
 constexpr char kVulkanClientSettingsOverrides[] =
-    R"({"FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
+    R"({"FStringGraphicsTextureManager2DenyPattern2":".*","FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
 
 constexpr const char* kIcdDirectories[] = {
     "/usr/share/vulkan/icd.d",
