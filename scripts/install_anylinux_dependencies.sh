@@ -39,9 +39,9 @@ AnyLinuxDependencySnapshot() {
   # immutable version pins. Never accept absent digests or compute our own trust.
   jq --exit-status --raw-output --argjson names "${names_json}" \
     --arg base 'https://api.github.com/repos/pkgforge-dev/archlinux-pkgs-debloated/releases/assets/' '
-      if .tag_name != "continuous" or (.assets | type) != "array" then
+      (if .tag_name != "continuous" or (.assets | type) != "array" then
         error("invalid continuous release metadata")
-      else .assets end as $assets |
+      else .assets end) as $assets |
       $names[] as $name |
       [$assets[] | select(.name == $name)] as $matches |
       if ($matches | length) != 1 then

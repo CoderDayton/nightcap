@@ -126,6 +126,16 @@ ExpectRejectedSnapshot() {
   fi
 }
 
+(AnyLinuxDependencySnapshot "${TEMP_DIR}/manifest.txt" \
+  "${TEMP_DIR}/release.json") >"${TEMP_DIR}/snapshot.tsv" ||
+  Fail 'rejected valid dependency snapshot'
+printf '%s\t%s\t%s\n' \
+  "${FFMPEG_HASH}" "${FFMPEG}" "${API}/assets/10" \
+  "${OPUS_HASH}" "${OPUS}" "${API}/assets/20" \
+  >"${TEMP_DIR}/expected-snapshot.tsv"
+cmp "${TEMP_DIR}/expected-snapshot.tsv" "${TEMP_DIR}/snapshot.tsv" ||
+  Fail 'incorrect dependency snapshot'
+
 ExpectRejectedSnapshot 'missing asset' '.assets |= .[1:]'
 ExpectRejectedSnapshot 'duplicate asset' '.assets += [.assets[0]]'
 ExpectRejectedSnapshot 'absent SHA256' '.assets[0].digest = null'
@@ -165,8 +175,10 @@ for SCENARIO in success replaced corrupted download-failure metadata-failure inv
     (cd "${TEMP_DIR}/${SCENARIO}" && sha256sum --check --strict SHA256SUMS)
     rm -- "${TEMP_DIR}/installed"
   else
-    [[ "${SCENARIO}" != success && "${SCENARIO}" != replaced ]] ||
+    if [[ "${SCENARIO}" == success || "${SCENARIO}" == replaced ]]; then
+      cat -- "${TEMP_DIR}/${SCENARIO}.log" >&2
       Fail "valid download failed: ${SCENARIO}"
+    fi
     [[ ! -e "${TEMP_DIR}/installed" ]] || Fail 'installed unverified archives'
   fi
   case "${SCENARIO}" in
