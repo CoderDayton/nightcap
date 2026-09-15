@@ -6,6 +6,10 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- FAQ covering Discord RPC, log locations, and VR, adapted from upstream.
+
 ## [0.1.0] - 2026-09-15
 
 First Nightcap release, forked from komaruworld/mocktail.

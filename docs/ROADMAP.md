@@ -34,9 +34,9 @@ Done when a mouse feels like a mouse and a plugged-in controller just works.
 
 ## 3. Discord Rich Presence
 
-Upstream ships Discord RPC, off by default, behind `discord_rpc.enabled`. It
-shows the experience name, elapsed time, and a join button when the server is
-public.
+Upstream ships Discord RPC, off by default, behind
+`integrations.discord_rpc.enabled` (see the [FAQ](../FAQ.md)). It shows the
+experience name, elapsed time, and a join button when the server is public.
 
 - Turn it on by default. It never reads a Discord token, so the privacy cost
   is only the experience name, which the player already shares in Roblox.
