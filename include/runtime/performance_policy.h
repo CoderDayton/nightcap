@@ -1,9 +1,11 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #ifndef MOCKTAIL_RUNTIME_PERFORMANCE_POLICY_H_
 #define MOCKTAIL_RUNTIME_PERFORMANCE_POLICY_H_
 
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "runtime/frame_rate_policy.h"
 #include "runtime/game_mode.h"
@@ -49,18 +51,18 @@ PerformancePolicy ParsePerformancePolicy(
 // Respects CPU affinity and falls back to the available logical count.
 int DetectAvailablePhysicalCoreCount();
 
-// Disabled policy preserves overrides; conflicting values fail.
-bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
-                                             std::string_view base_json,
-                                             std::string* merged_json,
-                                             std::string* error);
+// Disabled policy preserves overrides. A base_json value that differs from
+// the preset is kept as-is and its key is appended to kept_overrides.
+bool MergePerformanceClientSettingsOverrides(
+    const PerformancePolicy& policy, std::string_view base_json,
+    std::string* merged_json, std::string* error,
+    std::vector<std::string>* kept_overrides = nullptr);
 
 // Applies mandatory HTTP and crash policies after caller settings.
-bool MergeRuntimeClientSettingsOverrides(const FrameRatePolicy& frame_rate,
-                                         const PerformancePolicy& performance,
-                                         std::string_view base_json,
-                                         std::string* merged_json,
-                                         std::string* error);
+bool MergeRuntimeClientSettingsOverrides(
+    const FrameRatePolicy& frame_rate, const PerformancePolicy& performance,
+    std::string_view base_json, std::string* merged_json, std::string* error,
+    std::vector<std::string>* kept_overrides = nullptr);
 
 // Keeps the legacy test bypass disabled. The host PermissionsProtocol now
 // answers microphone authorization from capture configuration. No permission

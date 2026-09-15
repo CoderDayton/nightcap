@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "runtime/performance_policy.h"
 
 #include <sched.h>
@@ -27,22 +28,21 @@ struct ClientSetting {
   std::string_view value;
 };
 
-bool SetCompatibleValue(nlohmann::json* object, const ClientSetting& setting,
-                        std::string* error) {
+// A caller-supplied value always wins over the preset; the key is reported
+// through kept_overrides so startup can say which preset values were skipped.
+void SetCompatibleValue(nlohmann::json* object, const ClientSetting& setting,
+                        std::vector<std::string>* kept_overrides) {
   const std::string name(setting.name);
   const std::string value(setting.value);
   const auto existing = object->find(name);
   if (existing != object->end()) {
-    if (!existing->is_string() || existing->get<std::string>() != value) {
-      if (error != nullptr) {
-        *error = std::string("performance policy conflicts with ") + name;
-      }
-      return false;
+    if ((!existing->is_string() || existing->get<std::string>() != value) &&
+        kept_overrides != nullptr) {
+      kept_overrides->push_back(name);
     }
-    return true;
+    return;
   }
   (*object)[name] = value;
-  return true;
 }
 
 bool ReadTopologyValue(int logical_cpu, std::string_view name, int* value) {
@@ -154,10 +154,10 @@ int DetectAvailablePhysicalCoreCount() {
                                 : static_cast<int>(physical_cores.size());
 }
 
-bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
-                                             std::string_view base_json,
-                                             std::string* merged_json,
-                                             std::string* error) {
+bool MergePerformanceClientSettingsOverrides(
+    const PerformancePolicy& policy, std::string_view base_json,
+    std::string* merged_json, std::string* error,
+    std::vector<std::string>* kept_overrides) {
   if (merged_json == nullptr) {
     if (error != nullptr) {
       *error = "performance client-settings output is required";
@@ -184,13 +184,10 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     return true;
   }
   const auto apply_settings = [&overrides,
-                               error](const auto& settings) -> bool {
+                               kept_overrides](const auto& settings) {
     for (const ClientSetting& setting : settings) {
-      if (!SetCompatibleValue(&overrides, setting, error)) {
-        return false;
-      }
+      SetCompatibleValue(&overrides, setting, kept_overrides);
     }
-    return true;
   };
   const bool throughput_mode =
       policy.physics_worker_mode == PhysicsWorkerMode::kThroughput;
@@ -198,9 +195,7 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     const std::array<ClientSetting, 1> physics_settings = {{
         {"DFIntSimMidPhaseContactPipelineBatchSize", "128"},
     }};
-    if (!apply_settings(physics_settings)) {
-      return false;
-    }
+    apply_settings(physics_settings);
   }
   int render_worker_count = 0;
   if (throughput_mode ||
@@ -223,9 +218,7 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FIntTaskSchedulerAutoThreadLimit", workers},
         {"DFIntSimMidPhaseContactPipelineBatchSize", "128"},
     }};
-    if (!apply_settings(physics_settings)) {
-      return false;
-    }
+    apply_settings(physics_settings);
   } else if (policy.multithreaded_rendering &&
              policy.physics_worker_mode != PhysicsWorkerMode::kLatency) {
     const std::string workers = std::to_string(render_worker_count);
@@ -233,9 +226,7 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FIntTaskSchedulerThreadMin", workers},
         {"FIntTaskSchedulerAsyncTasksMinimumThreadCount", workers},
     }};
-    if (!apply_settings(scheduler_settings)) {
-      return false;
-    }
+    apply_settings(scheduler_settings);
   }
   if ((policy.multithreaded_rendering || throughput_mode) &&
       policy.physics_worker_mode != PhysicsWorkerMode::kLatency) {
@@ -322,26 +313,21 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FIntDefaultAudioDecodeBufferSizeMs", "50"},
         {"FIntMaxAudibleSoundChannels", "32"},
     }};
-    if (!apply_settings(rendering_settings)) {
-      return false;
-    }
+    apply_settings(rendering_settings);
     if (!manual_quality) {
-      if (!SetCompatibleValue(
-              &overrides, {"FIntDebugFRMQualityLevelOverride", quality_str},
-              error)) {
-        return false;
-      }
+      SetCompatibleValue(&overrides,
+                         {"FIntDebugFRMQualityLevelOverride", quality_str},
+                         kept_overrides);
     }
   }
   *merged_json = overrides.dump();
   return true;
 }
 
-bool MergeRuntimeClientSettingsOverrides(const FrameRatePolicy& frame_rate,
-                                         const PerformancePolicy& performance,
-                                         std::string_view base_json,
-                                         std::string* merged_json,
-                                         std::string* error) {
+bool MergeRuntimeClientSettingsOverrides(
+    const FrameRatePolicy& frame_rate, const PerformancePolicy& performance,
+    std::string_view base_json, std::string* merged_json, std::string* error,
+    std::vector<std::string>* kept_overrides) {
   std::string frame_rate_overrides;
   if (!MergeFrameRateClientSettingsOverrides(frame_rate, base_json,
                                              &frame_rate_overrides, error)) {
@@ -349,7 +335,8 @@ bool MergeRuntimeClientSettingsOverrides(const FrameRatePolicy& frame_rate,
   }
   std::string performance_overrides;
   if (!MergePerformanceClientSettingsOverrides(
-          performance, frame_rate_overrides, &performance_overrides, error)) {
+          performance, frame_rate_overrides, &performance_overrides, error,
+          kept_overrides)) {
     return false;
   }
   std::string http_client_overrides;

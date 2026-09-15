@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -779,13 +780,19 @@ int main(int argc, char* argv[]) {
                 << " FFlag overrides from " << fflags_path << '\n';
     }
     std::string client_settings_overrides;
+    std::vector<std::string> kept_fflag_overrides;
     if (!mocktail::runtime::MergeRuntimeClientSettingsOverrides(
             runtime_config.config.frame_rate(),
             runtime_config.config.performance(), fflags.json,
-            &client_settings_overrides, &command_line_error)) {
+            &client_settings_overrides, &command_line_error,
+            &kept_fflag_overrides)) {
       std::cerr << "[FATAL] Cannot apply runtime client-settings policy: "
                 << command_line_error << '\n';
       return EXIT_FAILURE;
+    }
+    for (const std::string& name : kept_fflag_overrides) {
+      std::cout << "  [runtime] keeping " << name << " from " << fflags_path
+                << " over the performance preset\n";
     }
     std::string audio_capture_overrides;
     if (!mocktail::runtime::MergeAudioCaptureClientSettingsOverrides(

@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include "runtime/performance_policy.h"
 
 #include <gtest/gtest.h>
@@ -5,6 +6,7 @@
 #define JSON_NOEXCEPTION 1
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 namespace mocktail {
 namespace runtime {
@@ -228,22 +230,50 @@ TEST(PerformancePolicyTest, ComposesFrameRateBeforePerformanceMode) {
   EXPECT_EQ(parsed.at("FFlagLuaAppDefaultHttpRetry"), "False");
 }
 
-TEST(PerformancePolicyTest, RejectsConflictingOrMalformedOverrides) {
+TEST(PerformancePolicyTest, KeepsUserOverridesThatConflictWithPreset) {
+  std::string merged;
+  std::string error;
+  std::vector<std::string> kept;
+  ASSERT_TRUE(MergePerformanceClientSettingsOverrides(
+      {true, 14},
+      R"({"FIntOcclusionWorkerThreadCount":"2","FFlagMovePrerenderV2":true,)"
+      R"("FIntDebugForceMSAASamples":4})",
+      &merged, &error, &kept))
+      << error;
+  const nlohmann::json parsed = nlohmann::json::parse(merged);
+  EXPECT_EQ(parsed.at("FIntOcclusionWorkerThreadCount"), "2");
+  EXPECT_EQ(parsed.at("FFlagMovePrerenderV2"), true);
+  EXPECT_EQ(parsed.at("FIntDebugForceMSAASamples"), 4);
+  EXPECT_EQ(parsed.at("FFlagFastGPULightGrid"), "True");
+  EXPECT_EQ(kept, (std::vector<std::string>{"FIntOcclusionWorkerThreadCount",
+                                            "FFlagMovePrerenderV2",
+                                            "FIntDebugForceMSAASamples"}));
+
+  PerformancePolicy latency =
+      ParsePerformancePolicy("true", "0", "auto", "latency");
+  latency.physical_core_count = 14;
+  kept.clear();
+  ASSERT_TRUE(MergePerformanceClientSettingsOverrides(
+      latency, R"({"DFIntSimMidPhaseContactPipelineBatchSize":"64"})", &merged,
+      &error, &kept))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)
+                .at("DFIntSimMidPhaseContactPipelineBatchSize"),
+            "64");
+  EXPECT_EQ(kept, (std::vector<std::string>{
+                      "DFIntSimMidPhaseContactPipelineBatchSize"}));
+
+  kept.clear();
+  ASSERT_TRUE(MergeRuntimeClientSettingsOverrides(
+      ParseFrameRatePolicy(""), {true, 14},
+      R"({"FIntOcclusionWorkerThreadCount":"2"})", &merged, &error, &kept))
+      << error;
+  EXPECT_EQ(kept, (std::vector<std::string>{"FIntOcclusionWorkerThreadCount"}));
+}
+
+TEST(PerformancePolicyTest, RejectsMalformedOverrides) {
   std::string merged = "unchanged";
   std::string error;
-  EXPECT_FALSE(MergePerformanceClientSettingsOverrides(
-      {true, 14}, R"({"FIntOcclusionWorkerThreadCount":"2"})", &merged,
-      &error));
-  EXPECT_EQ(merged, "unchanged");
-  EXPECT_NE(error.find("FIntOcclusionWorkerThreadCount"), std::string::npos);
-
-  error.clear();
-  EXPECT_FALSE(MergePerformanceClientSettingsOverrides(
-      {true, 14}, R"({"FFlagMovePrerenderV2":true})", &merged, &error));
-  EXPECT_EQ(merged, "unchanged");
-  EXPECT_NE(error.find("FFlagMovePrerenderV2"), std::string::npos);
-
-  error.clear();
   EXPECT_FALSE(MergePerformanceClientSettingsOverrides({true, 14}, "not-json",
                                                        &merged, &error));
   EXPECT_EQ(merged, "unchanged");
@@ -254,16 +284,6 @@ TEST(PerformancePolicyTest, RejectsConflictingOrMalformedOverrides) {
                                                        &merged, &error));
   EXPECT_EQ(merged, "unchanged");
   EXPECT_NE(error.find("JSON object"), std::string::npos);
-
-  PerformancePolicy latency =
-      ParsePerformancePolicy("true", "0", "auto", "latency");
-  latency.physical_core_count = 14;
-  error.clear();
-  EXPECT_FALSE(MergePerformanceClientSettingsOverrides(
-      latency, R"({"DFIntSimMidPhaseContactPipelineBatchSize":"64"})", &merged,
-      &error));
-  EXPECT_NE(error.find("DFIntSimMidPhaseContactPipelineBatchSize"),
-            std::string::npos);
 }
 
 TEST(PerformancePolicyTest, HostAudioMenuUsesBridgedDeviceQueries) {
