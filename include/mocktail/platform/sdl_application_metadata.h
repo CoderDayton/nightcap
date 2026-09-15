@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #ifndef MOCKTAIL_PLATFORM_SDL_APPLICATION_METADATA_H_
 #define MOCKTAIL_PLATFORM_SDL_APPLICATION_METADATA_H_
 
@@ -6,7 +7,7 @@
 namespace mocktail {
 namespace platform {
 
-inline constexpr char kMocktailApplicationName[] = "Mocktail";
+inline constexpr char kMocktailApplicationName[] = "Nightcap";
 inline constexpr char kMocktailApplicationIdentifier[] =
     "space.bigrat.mocktail";
 

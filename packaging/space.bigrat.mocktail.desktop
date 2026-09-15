@@ -1,7 +1,7 @@
 # Modified by vii from komaruworld/mocktail. See README "About this fork".
 [Desktop Entry]
 Type=Application
-Name=Mocktail
+Name=Nightcap
 GenericName=Roblox Player
 Comment=Play Roblox on Linux
 Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 mocktail %u

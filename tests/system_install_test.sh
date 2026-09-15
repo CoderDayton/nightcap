@@ -48,7 +48,7 @@ if find "${install_root}/usr" -type f \( -name '*.py' -o -name '*.sh' \) \
 fi
 
 [[ -f "${desktop}" ]]
-grep -Fq 'Name=Mocktail' "${desktop}"
+grep -Fq 'Name=Nightcap' "${desktop}"
 grep -Fxq 'Exec=env SDL_VIDEODRIVER=wayland,x11 MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 /usr/bin/mocktail %u' "${desktop}"
 grep -Fq 'Icon=space.bigrat.mocktail' "${desktop}"
 [[ -f "${metainfo}" ]]

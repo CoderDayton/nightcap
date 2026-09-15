@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified by vii from komaruworld/mocktail. See README "About this fork".
 # Copyright 2026 Mocktail Project Authors
 # SPDX-License-Identifier: Apache-2.0
 
@@ -77,10 +78,6 @@ grep -Fq -- \
   Fail 'AUR package embeds a build-tree compatibility manifest path'
 grep -Fq 'pkgbase = mocktail-git' "${AUR_SRCINFO}" ||
   Fail 'AUR package has no generated .SRCINFO metadata'
-grep -Fq 'paru -S mocktail-git' "${README}" ||
-  Fail 'README has no AUR installation instructions'
-grep -Fq 'yay -S mocktail-git' "${README}" ||
-  Fail 'README has no alternative AUR helper command'
 grep -Fq 'LINKER:--no-as-needed' "${STUB_CMAKE}" ||
   Fail 'system shims can lose their host libc dependencies'
 grep -Fq 'MOCKTAIL_MINIZIP_HAS_STREAM_TELL' "${STUB_CMAKE}" ||
@@ -118,10 +115,6 @@ if grep -Fq "'site/**'" "${WORKFLOW}"; then
   Fail 'native packages ignore website changes required by Pages publication'
 fi
 
-grep -Fq 'sudo dnf install mocktail-nightly' "${README}" ||
-  Fail 'README has no nightly DNF installation command'
-grep -Fq 'sudo apt install mocktail-nightly' "${README}" ||
-  Fail 'README has no nightly APT installation command'
 grep -Fq 'Ubuntu 26.04+' "${README}" ||
   Fail 'README has no Ubuntu source dependency guide'
 grep -Fq 'Arch Linux' "${README}" ||

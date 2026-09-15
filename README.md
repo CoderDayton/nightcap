@@ -1,24 +1,24 @@
 <!-- Modified by vii from komaruworld/mocktail. See "About this fork" below. -->
-# Mocktail
+# Nightcap
 
-[![CI](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml/badge.svg)](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml)
-[![Stars](https://img.shields.io/github/stars/komaruworld/mocktail?style=flat&logo=github)](https://github.com/komaruworld/mocktail/stargazers)
-[![Downloads](https://img.shields.io/github/downloads/komaruworld/mocktail/total?logo=github)](https://github.com/komaruworld/mocktail/releases/latest)
+[![CI](https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml/badge.svg)](https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/CoderDayton/nightcap?style=flat&logo=github)](https://github.com/CoderDayton/nightcap/stargazers)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1543955607869063269?label=discord)](https://discord.gg/rhgpfcmFSD)
 
-Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux
-userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI
-pieces the client expects, then connects them to SDL3 and Vulkan or OpenGL on
-the Linux side.
+Nightcap is Mocktail, tuned for playing on a real PC. It runs the Android
+`x86_64` Roblox client on Linux, including a Linux userspace hosted by
+FreeBSD's Linuxulator. It provides the Android ABI and JNI pieces the client
+expects, then connects them to SDL3 and Vulkan or OpenGL on the Linux side.
 
-Mocktail is an independent community project. It is not affiliated with Roblox
+Nightcap is an independent community project. It is not affiliated with Roblox
 Corporation or VinegarHQ and does not distribute the Roblox client.
 
 ## About this fork
 
-This is a fork of [komaruworld/mocktail](https://github.com/komaruworld/mocktail)
-with extra fixes for playing on a PC:
+Nightcap is a fork of [komaruworld/mocktail](https://github.com/komaruworld/mocktail)
+with extra fixes for playing on a PC. The program, config paths, and desktop
+entry keep the `mocktail` name so upstream fixes still apply cleanly.
 
 - **Lower input lag.** Frames are shown as soon as they are ready instead of
   waiting in a queue.
@@ -34,6 +34,21 @@ with extra fixes for playing on a PC:
 
 Everything else works the same as upstream.
 
+## Install
+
+Grab the AppImage from the
+[latest release](https://github.com/CoderDayton/nightcap/releases/latest),
+make it executable, and run it:
+
+```bash
+chmod +x Nightcap-x86_64.AppImage
+./Nightcap-x86_64.AppImage
+```
+
+Or build it from source using the steps under [Building](#building). For
+Flatpak, AUR, DEB, and RPM packages of the unmodified upstream, see
+[komaruworld/mocktail](https://github.com/komaruworld/mocktail#readme).
+
 ## How it works
 
 ```
@@ -43,73 +58,6 @@ Roblox APK -> signature and ABI checks -> Bionic + JNI -> SDL3 + Vulkan/OpenGL
 The APK is checked before any native code is loaded. It is downloaded on first
 launch and is not bundled with Mocktail. The last working copy is kept in case
 an update fails.
-
-## Install with Flatpak
-
-Install the stable release from Flathub:
-
-```bash
-flatpak install flathub space.bigrat.mocktail
-flatpak run space.bigrat.mocktail
-```
-
-Nightly builds are produced automatically from the latest `main` branch:
-
-```bash
-flatpak install --user https://mocktail.bigrat.space/mocktail.flatpakref
-flatpak run space.bigrat.mocktail
-```
-
-## Install from the AUR
-
-Arch Linux users can install either the pinned source release (`mocktail`) or
-the current development version (`mocktail-git`) with an AUR helper:
-
-```bash
-paru -S mocktail-git
-# or
-yay -S mocktail-git
-```
-
-Use `mocktail` instead of `mocktail-git` to build the pinned release from
-source, or install the stable prebuilt package with `paru -S mocktail-bin` or
-`yay -S mocktail-bin`.
-
-## Install with DNF
-
-Fedora 44 users can install either the stable `mocktail` package or the
-`mocktail-nightly` package built from `main`:
-
-```bash
-sudo curl -fsSL https://mocktail.bigrat.space/rpm/mocktail.repo \
-  -o /etc/yum.repos.d/mocktail.repo
-sudo dnf install mocktail
-# or
-sudo dnf install mocktail-nightly
-```
-
-## Install with APT
-
-Ubuntu 26.04 users can install either the stable `mocktail` package or the
-`mocktail-nightly` package built from `main`:
-
-```bash
-sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSL https://mocktail.bigrat.space/mocktail-packages.gpg \
-  -o /etc/apt/keyrings/mocktail.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/mocktail.gpg] https://mocktail.bigrat.space/apt mocktail main" | \
-  sudo tee /etc/apt/sources.list.d/mocktail.list >/dev/null
-sudo apt update
-sudo apt install mocktail
-# or
-sudo apt install mocktail-nightly
-```
-
-## Direct downloads
-
-Direct AppImage, DEB, and RPM downloads are available from the
-[Website](https://mocktail.bigrat.space/) and
-[GitHub Releases](https://github.com/komaruworld/mocktail/releases).
 
 <details>
 <summary>Screenshots</summary>
@@ -195,7 +143,7 @@ sudo dnf install gcc-c++ cmake git ninja-build pkgconf-pkg-config lld \
 </details>
 
 ```bash
-git clone --recurse-submodules https://github.com/komaruworld/mocktail.git
+git clone --recurse-submodules https://github.com/CoderDayton/nightcap.git
 cd mocktail
 make build
 ./build/mocktail
@@ -220,7 +168,13 @@ Run Mocktail without `hardened_malloc` enabled.
 
 ## Support
 
-You can support the project by giving it a star or with cryptocurrency:
+Support this fork by giving it a star or with cryptocurrency:
+
+- LTC: `LdABR2ELRYrUESWZWrEk1uNx38gHHMuHUU`
+- SOL: `tjeDnPoWeyW8zfTf8c5CVAm5QTV8vFPaPouaScAdwfT`
+- BCH: `qpktw5jwut9ae8e6898qt3v7rj3km44utgk2r9mj8n`
+
+Support the upstream project, which does most of the heavy lifting:
 
 - USDT (TON): `UQCi6Yzcc9cOctoij6n_r1K90-OdVxAT0D_xo2UzGKkQaJDY`
 - USDT (TRC20): `TNPMG9Vig2xiuo2r1QqnXRChPH7Vu28Jmx`

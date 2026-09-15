@@ -1,3 +1,4 @@
+// Modified by vii from komaruworld/mocktail. See README "About this fork".
 #include <adwaita.h>
 #include <glib-unix.h>
 #include <sys/socket.h>
@@ -153,7 +154,7 @@ void InstallProgressStyle(GdkDisplay* display) {
 }
 
 bool InitializeUi(UiStyle style) {
-  g_set_application_name("Mocktail");
+  g_set_application_name("Nightcap");
   if (!gtk_init_check()) {
     return false;
   }
@@ -229,7 +230,7 @@ void PresentProgressWindow(ProgressState* state, std::string_view message) {
   GtkWidget* window_widget = adw_window_new();
   state->window = GTK_WINDOW(g_object_ref_sink(window_widget));
   gtk_widget_add_css_class(window_widget, "mocktail-update-progress");
-  gtk_window_set_title(state->window, "Mocktail");
+  gtk_window_set_title(state->window, "Nightcap");
   gtk_window_set_default_size(state->window, 470, 640);
 
   GtkWidget* toolbar_widget = adw_toolbar_view_new();

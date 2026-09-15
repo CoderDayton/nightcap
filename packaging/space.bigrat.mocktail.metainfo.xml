@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Modified by vii from komaruworld/mocktail. See README "About this fork". -->
 <!-- Copyright 2026 Mocktail Project Authors -->
 <!-- SPDX-License-Identifier: CC0-1.0 -->
 <component type="desktop-application">
   <id>space.bigrat.mocktail</id>
-  <name>Mocktail</name>
+  <name>Nightcap</name>
   <summary>Play Roblox on Linux</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0</project_license>
@@ -14,7 +15,7 @@
     <color type="primary" scheme_preference="light">#CEB3EF</color>
     <color type="primary" scheme_preference="dark">#2F2A6B</color>
   </branding>
-  <url type="homepage">https://github.com/komaruworld/mocktail</url>
+  <url type="homepage">https://github.com/CoderDayton/nightcap</url>
   <description>
     <p>
       Sign in to Roblox, browse experiences, and play them on Linux.
