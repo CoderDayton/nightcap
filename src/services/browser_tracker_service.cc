@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <random>
 #include <system_error>
+#include <vector>
 
 namespace mocktail {
 namespace services {
@@ -211,6 +212,48 @@ bool FindExistingDirectoryAncestor(const std::filesystem::path& directory,
   }
 }
 
+// Creates every component of `directory` below `existing_ancestor` with mode
+// 0700, whatever the process umask. mkdir masks its mode argument, so a umask
+// of 002 would leave the directory group writable and rejected by the
+// IsPrivateDirectory checks that guard this file's credentials, while a umask
+// carrying owner bits would leave it unwritable by its own owner. Only
+// components this call creates are tightened; one that already exists keeps
+// its mode and is judged by IsPrivateDirectory like any other.
+bool CreatePrivateDirectories(const std::filesystem::path& directory,
+                              const std::filesystem::path& existing_ancestor) {
+  std::vector<std::filesystem::path> missing;
+  for (std::filesystem::path candidate = directory;
+       candidate != existing_ancestor;) {
+    if (candidate.empty()) return false;
+    missing.push_back(candidate);
+    // Mirror FindExistingDirectoryAncestor's walk, including the implicit "."
+    // parent of a bare relative name, so the two agree on which components are
+    // missing.
+    std::filesystem::path parent = candidate.parent_path();
+    if (parent.empty() && candidate != ".") parent = ".";
+    if (parent.empty() || parent == candidate) return false;
+    candidate = parent;
+  }
+  for (auto component = missing.rbegin(); component != missing.rend();
+       ++component) {
+    if (mkdir(component->c_str(), 0700) != 0) {
+      if (errno != EEXIST) return false;
+      continue;
+    }
+    const int created = open(component->c_str(),
+                             O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (created < 0) return false;
+    struct stat metadata = {};
+    const bool tightened = fstat(created, &metadata) == 0 &&
+                           S_ISDIR(metadata.st_mode) &&
+                           metadata.st_uid == geteuid() &&
+                           fchmod(created, 0700) == 0;
+    close(created);
+    if (!tightened) return false;
+  }
+  return true;
+}
+
 bool FsyncDirectoryChain(const std::filesystem::path& first,
                          const std::filesystem::path& last) {
   std::filesystem::path current = first;
@@ -322,8 +365,7 @@ bool AtomicWriteContents(const std::filesystem::path& path,
     return false;
   }
   const bool parent_existed = existing_ancestor == parent;
-  std::filesystem::create_directories(parent, filesystem_error);
-  if (filesystem_error) {
+  if (!CreatePrivateDirectories(parent, existing_ancestor)) {
     error->assign(directory_error);
     return false;
   }
@@ -449,10 +491,11 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
     return result;
   }
   const bool lock_parent_existed = existing_lock_ancestor == lock_parent;
-  std::filesystem::create_directories(lock_parent, filesystem_error);
+  const bool lock_parent_created =
+      CreatePrivateDirectories(lock_parent, existing_lock_ancestor);
   struct stat lock_parent_status = {};
   const bool safe_lock_parent =
-      !filesystem_error &&
+      lock_parent_created &&
       lstat(lock_parent.c_str(), &lock_parent_status) == 0 &&
       IsPrivateDirectory(lock_parent_status);
   const int lock = safe_lock_parent

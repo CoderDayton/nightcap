@@ -41,18 +41,26 @@ class FakeHttpClient final : public HttpClient {
 class BrowserTrackerServiceTest : public testing::Test {
  protected:
   void SetUp() override {
+    // The service refuses to hold credentials in a group- or world-writable
+    // directory, so the directories these tests create must be private
+    // whatever umask the developer or CI runner happens to use.
+    previous_umask_ = umask(077);
     root_ = std::filesystem::temp_directory_path() /
             ("mocktail-browser-tracker-" + std::to_string(getpid()) + "-" +
              ::testing::UnitTest::GetInstance()->current_test_info()->name());
     std::filesystem::remove_all(root_);
   }
-  void TearDown() override { std::filesystem::remove_all(root_); }
+  void TearDown() override {
+    std::filesystem::remove_all(root_);
+    umask(previous_umask_);
+  }
 
   std::filesystem::path Storage() const {
     return root_ / "appData/LocalStorage/appStorage.json";
   }
   std::filesystem::path Cookies() const { return root_ / "roblox.cookie"; }
   std::filesystem::path root_;
+  mode_t previous_umask_ = 0;
 };
 
 TEST_F(BrowserTrackerServiceTest, ReusesValidStoredIdentityWithoutNetwork) {
@@ -169,6 +177,58 @@ TEST_F(BrowserTrackerServiceTest,
   EXPECT_EQ(ReadFile(Cookies()), refreshed);
   EXPECT_EQ(ReadFile(Cookies()).find("rejected"), std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(Storage()));
+}
+
+TEST_F(BrowserTrackerServiceTest, CreatesPrivateStorageDirectoryUnderAnyUmask) {
+  std::filesystem::create_directories(root_);
+  ASSERT_EQ(chmod(root_.c_str(), 0700), 0);
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  FakeHttpClient http;
+  http.response = {true,
+                   200,
+                   R"({"browserTrackerId":987654321})",
+                   "",
+                   {"Set-Cookie: RBXEventTrackerV2="
+                    "CreateDate=1&rbxid=2&browserid=987654321; Path=/"}};
+
+  // A permissive umask must not widen the directories the service creates for
+  // its own credentials; it refuses to use any that are group or world
+  // writable.
+  const mode_t previous_umask = umask(0);
+  const BrowserTrackerResult result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+  umask(previous_umask);
+
+  ASSERT_TRUE(result) << result.error;
+  struct stat storage_parent = {};
+  ASSERT_EQ(stat(Storage().parent_path().c_str(), &storage_parent), 0);
+  EXPECT_EQ(storage_parent.st_mode & 0777, 0700U);
+}
+
+TEST_F(BrowserTrackerServiceTest,
+       CreatesUsableStorageDirectoryUnderRestrictiveUmask) {
+  std::filesystem::create_directories(root_);
+  ASSERT_EQ(chmod(root_.c_str(), 0700), 0);
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  FakeHttpClient http;
+  http.response = {true,
+                   200,
+                   R"({"browserTrackerId":987654321})",
+                   "",
+                   {"Set-Cookie: RBXEventTrackerV2="
+                    "CreateDate=1&rbxid=2&browserid=987654321; Path=/"}};
+
+  // mkdir applies the umask to its mode argument, so a umask that strips owner
+  // bits would otherwise leave the service's own directory unwritable.
+  const mode_t previous_umask = umask(0200);
+  const BrowserTrackerResult result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+  umask(previous_umask);
+
+  ASSERT_TRUE(result) << result.error;
+  struct stat storage_parent = {};
+  ASSERT_EQ(stat(Storage().parent_path().c_str(), &storage_parent), 0);
+  EXPECT_EQ(storage_parent.st_mode & 0777, 0700U);
 }
 
 TEST_F(BrowserTrackerServiceTest, RejectsCorruptStoredIdentityFailClosed) {
