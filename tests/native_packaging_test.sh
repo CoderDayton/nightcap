@@ -86,34 +86,35 @@ grep -Fq 'mz_stream_tell(unzGetStream(archive))' "${ANDROID_STUB}" ||
   Fail 'Android assets do not support the minizip-ng offset API'
 
 for expected in \
-    'ubuntu:26.04' \
-    'fedora:44' \
-    'archlinux:base-devel' \
-    'minizip-ng-compat-devel' \
-    '-G DEB' \
-    '-G RPM' \
-    'makepkg --dir' \
+    'cron:' \
     'APPIMAGE_FORMAT=anylinux' \
     'quick-sharun' \
     './scripts/install_anylinux_dependencies.sh' \
+    '--env GH_TOKEN' \
     'MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1' \
     '--appimage-extract-and-run mocktail_updater status' \
     'Mocktail-x86_64.AppImage' \
+    'Nightcap-nightly-x86_64.AppImage' \
+    'github-actions[bot]' \
     'gh release upload continuous'; do
   grep -Fq -- "${expected}" "${WORKFLOW}" ||
-    Fail "native package workflow is missing: ${expected}"
+    Fail "nightly AppImage workflow is missing: ${expected}"
 done
 
-grep -Fq 'paths-ignore:' "${WORKFLOW}" ||
-  Fail 'native package workflow has no path filters'
-grep -Fq "'assets/screenshots/**'" "${WORKFLOW}" ||
-  Fail 'native packages rebuild for screenshot-only changes'
-if grep -Fq "'packaging/flatpak/**'" "${WORKFLOW}"; then
-  Fail 'native packages ignore Flatpak changes required by Pages publication'
-fi
-if grep -Fq "'site/**'" "${WORKFLOW}"; then
-  Fail 'native packages ignore website changes required by Pages publication'
-fi
+# The nightly runs on a schedule and on demand. Per-commit triggers would
+# rebuild a full AppImage for every push and pull request. The DEB, RPM and
+# pacman packages are built by the Makefile but are not published from here;
+# upstream ships those for unmodified Mocktail.
+for unexpected in \
+    'push:' \
+    'pull_request:' \
+    '-G DEB' \
+    '-G RPM' \
+    'makepkg --dir'; do
+  if grep -Fq -- "${unexpected}" "${WORKFLOW}"; then
+    Fail "nightly AppImage workflow should not contain: ${unexpected}"
+  fi
+done
 
 grep -Fq 'Ubuntu 26.04+' "${README}" ||
   Fail 'README has no Ubuntu source dependency guide'
