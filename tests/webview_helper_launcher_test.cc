@@ -349,14 +349,18 @@ TEST(WebViewHelperLauncherTest, OwnsAndClosesTheExactSpawnedProcess) {
   const std::filesystem::path helper = temporary.path() / "fake-helper";
   const std::filesystem::path close_packet = temporary.path() / "close-packet";
   const std::filesystem::path ready = temporary.path() / "ready";
-  ASSERT_TRUE(WriteExecutable(helper,
-                              "#!/bin/sh\n"
-                              "cat >/dev/null\n"
-                              "touch '" +
-                                  ready.string() +
-                                  "'\n"
-                                  "dd bs=65548 count=1 status=none <&198 >'" +
-                                  close_packet.string() + "'\n"));
+  // dash rejects multi-digit file descriptors, so the control socket is read
+  // in python3 rather than through a `<&198` redirection.
+  ASSERT_TRUE(WriteExecutable(
+      helper, "#!/bin/sh\n"
+              "cat >/dev/null\n"
+              "touch '" +
+                  ready.string() +
+                  "'\n"
+                  "python3 -c 'import socket,sys; s=socket.socket(fileno=198); "
+                  "s.settimeout(2); "
+                  "open(sys.argv[1],\"wb\").write(s.recv(65548))' '" +
+                  close_packet.string() + "'\n"));
 
   const WebViewHelperLaunchResult result =
       LaunchWebViewHelper(helper, "https://www.roblox.com/login");

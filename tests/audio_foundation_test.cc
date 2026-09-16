@@ -628,6 +628,13 @@ TEST(OpenSlQueueTest, GetStatePollsWhilePlaybackReleasesBuffers) {
         probe.cv.wait_for(lock, 2s, [&probe] { return probe.calls == 1; }));
   }
 
+  // A freshly spawned thread is not guaranteed to have been scheduled yet, so
+  // wait for the first concurrent poll before asking the poller to stop.
+  const auto poll_deadline = std::chrono::steady_clock::now() + 2s;
+  while (polls.load(std::memory_order_relaxed) == 0 &&
+         std::chrono::steady_clock::now() < poll_deadline) {
+    std::this_thread::yield();
+  }
   stop_polling.store(true, std::memory_order_relaxed);
   poller.join();
   EXPECT_GT(polls.load(std::memory_order_relaxed), 0);

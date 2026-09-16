@@ -51,6 +51,9 @@ class TemporaryDirectory final {
 void Write(const std::filesystem::path& path, std::string_view contents) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream(path, std::ios::binary) << contents;
+  // Approval artifacts are rejected when group or world writable, which a
+  // permissive umask would otherwise leave them.
+  chmod(path.c_str(), 0600);
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
