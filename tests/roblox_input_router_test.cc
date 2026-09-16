@@ -239,6 +239,71 @@ TEST_F(RobloxInputRouterTest, RoutesMouseMotionButtonAndVerticalWheel) {
 }
 
 TEST_F(RobloxInputRouterTest,
+       KeepsRelativeMotionResponsiveAfterOvershootingViewportEdge) {
+  // Relative-mode motion reports zero absolute coordinates, so the router
+  // accumulates deltas. The accumulator stays inside the viewport: a reversal
+  // moves the pointer on the next event, however far the overshoot ran.
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{640.0f, 360.0f, 0.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, 2000.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, -100.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+
+  ASSERT_EQ(probe_.mouse_moves.size(), 3U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 1279.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].x, 1179.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].delta_x, -100.0f);
+}
+
+// A fractionally scaled X11 desktop: the buffer is 1:1 with logical units
+// while the display scale is not, which is the case where the guest-surface
+// scale actually changes a look delta.
+constexpr platform::WindowResizedEvent kFractionalScalingViewport{
+    1624, 811, 1624, 811, 1.145833F};
+
+TEST_F(RobloxInputRouterTest, ScalesLookDeltasUnlessRawMouseIsEnabled) {
+  ASSERT_EQ(router_.HandleEvent(Event(kFractionalScalingViewport)).state,
+            RobloxInputDispatchState::kStateUpdated);
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, 10.0f,
+                                                        -6.0f, 0}))
+          .dispatched());
+
+  ASSERT_EQ(probe_.mouse_moves.size(), 1U);
+  EXPECT_NEAR(probe_.mouse_moves[0].delta_x, 8.727f, 0.01f);
+  EXPECT_NEAR(probe_.mouse_moves[0].delta_y, -5.236f, 0.01f);
+}
+
+TEST_F(RobloxInputRouterTest, RawMouseSendsLookDeltasUnscaled) {
+  ASSERT_EQ(router_.HandleEvent(Event(kFractionalScalingViewport)).state,
+            RobloxInputDispatchState::kStateUpdated);
+  router_.SetRawMouseEnabled(true);
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, 10.0f,
+                                                        -6.0f, 0}))
+          .dispatched());
+
+  ASSERT_EQ(probe_.mouse_moves.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_x, 10.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_y, -6.0f);
+  // The reported position stays in guest units whatever the delta carries.
+  EXPECT_NEAR(probe_.mouse_moves[0].x, 8.727f, 0.01f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].y, 0.0f);
+}
+
+TEST_F(RobloxInputRouterTest,
        ScalesMouseCoordinatesAfterDisplayScaleChange) {
   const RobloxInputDispatchResult resize = router_.HandleEvent(
       Event(platform::WindowResizedEvent{1000, 800, 1250, 1000, 1.25F}));

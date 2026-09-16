@@ -36,6 +36,7 @@ class RobloxWindowInputRuntime final {
   Status UpdateTextFocusProperties(uint64_t generation,
                                    const RobloxTextFocusProperties& properties);
   RobloxInputSnapshot Snapshot() const;
+  void SetRawMouseEnabled(bool enabled);
 
  private:
   static void PlatformEventCallback(void* context,

@@ -123,6 +123,7 @@ class RobloxInputRuntime final {
   RobloxInputSnapshot Snapshot() const;
   Status GetMainWindowIsMouseLockedCenter(bool* locked_center);
   bool SupportsGamepads() const;
+  void SetRawMouseEnabled(bool enabled);
 
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);

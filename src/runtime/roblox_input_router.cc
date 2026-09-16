@@ -532,6 +532,11 @@ RobloxInputSnapshot RobloxInputRouter::Snapshot() const {
   return snapshot;
 }
 
+void RobloxInputRouter::SetRawMouseEnabled(bool enabled) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  raw_mouse_ = enabled;
+}
+
 RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
     const platform::MouseMotionEvent& event) {
   if (sink_.mouse_move == nullptr) {
@@ -544,21 +549,31 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
   const float delta_x = transform.HostLogicalToGuestX(event.delta_x);
   const float delta_y = transform.HostLogicalToGuestY(event.delta_y);
 
-  if (event.x == 0.0f && event.y == 0.0f &&
-      (delta_x != 0.0f || delta_y != 0.0f)) {
-    mouse_x_ += delta_x;
-    mouse_y_ += delta_y;
-  } else {
-    mouse_x_ = transform.HostLogicalToGuestX(event.x);
-    mouse_y_ = transform.HostLogicalToGuestY(event.y);
-  }
   const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
   const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
-  const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
-  const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
+
+  // mouse_x_/mouse_y_ stay inside the viewport. Relative-mode motion reports
+  // zero absolute coordinates, so the accumulated position is the only
+  // position there; letting it drift past the edge would swallow every
+  // reversal until the pointer walked all the way back.
+  if (event.x == 0.0f && event.y == 0.0f &&
+      (delta_x != 0.0f || delta_y != 0.0f)) {
+    mouse_x_ = std::clamp(mouse_x_ + delta_x, 0.0f, max_x);
+    mouse_y_ = std::clamp(mouse_y_ + delta_y, 0.0f, max_y);
+  } else {
+    mouse_x_ = std::clamp(transform.HostLogicalToGuestX(event.x), 0.0f, max_x);
+    mouse_y_ = std::clamp(transform.HostLogicalToGuestY(event.y), 0.0f, max_y);
+  }
+
+  // Raw mouse reports the host's own delta, skipping the guest-surface scale
+  // that otherwise changes look sensitivity when the desktop display scale and
+  // the window's pixel density disagree. The position stays in guest units.
+  const float reported_delta_x = raw_mouse_ ? event.delta_x : delta_x;
+  const float reported_delta_y = raw_mouse_ ? event.delta_y : delta_y;
 
   return NativeResultLocked(
-      sink_.mouse_move(sink_.context, clamped_x, clamped_y, delta_x, delta_y),
+      sink_.mouse_move(sink_.context, mouse_x_, mouse_y_, reported_delta_x,
+                       reported_delta_y),
       RobloxInputEventKind::kMouseMotion);
 }
 

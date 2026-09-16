@@ -627,6 +627,10 @@ RobloxInputDispatchResult RobloxInputRuntime::HandleEvent(
   return result;
 }
 
+void RobloxInputRuntime::SetRawMouseEnabled(bool enabled) {
+  router_.SetRawMouseEnabled(enabled);
+}
+
 RobloxInputSnapshot RobloxInputRuntime::Snapshot() const {
   return router_.Snapshot();
 }

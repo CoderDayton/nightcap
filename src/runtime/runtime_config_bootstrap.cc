@@ -96,6 +96,14 @@ audio:
   # between boots; prefer the exact device name when it is unique.
   input_device: default
 
+input:
+  # Boolean (default: false): send mouse look deltas in the host's own units.
+  # They are otherwise scaled by the window's pixel density divided by the
+  # desktop display scale, which cancels to 1.0 unless fractional scaling makes
+  # the two disagree. Turn this on when first-person aiming feels too slow or
+  # too fast under fractional scaling. The pointer position is unaffected.
+  raw_mouse: false
+
 integrations:
   fleasion:
     # Boolean (default: false): trust Fleasion's CA without editing Roblox files.

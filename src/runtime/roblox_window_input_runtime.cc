@@ -195,6 +195,10 @@ Status RobloxWindowInputRuntime::UpdateTextFocusProperties(
   return runtime_.UpdateTextFocusProperties(generation, properties);
 }
 
+void RobloxWindowInputRuntime::SetRawMouseEnabled(bool enabled) {
+  runtime_.SetRawMouseEnabled(enabled);
+}
+
 RobloxInputSnapshot RobloxWindowInputRuntime::Snapshot() const {
   return runtime_.Snapshot();
 }

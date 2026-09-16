@@ -288,6 +288,28 @@ TEST(RuntimeConfigFileTest, RejectsSymlinkAndOversizedConfiguration) {
   EXPECT_NE(loaded.error.find("no larger than 1 MiB"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, RawMouseDefaultsOffAndLoadsFromYaml) {
+  TemporaryDirectory defaulted_directory;
+  const RuntimeConfigLoadResult defaulted = LoadRuntimeConfig(
+      MapEnvironment(), defaulted_directory.Write(R"yaml(
+version: 1
+input:
+  touch_enabled: false
+)yaml"));
+  ASSERT_TRUE(defaulted) << defaulted.error;
+  EXPECT_FALSE(defaulted.config.input_capabilities().raw_mouse);
+
+  TemporaryDirectory enabled_directory;
+  const RuntimeConfigLoadResult enabled = LoadRuntimeConfig(
+      MapEnvironment(), enabled_directory.Write(R"yaml(
+version: 1
+input:
+  raw_mouse: true
+)yaml"));
+  ASSERT_TRUE(enabled) << enabled.error;
+  EXPECT_TRUE(enabled.config.input_capabilities().raw_mouse);
+}
+
 TEST(RuntimeConfigFileTest, LoadsTypedDesktopAndGraphicsSettings) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(

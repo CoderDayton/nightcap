@@ -171,6 +171,9 @@ class RobloxInputRouter final {
                                    const RobloxTextFocusProperties& properties);
   RobloxInputDispatchResult HandleEvent(const platform::PlatformEvent& event);
   RobloxInputSnapshot Snapshot() const;
+  // Raw mouse sends look deltas in host units instead of guest surface units.
+  // The reported pointer position stays in guest units either way.
+  void SetRawMouseEnabled(bool enabled);
 
  private:
   struct ActiveTouch {
@@ -237,6 +240,7 @@ class RobloxInputRouter final {
   std::vector<ActiveGamepad> gamepads_;
   float mouse_x_ = 0.0f;
   float mouse_y_ = 0.0f;
+  bool raw_mouse_ = false;
 };
 
 const char* RobloxInputDispatchStateName(RobloxInputDispatchState state);

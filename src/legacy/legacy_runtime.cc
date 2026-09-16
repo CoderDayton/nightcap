@@ -6801,6 +6801,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       window_input_runtime =
           std::make_shared<mocktail::runtime::RobloxWindowInputRuntime>(
               input_environment, roblox_capabilities.input);
+      window_input_runtime->SetRawMouseEnabled(input_capabilities.raw_mouse);
       const mocktail::Status input_status = window_input_runtime->Initialize();
       if (!input_status.ok()) {
         std::cerr << "[FATAL] Typed production input did not initialize: "

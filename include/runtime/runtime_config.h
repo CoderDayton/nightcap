@@ -39,6 +39,10 @@ struct InputCapabilityConfig {
   bool touch_enabled = false;
   bool mouse_enabled = true;
   bool keyboard_enabled = true;
+  // Mouse look deltas keep their host units instead of being scaled into guest
+  // surface units. The two differ only when the desktop display scale and the
+  // window's pixel density disagree, as under fractional scaling.
+  bool raw_mouse = false;
 };
 
 struct NetworkProxyConfig {

@@ -230,6 +230,11 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       keyboard.has_value()) {
     config.input_capabilities_.keyboard_enabled = *keyboard;
   }
+  if (const std::optional<bool> raw_mouse =
+          InputEnabled(environment, "MOCKTAIL_RAW_MOUSE");
+      raw_mouse.has_value()) {
+    config.input_capabilities_.raw_mouse = *raw_mouse;
+  }
   bool customized_device = false;
   config.device_profile_valid_ =
       config.device_profile_valid_ &&

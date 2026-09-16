@@ -183,6 +183,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "window.title",
        "window.high_dpi",
        "input.touch_enabled",
+       "input.raw_mouse",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
       "network.proxy_host",
@@ -432,6 +433,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_TOUCH_MODE"] = parsed ? "on" : "off";
+  }
+  if (const auto raw_mouse = value("input.raw_mouse"); raw_mouse.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*raw_mouse, &parsed)) {
+      *error = "input.raw_mouse must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_RAW_MOUSE"] = parsed ? "on" : "off";
   }
   if (const auto desktop_playability =
           value("compatibility.desktop_playability");
@@ -877,6 +886,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue(
           "MOCKTAIL_KEYBOARD_MODE",
           config.input_capabilities().keyboard_enabled ? "on" : "off", error) &&
+      SetEnvironmentValue("MOCKTAIL_RAW_MOUSE",
+                          config.input_capabilities().raw_mouse ? "on" : "off",
+                          error) &&
       SetEnvironmentValue("MOCKTAIL_DESKTOP_PLAYABILITY",
                           config.desktop_playability() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
