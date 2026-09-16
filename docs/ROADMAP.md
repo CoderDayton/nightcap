@@ -41,9 +41,6 @@ Upstream ships Discord RPC. Nightcap turns it on by default; see the
 [FAQ](../FAQ.md) to switch it off. It shows the experience name, elapsed
 time, the experience icon, and a join button when the server is public.
 
-- Custom presence: set the title, details line, state line, and large and
-  small icons from `config.yaml`, with placeholders like the experience name
-  and elapsed time.
 - A Discord tab in the settings window to toggle each field.
 
 Done when a friend can see what you are playing and join in one click, and
@@ -83,6 +80,8 @@ proves it.
 - Roblox sees the real host RAM and screen size.
 - Desktop launcher that works on Wayland and finds the installed binary.
 - Discord Rich Presence on by default.
+- Custom Discord presence: title, details, state, and large and small icons
+  from `config.yaml`, with `{place_name}` and `{place_icon}` placeholders.
 - Own app ID `io.github.CoderDayton.nightcap`, so Nightcap installs next to
   upstream.
 - AppImage and signed Flatpak releases on every `v*` tag, with the Flatpak

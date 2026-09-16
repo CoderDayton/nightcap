@@ -13,11 +13,14 @@ namespace mocktail {
 namespace runtime {
 
 struct DiscordRpcActivity {
+  std::string name;
   std::string details;
   std::string state;
   std::optional<int64_t> start_timestamp;
   std::string large_image;
   std::string large_text;
+  std::string small_image;
+  std::string small_text;
   std::string button_label;
   std::string button_url;
 };

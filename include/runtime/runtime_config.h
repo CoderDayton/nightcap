@@ -51,12 +51,24 @@ struct NetworkProxyConfig {
   int port = 0;
 };
 
+// Text and image fields expand {place_name} and {place_icon}. A field that
+// renders empty is left out of the activity.
 struct DiscordRpcTextConfig {
+  std::string title;
   std::string browsing = "Browsing experiences";
   std::string joining = "Joining an experience";
   std::string playing = "{place_name}";
   std::string state = "Playing Roblox";
   std::string unknown_place = "Unknown experience";
+};
+
+// Images are an https URL or a Discord application asset key. Discord shows
+// the small image only next to a large one.
+struct DiscordRpcImagesConfig {
+  std::string large = "{place_icon}";
+  std::string large_text = "{place_name}";
+  std::string small;
+  std::string small_text;
 };
 
 struct DiscordRpcConfig {
@@ -68,6 +80,7 @@ struct DiscordRpcConfig {
   std::string join_button_label = "Join Server";
   std::string application_id;
   DiscordRpcTextConfig text;
+  DiscordRpcImagesConfig images;
 };
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(

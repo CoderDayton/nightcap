@@ -6,6 +6,19 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Custom Discord presence. `integrations.discord_rpc.text.title` replaces the
+  name in "Playing Nightcap", and `integrations.discord_rpc.images` sets the
+  large and small icons and their hover text. Text and image fields accept
+  `{place_name}` and `{place_icon}`. Set `text.state: ""` to hide the
+  "Playing Roblox" line.
+
+### Fixed
+
+- With `show_place_name: false`, Discord no longer shows the experience
+  thumbnail or its name on hover.
+
 ## [0.2.0] - 2026-09-16
 
 ### Added

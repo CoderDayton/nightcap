@@ -169,6 +169,8 @@ TEST(RuntimeConfigBootstrapTest,
            "# Boolean (default: true): never expose private or reserved "
            "joins.\n      public_servers_only: true",
            "#   playing: \"{place_name}\"\n    #   state: Playing Roblox",
+           "#   title: \"{place_name}\"",
+           "#   large: \"{place_icon}\"\n    #   large_text: \"{place_name}\"",
             "# Integer (default: 1280): initial window width in logical desktop "
             "units.\n  "
             "width: 1280",
@@ -356,6 +358,11 @@ integrations:
       playing: "Inside {place_name}"
       state: Playing Roblox on Linux
       unknown_place: Unknown world
+      title: "{place_name}"
+    images:
+      large: ""
+      small: nightcap_logo
+      small_text: On Linux
 updates:
   automatic: true
 )yaml");
@@ -405,6 +412,78 @@ updates:
   EXPECT_EQ(loaded.config.discord_rpc().text.state,
             "Playing Roblox on Linux");
   EXPECT_EQ(loaded.config.discord_rpc().text.unknown_place, "Unknown world");
+  EXPECT_EQ(loaded.config.discord_rpc().text.title, "{place_name}");
+  EXPECT_TRUE(loaded.config.discord_rpc().images.large.empty());
+  EXPECT_EQ(loaded.config.discord_rpc().images.large_text, "{place_name}");
+  EXPECT_EQ(loaded.config.discord_rpc().images.small, "nightcap_logo");
+  EXPECT_EQ(loaded.config.discord_rpc().images.small_text, "On Linux");
+  EXPECT_TRUE(loaded.config.discord_rpc_valid());
+}
+
+TEST(RuntimeConfigFileTest, RejectsControlBytesInDiscordPresenceFields) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+integrations:
+  discord_rpc:
+    images:
+      small_text: "bad\x01text"
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("integrations.discord_rpc.images.small_text"),
+            std::string::npos);
+  EXPECT_NE(loaded.error.find("control bytes"), std::string::npos)
+      << loaded.error;
+}
+
+TEST(RuntimeConfigFileTest, EmptyDiscordStateLoadsAsHidden) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+integrations:
+  discord_rpc:
+    text:
+      state: ""
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.discord_rpc().text.state.empty());
+  EXPECT_TRUE(loaded.config.discord_rpc_valid());
+}
+
+TEST(RuntimeConfigFileTest, ExportsDiscordPresenceFieldsIncludingEmptyValues) {
+  std::string error;
+  const RuntimeConfig configured = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_DISCORD_RPC_TEXT_TITLE", "Nightcap"},
+                      {"MOCKTAIL_DISCORD_RPC_TEXT_STATE", ""},
+                      {"MOCKTAIL_DISCORD_RPC_IMAGE_LARGE", ""},
+                      {"MOCKTAIL_DISCORD_RPC_IMAGE_SMALL", "linux"}}));
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(configured, &error)) << error;
+
+  const RuntimeConfig exported =
+      RuntimeConfig::FromEnvironment(ProcessEnvironment());
+  EXPECT_EQ(exported.discord_rpc().text.title, "Nightcap");
+  EXPECT_TRUE(exported.discord_rpc().text.state.empty());
+  EXPECT_TRUE(exported.discord_rpc_valid());
+  EXPECT_TRUE(exported.discord_rpc().images.large.empty());
+  EXPECT_EQ(exported.discord_rpc().images.large_text, "{place_name}");
+  EXPECT_EQ(exported.discord_rpc().images.small, "linux");
+  EXPECT_TRUE(exported.discord_rpc().images.small_text.empty());
+  for (const char* variable :
+       {"MOCKTAIL_DISCORD_RPC_TEXT_TITLE", "MOCKTAIL_DISCORD_RPC_TEXT_STATE",
+        "MOCKTAIL_DISCORD_RPC_IMAGE_LARGE",
+        "MOCKTAIL_DISCORD_RPC_IMAGE_LARGE_TEXT",
+        "MOCKTAIL_DISCORD_RPC_IMAGE_SMALL",
+        "MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT"}) {
+    unsetenv(variable);
+  }
 }
 
 TEST(RuntimeConfigFileTest, EnvironmentOverridesYaml) {

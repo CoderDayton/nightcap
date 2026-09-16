@@ -219,6 +219,99 @@ TEST(DiscordRpcTest, ExpandsCustomPlaceTemplateAndUsesFallback) {
       "Playing Unknown world with Mocktail");
 }
 
+TEST(DiscordRpcTest, RendersCustomTitleAndStateTemplates) {
+  DiscordRpcConfig config;
+  config.text.title = "{place_name}";
+  config.text.state = "In {place_name}";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity playing =
+      BuildDiscordRpcActivity(config, RobloxExperiencePresencePhase::kPlaying,
+                              &request, "Natural Disaster Survival", 1);
+  EXPECT_EQ(playing.name, "Natural Disaster Survival");
+  EXPECT_EQ(playing.state, "In Natural Disaster Survival");
+
+  const DiscordRpcActivity browsing = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kBrowsing, nullptr, {}, 0);
+  EXPECT_TRUE(browsing.name.empty());
+}
+
+TEST(DiscordRpcTest, RendersCustomImagesWithPlaceholders) {
+  DiscordRpcConfig config;
+  config.images.large = "nightcap_logo";
+  config.images.large_text = "Nightcap";
+  config.images.small = "{place_icon}";
+  config.images.small_text = "{place_name}";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1,
+      "https://tr.rbxcdn.com/example/512/512/Image/Png");
+
+  EXPECT_EQ(activity.large_image, "nightcap_logo");
+  EXPECT_EQ(activity.large_text, "Nightcap");
+  EXPECT_EQ(activity.small_image,
+            "https://tr.rbxcdn.com/example/512/512/Image/Png");
+  EXPECT_EQ(activity.small_text, "Natural Disaster Survival");
+}
+
+TEST(DiscordRpcTest, EmptyLargeImageHidesBothImages) {
+  DiscordRpcConfig config;
+  config.images.large = "";
+  config.images.small = "nightcap_logo";
+  config.images.small_text = "Nightcap";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1,
+      "https://tr.rbxcdn.com/example/512/512/Image/Png");
+
+  EXPECT_TRUE(activity.large_image.empty());
+  EXPECT_TRUE(activity.large_text.empty());
+  EXPECT_TRUE(activity.small_image.empty());
+  EXPECT_TRUE(activity.small_text.empty());
+}
+
+TEST(DiscordRpcTest, DropsUnsafeCustomImages) {
+  const RobloxExperienceLaunchRequest request = PublicServer();
+  for (const char* unsafe :
+       {"file:///etc/passwd", "http://example.test/a.png", "not a key",
+        "{place_name}"}) {
+    DiscordRpcConfig config;
+    config.images.large = "nightcap_logo";
+    config.images.small = unsafe;
+    const DiscordRpcActivity small = BuildDiscordRpcActivity(
+        config, RobloxExperiencePresencePhase::kPlaying, &request,
+        "Natural Disaster Survival", 1);
+    EXPECT_TRUE(small.small_image.empty()) << unsafe;
+
+    config.images.large = unsafe;
+    const DiscordRpcActivity large = BuildDiscordRpcActivity(
+        config, RobloxExperiencePresencePhase::kPlaying, &request,
+        "Natural Disaster Survival", 1);
+    EXPECT_TRUE(large.large_image.empty()) << unsafe;
+    EXPECT_TRUE(large.large_text.empty()) << unsafe;
+  }
+}
+
+TEST(DiscordRpcTest, HiddenPlaceNameAlsoHidesPlaceImagesAndTitle) {
+  DiscordRpcConfig config;
+  config.show_place_name = false;
+  config.text.title = "{place_name}";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Secret place name", 1,
+      "https://tr.rbxcdn.com/example/512/512/Image/Png");
+
+  EXPECT_TRUE(activity.name.empty());
+  EXPECT_TRUE(activity.large_image.empty());
+  EXPECT_TRUE(activity.large_text.empty());
+}
+
 TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
   char directory_pattern[] = "/tmp/mocktail_discord_rpc_XXXXXX";
   char* directory = mkdtemp(directory_pattern);
@@ -280,6 +373,12 @@ TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
   config.application_id = "123456789012345678";
   config.show_place_name = false;
   config.join_enabled = false;
+  config.text.title = "Nightcap Test";
+  // Joining has no place yet, so this renders empty and must be left out.
+  config.text.joining = "{place_name}";
+  config.images.large = "nightcap_logo";
+  config.images.small = "linux";
+  config.images.small_text = "On Linux";
   DiscordRpcSession session(std::move(config));
   std::string detail;
   ASSERT_TRUE(session.Start(&detail)) << detail;
@@ -320,8 +419,15 @@ TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
   EXPECT_NE(activity_payloads[0].find("SET_ACTIVITY"), std::string::npos);
   EXPECT_NE(activity_payloads[0].find("Browsing experiences"),
             std::string::npos);
-  EXPECT_NE(activity_payloads[1].find("Joining an experience"),
+  EXPECT_NE(activity_payloads[0].find("\"name\":\"Nightcap Test\""),
             std::string::npos);
+  EXPECT_NE(activity_payloads[0].find("\"large_image\":\"nightcap_logo\""),
+            std::string::npos);
+  EXPECT_NE(activity_payloads[0].find("\"small_image\":\"linux\""),
+            std::string::npos);
+  EXPECT_NE(activity_payloads[0].find("\"small_text\":\"On Linux\""),
+            std::string::npos);
+  EXPECT_EQ(activity_payloads[1].find("\"details\""), std::string::npos);
   EXPECT_NE(activity_payloads[2].find("Playing Roblox"), std::string::npos);
   EXPECT_NE(activity_payloads[2].find("timestamps"), std::string::npos);
 
