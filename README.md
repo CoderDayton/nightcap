@@ -197,7 +197,6 @@ Support this fork by giving it a star or with cryptocurrency:
 
 - LTC: `LdABR2ELRYrUESWZWrEk1uNx38gHHMuHUU`
 - SOL: `tjeDnPoWeyW8zfTf8c5CVAm5QTV8vFPaPouaScAdwfT`
-- BCH: `qpktw5jwut9ae8e6898qt3v7rj3km44utgk2r9mj8n`
 
 Support the upstream project, which does most of the heavy lifting:
 
