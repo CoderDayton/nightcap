@@ -45,10 +45,13 @@ jobs:
 
       - name: Build AppImage
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
+            --env GH_TOKEN \
             ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
               pacman -Syu --noconfirm --needed \
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \

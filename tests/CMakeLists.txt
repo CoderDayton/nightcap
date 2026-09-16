@@ -1050,6 +1050,12 @@ add_test(
 )
 
 add_test(
+  NAME AnyLinuxDependenciesTest.RollingAssetsAreVerified
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/anylinux_dependencies_test.sh
+          ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
   NAME AnyLinuxPackagingTest.RelocatedRuntimePaths
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/anylinux_packaging_test.sh
           ${CMAKE_SOURCE_DIR} ${CMAKE_CXX_COMPILER}
