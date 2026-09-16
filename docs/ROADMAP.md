@@ -38,8 +38,9 @@ Upstream ships Discord RPC. Nightcap turns it on by default; see the
 [FAQ](../FAQ.md) to switch it off. It shows the experience name, elapsed
 time, the experience icon, and a join button when the server is public.
 
-- Show the current server region and player count when Roblox exposes them.
-- Make the join button work for private servers the player has a link for.
+- Custom presence: set the title, details line, state line, and large and
+  small icons from `config.yaml`, with placeholders like the experience name
+  and elapsed time.
 - A Discord tab in the settings window to toggle each field.
 
 Done when a friend can see what you are playing and join in one click, and
@@ -54,7 +55,8 @@ feeling.
   GPU time, and present latency.
 - Shader compile and pipeline cache tracing, so first-load stutter can be
   measured and cut.
-- A `--profile` flag that writes a trace file readable by Perfetto.
+- A `--profile` flag that writes a Chrome-format trace file, readable in
+  `ui.perfetto.dev` and `chrome://tracing`.
 - A short benchmark guide in `docs/` with a fixed set of experiences, so
   before and after numbers can be compared across machines.
 
