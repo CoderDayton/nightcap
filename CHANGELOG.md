@@ -9,6 +9,11 @@ GitHub are taken from the matching section here.
 ### Added
 
 - FAQ covering Discord RPC, log locations, and VR, adapted from upstream.
+- `input.raw_mouse` in `config.yaml` sends mouse look deltas in the host's
+  own units. Turn it on when first-person aiming feels too slow or too fast
+  under fractional display scaling. Off by default.
+- Nightly AppImage builds, published as the `continuous` prerelease. They are
+  untested; use a tagged release for normal play.
 
 ### Changed
 
@@ -19,6 +24,18 @@ GitHub are taken from the matching section here.
   project site.
 - Discord Rich Presence is on by default. Set
   `integrations.discord_rpc.enabled: false` to turn it off.
+- The AppImage build verifies its reduced dependency packages against digests
+  taken at build time, rather than a digest list kept in the repository.
+
+### Fixed
+
+- Mouse look keeps responding after a long turn. The tracked pointer position
+  could drift past the edge of the view, which swallowed every reversal until
+  the mouse travelled all the way back.
+- Nightcap no longer refuses to start with `cannot lock appStorage`. It
+  created its own credential directory using the process umask, then rejected
+  that directory for being group writable. Systems with a permissive umask,
+  such as `002`, failed on first run.
 
 ## [0.1.0] - 2026-09-15
 
