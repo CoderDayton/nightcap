@@ -25,7 +25,8 @@ side by side.
   waiting in a queue.
 - **Sharper textures.** Small textures are upscaled 4x by default, and you
   can replace any texture with your own PNG in `~/.config/mocktail/textures`.
-  Set `MOCKTAIL_SMALL_TEXTURE_UPSCALE=1` to turn the upscale off.
+  A ready-made crosshair is in [`textures/`](textures/README.md). Set
+  `MOCKTAIL_SMALL_TEXTURE_UPSCALE=1` to turn the upscale off.
 - **ETC2 textures on any GPU.** Games that use compressed mobile textures now
   render correctly on desktop GPUs, without stutter.
 - **No more error 319 kicks.** Servers no longer drop you shortly after
