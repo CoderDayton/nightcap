@@ -2,6 +2,7 @@
 
 #include <png.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -82,6 +83,23 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
       height == 0 || source_width == 0 || source_height == 0) {
     return;
   }
+  // Source box of destination column x is [columns[2x], columns[2x + 1]).
+  thread_local std::vector<std::uint32_t> columns;
+  columns.resize(static_cast<std::size_t>(width) * 2);
+  bool one_texel_columns = true;
+  for (std::uint32_t x = 0; x < width; ++x) {
+    const std::uint32_t x0 = static_cast<std::uint32_t>(
+        static_cast<std::uint64_t>(x) * source_width / width);
+    const std::uint32_t x1 = std::max<std::uint32_t>(
+        x0 + 1, static_cast<std::uint32_t>(
+                    (static_cast<std::uint64_t>(x) + 1) * source_width / width));
+    columns[2 * static_cast<std::size_t>(x)] = x0;
+    columns[2 * static_cast<std::size_t>(x) + 1] = x1;
+    one_texel_columns = one_texel_columns && x1 == x0 + 1;
+  }
+  const std::size_t row_bytes = static_cast<std::size_t>(width) * 4;
+  std::uint64_t previous_y0 = 0;
+  std::uint64_t previous_y1 = 0;
   for (std::uint32_t y = 0; y < height; ++y) {
     const std::uint64_t y0 = static_cast<std::uint64_t>(y) * source_height / height;
     std::uint64_t y1 =
@@ -89,13 +107,25 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
     if (y1 <= y0) {
       y1 = y0 + 1;
     }
-    for (std::uint32_t x = 0; x < width; ++x) {
-      const std::uint64_t x0 = static_cast<std::uint64_t>(x) * source_width / width;
-      std::uint64_t x1 =
-          (static_cast<std::uint64_t>(x) + 1) * source_width / width;
-      if (x1 <= x0) {
-        x1 = x0 + 1;
+    std::uint8_t* out_row = destination + y * row_bytes;
+    if (y > 0 && y0 == previous_y0 && y1 == previous_y1) {
+      std::memcpy(out_row, out_row - row_bytes, row_bytes);
+      continue;
+    }
+    previous_y0 = y0;
+    previous_y1 = y1;
+    if (one_texel_columns && y1 == y0 + 1) {
+      const std::uint8_t* source_row = source + y0 * source_width * 4;
+      for (std::uint32_t x = 0; x < width; ++x) {
+        std::memcpy(out_row + static_cast<std::size_t>(x) * 4,
+                    source_row + columns[2 * static_cast<std::size_t>(x)] * 4,
+                    4);
       }
+      continue;
+    }
+    for (std::uint32_t x = 0; x < width; ++x) {
+      const std::uint64_t x0 = columns[2 * static_cast<std::size_t>(x)];
+      const std::uint64_t x1 = columns[2 * static_cast<std::size_t>(x) + 1];
       std::uint64_t sum[4] = {0, 0, 0, 0};
       for (std::uint64_t sy = y0; sy < y1; ++sy) {
         for (std::uint64_t sx = x0; sx < x1; ++sx) {

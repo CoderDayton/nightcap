@@ -127,6 +127,10 @@ VkExtent3D g_copied_extent{};
 VkDeviceSize g_created_buffer_size = 0;
 std::uintptr_t g_next_image = 0x100;
 std::uint32_t g_copy_image_calls = 0;
+std::uint32_t g_create_buffer_calls = 0;
+std::uint32_t g_allocate_memory_calls = 0;
+std::uint32_t g_destroy_buffer_calls = 0;
+std::uint32_t g_free_memory_calls = 0;
 VkImageBlit g_blit{};
 VkFilter g_blit_filter = VK_FILTER_NEAREST;
 
@@ -159,6 +163,7 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeCreateBuffer(VkDevice,
                                                 const VkAllocationCallbacks*,
                                                 VkBuffer* buffer) {
   g_created_buffer_size = info->size;
+  ++g_create_buffer_calls;
   *buffer = FakeHandle<VkBuffer>(kStagingBuffer);
   return VK_SUCCESS;
 }
@@ -173,6 +178,7 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeAllocateMemory(
     VkDevice, const VkMemoryAllocateInfo*, const VkAllocationCallbacks*,
     VkDeviceMemory* memory) {
   *memory = FakeHandle<VkDeviceMemory>(kStagingMemory);
+  ++g_allocate_memory_calls;
   return VK_SUCCESS;
 }
 
@@ -193,9 +199,13 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeMapMemory(VkDevice, VkDeviceMemory memory,
 
 VKAPI_ATTR void VKAPI_CALL FakeUnmapMemory(VkDevice, VkDeviceMemory) {}
 VKAPI_ATTR void VKAPI_CALL FakeDestroyBuffer(VkDevice, VkBuffer,
-                                             const VkAllocationCallbacks*) {}
+                                             const VkAllocationCallbacks*) {
+  ++g_destroy_buffer_calls;
+}
 VKAPI_ATTR void VKAPI_CALL FakeFreeMemory(VkDevice, VkDeviceMemory,
-                                          const VkAllocationCallbacks*) {}
+                                          const VkAllocationCallbacks*) {
+  ++g_free_memory_calls;
+}
 VKAPI_ATTR void VKAPI_CALL FakeCopyBufferToImage(
     VkCommandBuffer, VkBuffer, VkImage, VkImageLayout, std::uint32_t count,
     const VkBufferImageCopy* regions) {
@@ -526,6 +536,60 @@ TEST(VulkanEtc2EmulationTest, FillsScaledMipsFromLevelZero) {
     ASSERT_EQ(g_staging[256 + index], expected[index]) << index;
   }
   emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, ReusesStagingBuffersAcrossCommandBuffers) {
+  const VkDevice device = FakeHandle<VkDevice>(0x17);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x207);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  g_source.fill(0);
+
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x27), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.extent = {4, 4, 1};
+  VkImage image = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                &mapped),
+            VK_SUCCESS);
+
+  g_create_buffer_calls = 0;
+  g_allocate_memory_calls = 0;
+  g_destroy_buffer_calls = 0;
+  g_free_memory_calls = 0;
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = {4, 4, 1};
+  for (std::uintptr_t frame = 0; frame < 8; ++frame) {
+    const VkCommandBuffer command_buffer =
+        FakeHandle<VkCommandBuffer>(0x780 + frame);
+    emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &region);
+    emulation.PrepareSubmit(&command_buffer, 1);
+    emulation.ReleaseCommandBuffer(command_buffer);
+  }
+  EXPECT_EQ(g_create_buffer_calls, 1u);
+  EXPECT_EQ(g_allocate_memory_calls, 1u);
+  EXPECT_EQ(g_destroy_buffer_calls, 0u);
+
+  emulation.DestroyDevice(device);
+  EXPECT_EQ(g_destroy_buffer_calls, 1u);
+  EXPECT_EQ(g_free_memory_calls, 1u);
 }
 
 // Copies out of a scaled image cover its host bounds and shrink back onto

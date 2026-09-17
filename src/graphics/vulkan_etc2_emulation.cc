@@ -200,11 +200,23 @@ bool IsColorFormat(EtcFormat format) {
          format == EtcFormat::kEtc2Rgba8;
 }
 
+// A host-visible transfer buffer that stays mapped for its whole life.
 struct Staging {
   VkDevice device = VK_NULL_HANDLE;
   VkBuffer buffer = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
+  VkDeviceSize capacity = 0;
+  std::uint8_t* mapped = nullptr;
 };
+
+// Idle staging buffers kept for reuse. Creating, allocating, binding and
+// mapping one costs hundreds of microseconds in the driver, so a burst of
+// texture uploads would otherwise stall the frame that records it.
+constexpr VkDeviceSize kMaxIdleStagingBytes = 64 * 1024 * 1024;
+constexpr std::size_t kMaxIdleStagingBuffers = 64;
+// A request may take an idle buffer up to this size, or up to 4x its own
+// size when larger, so small uploads share buffers without pinning big ones.
+constexpr VkDeviceSize kStagingReuseSlack = 64 * 1024;
 
 struct PendingUpload {
   VkDevice device = VK_NULL_HANDLE;
@@ -252,6 +264,7 @@ void LogFailure(const char* message) {
 
 bool CreateStaging(const HostDevice& dev, VkDeviceSize size, Staging* staging,
                    std::uint8_t** mapped) {
+  *mapped = nullptr;
   if (dev.create_buffer == nullptr || dev.allocate_memory == nullptr ||
       dev.get_buffer_memory_requirements == nullptr ||
       dev.bind_buffer_memory == nullptr || dev.map_memory == nullptr ||
@@ -301,8 +314,8 @@ bool CreateStaging(const HostDevice& dev, VkDeviceSize size, Staging* staging,
     dev.free_memory(dev.device, memory, nullptr);
     return false;
   }
-  *staging = {dev.device, buffer, memory};
   *mapped = static_cast<std::uint8_t*>(data);
+  *staging = {dev.device, buffer, memory, size, *mapped};
   return true;
 }
 
@@ -466,6 +479,8 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
   std::unordered_map<VkCommandBuffer, CommandRecord> commands;
   std::atomic<bool> has_commands{false};
+  std::vector<Staging> idle_staging;
+  VkDeviceSize idle_staging_bytes = 0;
   // Heap buffers reused across submits; they only grow.
   std::mutex scratch_mutex;
   std::vector<std::uint8_t> scratch_source;
@@ -560,6 +575,55 @@ struct VulkanEtc2Emulation::State {
                    upload.target_width, upload.target_height, upload.target);
     } else {
       std::memcpy(upload.target, decoded, upload.decoded);
+    }
+  }
+
+  // Takes the smallest idle buffer that fits, or creates one.
+  bool AcquireStaging(const HostDevice& dev, VkDeviceSize size,
+                      Staging* staging) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const VkDeviceSize limit = std::max(size * 4, kStagingReuseSlack);
+      auto best = idle_staging.end();
+      for (auto it = idle_staging.begin(); it != idle_staging.end(); ++it) {
+        if (it->device == dev.device && it->capacity >= size &&
+            it->capacity <= limit &&
+            (best == idle_staging.end() || it->capacity < best->capacity)) {
+          best = it;
+        }
+      }
+      if (best != idle_staging.end()) {
+        *staging = *best;
+        idle_staging_bytes -= best->capacity;
+        *best = idle_staging.back();
+        idle_staging.pop_back();
+        return true;
+      }
+    }
+    std::uint8_t* mapped = nullptr;
+    return CreateStaging(dev, size, staging, &mapped);
+  }
+
+  // Keeps released buffers for reuse up to the idle limits and destroys
+  // the rest.
+  void ReleaseStaging(std::vector<Staging> released) {
+    std::vector<Staging> doomed;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (const Staging& staging : released) {
+        if (idle_staging.size() < kMaxIdleStagingBuffers &&
+            idle_staging_bytes + staging.capacity <= kMaxIdleStagingBytes) {
+          idle_staging.push_back(staging);
+          idle_staging_bytes += staging.capacity;
+        } else {
+          doomed.push_back(staging);
+        }
+      }
+    }
+    for (const Staging& staging : doomed) {
+      if (const HostDevice* dev = Find(staging.device); dev != nullptr) {
+        DestroyStaging(*dev, staging);
+      }
     }
   }
 
@@ -704,6 +768,16 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
         doomed.insert(doomed.end(), it->second.staging.begin(),
                       it->second.staging.end());
         it = state_->commands.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (auto it = state_->idle_staging.begin();
+         it != state_->idle_staging.end();) {
+      if (it->device == device) {
+        state_->idle_staging_bytes -= it->capacity;
+        doomed.push_back(*it);
+        it = state_->idle_staging.erase(it);
       } else {
         ++it;
       }
@@ -944,18 +1018,17 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
   std::vector<PendingUpload> uploads;
   VkDeviceSize total = 0;
   Staging staging;
-  std::uint8_t* mapped = nullptr;
   if (!PlanRegions(record, device, source, destination, region_count, regions,
                    &rewritten, &uploads, &total)) {
     LogFailure("skipped an upload with an unsupported region");
     return;
   }
-  if (!CreateStaging(*dev, total, &staging, &mapped)) {
+  if (!state_->AcquireStaging(*dev, total, &staging)) {
     LogFailure("could not allocate a host-visible staging buffer");
     return;
   }
   for (PendingUpload& upload : uploads) {
-    upload.target = mapped + upload.target_offset;
+    upload.target = staging.mapped + upload.target_offset;
   }
   state_->Record(command_buffer, std::move(uploads), staging);
   dev->copy_buffer_to_image(command_buffer, staging.buffer, destination,
@@ -979,19 +1052,18 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
   std::vector<PendingUpload> uploads;
   VkDeviceSize total = 0;
   Staging staging;
-  std::uint8_t* mapped = nullptr;
   if (!PlanRegions(record, device, info->srcBuffer, info->dstImage,
                    info->regionCount, info->pRegions, &rewritten, &uploads,
                    &total)) {
     LogFailure("skipped an upload with an unsupported region");
     return;
   }
-  if (!CreateStaging(*dev, total, &staging, &mapped)) {
+  if (!state_->AcquireStaging(*dev, total, &staging)) {
     LogFailure("could not allocate a host-visible staging buffer");
     return;
   }
   for (PendingUpload& upload : uploads) {
-    upload.target = mapped + upload.target_offset;
+    upload.target = staging.mapped + upload.target_offset;
   }
   state_->Record(command_buffer, std::move(uploads), staging);
   VkCopyBufferToImageInfo2 host_info = *info;
@@ -1171,6 +1243,8 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
       }
     }
   }
+  TraceScope trace_scope(work.empty() ? nullptr : ActiveProfileTrace(),
+                         "etc2 decode", "texture");
   // Mapped Vulkan memory is uncached or write-combined, which makes the
   // decoder's scattered byte reads and writes tens of times slower than on
   // heap memory. Compressed bytes are streamed into a heap scratch buffer,
@@ -1218,6 +1292,10 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
     compressed_total += upload.compressed;
     decoded_total += upload.decoded;
   }
+  trace_scope.Arg("uploads", static_cast<std::int64_t>(copies.size()));
+  trace_scope.Arg("compressed_bytes",
+                  static_cast<std::int64_t>(compressed_total));
+  trace_scope.Arg("decoded_bytes", static_cast<std::int64_t>(decoded_total));
 
   std::lock_guard<std::mutex> scratch_lock(state_->scratch_mutex);
   std::vector<std::uint8_t>& scratch_source = state_->scratch_source;
@@ -1243,8 +1321,6 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
       EtcDecodeJob job;
       job.format = upload.format;
       job.source = source + layer * compressed_layer;
-  TraceScope trace_scope(work.empty() ? nullptr : ActiveProfileTrace(),
-                         "etc2 decode", "texture");
       job.source_bytes = compressed_layer;
       job.width = upload.width;
       job.height = upload.height;
@@ -1292,20 +1368,12 @@ void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
     if (record == state_->commands.end()) {
       return;
     }
-  trace_scope.Arg("uploads", static_cast<std::int64_t>(copies.size()));
-  trace_scope.Arg("compressed_bytes",
-                  static_cast<std::int64_t>(compressed_total));
-  trace_scope.Arg("decoded_bytes", static_cast<std::int64_t>(decoded_total));
     doomed = std::move(record->second.staging);
     state_->commands.erase(record);
     state_->has_commands.store(!state_->commands.empty(),
                                std::memory_order_release);
   }
-  for (const Staging& staging : doomed) {
-    if (const HostDevice* dev = state_->Find(staging.device); dev != nullptr) {
-      DestroyStaging(*dev, staging);
-    }
-  }
+  state_->ReleaseStaging(std::move(doomed));
 }
 
 }  // namespace mocktail::graphics
