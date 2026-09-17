@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
+#include "mocktail/graphics/chrome_trace_writer.h"
 #include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
 #include "mocktail/graphics/vulkan_text_overlay_compositor.h"
@@ -1011,7 +1012,8 @@ VkResult WaitForSemaphoresObserved(const char* call_name,
     }
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  static_cast<void>(call_name);
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       call_name, "wait");
   const VkResult result = host_wait(device, wait_info, timeout);
   if (observation != nullptr) {
     observation->SetResult(result);
@@ -1130,7 +1132,12 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   }
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t present_start_ns = fps_trace ? MonotonicNanos() : 0;
-  const VkResult result = host_present(queue, present_info);
+  VkResult result = VK_SUCCESS;
+  {
+    mocktail::graphics::TraceScope scope(
+        mocktail::graphics::ActiveProfileTrace(), "host present", "present");
+    result = host_present(queue, present_info);
+  }
   if (fps_trace) {
     PresentWaitTrace().Record(present_start_ns);
   }
@@ -1140,6 +1147,119 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
     note_end(static_cast<std::int32_t>(result));
   }
   return result;
+}
+
+// Samples the time between successive adapter present calls.
+void RecordProfiledFrame(mocktail::graphics::ChromeTraceWriter* trace,
+                         std::uint64_t present_start_ns) {
+  static std::atomic<std::uint64_t> previous_start_ns{0};
+  const std::uint64_t previous =
+      previous_start_ns.exchange(present_start_ns, std::memory_order_relaxed);
+  if (previous != 0 && present_start_ns > previous) {
+    trace->Counter("frame interval (ms)", present_start_ns,
+                   static_cast<double>(present_start_ns - previous) / 1e6);
+  }
+}
+
+// Pipeline and shader creation is wrapped only while profiling, so a normal
+// session calls the host driver directly.
+VkResult VKAPI_CALL ProfiledCreateGraphicsPipelines(
+    VkDevice device, VkPipelineCache cache, std::uint32_t count,
+    const VkGraphicsPipelineCreateInfo* infos,
+    const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
+  const auto host = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
+      HostDeviceProc(device, "vkCreateGraphicsPipelines"));
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkCreateGraphicsPipelines",
+                                       "pipeline");
+  const VkResult result =
+      host(device, cache, count, infos, allocator, pipelines);
+  scope.Arg("count", count);
+  scope.Arg("cache", cache != VK_NULL_HANDLE);
+  scope.Arg("result", result);
+  return result;
+}
+
+VkResult VKAPI_CALL ProfiledCreateComputePipelines(
+    VkDevice device, VkPipelineCache cache, std::uint32_t count,
+    const VkComputePipelineCreateInfo* infos,
+    const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
+  const auto host = reinterpret_cast<PFN_vkCreateComputePipelines>(
+      HostDeviceProc(device, "vkCreateComputePipelines"));
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkCreateComputePipelines",
+                                       "pipeline");
+  const VkResult result =
+      host(device, cache, count, infos, allocator, pipelines);
+  scope.Arg("count", count);
+  scope.Arg("cache", cache != VK_NULL_HANDLE);
+  scope.Arg("result", result);
+  return result;
+}
+
+VkResult VKAPI_CALL ProfiledCreateShaderModule(
+    VkDevice device, const VkShaderModuleCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkShaderModule* shader_module) {
+  const auto host = reinterpret_cast<PFN_vkCreateShaderModule>(
+      HostDeviceProc(device, "vkCreateShaderModule"));
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkCreateShaderModule", "pipeline");
+  const VkResult result = host(device, create_info, allocator, shader_module);
+  scope.Arg("bytes", create_info != nullptr
+                         ? static_cast<std::int64_t>(create_info->codeSize)
+                         : 0);
+  scope.Arg("result", result);
+  return result;
+}
+
+VkResult VKAPI_CALL ProfiledCreatePipelineCache(
+    VkDevice device, const VkPipelineCacheCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkPipelineCache* cache) {
+  const auto host = reinterpret_cast<PFN_vkCreatePipelineCache>(
+      HostDeviceProc(device, "vkCreatePipelineCache"));
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkCreatePipelineCache", "pipeline");
+  const VkResult result = host(device, create_info, allocator, cache);
+  scope.Arg("initial_bytes",
+            create_info != nullptr
+                ? static_cast<std::int64_t>(create_info->initialDataSize)
+                : 0);
+  scope.Arg("result", result);
+  return result;
+}
+
+// Null unless profiling is on and `name` is a profiled device command.
+PFN_vkVoidFunction ProfileAdapterProc(const char* name) {
+  if (name == nullptr || mocktail::graphics::ActiveProfileTrace() == nullptr) {
+    return nullptr;
+  }
+  if (std::strcmp(name, "vkCreateGraphicsPipelines") == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        ProfiledCreateGraphicsPipelines);
+  }
+  if (std::strcmp(name, "vkCreateComputePipelines") == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        ProfiledCreateComputePipelines);
+  }
+  if (std::strcmp(name, "vkCreateShaderModule") == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(ProfiledCreateShaderModule);
+  }
+  if (std::strcmp(name, "vkCreatePipelineCache") == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(ProfiledCreatePipelineCache);
+  }
+  return nullptr;
 }
 
 template <typename Function>
@@ -1397,6 +1517,10 @@ vkGetInstanceProcAddr(VkInstance instance, const char* name) {
                                  vkGetPhysicalDeviceSurfacePresentModesKHR)
                            : nullptr;
   }
+  if (const PFN_vkVoidFunction profiled = ProfileAdapterProc(name);
+      profiled != nullptr) {
+    return HostInstanceProc(instance, name) != nullptr ? profiled : nullptr;
+  }
   if (const PFN_vkVoidFunction adapter = AdapterProc(name);
       adapter != nullptr) {
     if ((IsDeviceAdapterProc(name) || IsEtc2PhysicalDeviceProc(name)) &&
@@ -1418,6 +1542,10 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,
   const PFN_vkVoidFunction host = host_get_device_proc_addr != nullptr
                                       ? host_get_device_proc_addr(device, name)
                                       : nullptr;
+  if (const PFN_vkVoidFunction profiled = ProfileAdapterProc(name);
+      profiled != nullptr) {
+    return host != nullptr ? profiled : nullptr;
+  }
   if (!IsDeviceAdapterProc(name)) {
     return host;
   }
@@ -1599,6 +1727,10 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
     host_destroy(device, allocator);
   }
   RemoveHostDeviceDispatch(device);
+  if (auto* trace = mocktail::graphics::ActiveProfileTrace();
+      trace != nullptr) {
+    trace->Flush();
+  }
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetDeviceQueue(VkDevice device,
@@ -1754,6 +1886,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkAcquireNextImageKHR", "wait");
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t acquire_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult host_result = host_acquire(
@@ -1783,6 +1917,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkAcquireNextImage2KHR", "wait");
   const VkResult host_result =
       host_acquire(device, acquire_info, image_index);
   const VkResult result = NormalizeSwapchainResult(host_result);
@@ -1807,6 +1943,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkWaitForFences", "wait");
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t fence_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult result =
@@ -2002,6 +2140,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkQueueSubmit", "submit");
+  scope.Arg("submits", submit_count);
   if (submits != nullptr) {
     for (std::uint32_t index = 0; index < submit_count; ++index) {
       State().etc2.PrepareSubmit(submits[index].pCommandBuffers,
@@ -2024,6 +2165,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkQueueSubmit2", "submit");
+  scope.Arg("submits", submit_count);
   PrepareEtc2Submit2(submit_count, submits);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, submits, fence, host_submit);
@@ -2041,6 +2185,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkQueueSubmit2KHR", "submit");
+  scope.Arg("submits", submit_count);
   PrepareEtc2Submit2(submit_count, submits);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, submits, fence,
@@ -2073,6 +2220,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkQueueWaitIdle", "wait");
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t idle_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult result =
@@ -2092,6 +2241,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkDeviceWaitIdle(VkDevice device) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkDeviceWaitIdle", "wait");
   const VkResult result =
       State().text_overlay.DeviceWaitIdle(device, host_wait);
   observation.SetResult(result);
@@ -2210,8 +2361,15 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  mocktail::graphics::ChromeTraceWriter* const trace =
+      mocktail::graphics::ActiveProfileTrace();
+  mocktail::graphics::TraceScope scope(trace, "vkQueuePresentKHR", "present");
+  if (trace != nullptr) {
+    RecordProfiledFrame(trace, mocktail::graphics::TraceClockNanos());
+  }
   const VkResult result = state.text_overlay.QueuePresent(
       queue, present_info, ObservedHostQueuePresent);
+  scope.Arg("result", result);
   const VkResult normalized_result = NormalizeSwapchainResult(result);
   if (normalized_result == VK_ERROR_OUT_OF_DATE_KHR) {
     const NoteSurfaceOutOfDateFn note_surface_out_of_date =

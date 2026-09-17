@@ -51,14 +51,16 @@ you can switch it all off in one click.
 Every performance change should come with numbers. Today they come with a
 feeling.
 
-- A frame time overlay, toggled by a key and a config flag, showing CPU time,
-  GPU time, and present latency.
-- Shader compile and pipeline cache tracing, so first-load stutter can be
-  measured and cut.
-- A `--profile` flag that writes a Chrome-format trace file, readable in
-  `ui.perfetto.dev` and `chrome://tracing`.
-- A short benchmark guide in `docs/` with a fixed set of experiences, so
-  before and after numbers can be compared across machines.
+Roblox's own stats overlays (Shift+F4, Shift+F5) already cover the game's
+frame time, so this item measures only the layer Roblox cannot see.
+
+- A `--profile` flag that writes a Chrome-format trace of the Vulkan
+  adapter's work, readable in `ui.perfetto.dev` and `chrome://tracing`.
+- Shader compile and pipeline cache tracing in that trace, so first-load
+  stutter can be measured and cut.
+- A short benchmark guide, [BENCHMARKING.md](BENCHMARKING.md), with a fixed
+  set of experiences, so before and after numbers can be compared on one
+  machine.
 
 Done when a pull request that claims a speedup can show the trace that
 proves it.

@@ -1,5 +1,6 @@
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
 
+#include "mocktail/graphics/chrome_trace_writer.h"
 #include "mocktail/graphics/texture_override.h"
 
 #include <algorithm>
@@ -1242,6 +1243,8 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
       EtcDecodeJob job;
       job.format = upload.format;
       job.source = source + layer * compressed_layer;
+  TraceScope trace_scope(work.empty() ? nullptr : ActiveProfileTrace(),
+                         "etc2 decode", "texture");
       job.source_bytes = compressed_layer;
       job.width = upload.width;
       job.height = upload.height;
@@ -1289,6 +1292,10 @@ void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
     if (record == state_->commands.end()) {
       return;
     }
+  trace_scope.Arg("uploads", static_cast<std::int64_t>(copies.size()));
+  trace_scope.Arg("compressed_bytes",
+                  static_cast<std::int64_t>(compressed_total));
+  trace_scope.Arg("decoded_bytes", static_cast<std::int64_t>(decoded_total));
     doomed = std::move(record->second.staging);
     state_->commands.erase(record);
     state_->has_commands.store(!state_->commands.empty(),

@@ -13,6 +13,11 @@ GitHub are taken from the matching section here.
   large and small icons and their hover text. Text and image fields accept
   `{place_name}` and `{place_icon}`. Set `text.state: ""` to hide the
   "Playing Roblox" line.
+- `--profile <file>` writes a Chrome-format trace of the Vulkan adapter's
+  work: presents, GPU waits, submits, ETC2 texture decode, and pipeline and
+  shader creation. Open it in ui.perfetto.dev. `docs/BENCHMARKING.md`
+  describes the benchmark runs, and `scripts/summarize_profile_trace.py`
+  turns traces into a before and after table.
 
 ### Fixed
 

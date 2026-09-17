@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -160,6 +162,42 @@ TEST(CommandLineTest, ScrubsInternalLaunchDocumentFromOwnedAndProcessArgv) {
                           [](char byte) { return byte == '\0'; }));
 }
 
+TEST(CommandLineTest, ParsesProfileTracePath) {
+  const std::array<const char*, 3> arguments = {"mocktail", "--profile",
+                                                "/traces/session.json"};
+
+  const CommandLineParseResult result =
+      ParseCommandLine(arguments.size(), arguments.data());
+
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.options.profile_trace_path, "/traces/session.json");
+}
+
+TEST(CommandLineTest, AppliesProfileTraceAsAbsolutePath) {
+  unsetenv("MOCKTAIL_PROFILE_TRACE");
+  CommandLineOptions options;
+  options.profile_trace_path = "session.json";
+  std::string error;
+
+  ASSERT_TRUE(ApplyCommandLineEnvironment(options, &error)) << error;
+
+  const char* applied = std::getenv("MOCKTAIL_PROFILE_TRACE");
+  ASSERT_NE(applied, nullptr);
+  EXPECT_EQ(std::string(applied),
+            (std::filesystem::current_path() / "session.json").string());
+  unsetenv("MOCKTAIL_PROFILE_TRACE");
+}
+
+TEST(CommandLineTest, LeavesProfileTraceUnsetWithoutOption) {
+  unsetenv("MOCKTAIL_PROFILE_TRACE");
+  std::string error;
+
+  ASSERT_TRUE(ApplyCommandLineEnvironment(CommandLineOptions{}, &error))
+      << error;
+
+  EXPECT_EQ(std::getenv("MOCKTAIL_PROFILE_TRACE"), nullptr);
+}
+
 TEST(CommandLineTest, RejectsUnsupportedPositionalArgument) {
   const std::array<const char*, 2> arguments = {"mocktail", "/tmp/payload"};
 
@@ -182,7 +220,7 @@ TEST(CommandLineTest, RejectsUnknownOptionBeforeRuntimeWork) {
 
 TEST(CommandLineTest, RejectsEveryMissingValue) {
   for (const char* option :
-       {"--roblox-lib", "--graphics", "--launch-uri"}) {
+       {"--roblox-lib", "--graphics", "--launch-uri", "--profile"}) {
     const std::array<const char*, 2> arguments = {"mocktail", option};
     const CommandLineParseResult result =
         ParseCommandLine(arguments.size(), arguments.data());
@@ -268,7 +306,7 @@ TEST(CommandLineTest, UsageContainsEverySupportedOption) {
   for (const char* option :
        {"--roblox-lib", "--headless", "--windowed", "--graphics",
         "--allow-unverified-build", "--force-run-latest", "--launch-uri",
-        "--help"}) {
+        "--profile", "--help"}) {
     EXPECT_NE(usage.find(option), std::string::npos) << option;
   }
   EXPECT_EQ(usage.find("--login"), std::string::npos);

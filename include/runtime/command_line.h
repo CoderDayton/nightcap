@@ -33,6 +33,8 @@ struct CommandLineOptions {
   // Requests one explicit launch of the provider latest without promoting it
   // into the managed payload state.
   bool force_run_latest = false;
+  // Chrome trace file the Vulkan adapter writes; empty when not profiling.
+  std::string profile_trace_path;
 };
 
 struct CommandLineParseResult {
