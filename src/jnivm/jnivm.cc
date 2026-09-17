@@ -62,7 +62,10 @@ thread_local JNIEnv* g_thread_local_env = nullptr;
 thread_local JNIEnv g_thread_env_storage = {};
 thread_local VM* g_thread_vm_instance = nullptr;
 thread_local mocktail::audio::FmodThreadFloatingPointMode g_thread_audio_fp_mode;
-thread_local std::vector<std::vector<jobject>> g_local_frames;
+// Each frame counts how many local references it holds per handle, so
+// DeleteLocalRef costs one hash lookup per open frame.
+using LocalFrame = std::unordered_map<jobject, uint32_t>;
+thread_local std::vector<LocalFrame> g_local_frames;
 
 std::recursive_mutex g_jni_state_mutex;
 // Authentication preflight can briefly own a second VM. Keep every live
@@ -289,6 +292,10 @@ constexpr uint32_t kJniHandleShift = 16;
 std::shared_ptr<void> g_segment_owners[kJniSegmentCapacity];
 std::unordered_set<jclass> g_known_classes;
 std::unordered_map<std::string, jobject> g_singleton_objects;
+std::unordered_set<jobject> g_singleton_handles;
+// One handle per Class. Class slots are never freed, so the table holds at
+// most one slot per distinct class.
+std::unordered_map<const Class*, jclass> g_class_handles;
 std::unordered_map<std::string, std::shared_ptr<Class>> g_fallback_classes;
 std::unordered_set<jstring> g_known_strings;
 std::list<std::string> g_method_name_storage;
@@ -339,7 +346,7 @@ void RegisterLocalRef(jobject obj) {
     return;
   }
   EnsureLocalFrame();
-  g_local_frames.back().push_back(obj);
+  ++g_local_frames.back()[obj];
 }
 
 void UnregisterLocalRef(jobject obj) {
@@ -348,10 +355,27 @@ void UnregisterLocalRef(jobject obj) {
   }
   for (auto frame = g_local_frames.rbegin(); frame != g_local_frames.rend();
        ++frame) {
-    for (auto it = frame->rbegin(); it != frame->rend(); ++it) {
-      if (*it == obj) {
-        frame->erase(std::next(it).base());
-        return;
+    auto it = frame->find(obj);
+    if (it != frame->end()) {
+      if (--it->second == 0) {
+        frame->erase(it);
+      }
+      return;
+    }
+  }
+}
+
+void ReleaseJniReference(jobject obj);
+
+// A detached thread can no longer use its local references, so they go the
+// way ART drops them on detach.
+void ReleaseThreadLocalRefs() {
+  std::vector<LocalFrame> frames = std::move(g_local_frames);
+  g_local_frames.clear();
+  for (const LocalFrame& frame : frames) {
+    for (const auto& [obj, count] : frame) {
+      for (uint32_t i = 0; i < count; ++i) {
+        ReleaseJniReference(obj);
       }
     }
   }
@@ -370,6 +394,8 @@ void RetainJniReference(jobject obj) {
   }
 }
 
+void ReportHandleTableFull();
+
 int AllocateSegmentSlot(void* value, std::shared_ptr<void> owner = nullptr,
                         SegmentType type = SegmentType::kObject) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
@@ -381,6 +407,7 @@ int AllocateSegmentSlot(void* value, std::shared_ptr<void> owner = nullptr,
              static_cast<uint32_t>(g_jni_ref_index) < kJniSegmentCapacity) {
     index = g_jni_ref_index++;
   } else {
+    ReportHandleTableFull();
     return 0;
   }
   my_segment[index] = value;
@@ -739,6 +766,13 @@ std::shared_ptr<Class> ClassFromJClass(jclass clazz) {
 static jclass StoreClass(std::shared_ptr<Class> cls) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   Class* raw_ptr = cls.get();
+  if (raw_ptr == nullptr) {
+    return nullptr;
+  }
+  auto cached = g_class_handles.find(raw_ptr);
+  if (cached != g_class_handles.end()) {
+    return cached->second;
+  }
   int index = AllocateSegmentSlot(raw_ptr, cls, SegmentType::kClass);
   if (index <= 0) {
     return nullptr;
@@ -746,6 +780,7 @@ static jclass StoreClass(std::shared_ptr<Class> cls) {
   jclass handle =
       reinterpret_cast<jclass>(JniHandleFromIndex(static_cast<uint32_t>(index)));
   g_known_classes.insert(handle);
+  g_class_handles.emplace(raw_ptr, handle);
   return handle;
 }
 
@@ -790,10 +825,8 @@ void ReleaseJniReference(jobject obj) {
       g_known_classes.end()) {
     return;
   }
-  for (const auto& pair : g_singleton_objects) {
-    if (pair.second == obj) {
-      return;
-    }
+  if (g_singleton_handles.count(obj) != 0) {
+    return;
   }
   const uint32_t index = JniIndexFromHandle(obj);
   if (index > 0 && index < kJniSegmentCapacity) {
@@ -850,6 +883,7 @@ jobject SingletonObject(const std::string& class_name) {
   }
   jobject object = MakeObjectForClass(class_name);
   g_singleton_objects[class_name] = object;
+  g_singleton_handles.insert(object);
   return object;
 }
 
@@ -859,6 +893,38 @@ std::string_view ObjectClassName(jobject obj) {
     return {};
   }
   return pseudo_object->GetClass()->GetName();
+}
+
+// Logs once per process which classes hold the live handles, so the leak
+// behind a later null FindClass or NewStringUTF can be named.
+void ReportHandleTableFull() {
+  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
+  static bool reported = false;
+  if (reported) {
+    return;
+  }
+  reported = true;
+  std::unordered_map<std::string_view, std::size_t> live_by_class;
+  for (const auto& entry : g_object_storage) {
+    std::string_view name = ObjectClassName(entry.first);
+    ++live_by_class[name.empty() ? std::string_view("<unknown>") : name];
+  }
+  std::vector<std::pair<std::string_view, std::size_t>> ranked(
+      live_by_class.begin(), live_by_class.end());
+  const std::size_t shown = std::min<std::size_t>(ranked.size(), 10);
+  std::partial_sort(ranked.begin(), ranked.begin() + shown, ranked.end(),
+                    [](const auto& a, const auto& b) {
+                      return a.second > b.second;
+                    });
+  fprintf(stderr,
+          "[JNI] handle table full (%u slots): %zu objects, %zu classes, "
+          "%zu arrays live; new objects return null\n",
+          kJniSegmentCapacity, g_object_storage.size(),
+          g_class_handles.size(), g_array_storage.size());
+  for (std::size_t i = 0; i < shown; ++i) {
+    fprintf(stderr, "[JNI]   %zu x %.*s\n", ranked[i].second,
+            static_cast<int>(ranked[i].first.size()), ranked[i].first.data());
+  }
 }
 
 jobject ExactMessageBusStaticObject(jclass clazz, jmethodID method_id) {
@@ -881,6 +947,8 @@ jobject EngineJavaCallbackObject() {
   }
   g_engine_java_callback =
       MakeObjectForClass("com/roblox/engine/jni/EngineJavaCallback2");
+  // VM-owned like a singleton, so detaching the creating thread keeps it.
+  g_singleton_handles.insert(g_engine_java_callback);
   g_static_object_fields["sImplementation"] = g_engine_java_callback;
   return g_engine_java_callback;
 }
@@ -1149,7 +1217,7 @@ static inline bool IsRawStringPointer(jstring str) {
   if (val < 0x10000) {
     return false;
   }
-  if (val < 0x10000000ULL && (val & 0xffff) == 0) {
+  if ((val & 0xffff) == 0 && (val >> kJniHandleShift) < kJniSegmentCapacity) {
     return false;
   }
   return true;
@@ -2270,25 +2338,26 @@ jobject MakeDeviceStaticParamsObject() {
   auto* pseudo_object = PseudoObjectFromRef(object);
   if (pseudo_object) {
     const PlatformIdentity identity = CurrentPlatformIdentity();
-    pseudo_object->object_fields["osVersion"] = MakeString("Android 13");
-    pseudo_object->object_fields["deviceName"] =
-        MakeString(identity.device_name.c_str());
+    // The field owns a reference, so the calling thread's local ref can be
+    // released on detach without freeing the value.
+    const auto set_string = [pseudo_object](const char* field,
+                                            const char* value) {
+      jobject text = MakeString(value);
+      RetainJniReference(text);
+      pseudo_object->object_fields[field] = text;
+    };
+    set_string("osVersion", "Android 13");
+    set_string("deviceName", identity.device_name.c_str());
     const char* app_version = std::getenv("MOCKTAIL_ROBLOX_VERSION");
-    pseudo_object->object_fields["appVersion"] =
-        MakeString(app_version != nullptr ? app_version : "unknown");
-    pseudo_object->object_fields["manufacturer"] =
-        MakeString(identity.manufacturer.c_str());
-    pseudo_object->object_fields["model"] = MakeString(identity.model.c_str());
-    pseudo_object->object_fields["brand"] = MakeString(identity.brand.c_str());
-    pseudo_object->object_fields["device"] =
-        MakeString(identity.device_code.c_str());
-    pseudo_object->object_fields["deviceSku"] =
-        MakeString(identity.device_sku.c_str());
-    pseudo_object->object_fields["appBuildVariant"] = MakeString("headless");
-    pseudo_object->object_fields["socModel"] =
-        MakeString(identity.soc_model.c_str());
-    pseudo_object->object_fields["soc_model"] =
-        MakeString(identity.soc_model.c_str());
+    set_string("appVersion", app_version != nullptr ? app_version : "unknown");
+    set_string("manufacturer", identity.manufacturer.c_str());
+    set_string("model", identity.model.c_str());
+    set_string("brand", identity.brand.c_str());
+    set_string("device", identity.device_code.c_str());
+    set_string("deviceSku", identity.device_sku.c_str());
+    set_string("appBuildVariant", "headless");
+    set_string("socModel", identity.soc_model.c_str());
+    set_string("soc_model", identity.soc_model.c_str());
     pseudo_object->boolean_fields["cpu64Bit"] = JNI_TRUE;
     const mocktail::runtime::DisplaySize host_display =
         mocktail::runtime::ParseDisplaySize(
@@ -6486,6 +6555,7 @@ void VM::InitJNIFunctionTables() {
     if (g_thread_vm_instance != owner || !IsThreadLocalEnvValid()) {
       return JNI_EDETACHED;
     }
+    ReleaseThreadLocalRefs();
     g_thread_audio_fp_mode.Restore();
     g_thread_local_env = nullptr;
     g_thread_vm_instance = nullptr;
@@ -6615,16 +6685,25 @@ void VM::InitJNIFunctionTables() {
   native_interface_.PopLocalFrame =
       [](JNIEnv* /*env*/, jobject result) -> jobject {
     EnsureLocalFrame();
-    std::vector<jobject> frame = std::move(g_local_frames.back());
+    LocalFrame frame = std::move(g_local_frames.back());
     if (g_local_frames.size() > 1) {
       g_local_frames.pop_back();
     } else {
       g_local_frames.back().clear();
     }
-    for (jobject obj : frame) {
-      if (obj != result) {
+    bool result_kept = false;
+    for (const auto& [obj, count] : frame) {
+      uint32_t releases = count;
+      if (obj == result) {
+        --releases;
+        result_kept = true;
+      }
+      for (uint32_t i = 0; i < releases; ++i) {
         ReleaseJniReference(obj);
       }
+    }
+    if (result != nullptr && !result_kept) {
+      RetainJniReference(result);
     }
     RegisterLocalRef(result);
     return result;
