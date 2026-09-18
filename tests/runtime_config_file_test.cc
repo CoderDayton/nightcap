@@ -168,8 +168,9 @@ TEST(RuntimeConfigBootstrapTest,
            "button targets that server.\n      enabled: true",
            "# Boolean (default: true): never expose private or reserved "
            "joins.\n      public_servers_only: true",
-           "#   playing: \"{place_name}\"\n    #   state: Playing Roblox",
-           "#   title: \"{place_name}\"",
+           "#   playing: \"Playing {place_name}\"\n    #   state: \"by "
+           "{creator_name}\"",
+           "#   title: Roblox",
            "#   large: \"{place_icon}\"\n    #   large_text: \"{place_name}\"",
             "# Integer (default: 1280): initial window width in logical desktop "
             "units.\n  "

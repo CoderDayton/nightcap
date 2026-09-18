@@ -83,7 +83,8 @@ proves it.
 - Desktop launcher that works on Wayland and finds the installed binary.
 - Discord Rich Presence on by default.
 - Custom Discord presence: title, details, state, and large and small icons
-  from `config.yaml`, with `{place_name}` and `{place_icon}` placeholders.
+  from `config.yaml`, with `{place_name}`, `{place_icon}`, and
+  `{creator_name}` placeholders.
 - Own app ID `io.github.CoderDayton.nightcap`, so Nightcap installs next to
   upstream.
 - AppImage and signed Flatpak releases on every `v*` tag, with the Flatpak

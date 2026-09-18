@@ -84,10 +84,10 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_EQ(config.discord_rpc().application_id, "1549428231927500843");
   EXPECT_EQ(config.discord_rpc().text.browsing, "Browsing experiences");
   EXPECT_EQ(config.discord_rpc().text.joining, "Joining an experience");
-  EXPECT_EQ(config.discord_rpc().text.playing, "{place_name}");
-  EXPECT_EQ(config.discord_rpc().text.state, "Playing Roblox");
+  EXPECT_EQ(config.discord_rpc().text.playing, "Playing {place_name}");
+  EXPECT_EQ(config.discord_rpc().text.state, "by {creator_name}");
   EXPECT_EQ(config.discord_rpc().text.unknown_place, "Unknown experience");
-  EXPECT_TRUE(config.discord_rpc().text.title.empty());
+  EXPECT_EQ(config.discord_rpc().text.title, "Roblox");
   EXPECT_EQ(config.discord_rpc().images.large, "{place_icon}");
   EXPECT_EQ(config.discord_rpc().images.large_text, "{place_name}");
   EXPECT_TRUE(config.discord_rpc().images.small.empty());

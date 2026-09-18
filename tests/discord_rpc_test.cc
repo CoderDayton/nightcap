@@ -79,8 +79,9 @@ TEST(DiscordRpcTest, BuildsEnglishBrowsingAndJoiningActivities) {
 
   const DiscordRpcActivity browsing = BuildDiscordRpcActivity(
       config, RobloxExperiencePresencePhase::kBrowsing, nullptr, {}, 0);
+  EXPECT_EQ(browsing.name, "Roblox");
   EXPECT_EQ(browsing.details, "Browsing experiences");
-  EXPECT_EQ(browsing.state, "Playing Roblox");
+  EXPECT_TRUE(browsing.state.empty());
   EXPECT_FALSE(browsing.start_timestamp.has_value());
   EXPECT_TRUE(browsing.button_url.empty());
 
@@ -88,7 +89,7 @@ TEST(DiscordRpcTest, BuildsEnglishBrowsingAndJoiningActivities) {
   const DiscordRpcActivity joining = BuildDiscordRpcActivity(
       config, RobloxExperiencePresencePhase::kJoining, &request, {}, 0);
   EXPECT_EQ(joining.details, "Joining an experience");
-  EXPECT_EQ(joining.state, "Playing Roblox");
+  EXPECT_TRUE(joining.state.empty());
   EXPECT_TRUE(joining.button_url.empty());
 }
 
@@ -107,16 +108,41 @@ TEST(DiscordRpcTest, ShowsPlaceTimerAndPublicJoinWhenPlaying) {
 
   const DiscordRpcActivity activity = BuildDiscordRpcActivity(
       config, RobloxExperiencePresencePhase::kPlaying, &request,
-      "Natural Disaster Survival", 1770000000);
+      "Natural Disaster Survival", 1770000000, {}, "Stickmasterluke");
 
-  EXPECT_EQ(activity.details, "Natural Disaster Survival");
-  EXPECT_EQ(activity.state, "Playing Roblox");
+  EXPECT_EQ(activity.name, "Roblox");
+  EXPECT_EQ(activity.details, "Playing Natural Disaster Survival");
+  EXPECT_EQ(activity.state, "by Stickmasterluke");
   ASSERT_TRUE(activity.start_timestamp.has_value());
   EXPECT_EQ(*activity.start_timestamp, 1770000000);
   EXPECT_EQ(activity.button_label, "Join Server");
   EXPECT_EQ(activity.button_url,
             "https://komaruworld.github.io/mocktail/join.html#placeId="
             "189707&gameInstanceId=job%2Fa%2Bb");
+}
+
+TEST(DiscordRpcTest, LeavesOutTextThatExpandsAnEmptyCreator) {
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity unknown_creator = BuildDiscordRpcActivity(
+      DiscordRpcConfig(), RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1);
+  EXPECT_EQ(unknown_creator.details, "Playing Natural Disaster Survival");
+  EXPECT_TRUE(unknown_creator.state.empty());
+
+  DiscordRpcConfig custom;
+  custom.text.state = "by {creator_name} on Linux";
+  EXPECT_TRUE(BuildDiscordRpcActivity(custom,
+                                      RobloxExperiencePresencePhase::kPlaying,
+                                      &request, "Natural Disaster Survival",
+                                      1)
+                  .state.empty());
+  EXPECT_EQ(BuildDiscordRpcActivity(custom,
+                                    RobloxExperiencePresencePhase::kPlaying,
+                                    &request, "Natural Disaster Survival", 1,
+                                    {}, "Stickmasterluke")
+                .state,
+            "by Stickmasterluke on Linux");
 }
 
 TEST(DiscordRpcTest, ShowsExternalPlaceThumbnailWhenAvailable) {
@@ -191,12 +217,20 @@ TEST(DiscordRpcTest, HidesPlaceNameAndElapsedTimeByPolicy) {
   config.join_enabled = false;
 
   const RobloxExperienceLaunchRequest request = PublicServer();
-  const DiscordRpcActivity activity =
-      BuildDiscordRpcActivity(config, RobloxExperiencePresencePhase::kPlaying,
-                              &request, "Secret place name", 1770000000);
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Secret place name", 1770000000, {}, "Secret creator");
 
-  EXPECT_EQ(activity.details, "Playing Roblox");
+  // The creator hides with the place, so the default state renders empty.
+  EXPECT_TRUE(activity.details.empty());
   EXPECT_TRUE(activity.state.empty());
+
+  config.text.state = "Playing Roblox";
+  const DiscordRpcActivity fixed_state = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Secret place name", 1770000000, {}, "Secret creator");
+  EXPECT_EQ(fixed_state.details, "Playing Roblox");
+  EXPECT_TRUE(fixed_state.state.empty());
   EXPECT_FALSE(activity.start_timestamp.has_value());
   EXPECT_TRUE(activity.button_url.empty());
 }
@@ -374,6 +408,7 @@ TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
   config.show_place_name = false;
   config.join_enabled = false;
   config.text.title = "Nightcap Test";
+  config.text.state = "Playing Roblox";
   // Joining has no place yet, so this renders empty and must be left out.
   config.text.joining = "{place_name}";
   config.images.large = "nightcap_logo";

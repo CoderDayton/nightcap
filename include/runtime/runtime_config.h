@@ -51,14 +51,15 @@ struct NetworkProxyConfig {
   int port = 0;
 };
 
-// Text and image fields expand {place_name} and {place_icon}. A field that
-// renders empty is left out of the activity.
+// Text and image fields expand {place_name}, {place_icon}, and
+// {creator_name}. A field that expands an empty placeholder, or renders
+// empty, is left out of the activity.
 struct DiscordRpcTextConfig {
-  std::string title;
+  std::string title = "Roblox";
   std::string browsing = "Browsing experiences";
   std::string joining = "Joining an experience";
-  std::string playing = "{place_name}";
-  std::string state = "Playing Roblox";
+  std::string playing = "Playing {place_name}";
+  std::string state = "by {creator_name}";
   std::string unknown_place = "Unknown experience";
 };
 
