@@ -68,8 +68,8 @@ struct DiscordRpcTextConfig {
 struct DiscordRpcImagesConfig {
   std::string large = "{place_icon}";
   std::string large_text = "{place_name}";
-  std::string small;
-  std::string small_text;
+  std::string small = "roblox_small";
+  std::string small_text = "Roblox";
 };
 
 struct DiscordRpcConfig {

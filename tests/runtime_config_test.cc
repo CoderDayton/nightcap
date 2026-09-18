@@ -90,8 +90,8 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_EQ(config.discord_rpc().text.title, "Roblox");
   EXPECT_EQ(config.discord_rpc().images.large, "{place_icon}");
   EXPECT_EQ(config.discord_rpc().images.large_text, "{place_name}");
-  EXPECT_TRUE(config.discord_rpc().images.small.empty());
-  EXPECT_TRUE(config.discord_rpc().images.small_text.empty());
+  EXPECT_EQ(config.discord_rpc().images.small, "roblox_small");
+  EXPECT_EQ(config.discord_rpc().images.small_text, "Roblox");
   EXPECT_TRUE(config.discord_rpc_valid());
   EXPECT_FALSE(config.has_unsafe_detached_thread_overrides());
   EXPECT_TRUE(config.unsafe_detached_thread_overrides().empty());

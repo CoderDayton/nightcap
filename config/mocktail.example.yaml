@@ -128,8 +128,8 @@ integrations:
     # images:
     #   large: "{place_icon}"
     #   large_text: "{place_name}"
-    #   small: ""
-    #   small_text: ""
+    #   small: roblox_small
+    #   small_text: Roblox
     # Advanced: overrides the application bundled by the package maintainer.
     # application_id: 123456789012345678
 

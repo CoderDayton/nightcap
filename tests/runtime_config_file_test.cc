@@ -171,7 +171,8 @@ TEST(RuntimeConfigBootstrapTest,
            "#   playing: \"Playing {place_name}\"\n    #   state: \"by "
            "{creator_name}\"",
            "#   title: Roblox",
-           "#   large: \"{place_icon}\"\n    #   large_text: \"{place_name}\"",
+           "#   large: \"{place_icon}\"\n    #   large_text: \"{place_name}\"\n"
+           "    #   small: roblox_small\n    #   small_text: Roblox",
             "# Integer (default: 1280): initial window width in logical desktop "
             "units.\n  "
             "width: 1280",
@@ -476,7 +477,7 @@ TEST(RuntimeConfigFileTest, ExportsDiscordPresenceFieldsIncludingEmptyValues) {
   EXPECT_TRUE(exported.discord_rpc().images.large.empty());
   EXPECT_EQ(exported.discord_rpc().images.large_text, "{place_name}");
   EXPECT_EQ(exported.discord_rpc().images.small, "linux");
-  EXPECT_TRUE(exported.discord_rpc().images.small_text.empty());
+  EXPECT_EQ(exported.discord_rpc().images.small_text, "Roblox");
   for (const char* variable :
        {"MOCKTAIL_DISCORD_RPC_TEXT_TITLE", "MOCKTAIL_DISCORD_RPC_TEXT_STATE",
         "MOCKTAIL_DISCORD_RPC_IMAGE_LARGE",

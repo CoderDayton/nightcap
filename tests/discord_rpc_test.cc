@@ -156,6 +156,8 @@ TEST(DiscordRpcTest, ShowsExternalPlaceThumbnailWhenAvailable) {
   EXPECT_EQ(activity.large_image,
             "https://tr.rbxcdn.com/example/512/512/Image/Png");
   EXPECT_EQ(activity.large_text, "Natural Disaster Survival");
+  EXPECT_EQ(activity.small_image, "roblox_small");
+  EXPECT_EQ(activity.small_text, "Roblox");
 }
 
 TEST(DiscordRpcTest, ShowsPlaceJoinWhenServerIdIsUnavailable) {
