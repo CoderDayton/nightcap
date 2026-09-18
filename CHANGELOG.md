@@ -42,6 +42,21 @@ GitHub are taken from the matching section here.
   `docs/PERFORMANCE.md`.
 - With `show_place_name: false`, Discord no longer shows the experience
   thumbnail or its name on hover.
+- The host main thread no longer spins on the engine's message pump, which
+  cost about half a core and 146,000 empty calls a second. It now rests 100 µs
+  between polls: sleeping when the governor is `performance`, parking the
+  core with TPAUSE on CPUs that have it, spinning otherwise. With GameMode
+  setting the governor, process CPU in a 60k-part place fell from 216% to
+  107% at the same 120 fps. `MOCKTAIL_ENGINE_PUMP_REST` forces a mode; see
+  `docs/PERFORMANCE.md`.
+- ETC2 uploads with a `bufferRowLength` or `bufferImageHeight` larger than
+  the image read the padded rows as packed data and decoded garbage.
+- ETC2 resampling created and joined worker threads on every batch. It now
+  runs on the persistent decode pool.
+- A failed trace write left the profile writer thread waking every 250 ms
+  for the rest of the session. It now exits.
+- The `--profile` trace gains a `pump` slice for the engine's main-thread
+  step.
 
 ## [0.2.0] - 2026-09-16
 

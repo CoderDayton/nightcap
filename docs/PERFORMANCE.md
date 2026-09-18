@@ -38,7 +38,19 @@ park_cores=no
 
 GameMode reads `$XDG_CONFIG_HOME`, `/usr/share/gamemode` and `/etc`, in that
 order. It does not read anything under Nightcap's own config directory, so this
-file has to live in one of those three places.
+file has to live in one of those three places. The daemon reads it when it
+starts, so restart it after editing: `systemctl --user restart gamemoded`.
+
+The governor switch runs through polkit. Debian and Ubuntu only allow it for
+members of the `gamemode` group; without that, the daemon's journal shows
+`cpugovctl set performance: Not authorized` and the governor stays put while
+the session is otherwise active. Add yourself and log in again:
+
+```bash
+sudo usermod -aG gamemode "$USER"
+```
+
+Fedora and Arch allow any logged-in local user.
 
 Setting `performance.gamemode: on` accepts the pinning instead: `on` is an
 explicit request for GameMode, and Nightcap keeps the session whatever it does
@@ -49,6 +61,32 @@ To see which CPUs the process may use:
 ```bash
 taskset -pc $(pgrep -x mocktail)
 ```
+
+## The main-thread pump
+
+Roblox posts its per-frame main-thread step at a time of its own choosing,
+and nothing signals the host when it does. The host main thread therefore
+polls `nativeCallMessagesFromMainThread`, and a post that waits more than a
+fraction of a millisecond costs a whole frame. Between polls the thread rests
+for 100 µs, and how it rests decides the CPU clock:
+
+| Mode | When | What it costs |
+| --- | --- | --- |
+| `sleep` | The governor is `performance`, which GameMode sets | The thread idles at about 3% of a core. The governor holds the clock. |
+| `tpause` | Otherwise, on a CPU with WAITPKG (Intel 12th gen and newer) | The core stays awake in a light C0 state. Frame rate holds; the OS books the time as busy, so the thread shows around 70% of a core, at lower power than a spin. |
+| `spin` | Otherwise | The core stays awake at full power. |
+
+Under a power-saving governor the CPU clocks a bursty core down unless some
+core stays awake, and Roblox's render thread then runs slower and drops
+frames. That is why `sleep` is not the default there. Startup prints the
+chosen mode:
+
+```
+  [main] engine pump rest: tpause (MOCKTAIL_ENGINE_PUMP_REST=sleep|tpause|spin)
+```
+
+`MOCKTAIL_ENGINE_PUMP_REST` forces a mode. `sleep` without the governor's help
+runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
@@ -98,10 +136,12 @@ ps -L -o psr=,pcpu=,comm= -p $(pgrep -x mocktail)   # which core each thread is 
 nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw --format=csv
 ```
 
-A thread pinned near 100% while the frame rate is steady is a busy-wait. Load
-spread across many `RBX Worker` threads is the game's own scheduler, and its
-cost tracks the place you are in — part count, moving parts and joints all show
-in the Shift+F4 World section.
+A thread pinned near 100% while the frame rate is steady is a busy-wait. The
+one exception is the host main thread in `tpause` mode, which the OS reports
+as busy while the core is parked (see above). Load spread across many
+`RBX Worker` threads is the game's own scheduler, and its cost tracks the
+place you are in — part count, moving parts and joints all show in the
+Shift+F4 World section.
 
 `--profile <file>` writes a Chrome trace of the Vulkan adapter's work for
 ui.perfetto.dev. See [BENCHMARKING.md](BENCHMARKING.md).

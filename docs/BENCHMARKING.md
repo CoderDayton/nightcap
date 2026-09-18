@@ -48,6 +48,7 @@ Each slice is named after the call it times, on the thread that made it.
 | `pipeline` | `vkCreateGraphicsPipelines`, `vkCreateComputePipelines` | `count`, `cache` (1 when a pipeline cache was passed), `result` |
 | `pipeline` | `vkCreateShaderModule` | `bytes`, `result` |
 | `pipeline` | `vkCreatePipelineCache` | `initial_bytes`, `result` |
+| `pump` | `nativeCallMessagesFromMainThread`: the engine's main-thread step, on the host main thread. Only calls of 20 µs or more are recorded; the empty polls between them are not. | |
 
 The `frame interval (ms)` counter is the time between successive adapter
 presents. `vkQueuePresentKHR` time minus `host present` time is the adapter's
