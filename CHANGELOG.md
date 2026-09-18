@@ -11,8 +11,14 @@ GitHub are taken from the matching section here.
 - Custom Discord presence. `integrations.discord_rpc.text.title` replaces the
   name in "Playing Nightcap", and `integrations.discord_rpc.images` sets the
   large and small icons and their hover text. Text and image fields accept
-  `{place_name}` and `{place_icon}`. Set `text.state: ""` to hide the
-  "Playing Roblox" line.
+  `{place_name}`, `{place_icon}`, and `{creator_name}`. A field that expands
+  an empty placeholder is left out, and `text.state: ""` hides the state line.
+- The default Discord card now matches Sober: the title is "Roblox", the
+  details line is "Playing <experience>", the state is "by <creator>", and
+  the Roblox badge sits inside the experience icon. The creator comes from the
+  same Roblox games request that already fetches the experience name. With
+  `show_place_name: false` the creator is hidden too, so the card shows only
+  the title and timer.
 - `--profile <file>` writes a Chrome-format trace of the Vulkan adapter's
   work: presents, GPU waits, submits, ETC2 texture decode, and pipeline and
   shader creation. Open it in ui.perfetto.dev. `docs/BENCHMARKING.md`
