@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -25,10 +26,21 @@ void AppendInteger(std::string* out, std::int64_t value) {
   char digits[24];
   const auto [end, error] =
       std::to_chars(digits, digits + sizeof(digits), value);
-  out->append(digits, error == std::errc() ? end : digits);
+  if (error == std::errc()) {
+    out->append(digits, end);
+  } else {
+    // Appending nothing would leave "ts": with no value, which costs the
+    // whole trace rather than the one field.
+    out->push_back('0');
+  }
 }
 
 void AppendDouble(std::string* out, double value) {
+  // to_chars spells inf and nan without quotes, which no JSON reader accepts.
+  if (!std::isfinite(value)) {
+    out->push_back('0');
+    return;
+  }
   char digits[32];
   const auto [end, error] =
       std::to_chars(digits, digits + sizeof(digits), value);

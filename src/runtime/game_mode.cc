@@ -1,10 +1,13 @@
 #include "runtime/game_mode.h"
 
+#include <dirent.h>
 #include <dlfcn.h>
 #if defined(__GLIBC__)
 #include <link.h>
 #endif
 
+#include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -56,18 +59,47 @@ void* OpenClientLibrary(const char* name) {
 #endif
 }
 
-int GetProcessAffinity(cpu_set_t* mask) {
+int GetThreadAffinity(cpu_set_t* mask) {
   return sched_getaffinity(0, sizeof(*mask), mask);
 }
 
-int SetProcessAffinity(const cpu_set_t* mask) {
-  return sched_setaffinity(0, sizeof(*mask), mask);
+// sched_setaffinity binds one thread, and GameMode pins every thread it finds,
+// so restoring the mask means walking the task list. Threads that exit while
+// the directory is being read are skipped, not treated as failures.
+int SetAffinityOfEveryThread(const cpu_set_t* mask) {
+  DIR* tasks = opendir("/proc/self/task");
+  if (tasks == nullptr) {
+    return sched_setaffinity(0, sizeof(*mask), mask);
+  }
+  int result = 0;
+  for (;;) {
+    // readdir() reports both end-of-directory and failure with a null return,
+    // so a read that dies partway must not pass for a completed walk.
+    errno = 0;
+    const dirent* entry = readdir(tasks);
+    if (entry == nullptr) {
+      if (errno != 0) {
+        result = -1;
+      }
+      break;
+    }
+    const long tid = std::strtol(entry->d_name, nullptr, 10);
+    if (tid <= 0) {
+      continue;
+    }
+    if (sched_setaffinity(static_cast<pid_t>(tid), sizeof(*mask), mask) != 0 &&
+        errno != ESRCH) {
+      result = -1;
+    }
+  }
+  closedir(tasks);
+  return result;
 }
 
 }  // namespace
 
 CpuAffinityApi HostCpuAffinityApi() {
-  return CpuAffinityApi{&GetProcessAffinity, &SetProcessAffinity};
+  return CpuAffinityApi{&GetThreadAffinity, &SetAffinityOfEveryThread};
 }
 
 bool CpuAffinityNarrowed(const cpu_set_t& before, const cpu_set_t& after) {

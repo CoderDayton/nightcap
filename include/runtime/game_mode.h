@@ -46,10 +46,14 @@ struct GameModeClientApi {
   ErrorFn error_string = nullptr;
 };
 
-// The process affinity syscalls, injectable so tests exercise the restore
-// without moving the calling thread.
+// The CPU affinity calls, injectable so tests exercise the restore without
+// moving the threads they run on.
 struct CpuAffinityApi {
+  // Reads the calling thread's permitted CPUs. GameMode pins every thread
+  // alike, so one thread's mask is enough to detect the pin.
   using GetFn = int (*)(cpu_set_t* mask);
+  // Applies `mask` to every thread of this process, not only the caller.
+  // Returns 0 when each live thread took it.
   using SetFn = int (*)(const cpu_set_t* mask);
 
   GetFn get = nullptr;

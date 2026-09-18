@@ -3,9 +3,13 @@
 #include <gtest/gtest.h>
 
 #include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
+#include <atomic>
 #include <cstddef>
 #include <initializer_list>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -229,6 +233,56 @@ TEST(CpuAffinityNarrowedTest, ComparesPermittedCpuSets) {
 
 // The daemon re-applies its pin every few seconds, so a session that pins is
 // dropped rather than corrected.
+TEST(HostCpuAffinityTest, RestoreReachesEveryThread) {
+  const CpuAffinityApi api = HostCpuAffinityApi();
+  ASSERT_NE(api.get, nullptr);
+  ASSERT_NE(api.set, nullptr);
+  cpu_set_t original;
+  CPU_ZERO(&original);
+  ASSERT_EQ(api.get(&original), 0);
+  if (CPU_COUNT(&original) < 2) {
+    GTEST_SKIP() << "needs at least two permitted CPUs";
+  }
+  int first = 0;
+  while (!CPU_ISSET(first, &original)) {
+    ++first;
+  }
+
+  std::atomic<pid_t> helper_tid{0};
+  std::atomic<int> helper_pin_result{0};
+  std::atomic<bool> release{false};
+  std::thread helper([&] {
+    const cpu_set_t pinned = MaskOf({first});
+    const pid_t tid = static_cast<pid_t>(::syscall(SYS_gettid));
+    // Published whatever the pin does: the waiter below would otherwise spin
+    // forever on a failure instead of reporting one.
+    helper_pin_result.store(sched_setaffinity(tid, sizeof(pinned), &pinned));
+    helper_tid.store(tid);
+    while (!release.load()) {
+      sched_yield();
+    }
+  });
+  while (helper_tid.load() == 0) {
+    sched_yield();
+  }
+  if (helper_pin_result.load() != 0) {
+    release.store(true);
+    helper.join();
+    FAIL() << "could not pin the helper thread to CPU " << first;
+  }
+
+  EXPECT_EQ(api.set(&original), 0);
+  cpu_set_t restored;
+  CPU_ZERO(&restored);
+  EXPECT_EQ(
+      sched_getaffinity(helper_tid.load(), sizeof(restored), &restored), 0);
+  release.store(true);
+  helper.join();
+
+  EXPECT_TRUE(CPU_EQUAL(&restored, &original))
+      << "restore left the helper thread pinned to CPU " << first;
+}
+
 TEST(GameModeSessionTest, DropsTheRequestWhenTheDaemonPinsCores) {
   ClientProbe probe;
   g_probe = &probe;
