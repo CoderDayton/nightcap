@@ -264,6 +264,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/command_line.cc
   src/runtime/crash_report_policy.cc
   src/runtime/discord_rpc.cc
+  src/runtime/device_memory_profile.cc
   src/runtime/device_profile.cc
   src/runtime/environment.cc
   src/runtime/external_launch_broker.cc

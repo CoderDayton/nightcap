@@ -1,3 +1,4 @@
+// Includes changes by vii from CoderDayton/nightcap.
 // Android Vulkan loader ABI -> host Vulkan loader + SDL3 WSI.
 
 #include <dlfcn.h>
@@ -17,6 +18,7 @@
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/present_mode_policy.h"
+#include "mocktail/graphics/vulkan_etc2_emulation.h"
 #include "mocktail/graphics/vulkan_text_overlay_compositor.h"
 #include "mocktail/platform/platform_runtime.h"
 
@@ -188,6 +190,7 @@ struct AdapterState {
   VkInstance latest_instance = VK_NULL_HANDLE;
   size_t active_instance_count = 0;
   mocktail::graphics::VulkanTextOverlayCompositor text_overlay;
+  mocktail::graphics::VulkanEtc2Emulation etc2;
   std::atomic<NotePresentFn> note_present{nullptr};
   std::atomic<NoteHostPresentBeginFn> note_host_present_begin{nullptr};
   std::atomic<NoteHostPresentEndFn> note_host_present_end{nullptr};
@@ -727,12 +730,90 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkQueueWaitIdle)
   MOCKTAIL_VK_PROC(vkDeviceWaitIdle)
   MOCKTAIL_VK_PROC(vkQueuePresentKHR)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFeatures)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFeatures2)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFormatProperties)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFormatProperties2)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceImageFormatProperties)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceImageFormatProperties2)
+  MOCKTAIL_VK_PROC(vkCreateImage)
+  MOCKTAIL_VK_PROC(vkDestroyImage)
+  MOCKTAIL_VK_PROC(vkCreateImageView)
+  MOCKTAIL_VK_PROC(vkBindBufferMemory)
+  MOCKTAIL_VK_PROC(vkBindBufferMemory2)
+  MOCKTAIL_VK_PROC(vkMapMemory)
+  MOCKTAIL_VK_PROC(vkMapMemory2)
+  MOCKTAIL_VK_PROC(vkUnmapMemory)
+  MOCKTAIL_VK_PROC(vkUnmapMemory2)
+  MOCKTAIL_VK_PROC(vkFreeMemory)
+  MOCKTAIL_VK_PROC(vkDestroyBuffer)
+  MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage)
+  MOCKTAIL_VK_PROC(vkCmdCopyImage)
+  MOCKTAIL_VK_PROC(vkCmdCopyImage2)
+  MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage2)
+  MOCKTAIL_VK_PROC(vkCmdExecuteCommands)
 #undef MOCKTAIL_VK_PROC
+#define MOCKTAIL_VK_ALIAS(alias, function)                 \
+  if (std::strcmp(name, #alias) == 0) {                    \
+    return reinterpret_cast<PFN_vkVoidFunction>(function); \
+  }
+  MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceFeatures2KHR,
+                    vkGetPhysicalDeviceFeatures2)
+  MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceFormatProperties2KHR,
+                    vkGetPhysicalDeviceFormatProperties2)
+  MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceImageFormatProperties2KHR,
+                    vkGetPhysicalDeviceImageFormatProperties2)
+  MOCKTAIL_VK_ALIAS(vkBindBufferMemory2KHR, vkBindBufferMemory2)
+  MOCKTAIL_VK_ALIAS(vkCmdCopyImage2KHR, vkCmdCopyImage2)
+  MOCKTAIL_VK_ALIAS(vkMapMemory2KHR, vkMapMemory2)
+  MOCKTAIL_VK_ALIAS(vkUnmapMemory2KHR, vkUnmapMemory2)
+  MOCKTAIL_VK_ALIAS(vkCmdCopyBufferToImage2KHR, vkCmdCopyBufferToImage2)
+#undef MOCKTAIL_VK_ALIAS
   return nullptr;
 }
 
+bool NameInList(const char* name, const char* const* names,
+                std::size_t count) {
+  return name != nullptr &&
+         std::any_of(names, names + count, [name](const char* candidate) {
+           return std::strcmp(name, candidate) == 0;
+         });
+}
+
+bool IsEtc2DeviceProc(const char* name) {
+  static constexpr const char* kNames[] = {
+      "vkCreateImage",          "vkDestroyImage",
+      "vkCreateImageView",      "vkBindBufferMemory",
+      "vkBindBufferMemory2",    "vkBindBufferMemory2KHR",
+      "vkMapMemory",            "vkMapMemory2",
+      "vkMapMemory2KHR",        "vkUnmapMemory",
+      "vkUnmapMemory2",         "vkUnmapMemory2KHR",
+      "vkFreeMemory",           "vkDestroyBuffer",
+      "vkCmdCopyBufferToImage", "vkCmdCopyBufferToImage2",
+      "vkCmdCopyImage",         "vkCmdCopyImage2",
+      "vkCmdCopyImage2KHR",
+      "vkCmdCopyBufferToImage2KHR", "vkCmdExecuteCommands",
+  };
+  return NameInList(name, kNames, sizeof(kNames) / sizeof(kNames[0]));
+}
+
+bool IsEtc2PhysicalDeviceProc(const char* name) {
+  static constexpr const char* kNames[] = {
+      "vkGetPhysicalDeviceFeatures",
+      "vkGetPhysicalDeviceFeatures2",
+      "vkGetPhysicalDeviceFeatures2KHR",
+      "vkGetPhysicalDeviceFormatProperties",
+      "vkGetPhysicalDeviceFormatProperties2",
+      "vkGetPhysicalDeviceFormatProperties2KHR",
+      "vkGetPhysicalDeviceImageFormatProperties",
+      "vkGetPhysicalDeviceImageFormatProperties2",
+      "vkGetPhysicalDeviceImageFormatProperties2KHR",
+  };
+  return NameInList(name, kNames, sizeof(kNames) / sizeof(kNames[0]));
+}
+
 bool IsDeviceAdapterProc(const char* name) {
-  return name != nullptr && (std::strcmp(name, "vkDestroyDevice") == 0 ||
+  return name != nullptr && (IsEtc2DeviceProc(name) || std::strcmp(name, "vkDestroyDevice") == 0 ||
                              std::strcmp(name, "vkGetDeviceQueue") == 0 ||
                              std::strcmp(name, "vkGetDeviceQueue2") == 0 ||
                              std::strcmp(name, "vkCreateSwapchainKHR") == 0 ||
@@ -959,10 +1040,22 @@ struct FpsWaitTrace {
   std::atomic<std::uint64_t> total_ns{0};
   std::atomic<std::uint64_t> max_ns{0};
   std::atomic<std::uint64_t> window_start_ns{0};
+  std::atomic<std::uint64_t> max_gap_ns{0};
+  std::atomic<std::uint64_t> last_start_ns{0};
 
   void Record(std::uint64_t start_ns) {
     if (name == nullptr || start_ns == 0) {
       return;
+    }
+    const std::uint64_t previous_start =
+        last_start_ns.exchange(start_ns, std::memory_order_relaxed);
+    if (previous_start != 0 && start_ns > previous_start) {
+      const std::uint64_t gap_ns = start_ns - previous_start;
+      std::uint64_t max_gap = max_gap_ns.load(std::memory_order_relaxed);
+      while (gap_ns > max_gap &&
+             !max_gap_ns.compare_exchange_weak(max_gap, gap_ns,
+                                               std::memory_order_relaxed)) {
+      }
     }
     const std::uint64_t wait_ns = MonotonicNanos() - start_ns;
     total_ns.fetch_add(wait_ns, std::memory_order_relaxed);
@@ -984,14 +1077,18 @@ struct FpsWaitTrace {
     const std::uint64_t total = total_ns.exchange(0, std::memory_order_relaxed);
     const std::uint64_t peak = max_ns.exchange(0, std::memory_order_relaxed);
     const std::uint64_t count = samples.exchange(0, std::memory_order_relaxed);
+    const std::uint64_t gap_peak =
+        max_gap_ns.exchange(0, std::memory_order_relaxed);
     window_start_ns.store(start_ns, std::memory_order_relaxed);
     if (count == 0) {
       return;
     }
-    std::fprintf(stderr, "  [fps] %s n=%llu avg=%llu us max=%llu us\n", name,
-                 static_cast<unsigned long long>(count),
+    std::fprintf(stderr,
+                 "  [fps] %s n=%llu avg=%llu us max=%llu us gap_max=%llu us\n",
+                 name, static_cast<unsigned long long>(count),
                  static_cast<unsigned long long>(total / count / 1000ULL),
-                 static_cast<unsigned long long>(peak / 1000ULL));
+                 static_cast<unsigned long long>(peak / 1000ULL),
+                 static_cast<unsigned long long>(gap_peak / 1000ULL));
   }
 };
 
@@ -1040,6 +1137,58 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
     note_end(static_cast<std::int32_t>(result));
   }
   return result;
+}
+
+template <typename Function>
+Function HostPhysicalDeviceProc(const char* name, const char* alias) {
+  VkInstance instance = VK_NULL_HANDLE;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    instance = state.latest_instance;
+  }
+  PFN_vkVoidFunction proc = HostInstanceProc(instance, name);
+  if (proc == nullptr && alias != nullptr) {
+    proc = HostInstanceProc(instance, alias);
+  }
+  return reinterpret_cast<Function>(proc);
+}
+
+bool Etc2EmulatedPhysicalDevice(VkPhysicalDevice physical_device) {
+  return State().etc2.PhysicalDeviceNeedsEmulation(
+      physical_device, HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFeatures>(
+                           "vkGetPhysicalDeviceFeatures", nullptr));
+}
+
+void ReleaseEtc2PoolCommandBuffers(VkDevice device,
+                                   VkCommandPool command_pool) {
+  std::vector<VkCommandBuffer> command_buffers;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (const auto& binding : state.command_buffer_bindings) {
+      if (binding.device == device && binding.command_pool == command_pool) {
+        command_buffers.push_back(binding.command_buffer);
+      }
+    }
+  }
+  for (VkCommandBuffer command_buffer : command_buffers) {
+    State().etc2.ReleaseCommandBuffer(command_buffer);
+  }
+}
+
+void PrepareEtc2Submit2(std::uint32_t submit_count,
+                        const VkSubmitInfo2* submits) {
+  if (submits == nullptr) {
+    return;
+  }
+  for (std::uint32_t index = 0; index < submit_count; ++index) {
+    for (std::uint32_t info = 0; info < submits[index].commandBufferInfoCount;
+         ++info) {
+      State().etc2.PrepareSubmit(
+          &submits[index].pCommandBufferInfos[info].commandBuffer, 1);
+    }
+  }
 }
 
 }  // namespace
@@ -1247,7 +1396,7 @@ vkGetInstanceProcAddr(VkInstance instance, const char* name) {
   }
   if (const PFN_vkVoidFunction adapter = AdapterProc(name);
       adapter != nullptr) {
-    if (IsDeviceAdapterProc(name) &&
+    if ((IsDeviceAdapterProc(name) || IsEtc2PhysicalDeviceProc(name)) &&
         HostInstanceProc(instance, name) == nullptr) {
       return nullptr;
     }
@@ -1306,6 +1455,30 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
 
   VkDeviceCreateInfo host_info = *create_info;
   EnabledDeviceFeatures enabled = InspectEnabledFeatures(*create_info);
+  const bool etc2_emulated = State().etc2.PhysicalDeviceNeedsEmulation(
+      physical_device, reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+                           HostInstanceProc(instance,
+                                            "vkGetPhysicalDeviceFeatures")));
+  VkPhysicalDeviceFeatures host_enabled_features{};
+  VkPhysicalDeviceFeatures2* requested_features2 = nullptr;
+  VkBool32 requested_features2_etc2 = VK_FALSE;
+  if (etc2_emulated) {
+    enabled.root.features.textureCompressionETC2 = VK_FALSE;
+    if (create_info->pEnabledFeatures != nullptr) {
+      host_enabled_features = *create_info->pEnabledFeatures;
+      host_enabled_features.textureCompressionETC2 = VK_FALSE;
+      host_info.pEnabledFeatures = &host_enabled_features;
+    }
+    // Restore the caller-owned feature bit after the host call.
+    requested_features2 = const_cast<VkPhysicalDeviceFeatures2*>(
+        reinterpret_cast<const VkPhysicalDeviceFeatures2*>(FindFeature(
+            create_info->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)));
+    if (requested_features2 != nullptr) {
+      requested_features2_etc2 =
+          requested_features2->features.textureCompressionETC2;
+      requested_features2->features.textureCompressionETC2 = VK_FALSE;
+    }
+  }
   enabled.root.pNext = &enabled.vulkan11;
   enabled.vulkan11.pNext = &enabled.vulkan12;
   enabled.vulkan12.pNext = nullptr;
@@ -1341,11 +1514,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
 
   const VkResult result =
       host_create(physical_device, &host_info, allocator, device);
+  if (requested_features2 != nullptr) {
+    requested_features2->features.textureCompressionETC2 =
+        requested_features2_etc2;
+  }
   if (result != VK_SUCCESS) {
     return result;
   }
   RegisterHostDeviceDispatch(*device, physical_device,
                              host_get_device_proc_addr);
+  VkPhysicalDeviceMemoryProperties memory_properties{};
+  if (const auto host_memory_properties =
+          reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+              HostInstanceProc(instance,
+                               "vkGetPhysicalDeviceMemoryProperties"));
+      host_memory_properties != nullptr) {
+    host_memory_properties(physical_device, &memory_properties);
+  }
+  State().etc2.RegisterDevice(*device, physical_device, etc2_emulated,
+                              memory_properties, host_get_device_proc_addr);
 
   std::uint32_t queue_family_count = 0;
   const auto host_get_queue_families =
@@ -1403,6 +1590,7 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
   const auto host_destroy = reinterpret_cast<PFN_vkDestroyDevice>(
       HostDeviceProc(device, "vkDestroyDevice"));
   State().text_overlay.DestroyDevice(device);
+  State().etc2.DestroyDevice(device);
   if (host_destroy != nullptr) {
     host_destroy(device, allocator);
   }
@@ -1650,6 +1838,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  ReleaseEtc2PoolCommandBuffers(device, command_pool);
   const VkResult result = host_reset(device, command_pool, flags);
   observation.SetResult(result);
   return result;
@@ -1706,6 +1895,11 @@ VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return;
   }
+  if (command_buffers != nullptr) {
+    for (std::uint32_t index = 0; index < command_buffer_count; ++index) {
+      State().etc2.ReleaseCommandBuffer(command_buffers[index]);
+    }
+  }
   host_free(device, command_pool, command_buffer_count, command_buffers);
   RemoveHostCommandBuffers(device, command_pool, command_buffer_count,
                            command_buffers);
@@ -1722,6 +1916,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyCommandPool(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return;
   }
+  ReleaseEtc2PoolCommandBuffers(device, command_pool);
   host_destroy(device, command_pool, allocator);
   RemoveHostCommandPoolBindings(device, command_pool);
   observation.SetResult(VK_SUCCESS);
@@ -1737,6 +1932,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  State().etc2.ReleaseCommandBuffer(command_buffer);
   const VkResult result = host_begin(command_buffer, begin_info);
   observation.SetResult(result);
   return result;
@@ -1765,6 +1961,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  State().etc2.ReleaseCommandBuffer(command_buffer);
   const VkResult result = host_reset(command_buffer, flags);
   observation.SetResult(result);
   return result;
@@ -1801,6 +1998,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  if (submits != nullptr) {
+    for (std::uint32_t index = 0; index < submit_count; ++index) {
+      State().etc2.PrepareSubmit(submits[index].pCommandBuffers,
+                                 submits[index].commandBufferCount);
+    }
+  }
   const VkResult result = State().text_overlay.QueueSubmit(
       queue, submit_count, submits, fence, host_submit);
   observation.SetResult(result);
@@ -1817,6 +2020,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  PrepareEtc2Submit2(submit_count, submits);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, submits, fence, host_submit);
   observation.SetResult(result);
@@ -1833,6 +2037,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  PrepareEtc2Submit2(submit_count, submits);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, submits, fence,
       reinterpret_cast<PFN_vkQueueSubmit2>(host_submit));
@@ -2023,6 +2228,252 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
   }
   observation.SetResult(normalized_result);
   return normalized_result;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures(
+    VkPhysicalDevice physical_device, VkPhysicalDeviceFeatures* features) {
+  const auto host = HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFeatures>(
+      "vkGetPhysicalDeviceFeatures", nullptr);
+  if (host == nullptr || features == nullptr) {
+    return;
+  }
+  host(physical_device, features);
+  if (Etc2EmulatedPhysicalDevice(physical_device) &&
+      mocktail::graphics::Etc2SupportAdvertised()) {
+    features->textureCompressionETC2 = VK_TRUE;
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(
+    VkPhysicalDevice physical_device, VkPhysicalDeviceFeatures2* features) {
+  const auto host = HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFeatures2>(
+      "vkGetPhysicalDeviceFeatures2", "vkGetPhysicalDeviceFeatures2KHR");
+  if (host == nullptr || features == nullptr) {
+    return;
+  }
+  host(physical_device, features);
+  if (Etc2EmulatedPhysicalDevice(physical_device) &&
+      mocktail::graphics::Etc2SupportAdvertised()) {
+    features->features.textureCompressionETC2 = VK_TRUE;
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(
+    VkPhysicalDevice physical_device, VkFormat format,
+    VkFormatProperties* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFormatProperties>(
+          "vkGetPhysicalDeviceFormatProperties", nullptr);
+  if (host == nullptr || properties == nullptr) {
+    return;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    host(physical_device, format, properties);
+    return;
+  }
+  host(physical_device, mapped.host_format, properties);
+  properties->linearTilingFeatures = 0;
+  properties->optimalTilingFeatures =
+      mocktail::graphics::EmulatedEtc2FormatFeatures(
+          properties->optimalTilingFeatures);
+  properties->bufferFeatures = 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties2(
+    VkPhysicalDevice physical_device, VkFormat format,
+    VkFormatProperties2* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFormatProperties2>(
+          "vkGetPhysicalDeviceFormatProperties2",
+          "vkGetPhysicalDeviceFormatProperties2KHR");
+  if (host == nullptr || properties == nullptr) {
+    return;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    host(physical_device, format, properties);
+    return;
+  }
+  host(physical_device, mapped.host_format, properties);
+  VkFormatProperties& base = properties->formatProperties;
+  base.linearTilingFeatures = 0;
+  base.optimalTilingFeatures =
+      mocktail::graphics::EmulatedEtc2FormatFeatures(base.optimalTilingFeatures);
+  base.bufferFeatures = 0;
+  if (auto* extended = const_cast<VkFormatProperties3*>(
+          reinterpret_cast<const VkFormatProperties3*>(FindFeature(
+              properties->pNext, VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3)));
+      extended != nullptr) {
+    extended->linearTilingFeatures = 0;
+    extended->optimalTilingFeatures =
+        mocktail::graphics::EmulatedEtc2FormatFeatures(
+            static_cast<VkFormatFeatureFlags>(
+                extended->optimalTilingFeatures));
+    extended->bufferFeatures = 0;
+  }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(
+    VkPhysicalDevice physical_device, VkFormat format, VkImageType type,
+    VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags,
+    VkImageFormatProperties* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceImageFormatProperties>(
+          "vkGetPhysicalDeviceImageFormatProperties", nullptr);
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    return host(physical_device, format, type, tiling, usage, flags,
+                properties);
+  }
+  if (tiling != VK_IMAGE_TILING_OPTIMAL || type != VK_IMAGE_TYPE_2D) {
+    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+  }
+  return host(physical_device, mapped.host_format, type, tiling, usage,
+              flags & ~static_cast<VkImageCreateFlags>(
+                          VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT),
+              properties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties2(
+    VkPhysicalDevice physical_device,
+    const VkPhysicalDeviceImageFormatInfo2* info,
+    VkImageFormatProperties2* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
+          "vkGetPhysicalDeviceImageFormatProperties2",
+          "vkGetPhysicalDeviceImageFormatProperties2KHR");
+  if (host == nullptr || info == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(info->format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    return host(physical_device, info, properties);
+  }
+  if (info->tiling != VK_IMAGE_TILING_OPTIMAL ||
+      info->type != VK_IMAGE_TYPE_2D) {
+    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+  }
+  VkPhysicalDeviceImageFormatInfo2 host_info = *info;
+  host_info.format = mapped.host_format;
+  host_info.flags &= ~static_cast<VkImageCreateFlags>(
+      VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+  return host(physical_device, &host_info, properties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(
+    VkDevice device, const VkImageCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkImage* image) {
+  return State().etc2.CreateImage(device, create_info, allocator, image);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyImage(
+    VkDevice device, VkImage image, const VkAllocationCallbacks* allocator) {
+  State().etc2.DestroyImage(device, image, allocator);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(
+    VkDevice device, const VkImageViewCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkImageView* view) {
+  return State().etc2.CreateImageView(device, create_info, allocator, view);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device,
+                                                  VkBuffer buffer,
+                                                  VkDeviceMemory memory,
+                                                  VkDeviceSize offset) {
+  return State().etc2.BindBufferMemory(device, buffer, memory, offset);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory2(
+    VkDevice device, std::uint32_t count,
+    const VkBindBufferMemoryInfo* infos) {
+  return State().etc2.BindBufferMemory2(device, count, infos);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory(VkDevice device,
+                                           VkDeviceMemory memory,
+                                           VkDeviceSize offset,
+                                           VkDeviceSize size,
+                                           VkMemoryMapFlags flags,
+                                           void** data) {
+  return State().etc2.MapMemory(device, memory, offset, size, flags, data);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory2(VkDevice device,
+                                            const VkMemoryMapInfo* info,
+                                            void** data) {
+  return State().etc2.MapMemory2(device, info, data);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkUnmapMemory(VkDevice device,
+                                         VkDeviceMemory memory) {
+  State().etc2.UnmapMemory(device, memory);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkUnmapMemory2(VkDevice device,
+                                              const VkMemoryUnmapInfo* info) {
+  return State().etc2.UnmapMemory2(device, info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkFreeMemory(
+    VkDevice device, VkDeviceMemory memory,
+    const VkAllocationCallbacks* allocator) {
+  State().etc2.FreeMemory(device, memory, allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyBuffer(
+    VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* allocator) {
+  State().etc2.DestroyBuffer(device, buffer, allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage(
+    VkCommandBuffer command_buffer, VkBuffer source, VkImage destination,
+    VkImageLayout layout, std::uint32_t region_count,
+    const VkBufferImageCopy* regions) {
+  State().etc2.CmdCopyBufferToImage(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, destination, layout, region_count, regions);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage2(
+    VkCommandBuffer command_buffer, const VkCopyBufferToImageInfo2* info) {
+  State().etc2.CmdCopyBufferToImage2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(
+    VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t region_count,
+    const VkImageCopy* regions) {
+  State().etc2.CmdCopyImage(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, source_layout, destination, destination_layout, region_count,
+      regions);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage2(VkCommandBuffer command_buffer,
+                                           const VkCopyImageInfo2* info) {
+  State().etc2.CmdCopyImage2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(
+    VkCommandBuffer command_buffer, std::uint32_t count,
+    const VkCommandBuffer* secondaries) {
+  State().etc2.CmdExecuteCommands(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      count, secondaries);
 }
 
 }  // extern "C"

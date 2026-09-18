@@ -57,7 +57,7 @@ jobs:
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
                 nlohmann-json libyaml libelf minizip minizip-ng capstone gtk4 \
                 libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
-                vulkan-headers zlib libplacebo bubblewrap xdg-dbus-proxy \
+                vulkan-headers zlib libplacebo libpng bubblewrap xdg-dbus-proxy \
                 patchelf jq unzip file ca-certificates dbus zsync
 
               # Reduced ABI-compatible packages belong only in this builder.
@@ -172,7 +172,7 @@ jobs:
                 libyaml-dev libelf-dev libminizip-dev libcapstone-dev \
                 libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
                 libutf8proc-dev libfontconfig1-dev libegl-dev \
-                libvulkan-dev libplacebo-dev zlib1g-dev
+                libvulkan-dev libplacebo-dev libpng-dev zlib1g-dev
               cmake -S . -B build-deb -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=/usr \
@@ -220,7 +220,7 @@ jobs:
                 minizip-ng-compat-devel capstone-devel gtk4-devel libadwaita-devel \
                 webkitgtk6.0-devel utf8proc-devel fontconfig-devel \
                 libglvnd-devel vulkan-headers vulkan-loader-devel \
-                libplacebo-devel zlib-ng-compat-devel
+                libplacebo-devel libpng-devel zlib-ng-compat-devel
               cmake -S . -B build-rpm -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=/usr \
@@ -264,7 +264,7 @@ jobs:
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
                 nlohmann-json libyaml libelf minizip capstone gtk4 \
                 libadwaita webkitgtk-6.0 libutf8proc fontconfig \
-                libplacebo vulkan-headers vulkan-icd-loader libglvnd zlib
+                libplacebo libpng vulkan-headers vulkan-icd-loader libglvnd zlib
               useradd --create-home builder
               chown -R builder:builder /workspace
               runuser -u builder -- env MOCKTAIL_SOURCE_DIR=/workspace \
