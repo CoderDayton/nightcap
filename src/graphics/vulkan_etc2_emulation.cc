@@ -226,6 +226,12 @@ struct PendingUpload {
   VkDeviceSize source_offset = 0;
   VkDeviceSize compressed = 0;
   VkDeviceSize decoded = 0;
+  // Source pitch in bytes from bufferRowLength/bufferImageHeight, and the
+  // bytes the region spans from `source_offset` including that padding.
+  // `compressed` stays the packed size the decoder consumes.
+  VkDeviceSize source_row_stride = 0;
+  VkDeviceSize source_layer_stride = 0;
+  VkDeviceSize source_span = 0;
   VkDeviceSize target_offset = 0;
   EtcFormat format = EtcFormat::kEtc2Rgb8;
   VkImage image = VK_NULL_HANDLE;
@@ -424,6 +430,25 @@ bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
     upload.target_width = upload.width;
     upload.target_height = upload.height;
     upload.target_bytes = upload.decoded;
+    const VkDeviceSize row_texels =
+        region.bufferRowLength != 0 ? region.bufferRowLength : upload.width;
+    const VkDeviceSize layer_rows =
+        region.bufferImageHeight != 0 ? region.bufferImageHeight
+                                      : upload.height;
+    if (row_texels < upload.width || layer_rows < upload.height) {
+      return false;
+    }
+    const VkDeviceSize block_bytes = EtcBlockBytes(record.format.etc_format);
+    const VkDeviceSize block_rows =
+        (static_cast<VkDeviceSize>(upload.height) + 3) / 4;
+    const VkDeviceSize packed_row =
+        ((static_cast<VkDeviceSize>(upload.width) + 3) / 4) * block_bytes;
+    upload.source_row_stride = ((row_texels + 3) / 4) * block_bytes;
+    upload.source_layer_stride =
+        upload.source_row_stride * ((layer_rows + 3) / 4);
+    upload.source_span = (upload.layers - 1) * upload.source_layer_stride +
+                         (block_rows - 1) * upload.source_row_stride +
+                         packed_row;
     Region copy = region;
     copy.bufferOffset = *total;
     copy.bufferRowLength = 0;
@@ -1291,9 +1316,9 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
                    (mapping->second.size == VK_WHOLE_SIZE ||
                     (absolute - mapping->second.offset <=
                          mapping->second.size &&
-                     upload.compressed <= mapping->second.size -
-                                              (absolute -
-                                               mapping->second.offset)))) {
+                     upload.source_span <= mapping->second.size -
+                                               (absolute -
+                                                mapping->second.offset)))) {
           item.source = static_cast<std::uint8_t*>(mapping->second.data) +
                         (absolute - mapping->second.offset);
         } else {
@@ -1386,8 +1411,24 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
     const PendingUpload& upload = *copied_uploads[index];
     std::uint8_t* source = scratch_source.data() + compressed_offset;
     std::uint8_t* decoded = scratch_decoded.data() + decoded_offset;
-    std::memcpy(source, copy.source, copy.compressed);
     const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
+    if (upload.source_span == copy.compressed) {
+      std::memcpy(source, copy.source, copy.compressed);
+    } else {
+      // Padded rows: gather the covered blocks into the packed layout the
+      // decoder expects.
+      const VkDeviceSize block_rows =
+          (static_cast<VkDeviceSize>(upload.height) + 3) / 4;
+      const VkDeviceSize packed_row = compressed_layer / block_rows;
+      for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
+        for (VkDeviceSize row = 0; row < block_rows; ++row) {
+          std::memcpy(source + layer * compressed_layer + row * packed_row,
+                      copy.source + layer * upload.source_layer_stride +
+                          row * upload.source_row_stride,
+                      packed_row);
+        }
+      }
+    }
     const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
     for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
       EtcDecodeJob job;

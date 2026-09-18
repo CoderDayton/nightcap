@@ -454,6 +454,16 @@ target_link_libraries(input_pump_pacer_test PRIVATE
 )
 mocktail_apply_compile_options(input_pump_pacer_test)
 
+add_executable(input_pump_pacing_runtime_test
+  input_pump_pacing_runtime_test.cc
+)
+target_link_libraries(input_pump_pacing_runtime_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(input_pump_pacing_runtime_test)
+
 add_executable(vulkan_surface_recovery_gate_test
   vulkan_surface_recovery_gate_test.cc
 )
@@ -997,6 +1007,7 @@ gtest_discover_tests(jnivm_native_text_box_info_test)
 gtest_discover_tests(jnivm_webrtc_audio_manager_test)
 gtest_discover_tests(vulkan_present_observer_test)
 gtest_discover_tests(input_pump_pacer_test)
+gtest_discover_tests(input_pump_pacing_runtime_test)
 gtest_discover_tests(vulkan_surface_recovery_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)

@@ -2298,10 +2298,9 @@ bool HandleRobloxCookieSetVoidMethodA(jobject obj, jmethodID method_id,
 
 jobject MakeFileObject(const char* path) {
   jobject file = MakeObjectForClass("java/io/File");
-  auto* pseudo_object = PseudoObjectFromRef(file);
-  if (pseudo_object) {
-    pseudo_object->object_fields["path"] = MakeString(path);
-  }
+  // The field owns a reference, so the calling thread's local ref can be
+  // released on detach without freeing the value.
+  SetStringFieldRaw(file, "path", path);
   return file;
 }
 

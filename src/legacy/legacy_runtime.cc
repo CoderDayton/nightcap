@@ -762,7 +762,12 @@ uint64_t MonotonicNanos() {
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
-JNIEnv* AttachMainThreadJniEnv() {
+// `attached` reports whether AttachCurrentThread itself succeeded, so a caller
+// that caches the env can tell a real attach from the GetJNIEnv fallback.
+JNIEnv* AttachMainThreadJniEnv(bool* attached = nullptr) {
+  if (attached != nullptr) {
+    *attached = false;
+  }
   if (g_vm_for_main_thread_pump == nullptr) {
     return nullptr;
   }
@@ -773,6 +778,9 @@ JNIEnv* AttachMainThreadJniEnv() {
     jint attach_result = java_vm->AttachCurrentThread(&raw_env, nullptr);
     if (attach_result == JNI_OK && raw_env != nullptr) {
       env = static_cast<JNIEnv*>(raw_env);
+      if (attached != nullptr) {
+        *attached = true;
+      }
     } else if (IsEnabled("MOCKTAIL_TRACE_MAIN_THREAD_PUMP")) {
       std::cerr << "  [main] AttachCurrentThread failed in pump: "
                 << attach_result << '\n'
@@ -784,6 +792,35 @@ JNIEnv* AttachMainThreadJniEnv() {
   }
   g_vm_for_main_thread_pump->RestoreFunctions();
   PublishCurrentJniEnv(env);
+  return env;
+}
+
+// The pseudo-VM attach is idempotent: once this thread holds a live env for
+// the VM, re-attaching hands back the same thread-local pointer. Only the
+// main thread calls this, so the cache needs no synchronization. The game
+// session installs RestoreGameSessionJniEnvironment, which restores the JNI
+// function tables when a guest JNI_OnLoad replaces them.
+JNIEnv* MainThreadPumpJniEnv() {
+  static JNIEnv* cached_env = nullptr;
+  static const jnivm::VM* cached_vm = nullptr;
+  if (cached_env != nullptr && cached_vm == g_vm_for_main_thread_pump) {
+    // Only the attach is cached. The table restore and the env publish run on
+    // every tick: a guest JNI_OnLoad can replace the function tables, and any
+    // other thread that publishes its own env overwrites the single global
+    // slot this one shares.
+    g_vm_for_main_thread_pump->RestoreFunctions();
+    PublishCurrentJniEnv(cached_env);
+    return cached_env;
+  }
+  // Only a real attach is worth caching. The GetJNIEnv fallback means this
+  // thread is not attached to the VM, and the next tick has to retry: a VM
+  // swap can make AttachCurrentThread fail for one tick and succeed after.
+  bool attached = false;
+  JNIEnv* env = AttachMainThreadJniEnv(&attached);
+  if (env != nullptr && attached) {
+    cached_env = env;
+    cached_vm = g_vm_for_main_thread_pump;
+  }
   return env;
 }
 
@@ -944,7 +981,7 @@ void PumpRobloxMainThreadMessagesOnce() {
     return;
   }
 
-  JNIEnv* env = AttachMainThreadJniEnv();
+  JNIEnv* env = MainThreadPumpJniEnv();
   if (env == nullptr) {
     static bool logged_missing_env = false;
     if (!logged_missing_env && trace_pump) {
@@ -1414,8 +1451,11 @@ void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
 
 void PublishCurrentJniEnv(JNIEnv* env) {
   using SetCurrentJniEnvFn = void (*)(void*);
-  auto* set_current_jni_env = reinterpret_cast<SetCurrentJniEnvFn>(
-      ::dlsym(RTLD_DEFAULT, "mocktail_set_current_jni_env"));
+  // RTLD_DEFAULT resolves this to the runtime's own exported setter, so the
+  // address is fixed for the life of the process.
+  static SetCurrentJniEnvFn set_current_jni_env =
+      reinterpret_cast<SetCurrentJniEnvFn>(
+          ::dlsym(RTLD_DEFAULT, "mocktail_set_current_jni_env"));
   if (set_current_jni_env) {
     set_current_jni_env(env);
   }

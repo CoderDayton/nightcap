@@ -730,5 +730,80 @@ TEST(VulkanEtc2EmulationTest, BlitsCopiesThatTouchScaledImages) {
   EXPECT_EQ(g_copy_image_calls, 1u);
 }
 
+// bufferRowLength counts texels of source pitch, not of the copied region, so
+// a padded row holds blocks the region does not cover.
+TEST(VulkanEtc2EmulationTest, ReadsCompressedRowsAtTheRequestedStride) {
+  const VkDevice device = FakeHandle<VkDevice>(0x18);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x208);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x708);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "1", 1), 0);
+
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VulkanEtc2Emulation emulation;
+  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x28), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.extent = {8, 8, 1};
+  image_info.mipLevels = 1;
+  image_info.arrayLayers = 1;
+  VkImage image = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  ASSERT_EQ(g_created_extent.width, 8u);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                &mapped),
+            VK_SUCCESS);
+
+  // Differential block: every texel decodes to 134.
+  const std::array<std::uint8_t, 8> covered = {0x81, 0x81, 0x81, 0x02,
+                                               0,    0,    0,    0};
+  // Individual block: every texel decodes to 138.
+  const std::array<std::uint8_t, 8> padding = {0x88, 0x88, 0x88, 0x00,
+                                               0,    0,    0,    0};
+  // 16 texels of pitch is 4 blocks per row; the 8x8 region covers the first 2.
+  const std::array<const std::uint8_t*, 6> layout = {
+      covered.data(), covered.data(), padding.data(),
+      padding.data(), covered.data(), covered.data()};
+  for (std::size_t block = 0; block < layout.size(); ++block) {
+    std::memcpy(g_source.data() + block * 8, layout[block], 8);
+  }
+
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = {8, 8, 1};
+  region.bufferRowLength = 16;
+  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                 &region);
+  emulation.PrepareSubmit(&command_buffer, 1);
+
+  std::array<std::uint8_t, 32> packed{};
+  for (std::size_t block = 0; block < 4; ++block) {
+    std::memcpy(packed.data() + block * 8, covered.data(), covered.size());
+  }
+  std::array<std::uint8_t, 8 * 8 * 4> expected{};
+  ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, packed.data(), packed.size(),
+                             8, 8, expected.data(), expected.size()));
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    ASSERT_EQ(g_staging[index], expected[index]) << "byte " << index;
+  }
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
 }  // namespace
 }  // namespace mocktail::graphics

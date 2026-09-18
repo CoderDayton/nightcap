@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
@@ -117,6 +118,24 @@ TEST(SdlWindowIconTest, AppliesEmbeddedPngToRealWindow) {
   SDL_Window* window =
       SDL_CreateWindow("Mocktail icon test", 64, 64, SDL_WINDOW_HIDDEN);
   ASSERT_NE(window, nullptr) << SDL_GetError();
+
+  // Setting a window icon needs compositor support: on Wayland that is the
+  // xdg_toplevel_icon_v1 protocol, which many compositors do not implement.
+  // Probe with a throwaway surface so this covers the embedded PNG wherever
+  // icons work, instead of failing on a platform limitation the callers of
+  // ApplySdlWindowIcon already treat as non-fatal.
+  SDL_Surface* probe = SDL_CreateSurface(1, 1, SDL_PIXELFORMAT_RGBA32);
+  ASSERT_NE(probe, nullptr) << SDL_GetError();
+  SDL_ClearError();
+  const bool icons_supported = SDL_SetWindowIcon(window, probe);
+  const std::string probe_error = icons_supported ? std::string() : SDL_GetError();
+  SDL_DestroySurface(probe);
+  if (!icons_supported) {
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    GTEST_SKIP() << "this video driver cannot set a window icon: "
+                 << probe_error;
+  }
 
   const Status status = platform::ApplySdlWindowIcon(window);
   EXPECT_TRUE(status.ok()) << status.message();

@@ -349,6 +349,7 @@ class ExternalLaunchBroker::Impl final {
       Status initial_status = NormalizeRequest(*initial_request, &normalized);
       if (!initial_status.ok()) return initial_status;
       pending_.push_back(std::move(normalized));
+      PublishPendingCount();
     }
     socket_path_ = options_.socket_path;
     Status status = socket_path_.empty()
@@ -426,6 +427,14 @@ class ExternalLaunchBroker::Impl final {
     if (!sink.valid()) {
       return Invalid("external-launch sink is incomplete");
     }
+    // The host main loop drains on every tick and the queue is almost always
+    // empty. Observe that without either lock, so an idle tick never waits
+    // behind a dispatch already in flight. A request queued just after this
+    // load is delivered on the next tick.
+    if (pending_count_.load(std::memory_order_acquire) == 0 &&
+        !stopping_.load(std::memory_order_acquire)) {
+      return Status::Ok();
+    }
     std::lock_guard<std::mutex> drain_lock(drain_mutex_);
     if (stopping_.load(std::memory_order_acquire)) {
       return Failed("external-launch broker is stopping");
@@ -437,11 +446,13 @@ class ExternalLaunchBroker::Impl final {
         if (pending_.empty()) break;
         request = std::move(pending_.front());
         pending_.pop_front();
+        PublishPendingCount();
       }
       Status status = sink.dispatch(sink.context, request);
       if (!status.ok()) {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         pending_.push_front(std::move(request));
+        PublishPendingCount();
         return status;
       }
     }
@@ -482,6 +493,7 @@ class ExternalLaunchBroker::Impl final {
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
       pending_.clear();
+      PublishPendingCount();
     }
     started_ = false;
     return Status::Ok();
@@ -577,7 +589,14 @@ class ExternalLaunchBroker::Impl final {
       return Unavailable("external-launch queue is full");
     }
     pending_.push_back(std::move(request));
+    PublishPendingCount();
     return Status::Ok();
+  }
+
+  // Mirrors pending_.size() for Drain's lock-free idle check. Every caller
+  // holds queue_mutex_, except Start, which runs before the worker exists.
+  void PublishPendingCount() {
+    pending_count_.store(pending_.size(), std::memory_order_release);
   }
 
   void CleanupEndpoint() {
@@ -607,6 +626,7 @@ class ExternalLaunchBroker::Impl final {
   std::mutex drain_mutex_;
   std::mutex lifecycle_mutex_;
   std::deque<RobloxExperienceLaunchRequest> pending_;
+  std::atomic<std::size_t> pending_count_{0};
   OwnedPthread worker_;
   std::atomic<bool> stopping_{true};
   int listener_ = -1;
