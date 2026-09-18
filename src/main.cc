@@ -552,6 +552,12 @@ int main(int argc, char* argv[]) {
     case mocktail::runtime::GameModeSessionState::kActive:
       std::cout << "  [gamemode] performance request active\n";
       break;
+    case mocktail::runtime::GameModeSessionState::kDeclinedCorePinning:
+      std::cout << "  [gamemode] released: it pinned this process to a subset "
+                   "of the CPUs, which concentrates the worker pool. Set "
+                   "pin_cores=no in ~/.config/gamemode.ini to keep GameMode, "
+                   "or performance.gamemode: on to accept the pinning\n";
+      break;
     case mocktail::runtime::GameModeSessionState::kAlreadyActive:
       std::cout << "  [gamemode] already active for this process\n";
       break;

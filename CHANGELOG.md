@@ -21,6 +21,25 @@ GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Texture uploads stalled the frame they were submitted on. ETC2 batches
+  decoded on worker threads but were then resampled one upload at a time on
+  the submitting thread, which at the default 4x upscale is sixteen times the
+  decoded texels. Resampling now runs on the same worker pool, in two passes so
+  mip level 0 still resolves before the mips built from it. In a 70k-part
+  place the worst `vkQueueSubmit` fell from 167ms to 92ms.
+- Most ETC2 batches decoded on a single thread. Workers were created and
+  joined per batch, so the parallel floor had to cover that cost and sat at a
+  1024x1024 image; batches under it ran on the caller, which was 54% of all
+  decode time in a 70k-part place. Decode workers are now a persistent pool,
+  and the floor drops to a 128x128 image. Mean decode time in that place fell
+  from 8.2ms to 4.7ms, and 11.8ms before both texture fixes.
+- On CPUs with a wide core-speed spread, Feral GameMode pinned the process to
+  the few fastest cores, concentrating Roblox's worker pool onto them instead
+  of spreading it. With `performance.gamemode: auto`, a request that narrows
+  the CPU affinity is now released again, which releases the pin. Set
+  `pin_cores=no` in `~/.config/gamemode.ini` to keep GameMode without the
+  pinning, or `performance.gamemode: on` to accept it. See
+  `docs/PERFORMANCE.md`.
 - With `show_place_name: false`, Discord no longer shows the experience
   thumbnail or its name on hover.
 

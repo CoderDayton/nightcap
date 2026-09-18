@@ -252,6 +252,57 @@ TEST(Etc2DecoderTest, DecodesJobsOnWorkersLikeSerialDecode) {
   EXPECT_EQ(short_output, std::vector<std::uint8_t>(4 * 4 * 4 - 1, 0xAB));
 }
 
+// Batches of small textures stay under the old parallel floor; the pool has
+// to decode them exactly as the caller would.
+TEST(Etc2DecoderTest, DecodesManySmallJobsLikeSerialDecode) {
+  constexpr std::size_t kJobs = 24;
+  constexpr std::uint32_t kWidth = 64;
+  constexpr std::uint32_t kHeight = 64;
+  std::vector<std::vector<std::uint8_t>> sources;
+  std::vector<std::vector<std::uint8_t>> expected;
+  std::vector<std::vector<std::uint8_t>> outputs;
+  for (std::size_t index = 0; index < kJobs; ++index) {
+    sources.push_back(RandomBlocks(EtcFormat::kEtc2Rgb8, kWidth, kHeight,
+                                   static_cast<std::uint32_t>(index + 11)));
+    expected.push_back(
+        Decode(EtcFormat::kEtc2Rgb8, sources.back(), kWidth, kHeight));
+    outputs.emplace_back(expected.back().size(), 0xAB);
+  }
+  std::vector<EtcDecodeJob> jobs;
+  for (std::size_t index = 0; index < kJobs; ++index) {
+    jobs.push_back({EtcFormat::kEtc2Rgb8, sources[index].data(),
+                    sources[index].size(), kWidth, kHeight,
+                    outputs[index].data(), outputs[index].size()});
+  }
+
+  DecodeEtcJobs(jobs.data(), jobs.size(), 8);
+
+  for (std::size_t index = 0; index < kJobs; ++index) {
+    EXPECT_TRUE(jobs[index].ok) << index;
+    EXPECT_EQ(outputs[index], expected[index]) << index;
+  }
+}
+
+// The workers outlive each batch, so a later batch must find them idle.
+TEST(Etc2DecoderTest, DecodesCorrectlyAcrossRepeatedBatches) {
+  constexpr std::uint32_t kWidth = 260;
+  constexpr std::uint32_t kHeight = 132;
+  const std::vector<std::uint8_t> source =
+      RandomBlocks(EtcFormat::kEtc2Rgba8, kWidth, kHeight, 7);
+  const std::vector<std::uint8_t> expected =
+      Decode(EtcFormat::kEtc2Rgba8, source, kWidth, kHeight);
+
+  for (int round = 0; round < 40; ++round) {
+    std::vector<std::uint8_t> output(expected.size(), 0xAB);
+    EtcDecodeJob job{EtcFormat::kEtc2Rgba8, source.data(), source.size(),
+                     kWidth,                kHeight,      output.data(),
+                     output.size()};
+    DecodeEtcJobs(&job, 1, 8);
+    ASSERT_TRUE(job.ok) << round;
+    ASSERT_EQ(output, expected) << round;
+  }
+}
+
 TEST(Etc2DecoderTest, RejectsShortBuffers) {
   const std::vector<std::uint8_t> source(8, 0);
   std::vector<std::uint8_t> output(4 * 4 * 4, 0);

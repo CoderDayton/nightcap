@@ -4,6 +4,8 @@
 #include "mocktail/graphics/texture_override.h"
 
 #include <algorithm>
+#include <pthread.h>
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -575,6 +577,76 @@ struct VulkanEtc2Emulation::State {
                    upload.target_width, upload.target_height, upload.target);
     } else {
       std::memcpy(upload.target, decoded, upload.decoded);
+    }
+  }
+
+  struct EmitJob {
+    const PendingUpload* upload = nullptr;
+    const std::uint8_t* compressed = nullptr;
+    const std::uint8_t* decoded = nullptr;
+  };
+
+  struct EmitQueue {
+    State* state = nullptr;
+    std::vector<EmitJob> jobs;
+    std::atomic<std::size_t> next{0};
+
+    void Run() {
+      for (;;) {
+        const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
+        if (index >= jobs.size()) {
+          return;
+        }
+        const EmitJob& job = jobs[index];
+        state->EmitUpload(*job.upload, job.compressed, job.decoded);
+      }
+    }
+  };
+
+  static void* RunEmitQueue(void* argument) {
+    static_cast<EmitQueue*>(argument)->Run();
+    return nullptr;
+  }
+
+  // Resampling a batch costs sixteen times the decoded texels at the default
+  // upscale, so uploads are emitted across the decode worker pool. They write
+  // disjoint staging ranges, and level 0 is emitted before the rest because it
+  // publishes the texels the other mips resample from.
+  void EmitBatch(std::vector<EmitJob> jobs, unsigned worker_count) {
+    if (jobs.empty()) {
+      return;
+    }
+    std::vector<EmitJob> level_zero;
+    std::vector<EmitJob> rest;
+    for (const EmitJob& job : jobs) {
+      (job.upload->mip_level == 0 ? level_zero : rest).push_back(job);
+    }
+    EmitPass(std::move(level_zero), worker_count);
+    EmitPass(std::move(rest), worker_count);
+  }
+
+  void EmitPass(std::vector<EmitJob> jobs, unsigned worker_count) {
+    if (jobs.empty()) {
+      return;
+    }
+    EmitQueue queue;
+    queue.state = this;
+    queue.jobs = std::move(jobs);
+    const std::size_t threads =
+        std::min<std::size_t>(std::max(worker_count, 1U), queue.jobs.size());
+    std::vector<pthread_t> workers;
+    workers.reserve(threads > 0 ? threads - 1 : 0);
+    for (std::size_t index = 1; index < threads; ++index) {
+      pthread_t worker;
+      // The caller emits whatever workers that failed to start leave behind.
+      if (pthread_create(&worker, nullptr, &State::RunEmitQueue, &queue) != 0) {
+        break;
+      }
+      workers.push_back(worker);
+    }
+    queue.Run();
+    for (const pthread_t worker : workers) {
+      pthread_join(worker, nullptr);
     }
   }
 
@@ -1349,12 +1421,15 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
   }
   compressed_offset = 0;
   decoded_offset = 0;
+  std::vector<State::EmitJob> emit_jobs;
+  emit_jobs.reserve(copied_uploads.size());
   for (const PendingUpload* upload : copied_uploads) {
-    state_->EmitUpload(*upload, scratch_source.data() + compressed_offset,
-                       scratch_decoded.data() + decoded_offset);
+    emit_jobs.push_back({upload, scratch_source.data() + compressed_offset,
+                         scratch_decoded.data() + decoded_offset});
     compressed_offset += upload->compressed;
     decoded_offset += upload->decoded;
   }
+  state_->EmitBatch(std::move(emit_jobs), DecodeWorkerCount());
 }
 
 void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {

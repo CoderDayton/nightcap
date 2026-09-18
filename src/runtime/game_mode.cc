@@ -56,7 +56,33 @@ void* OpenClientLibrary(const char* name) {
 #endif
 }
 
+int GetProcessAffinity(cpu_set_t* mask) {
+  return sched_getaffinity(0, sizeof(*mask), mask);
+}
+
+int SetProcessAffinity(const cpu_set_t* mask) {
+  return sched_setaffinity(0, sizeof(*mask), mask);
+}
+
 }  // namespace
+
+CpuAffinityApi HostCpuAffinityApi() {
+  return CpuAffinityApi{&GetProcessAffinity, &SetProcessAffinity};
+}
+
+bool CpuAffinityNarrowed(const cpu_set_t& before, const cpu_set_t& after) {
+  if (CPU_COUNT(&after) >= CPU_COUNT(&before)) {
+    return false;
+  }
+  // A smaller set that escapes `before` is a move, not a narrowing, and the
+  // daemon's choice of CPUs is then the only one known to be permitted.
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (CPU_ISSET(cpu, &after) && !CPU_ISSET(cpu, &before)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 bool ParseGameModePolicy(std::string_view value, GameModePolicy* policy) {
   if (policy == nullptr) {
@@ -97,6 +123,8 @@ const char* GameModeSessionStateName(GameModeSessionState state) {
       return "unavailable";
     case GameModeSessionState::kRequestFailed:
       return "request-failed";
+    case GameModeSessionState::kDeclinedCorePinning:
+      return "declined-core-pinning";
     case GameModeSessionState::kAlreadyActive:
       return "already-active";
     case GameModeSessionState::kActive:
@@ -123,7 +151,7 @@ GameModeSession::GameModeSession(GameModeSession&& other) noexcept
 
 GameModeSession GameModeSession::Start(GameModePolicy policy) {
   if (policy == GameModePolicy::kOff) {
-    return StartBound(policy, {}, nullptr);
+    return StartBound(policy, {}, {}, nullptr);
   }
 
   void* library = OpenClientLibrary("libgamemode.so.0");
@@ -155,7 +183,8 @@ GameModeSession GameModeSession::Start(GameModePolicy policy) {
   (void)ResolveFunction(library, "real_gamemode_query_status",
                         &api.query_status, nullptr);
 
-  GameModeSession session = StartBound(policy, api, library);
+  GameModeSession session =
+      StartBound(policy, api, HostCpuAffinityApi(), library);
   if (!session.owns_request_) {
     session.CloseLibrary();
   }
@@ -164,11 +193,17 @@ GameModeSession GameModeSession::Start(GameModePolicy policy) {
 
 GameModeSession GameModeSession::StartWithClientForTesting(
     GameModePolicy policy, GameModeClientApi api) {
-  return StartBound(policy, api, nullptr);
+  return StartBound(policy, api, {}, nullptr);
+}
+
+GameModeSession GameModeSession::StartWithClientForTesting(
+    GameModePolicy policy, GameModeClientApi api, CpuAffinityApi affinity) {
+  return StartBound(policy, api, affinity, nullptr);
 }
 
 GameModeSession GameModeSession::StartBound(GameModePolicy policy,
                                             GameModeClientApi api,
+                                            CpuAffinityApi affinity,
                                             void* library_handle) {
   GameModeSession session;
   if (policy == GameModePolicy::kOff) {
@@ -185,6 +220,11 @@ GameModeSession GameModeSession::StartBound(GameModePolicy policy,
     session.state_ = GameModeSessionState::kAlreadyActive;
     return session;
   }
+  cpu_set_t before;
+  CPU_ZERO(&before);
+  const bool affinity_readable =
+      policy != GameModePolicy::kOn && affinity.get != nullptr &&
+      affinity.set != nullptr && affinity.get(&before) == 0;
   if (api.request_start() != 0) {
     session.state_ = GameModeSessionState::kRequestFailed;
     session.detail_ = ClientError(api, "GameMode request was rejected");
@@ -192,6 +232,21 @@ GameModeSession GameModeSession::StartBound(GameModePolicy policy,
   }
   session.state_ = GameModeSessionState::kActive;
   session.owns_request_ = true;
+  // The daemon pins before the request call returns, and re-pins every few
+  // seconds afterwards. Ending the request is what releases the pin.
+  cpu_set_t after;
+  CPU_ZERO(&after);
+  if (affinity_readable && affinity.get(&after) == 0 &&
+      CpuAffinityNarrowed(before, after)) {
+    session.state_ = GameModeSessionState::kDeclinedCorePinning;
+    session.detail_ = "GameMode pinned the process to a subset of its CPUs";
+    // A release that fails leaves the daemon holding the request, so keep
+    // owning it and let Stop() retry rather than reporting it released.
+    if (api.request_end() == 0) {
+      session.owns_request_ = false;
+    }
+    (void)affinity.set(&before);
+  }
   return session;
 }
 
