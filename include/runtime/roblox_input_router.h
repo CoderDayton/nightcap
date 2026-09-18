@@ -223,6 +223,10 @@ class RobloxInputRouter final {
   Status DisconnectGamepadLocked(ActiveGamepad& gamepad);
   Status DisconnectGamepadsLocked();
   Status ReleasePressedInputsLocked();
+  // Keeps mouse_x_/mouse_y_ where they are for an event that carries no
+  // usable position, clamped to the current viewport. Before any absolute
+  // position has been seen, the held position is the viewport center.
+  void HoldPointerLocked(const platform::SurfaceCoordinateTransform& transform);
   int32_t AllocatePointerIdLocked() const;
   std::vector<ActiveTouch>::iterator FindTouchIteratorLocked(int64_t touch_id,
                                                              int64_t finger_id);
@@ -238,8 +242,13 @@ class RobloxInputRouter final {
   std::vector<ActiveTouch> active_touches_;
   std::vector<ActiveKey> active_keys_;
   std::vector<ActiveGamepad> gamepads_;
+  // Last known pointer position in guest units. Relative-mode motion, and
+  // wheel or button events with zero coordinates, do not move it: the pointer
+  // stays where it was captured while the deltas pass through.
   float mouse_x_ = 0.0f;
   float mouse_y_ = 0.0f;
+  // True once an absolute position has been received since Activate.
+  bool pointer_anchored_ = false;
   bool raw_mouse_ = false;
 };
 
