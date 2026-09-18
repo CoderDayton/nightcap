@@ -20,13 +20,13 @@ bool RealSdlWindowTestsEnabled() {
   return enabled != nullptr && std::string(enabled) == "1";
 }
 
-// Unthrottled presentation must not park the main-thread pump.
+// Unthrottled presentation must not pace the main-thread pump.
 //
-// Roblox's render thread posts work to the main thread and waits on the
-// reply. That queue is inside libroblox.so, so polling is the only way to
-// observe it and a timed sleep cannot be woken by a post. A frame that misses
-// its slot slips a whole period, and the engine's slack before that happens
-// is under a millisecond, shorter than any sleep long enough to save CPU.
+// Roblox posts its per-frame main-thread step at a time of its own choosing
+// and nothing signals the host, so the pump is a poll. A frame that misses
+// its slot slips a whole period, and the engine's slack is under a
+// millisecond, so the pacer's 240 Hz cadence is far too coarse here. The rest
+// between polls is runtime/engine_pump_rest, bounded at 100 us.
 //
 // A throttled present blocks on vsync, so the pacer still runs there.
 TEST(InputPumpPacingRuntimeTest, UnthrottledPresentationDoesNotParkThePump) {

@@ -58,6 +58,8 @@
 #include "libc_shim/libc_shim.h"
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
+#include "mocktail/graphics/chrome_trace_writer.h"
+#include "runtime/engine_pump_rest.h"
 #include "runtime/device_memory_profile.h"
 #include "runtime/display_size.h"
 #include "runtime/environment.h"
@@ -942,6 +944,43 @@ bool RunTaskSchedulerForegroundOnMainThread(
   }
 }
 
+// The profile trace writer is compiled into the Vulkan adapter, which the host
+// dlopens RTLD_GLOBAL, so the pump slice goes through symbols resolved from it.
+// Until the adapter is loaded there is no writer and nothing is recorded.
+struct PumpTraceHooks {
+  using ActiveFn = mocktail::graphics::ChromeTraceWriter* (*)();
+  using ClockFn = std::uint64_t (*)();
+  using SliceFn = void (*)(mocktail::graphics::ChromeTraceWriter*, const char*,
+                           const char*, std::uint64_t, std::uint64_t,
+                           const mocktail::graphics::TraceArg*, std::size_t);
+  ActiveFn active = nullptr;
+  ClockFn clock = nullptr;
+  SliceFn slice = nullptr;
+};
+
+const PumpTraceHooks& PumpTrace() {
+  static PumpTraceHooks hooks;
+  // The adapter loads during startup, so a few hundred ticks cover it. After
+  // that the lookups stop and the pump stays untraced.
+  static int attempts = 0;
+  if (hooks.active == nullptr && attempts++ < 1000) {
+    PumpTraceHooks resolved;
+    resolved.active = reinterpret_cast<PumpTraceHooks::ActiveFn>(
+        ::dlsym(RTLD_DEFAULT, "_ZN8mocktail8graphics18ActiveProfileTraceEv"));
+    resolved.clock = reinterpret_cast<PumpTraceHooks::ClockFn>(
+        ::dlsym(RTLD_DEFAULT, "_ZN8mocktail8graphics15TraceClockNanosEv"));
+    resolved.slice = reinterpret_cast<PumpTraceHooks::SliceFn>(::dlsym(
+        RTLD_DEFAULT,
+        "_ZN8mocktail8graphics17ChromeTraceWriter5SliceEPKcS3_mmPKNS0_"
+        "8TraceArgEm"));
+    if (resolved.active != nullptr && resolved.clock != nullptr &&
+        resolved.slice != nullptr) {
+      hooks = resolved;
+    }
+  }
+  return hooks;
+}
+
 void PumpRobloxMainThreadMessagesOnce() {
   static const bool force_early =
       IsEnabled("MOCKTAIL_FORCE_EARLY_MAIN_THREAD_MESSAGE_PUMP");
@@ -1003,8 +1042,21 @@ void PumpRobloxMainThreadMessagesOnce() {
                 << std::flush;
     }
   }
+  const PumpTraceHooks& hooks = PumpTrace();
+  mocktail::graphics::ChromeTraceWriter* trace =
+      hooks.active != nullptr ? hooks.active() : nullptr;
+  const std::uint64_t pump_start_ns = trace != nullptr ? hooks.clock() : 0;
   g_native_call_messages_from_main_thread(
       env, g_native_gl_class_for_main_thread);
+  if (trace != nullptr) {
+    // Empty polls run at kilohertz rates and would swamp the trace, so only
+    // calls that ran a message are recorded.
+    const std::uint64_t pump_end_ns = hooks.clock();
+    if (pump_end_ns - pump_start_ns >= 20'000) {
+      hooks.slice(trace, "nativeCallMessagesFromMainThread", "pump",
+                  pump_start_ns, pump_end_ns, nullptr, 0);
+    }
+  }
   if (__builtin_expect(trace_pump, 0)) {
     if (pump_count <= 10 || pump_count % 100 == 0) {
       std::cerr << "  [main] nativeCallMessagesFromMainThread returned #"
@@ -6871,6 +6923,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   bool input_shutdown_completed = window_input_runtime == nullptr;
   bool resize_readiness_completed = true;
   if (mocktail::window::IsInitialised()) {
+    std::cout << "  [main] engine pump rest: "
+              << mocktail::runtime::EnginePumpRestModeName(
+                     mocktail::runtime::ActiveEnginePumpRestMode())
+              << " (MOCKTAIL_ENGINE_PUMP_REST=sleep|tpause|spin)\n";
     std::cout << "  [main] entering SDL event loop (close the window to quit)\n"
               << std::flush;
     std::unique_ptr<mocktail::window::WindowGameSurfaceBridge> surface_bridge;
@@ -6986,7 +7042,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         }
       }
       const uint64_t fps_after_launch_ns = fps_trace ? MonotonicNanos() : 0;
-      const uint64_t fps_pace_ns = mocktail::window::PaceInputPump();
+      // The pacer sleeps only under throttled presentation. Unthrottled, the
+      // engine pump above is a poll, and the rest between polls is what keeps
+      // it from spinning.
+      uint64_t fps_pace_ns = mocktail::window::PaceInputPump();
+      if (fps_pace_ns == 0 &&
+          mocktail::window::UnthrottledPresentationRequested()) {
+        fps_pace_ns = mocktail::runtime::RestAfterEnginePump();
+      }
       if (fps_trace) {
         const uint64_t fps_tick_end_ns = MonotonicNanos();
         ++fps_samples;
