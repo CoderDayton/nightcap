@@ -3,9 +3,14 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <random>
+#include <set>
+#include <thread>
 #include <vector>
 
 namespace mocktail::graphics {
@@ -301,6 +306,43 @@ TEST(Etc2DecoderTest, DecodesCorrectlyAcrossRepeatedBatches) {
     ASSERT_TRUE(job.ok) << round;
     ASSERT_EQ(output, expected) << round;
   }
+}
+
+std::size_t ThreadCount() {
+  return static_cast<std::size_t>(
+      std::distance(std::filesystem::directory_iterator("/proc/self/task"),
+                    std::filesystem::directory_iterator()));
+}
+
+// Other batch work (ETC2 emit) drains its own queue across the decode
+// workers. The function runs worker_count times, once of them on the caller,
+// and a second batch reuses the threads the first one started.
+TEST(Etc2DecoderTest, RunsAFunctionAcrossPooledWorkersWithoutNewThreads) {
+  struct Probe {
+    std::mutex mutex;
+    std::set<std::thread::id> threads;
+    std::atomic<int> calls{0};
+  };
+  const auto run = [](void* context) {
+    auto* probe = static_cast<Probe*>(context);
+    probe->calls.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(probe->mutex);
+    probe->threads.insert(std::this_thread::get_id());
+  };
+
+  Probe first;
+  RunOnDecodeWorkers(run, &first, 3);
+  EXPECT_EQ(first.calls.load(), 3);
+  // An idle worker may claim two of the slots.
+  EXPECT_GE(first.threads.size(), 2u);
+  EXPECT_LE(first.threads.size(), 3u);
+  EXPECT_EQ(first.threads.count(std::this_thread::get_id()), 1u);
+
+  const std::size_t pooled = ThreadCount();
+  Probe second;
+  RunOnDecodeWorkers(run, &second, 3);
+  EXPECT_EQ(second.calls.load(), 3);
+  EXPECT_EQ(ThreadCount(), pooled);
 }
 
 TEST(Etc2DecoderTest, RejectsShortBuffers) {

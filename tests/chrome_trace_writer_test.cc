@@ -1,8 +1,11 @@
 #include "mocktail/graphics/chrome_trace_writer.h"
 
 #include <gtest/gtest.h>
+#include <signal.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -261,6 +264,47 @@ TEST(ChromeTraceWriterTest, ScopeRecordsItsLifetimeAndArgs) {
 TEST(ChromeTraceWriterTest, ScopeWithoutWriterRecordsNothing) {
   TraceScope scope(nullptr, "unused", "test");
   scope.Arg("ignored", 1);
+}
+
+std::size_t ThreadCount() {
+  return static_cast<std::size_t>(
+      std::distance(std::filesystem::directory_iterator("/proc/self/task"),
+                    std::filesystem::directory_iterator()));
+}
+
+// A failed write closes the trace, so the writer thread has nothing left to
+// do and exits instead of ticking for the rest of the process.
+TEST(ChromeTraceWriterTest, WriterThreadExitsAfterAWriteFailure) {
+  TemporaryDirectory directory;
+  const auto path = directory.root() / "trace.json";
+  const std::size_t idle_threads = ThreadCount();
+  auto writer = OpenOrFail(path);
+  ASSERT_NE(writer, nullptr);
+  ASSERT_EQ(ThreadCount(), idle_threads + 1);
+
+  // With SIGXFSZ ignored, a write past RLIMIT_FSIZE fails with EFBIG.
+  struct sigaction ignore {};
+  ignore.sa_handler = SIG_IGN;
+  struct sigaction saved_action {};
+  ASSERT_EQ(sigaction(SIGXFSZ, &ignore, &saved_action), 0);
+  rlimit saved_limit{};
+  ASSERT_EQ(getrlimit(RLIMIT_FSIZE, &saved_limit), 0);
+  rlimit no_growth = saved_limit;
+  no_growth.rlim_cur = 0;
+  ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &no_growth), 0);
+  writer->Slice("lost", "test", 0, 1);
+  writer->Flush();
+  EXPECT_EQ(setrlimit(RLIMIT_FSIZE, &saved_limit), 0);
+  EXPECT_EQ(sigaction(SIGXFSZ, &saved_action, nullptr), 0);
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (ThreadCount() != idle_threads &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_EQ(ThreadCount(), idle_threads);
+  writer->Close();
 }
 
 TEST(ChromeTraceWriterTest, ActiveProfileTraceIsOffWithoutEnvironment) {

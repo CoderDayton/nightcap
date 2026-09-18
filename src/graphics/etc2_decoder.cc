@@ -287,10 +287,11 @@ class DecodePool {
     return *pool;
   }
 
-  // Decodes `queue` across pooled workers and the calling thread. Returns
-  // false when another batch already holds the pool or no worker could be
-  // started, leaving the whole queue to the caller.
-  bool Run(DecodeBandQueue* queue, std::size_t workers) {
+  // Calls run(context) on the calling thread and on pooled workers, `workers`
+  // calls in all. Returns false without calling it when another batch
+  // already holds the pool or no worker could be started, leaving the whole
+  // batch to the caller.
+  bool Run(void (*run)(void*), void* context, std::size_t workers) {
     if (workers < 2) {
       return false;
     }
@@ -304,15 +305,17 @@ class DecodePool {
     }
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      queue_ = queue;
+      run_ = run;
+      context_ = context;
       unclaimed_ = helpers;
       running_ = helpers;
     }
     ready_.notify_all();
-    queue->Run();
+    run(context);
     std::unique_lock<std::mutex> lock(mutex_);
     done_.wait(lock, [this] { return running_ == 0; });
-    queue_ = nullptr;
+    run_ = nullptr;
+    context_ = nullptr;
     return true;
   }
 
@@ -344,9 +347,10 @@ class DecodePool {
     for (;;) {
       ready_.wait(lock, [this] { return unclaimed_ > 0; });
       --unclaimed_;
-      DecodeBandQueue* queue = queue_;
+      void (*run)(void*) = run_;
+      void* context = context_;
       lock.unlock();
-      queue->Run();
+      run(context);
       lock.lock();
       if (--running_ == 0) {
         done_.notify_all();
@@ -358,7 +362,8 @@ class DecodePool {
   std::mutex mutex_;
   std::condition_variable ready_;
   std::condition_variable done_;
-  DecodeBandQueue* queue_ = nullptr;
+  void (*run_)(void*) = nullptr;
+  void* context_ = nullptr;
   std::size_t unclaimed_ = 0;
   std::size_t running_ = 0;
   std::size_t threads_ = 0;
@@ -396,10 +401,20 @@ void DecodeEtcJobs(EtcDecodeJob* jobs, std::size_t count,
       total_blocks < kParallelMinimumBlocks
           ? 1
           : std::min<std::size_t>(std::max(worker_count, 1U), bands.size());
-  // The pool declines when it is already busy; the caller decodes the whole
-  // queue itself then, exactly as a single-threaded batch does.
-  if (!DecodePool::Instance().Run(&queue, threads)) {
-    queue.Run();
+  RunOnDecodeWorkers(
+      [](void* context) { static_cast<DecodeBandQueue*>(context)->Run(); },
+      &queue, static_cast<unsigned>(threads));
+}
+
+void RunOnDecodeWorkers(void (*run)(void*), void* context,
+                        unsigned worker_count) {
+  if (run == nullptr) {
+    return;
+  }
+  // The pool declines when it is already busy; the caller drains the whole
+  // batch itself then, exactly as a single-threaded batch does.
+  if (!DecodePool::Instance().Run(run, context, worker_count)) {
+    run(context);
   }
 }
 

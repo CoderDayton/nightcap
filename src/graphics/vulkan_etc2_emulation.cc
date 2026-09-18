@@ -4,7 +4,6 @@
 #include "mocktail/graphics/texture_override.h"
 
 #include <algorithm>
-#include <pthread.h>
 
 #include <atomic>
 #include <cstdio>
@@ -628,11 +627,6 @@ struct VulkanEtc2Emulation::State {
     }
   };
 
-  static void* RunEmitQueue(void* argument) {
-    static_cast<EmitQueue*>(argument)->Run();
-    return nullptr;
-  }
-
   // Resampling a batch costs sixteen times the decoded texels at the default
   // upscale, so uploads are emitted across the decode worker pool. They write
   // disjoint staging ranges, and level 0 is emitted before the rest because it
@@ -659,20 +653,9 @@ struct VulkanEtc2Emulation::State {
     queue.jobs = std::move(jobs);
     const std::size_t threads =
         std::min<std::size_t>(std::max(worker_count, 1U), queue.jobs.size());
-    std::vector<pthread_t> workers;
-    workers.reserve(threads > 0 ? threads - 1 : 0);
-    for (std::size_t index = 1; index < threads; ++index) {
-      pthread_t worker;
-      // The caller emits whatever workers that failed to start leave behind.
-      if (pthread_create(&worker, nullptr, &State::RunEmitQueue, &queue) != 0) {
-        break;
-      }
-      workers.push_back(worker);
-    }
-    queue.Run();
-    for (const pthread_t worker : workers) {
-      pthread_join(worker, nullptr);
-    }
+    RunOnDecodeWorkers(
+        [](void* context) { static_cast<EmitQueue*>(context)->Run(); }, &queue,
+        static_cast<unsigned>(threads));
   }
 
   // Takes the smallest idle buffer that fits, or creates one.

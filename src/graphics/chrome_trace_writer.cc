@@ -224,8 +224,14 @@ void ChromeTraceWriter::WritePending() {
                  std::strerror(errno));
     std::fclose(file_);
     file_ = nullptr;
-    std::lock_guard<std::mutex> lock(mutex_);
-    closed_ = true;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      closed_ = true;
+      // Nothing can reach the file now, so the writer thread exits instead of
+      // ticking for the rest of the process.
+      stopping_ = true;
+    }
+    wake_.notify_all();
   }
 }
 
@@ -236,11 +242,10 @@ void ChromeTraceWriter::Close() {
   if (getpid() != owner_pid_) {
     return;
   }
+  // A write failure sets stopping_ without joining the thread, so the join
+  // below runs even when stopping_ is already set.
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (stopping_) {
-      return;
-    }
     stopping_ = true;
   }
   wake_.notify_all();
