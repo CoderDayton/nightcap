@@ -15,7 +15,8 @@ Goal: a small GTK4 settings window, reachable from the app menu and from a
 - Graphics tab: backend, frame rate limit, vsync, small texture upscale.
 - Input tab: the `input.raw_mouse` toggle and controller options.
 - Advanced tab: FFlag overrides with a plain text editor for `fflags.json`.
-- Discord tab: the `discord_rpc` block (see item 3).
+- Discord tab: every field in the `discord_rpc` block, so a friend can see
+  what you are playing and you can switch it all off in one click.
 - Changes apply on next launch. A restart button restarts Nightcap.
 
 Done when every option in `config/mocktail.example.yaml` that a player would
@@ -35,36 +36,16 @@ is left.
 
 Done when a plugged-in pad shows its own buttons.
 
-## 3. Discord Rich Presence
+## 3. First-load stutter
 
-Upstream ships Discord RPC. Nightcap turns it on by default; see the
-[FAQ](../FAQ.md) to switch it off. It shows the experience name, elapsed
-time, the experience icon, and a join button when the server is public.
+The `--profile` trace now shows shader compiles and pipeline creation, so
+the stutter on first entering an experience can be measured.
 
-- Custom presence: set the title, details line, state line, and large and
-  small icons from `config.yaml`, with placeholders like the experience name
-  and elapsed time.
-- A Discord tab in the settings window to toggle each field.
+- Cut the stutter the trace shows, and prove it with a before and after
+  trace per [BENCHMARKING.md](BENCHMARKING.md).
 
-Done when a friend can see what you are playing and join in one click, and
-you can switch it all off in one click.
-
-## 4. Performance profiling
-
-Every performance change should come with numbers. Today they come with a
-feeling.
-
-- A frame time overlay, toggled by a key and a config flag, showing CPU time,
-  GPU time, and present latency.
-- Shader compile and pipeline cache tracing, so first-load stutter can be
-  measured and cut.
-- A `--profile` flag that writes a Chrome-format trace file, readable in
-  `ui.perfetto.dev` and `chrome://tracing`.
-- A short benchmark guide in `docs/` with a fixed set of experiences, so
-  before and after numbers can be compared across machines.
-
-Done when a pull request that claims a speedup can show the trace that
-proves it.
+Done when entering a fresh experience no longer drops frames on shader
+compiles.
 
 ## Shipped
 
@@ -82,7 +63,21 @@ proves it.
 - No more error 319 kicks after joining a server.
 - Roblox sees the real host RAM and screen size.
 - Desktop launcher that works on Wayland and finds the installed binary.
-- Discord Rich Presence on by default.
+- Discord Rich Presence on by default, with the experience name, creator,
+  elapsed time, the experience icon with a Roblox badge, and a join button
+  when the server is public. See the [FAQ](../FAQ.md) to switch it off.
+- Custom Discord presence: title, details, state, and large and small icons
+  from `config.yaml`, with `{place_name}`, `{place_icon}`, and
+  `{creator_name}` placeholders.
+- `--profile` writes a Chrome-format trace of the Vulkan adapter's work,
+  including shader and pipeline creation, readable in `ui.perfetto.dev`.
+  [BENCHMARKING.md](BENCHMARKING.md) fixes the experiences to measure and
+  `scripts/summarize_profile_trace.py` builds the before and after table.
+- Texture uploads no longer stall the frame they land on: ETC2 decode and
+  resampling run on a persistent worker pool.
+- The host main thread rests between engine polls instead of spinning, and
+  GameMode's core pinning is released, so Roblox's workers spread across
+  every core. See [PERFORMANCE.md](PERFORMANCE.md).
 - Own app ID `io.github.CoderDayton.nightcap`, so Nightcap installs next to
   upstream.
 - AppImage and signed Flatpak releases on every `v*` tag, with the Flatpak

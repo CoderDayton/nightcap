@@ -84,9 +84,14 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_EQ(config.discord_rpc().application_id, "1549428231927500843");
   EXPECT_EQ(config.discord_rpc().text.browsing, "Browsing experiences");
   EXPECT_EQ(config.discord_rpc().text.joining, "Joining an experience");
-  EXPECT_EQ(config.discord_rpc().text.playing, "{place_name}");
-  EXPECT_EQ(config.discord_rpc().text.state, "Playing Roblox");
+  EXPECT_EQ(config.discord_rpc().text.playing, "Playing {place_name}");
+  EXPECT_EQ(config.discord_rpc().text.state, "by {creator_name}");
   EXPECT_EQ(config.discord_rpc().text.unknown_place, "Unknown experience");
+  EXPECT_EQ(config.discord_rpc().text.title, "Roblox");
+  EXPECT_EQ(config.discord_rpc().images.large, "{place_icon}");
+  EXPECT_EQ(config.discord_rpc().images.large_text, "{place_name}");
+  EXPECT_EQ(config.discord_rpc().images.small, "roblox_small");
+  EXPECT_EQ(config.discord_rpc().images.small_text, "Roblox");
   EXPECT_TRUE(config.discord_rpc_valid());
   EXPECT_FALSE(config.has_unsafe_detached_thread_overrides());
   EXPECT_TRUE(config.unsafe_detached_thread_overrides().empty());
@@ -121,6 +126,10 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
       {"MOCKTAIL_DISCORD_RPC_JOIN_BUTTON_LABEL", "Play Together"},
       {"MOCKTAIL_DISCORD_APPLICATION_ID", "123456789012345678"},
       {"MOCKTAIL_DISCORD_RPC_TEXT_PLAYING", "In {place_name}"},
+      {"MOCKTAIL_DISCORD_RPC_TEXT_TITLE", "Nightcap"},
+      {"MOCKTAIL_DISCORD_RPC_IMAGE_LARGE", ""},
+      {"MOCKTAIL_DISCORD_RPC_IMAGE_SMALL", "linux"},
+      {"MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT", "On Linux"},
   });
   const RuntimeConfig config = RuntimeConfig::FromEnvironment(environment);
 
@@ -162,6 +171,11 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
   EXPECT_EQ(config.discord_rpc().join_button_label, "Play Together");
   EXPECT_EQ(config.discord_rpc().application_id, "123456789012345678");
   EXPECT_EQ(config.discord_rpc().text.playing, "In {place_name}");
+  EXPECT_EQ(config.discord_rpc().text.title, "Nightcap");
+  EXPECT_TRUE(config.discord_rpc().images.large.empty());
+  EXPECT_EQ(config.discord_rpc().images.large_text, "{place_name}");
+  EXPECT_EQ(config.discord_rpc().images.small, "linux");
+  EXPECT_EQ(config.discord_rpc().images.small_text, "On Linux");
   EXPECT_TRUE(config.discord_rpc_valid());
 }
 

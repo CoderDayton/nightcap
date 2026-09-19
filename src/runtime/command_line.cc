@@ -1,6 +1,7 @@
 #include "runtime/command_line.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -78,6 +79,12 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
       result.options.allow_unverified_build = true;
     } else if (argument == "--force-run-latest") {
       result.options.force_run_latest = true;
+    } else if (argument == "--profile") {
+      if (!ReadOptionValue(argc, argv, &index, argument,
+                           &result.options.profile_trace_path,
+                           &result.error)) {
+        return result;
+      }
     } else if (argument == "--launch-uri") {
       if (!result.options.launch_request_json.empty()) {
         result.error = "duplicate option: --launch-uri";
@@ -227,6 +234,20 @@ bool ApplyCommandLineEnvironment(const CommandLineOptions& options,
                       error)) {
     return false;
   }
+  if (!options.profile_trace_path.empty()) {
+    // Absolute, so a later working-directory change cannot move the trace.
+    std::error_code absolute_error;
+    const std::filesystem::path trace_path =
+        std::filesystem::absolute(options.profile_trace_path, absolute_error);
+    if (absolute_error ||
+        !SetEnvironment("MOCKTAIL_PROFILE_TRACE", trace_path.string(),
+                        error)) {
+      if (error != nullptr && absolute_error) {
+        *error = "could not resolve --profile path";
+      }
+      return false;
+    }
+  }
   if (options.window_mode == WindowMode::kHeadless) {
     return SetEnvironment("MOCKTAIL_HEADLESS", "1", error);
   }
@@ -256,6 +277,8 @@ std::string CommandLineUsage(const std::string& program_name) {
          "without approval; it is not activated\n"
       << "  --launch-uri <uri>       Join from a roblox: or roblox-player: "
          "website link\n"
+      << "  --profile <file>         Write a Chrome trace of Vulkan adapter "
+         "work for ui.perfetto.dev\n"
       << "  --help, -h               Show this help\n\n"
       << "Auth:\n"
       << "  When no saved Roblox session is found, Roblox's welcome screen "

@@ -233,16 +233,17 @@ TEST_F(RobloxInputRouterTest, RoutesMouseMotionButtonAndVerticalWheel) {
   EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].y, 80.0f);
   EXPECT_EQ(probe_.mouse_buttons[0].button, 1);
   ASSERT_EQ(probe_.mouse_wheels.size(), 1U);
-  EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].x, 0.0f);
-  EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].y, 0.0f);
+  // A wheel event without a usable position keeps the pointer where it was.
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].x, 100.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].y, 80.0f);
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].delta_y, -2.0f);
 }
 
-TEST_F(RobloxInputRouterTest,
-       KeepsRelativeMotionResponsiveAfterOvershootingViewportEdge) {
-  // Relative-mode motion reports zero absolute coordinates, so the router
-  // accumulates deltas. The accumulator stays inside the viewport: a reversal
-  // moves the pointer on the next event, however far the overshoot ran.
+TEST_F(RobloxInputRouterTest, HoldsPointerPositionDuringRelativeMotion) {
+  // Relative-mode motion reports zero absolute coordinates. The pointer stays
+  // where it was captured while the deltas pass through, so a long camera
+  // turn neither walks the reported position to the viewport edge nor
+  // swallows the reversal. The next absolute event moves the pointer again.
   ASSERT_TRUE(
       router_
           .HandleEvent(Event(platform::MouseMotionEvent{640.0f, 360.0f, 0.0f,
@@ -256,13 +257,111 @@ TEST_F(RobloxInputRouterTest,
   ASSERT_TRUE(
       router_
           .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, -100.0f,
+                                                        40.0f, 0}))
+          .dispatched());
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{200.0f, 100.0f, 3.0f,
+                                                        3.0f, 0}))
+          .dispatched());
+
+  ASSERT_EQ(probe_.mouse_moves.size(), 4U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].y, 360.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].delta_x, 2000.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].y, 360.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].delta_x, -100.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].delta_y, 40.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[3].x, 200.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[3].y, 100.0f);
+}
+
+TEST_F(RobloxInputRouterTest,
+       AnchorsUnknownPointerAtViewportCenterForRelativeMotion) {
+  // No absolute position has been seen yet, so the held position is the
+  // viewport center rather than the top-left corner.
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, 25.0f,
+                                                        -10.0f, 0}))
+          .dispatched());
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, 300.0f,
                                                         0.0f, 0}))
           .dispatched());
 
-  ASSERT_EQ(probe_.mouse_moves.size(), 3U);
-  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 1279.0f);
-  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].x, 1179.0f);
-  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].delta_x, -100.0f);
+  ASSERT_EQ(probe_.mouse_moves.size(), 2U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].x, 639.5f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].y, 359.5f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_x, 25.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_y, -10.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 639.5f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].y, 359.5f);
+}
+
+TEST_F(RobloxInputRouterTest, ClampsHeldPointerToViewportAfterResize) {
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{1200.0f, 700.0f, 0.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+  ASSERT_EQ(router_
+                .HandleEvent(Event(
+                    platform::WindowResizedEvent{800, 600, 800, 600, 1.0F}))
+                .state,
+            RobloxInputDispatchState::kStateUpdated);
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, 50.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+
+  ASSERT_EQ(probe_.mouse_moves.size(), 2U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 799.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].y, 599.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].delta_x, 50.0f);
+}
+
+TEST_F(RobloxInputRouterTest,
+       KeepsHeldPointerAcrossZeroCoordinateWheelAndButtonEvents) {
+  // While the pointer is captured, wheel and button events also arrive with
+  // zero coordinates. None of them may move the held position.
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{640.0f, 360.0f, 0.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(
+                      platform::MouseWheelEvent{0.0f, -1.0f, 0.0f, 0.0f}))
+                  .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_LEFT, 1, 0.0f, 0.0f}))
+                  .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      false, SDL_BUTTON_LEFT, 1, 0.0f, 0.0f}))
+                  .dispatched());
+  ASSERT_TRUE(
+      router_
+          .HandleEvent(Event(platform::MouseMotionEvent{0.0f, 0.0f, -500.0f,
+                                                        0.0f, 0}))
+          .dispatched());
+
+  ASSERT_EQ(probe_.mouse_wheels.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].y, 360.0f);
+  ASSERT_EQ(probe_.mouse_buttons.size(), 2U);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].y, 360.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[1].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[1].y, 360.0f);
+  ASSERT_EQ(probe_.mouse_moves.size(), 2U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].y, 360.0f);
 }
 
 // A fractionally scaled X11 desktop: the buffer is 1:1 with logical units
@@ -298,9 +397,14 @@ TEST_F(RobloxInputRouterTest, RawMouseSendsLookDeltasUnscaled) {
   ASSERT_EQ(probe_.mouse_moves.size(), 1U);
   EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_x, 10.0f);
   EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_y, -6.0f);
-  // The reported position stays in guest units whatever the delta carries.
-  EXPECT_NEAR(probe_.mouse_moves[0].x, 8.727f, 0.01f);
-  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].y, 0.0f);
+  // The reported position stays in guest units whatever the delta carries:
+  // with no absolute position seen, it is the guest viewport center.
+  const platform::SurfaceCoordinateTransform transform = {1624, 811, 1624, 811,
+                                                          1.145833F};
+  EXPECT_NEAR(probe_.mouse_moves[0].x, (transform.guest_width() - 1.0F) / 2.0F,
+              0.01f);
+  EXPECT_NEAR(probe_.mouse_moves[0].y,
+              (transform.guest_height() - 1.0F) / 2.0F, 0.01f);
 }
 
 TEST_F(RobloxInputRouterTest,

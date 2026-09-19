@@ -79,8 +79,9 @@ TEST(DiscordRpcTest, BuildsEnglishBrowsingAndJoiningActivities) {
 
   const DiscordRpcActivity browsing = BuildDiscordRpcActivity(
       config, RobloxExperiencePresencePhase::kBrowsing, nullptr, {}, 0);
+  EXPECT_EQ(browsing.name, "Roblox");
   EXPECT_EQ(browsing.details, "Browsing experiences");
-  EXPECT_EQ(browsing.state, "Playing Roblox");
+  EXPECT_TRUE(browsing.state.empty());
   EXPECT_FALSE(browsing.start_timestamp.has_value());
   EXPECT_TRUE(browsing.button_url.empty());
 
@@ -88,7 +89,7 @@ TEST(DiscordRpcTest, BuildsEnglishBrowsingAndJoiningActivities) {
   const DiscordRpcActivity joining = BuildDiscordRpcActivity(
       config, RobloxExperiencePresencePhase::kJoining, &request, {}, 0);
   EXPECT_EQ(joining.details, "Joining an experience");
-  EXPECT_EQ(joining.state, "Playing Roblox");
+  EXPECT_TRUE(joining.state.empty());
   EXPECT_TRUE(joining.button_url.empty());
 }
 
@@ -107,16 +108,41 @@ TEST(DiscordRpcTest, ShowsPlaceTimerAndPublicJoinWhenPlaying) {
 
   const DiscordRpcActivity activity = BuildDiscordRpcActivity(
       config, RobloxExperiencePresencePhase::kPlaying, &request,
-      "Natural Disaster Survival", 1770000000);
+      "Natural Disaster Survival", 1770000000, {}, "Stickmasterluke");
 
-  EXPECT_EQ(activity.details, "Natural Disaster Survival");
-  EXPECT_EQ(activity.state, "Playing Roblox");
+  EXPECT_EQ(activity.name, "Roblox");
+  EXPECT_EQ(activity.details, "Playing Natural Disaster Survival");
+  EXPECT_EQ(activity.state, "by Stickmasterluke");
   ASSERT_TRUE(activity.start_timestamp.has_value());
   EXPECT_EQ(*activity.start_timestamp, 1770000000);
   EXPECT_EQ(activity.button_label, "Join Server");
   EXPECT_EQ(activity.button_url,
             "https://komaruworld.github.io/mocktail/join.html#placeId="
             "189707&gameInstanceId=job%2Fa%2Bb");
+}
+
+TEST(DiscordRpcTest, LeavesOutTextThatExpandsAnEmptyCreator) {
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity unknown_creator = BuildDiscordRpcActivity(
+      DiscordRpcConfig(), RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1);
+  EXPECT_EQ(unknown_creator.details, "Playing Natural Disaster Survival");
+  EXPECT_TRUE(unknown_creator.state.empty());
+
+  DiscordRpcConfig custom;
+  custom.text.state = "by {creator_name} on Linux";
+  EXPECT_TRUE(BuildDiscordRpcActivity(custom,
+                                      RobloxExperiencePresencePhase::kPlaying,
+                                      &request, "Natural Disaster Survival",
+                                      1)
+                  .state.empty());
+  EXPECT_EQ(BuildDiscordRpcActivity(custom,
+                                    RobloxExperiencePresencePhase::kPlaying,
+                                    &request, "Natural Disaster Survival", 1,
+                                    {}, "Stickmasterluke")
+                .state,
+            "by Stickmasterluke on Linux");
 }
 
 TEST(DiscordRpcTest, ShowsExternalPlaceThumbnailWhenAvailable) {
@@ -130,6 +156,8 @@ TEST(DiscordRpcTest, ShowsExternalPlaceThumbnailWhenAvailable) {
   EXPECT_EQ(activity.large_image,
             "https://tr.rbxcdn.com/example/512/512/Image/Png");
   EXPECT_EQ(activity.large_text, "Natural Disaster Survival");
+  EXPECT_EQ(activity.small_image, "roblox_small");
+  EXPECT_EQ(activity.small_text, "Roblox");
 }
 
 TEST(DiscordRpcTest, ShowsPlaceJoinWhenServerIdIsUnavailable) {
@@ -191,12 +219,20 @@ TEST(DiscordRpcTest, HidesPlaceNameAndElapsedTimeByPolicy) {
   config.join_enabled = false;
 
   const RobloxExperienceLaunchRequest request = PublicServer();
-  const DiscordRpcActivity activity =
-      BuildDiscordRpcActivity(config, RobloxExperiencePresencePhase::kPlaying,
-                              &request, "Secret place name", 1770000000);
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Secret place name", 1770000000, {}, "Secret creator");
 
-  EXPECT_EQ(activity.details, "Playing Roblox");
+  // The creator hides with the place, so the default state renders empty.
+  EXPECT_TRUE(activity.details.empty());
   EXPECT_TRUE(activity.state.empty());
+
+  config.text.state = "Playing Roblox";
+  const DiscordRpcActivity fixed_state = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Secret place name", 1770000000, {}, "Secret creator");
+  EXPECT_EQ(fixed_state.details, "Playing Roblox");
+  EXPECT_TRUE(fixed_state.state.empty());
   EXPECT_FALSE(activity.start_timestamp.has_value());
   EXPECT_TRUE(activity.button_url.empty());
 }
@@ -217,6 +253,99 @@ TEST(DiscordRpcTest, ExpandsCustomPlaceTemplateAndUsesFallback) {
                               &request, {}, 1)
           .details,
       "Playing Unknown world with Mocktail");
+}
+
+TEST(DiscordRpcTest, RendersCustomTitleAndStateTemplates) {
+  DiscordRpcConfig config;
+  config.text.title = "{place_name}";
+  config.text.state = "In {place_name}";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity playing =
+      BuildDiscordRpcActivity(config, RobloxExperiencePresencePhase::kPlaying,
+                              &request, "Natural Disaster Survival", 1);
+  EXPECT_EQ(playing.name, "Natural Disaster Survival");
+  EXPECT_EQ(playing.state, "In Natural Disaster Survival");
+
+  const DiscordRpcActivity browsing = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kBrowsing, nullptr, {}, 0);
+  EXPECT_TRUE(browsing.name.empty());
+}
+
+TEST(DiscordRpcTest, RendersCustomImagesWithPlaceholders) {
+  DiscordRpcConfig config;
+  config.images.large = "nightcap_logo";
+  config.images.large_text = "Nightcap";
+  config.images.small = "{place_icon}";
+  config.images.small_text = "{place_name}";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1,
+      "https://tr.rbxcdn.com/example/512/512/Image/Png");
+
+  EXPECT_EQ(activity.large_image, "nightcap_logo");
+  EXPECT_EQ(activity.large_text, "Nightcap");
+  EXPECT_EQ(activity.small_image,
+            "https://tr.rbxcdn.com/example/512/512/Image/Png");
+  EXPECT_EQ(activity.small_text, "Natural Disaster Survival");
+}
+
+TEST(DiscordRpcTest, EmptyLargeImageHidesBothImages) {
+  DiscordRpcConfig config;
+  config.images.large = "";
+  config.images.small = "nightcap_logo";
+  config.images.small_text = "Nightcap";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1,
+      "https://tr.rbxcdn.com/example/512/512/Image/Png");
+
+  EXPECT_TRUE(activity.large_image.empty());
+  EXPECT_TRUE(activity.large_text.empty());
+  EXPECT_TRUE(activity.small_image.empty());
+  EXPECT_TRUE(activity.small_text.empty());
+}
+
+TEST(DiscordRpcTest, DropsUnsafeCustomImages) {
+  const RobloxExperienceLaunchRequest request = PublicServer();
+  for (const char* unsafe :
+       {"file:///etc/passwd", "http://example.test/a.png", "not a key",
+        "{place_name}"}) {
+    DiscordRpcConfig config;
+    config.images.large = "nightcap_logo";
+    config.images.small = unsafe;
+    const DiscordRpcActivity small = BuildDiscordRpcActivity(
+        config, RobloxExperiencePresencePhase::kPlaying, &request,
+        "Natural Disaster Survival", 1);
+    EXPECT_TRUE(small.small_image.empty()) << unsafe;
+
+    config.images.large = unsafe;
+    const DiscordRpcActivity large = BuildDiscordRpcActivity(
+        config, RobloxExperiencePresencePhase::kPlaying, &request,
+        "Natural Disaster Survival", 1);
+    EXPECT_TRUE(large.large_image.empty()) << unsafe;
+    EXPECT_TRUE(large.large_text.empty()) << unsafe;
+  }
+}
+
+TEST(DiscordRpcTest, HiddenPlaceNameAlsoHidesPlaceImagesAndTitle) {
+  DiscordRpcConfig config;
+  config.show_place_name = false;
+  config.text.title = "{place_name}";
+  const RobloxExperienceLaunchRequest request = PublicServer();
+
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Secret place name", 1,
+      "https://tr.rbxcdn.com/example/512/512/Image/Png");
+
+  EXPECT_TRUE(activity.name.empty());
+  EXPECT_TRUE(activity.large_image.empty());
+  EXPECT_TRUE(activity.large_text.empty());
 }
 
 TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
@@ -280,6 +409,13 @@ TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
   config.application_id = "123456789012345678";
   config.show_place_name = false;
   config.join_enabled = false;
+  config.text.title = "Nightcap Test";
+  config.text.state = "Playing Roblox";
+  // Joining has no place yet, so this renders empty and must be left out.
+  config.text.joining = "{place_name}";
+  config.images.large = "nightcap_logo";
+  config.images.small = "linux";
+  config.images.small_text = "On Linux";
   DiscordRpcSession session(std::move(config));
   std::string detail;
   ASSERT_TRUE(session.Start(&detail)) << detail;
@@ -320,8 +456,15 @@ TEST(DiscordRpcTest, PublishesLifecycleActivitiesOverDiscordIpc) {
   EXPECT_NE(activity_payloads[0].find("SET_ACTIVITY"), std::string::npos);
   EXPECT_NE(activity_payloads[0].find("Browsing experiences"),
             std::string::npos);
-  EXPECT_NE(activity_payloads[1].find("Joining an experience"),
+  EXPECT_NE(activity_payloads[0].find("\"name\":\"Nightcap Test\""),
             std::string::npos);
+  EXPECT_NE(activity_payloads[0].find("\"large_image\":\"nightcap_logo\""),
+            std::string::npos);
+  EXPECT_NE(activity_payloads[0].find("\"small_image\":\"linux\""),
+            std::string::npos);
+  EXPECT_NE(activity_payloads[0].find("\"small_text\":\"On Linux\""),
+            std::string::npos);
+  EXPECT_EQ(activity_payloads[1].find("\"details\""), std::string::npos);
   EXPECT_NE(activity_payloads[2].find("Playing Roblox"), std::string::npos);
   EXPECT_NE(activity_payloads[2].find("timestamps"), std::string::npos);
 

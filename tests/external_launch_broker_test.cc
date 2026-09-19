@@ -9,13 +9,16 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -286,6 +289,121 @@ TEST_F(ExternalLaunchBrokerTest, GlobalAttachmentDrainsAndRequiresOneOwner) {
 
   ClearActiveExternalLaunchBroker(broker_.get());
   EXPECT_EQ(GetActiveExternalLaunchBroker(), nullptr);
+}
+
+// The host main loop drains the broker on every tick and is almost always
+// idle. An idle drain must observe the empty queue without waiting for a
+// dispatch already in flight, or one slow launch stalls the whole loop.
+TEST_F(ExternalLaunchBrokerTest, IdleDrainDoesNotWaitForAnInFlightDispatch) {
+  Start();
+  ASSERT_TRUE(broker_->QueueInitialRequest(Request(7001)).ok());
+
+  std::mutex gate_mutex;
+  std::condition_variable gate;
+  bool released = false;
+  std::atomic<bool> dispatching{false};
+
+  struct BlockingProbe {
+    std::mutex* gate_mutex;
+    std::condition_variable* gate;
+    bool* released;
+    std::atomic<bool>* dispatching;
+  } blocking{&gate_mutex, &gate, &released, &dispatching};
+
+  const ExternalLaunchSink blocking_sink{
+      &blocking,
+      [](void* context, const RobloxExperienceLaunchRequest&) -> Status {
+        auto* probe = static_cast<BlockingProbe*>(context);
+        probe->dispatching->store(true, std::memory_order_release);
+        std::unique_lock<std::mutex> lock(*probe->gate_mutex);
+        probe->gate->wait(lock, [probe] { return *probe->released; });
+        return Status::Ok();
+      }};
+
+  std::thread holder([&] {
+    EXPECT_TRUE(broker_->Drain(blocking_sink, 1).ok());
+  });
+  while (!dispatching.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  // Release on a timer, so a drain that does block behind the dispatch
+  // reports a slow elapsed time instead of deadlocking the test.
+  std::thread releaser([&] {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    {
+      std::lock_guard<std::mutex> lock(gate_mutex);
+      released = true;
+    }
+    gate.notify_all();
+  });
+
+  CaptureProbe probe;
+  const auto started = std::chrono::steady_clock::now();
+  const Status idle = broker_->Drain({&probe, Capture}, 4);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  releaser.join();
+  holder.join();
+
+  EXPECT_TRUE(idle.ok()) << idle.message();
+  EXPECT_TRUE(probe.requests.empty());
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                .count(),
+            250)
+      << "idle drain blocked behind the in-flight dispatch";
+}
+
+// The lock-free idle path must not drop a request that arrives while a
+// dispatch is running.
+TEST_F(ExternalLaunchBrokerTest, DeliversARequestQueuedDuringADispatch) {
+  Start();
+  ASSERT_TRUE(broker_->QueueInitialRequest(Request(7101)).ok());
+
+  std::mutex gate_mutex;
+  std::condition_variable gate;
+  bool released = false;
+  std::atomic<bool> dispatching{false};
+
+  struct BlockingProbe {
+    std::mutex* gate_mutex;
+    std::condition_variable* gate;
+    bool* released;
+    std::atomic<bool>* dispatching;
+  } blocking{&gate_mutex, &gate, &released, &dispatching};
+
+  const ExternalLaunchSink blocking_sink{
+      &blocking,
+      [](void* context, const RobloxExperienceLaunchRequest&) -> Status {
+        auto* probe = static_cast<BlockingProbe*>(context);
+        probe->dispatching->store(true, std::memory_order_release);
+        std::unique_lock<std::mutex> lock(*probe->gate_mutex);
+        probe->gate->wait(lock, [probe] { return *probe->released; });
+        return Status::Ok();
+      }};
+
+  std::thread holder([&] {
+    EXPECT_TRUE(broker_->Drain(blocking_sink, 1).ok());
+  });
+  while (!dispatching.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  ASSERT_TRUE(broker_->QueueInitialRequest(Request(7102)).ok());
+  EXPECT_EQ(broker_->pending_launch_count(), 1u);
+
+  {
+    std::lock_guard<std::mutex> lock(gate_mutex);
+    released = true;
+  }
+  gate.notify_all();
+  holder.join();
+
+  CaptureProbe probe;
+  ASSERT_TRUE(broker_->Drain({&probe, Capture}, 4).ok());
+  ASSERT_EQ(probe.requests.size(), 1u);
+  EXPECT_EQ(probe.requests[0].place_id, 7102);
+  EXPECT_EQ(broker_->pending_launch_count(), 0u);
 }
 
 }  // namespace

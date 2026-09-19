@@ -37,8 +37,9 @@ side by side.
 
 Everything else works the same as upstream. See the
 [roadmap](docs/ROADMAP.md) for what is coming next, the
-[changelog](CHANGELOG.md) for what each release changed, and the
-[FAQ](FAQ.md) for Discord RPC, logs, and VR.
+[changelog](CHANGELOG.md) for what each release changed,
+[performance](docs/PERFORMANCE.md) for CPU load, heat and the knobs that change
+them, and the [FAQ](FAQ.md) for Discord RPC, logs, and VR.
 
 ## Install with Flatpak
 

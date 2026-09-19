@@ -98,6 +98,56 @@ TEST(TextureOverrideTest, ResampleAveragesSourceBoxes) {
   }
 }
 
+// Rounded mean of the source box [x*sw/w, (x+1)*sw/w) per axis, at least one
+// texel wide.
+std::vector<std::uint8_t> ReferenceBoxResample(const RgbaImage& source,
+                                               std::uint32_t width,
+                                               std::uint32_t height) {
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(width) * height * 4);
+  const auto span = [](std::uint32_t i, std::uint32_t from, std::uint32_t to) {
+    const std::uint64_t first = static_cast<std::uint64_t>(i) * from / to;
+    const std::uint64_t last =
+        std::max<std::uint64_t>(first + 1, (i + 1ULL) * from / to);
+    return std::pair{first, last};
+  };
+  for (std::uint32_t y = 0; y < height; ++y) {
+    const auto [y0, y1] = span(y, source.height, height);
+    for (std::uint32_t x = 0; x < width; ++x) {
+      const auto [x0, x1] = span(x, source.width, width);
+      for (int channel = 0; channel < 4; ++channel) {
+        std::uint64_t sum = 0;
+        for (std::uint64_t sy = y0; sy < y1; ++sy) {
+          for (std::uint64_t sx = x0; sx < x1; ++sx) {
+            sum += source.pixels[(sy * source.width + sx) * 4 + channel];
+          }
+        }
+        const std::uint64_t count = (y1 - y0) * (x1 - x0);
+        out[(static_cast<std::size_t>(y) * width + x) * 4 + channel] =
+            static_cast<std::uint8_t>((sum + count / 2) / count);
+      }
+    }
+  }
+  return out;
+}
+
+TEST(TextureOverrideTest, ResampleMatchesBoxFilterForMixedSizes) {
+  const std::pair<std::uint32_t, std::uint32_t> sources[] = {
+      {1, 1}, {3, 5}, {48, 48}, {60, 33}, {64, 17}};
+  const std::pair<std::uint32_t, std::uint32_t> targets[] = {
+      {1, 1}, {2, 7}, {5, 3}, {48, 48}, {192, 192}, {240, 132}, {31, 200}};
+  for (const auto& [source_width, source_height] : sources) {
+    const RgbaImage source = Gradient(source_width, source_height);
+    for (const auto& [width, height] : targets) {
+      std::vector<std::uint8_t> actual(
+          static_cast<std::size_t>(width) * height * 4, 0);
+      ResampleRgba(source, width, height, actual.data());
+      ASSERT_EQ(actual, ReferenceBoxResample(source, width, height))
+          << source_width << "x" << source_height << " -> " << width << "x"
+          << height;
+    }
+  }
+}
+
 TEST(TextureOverrideTest, LookupFindsPngNamedByHashAndCachesMisses) {
   TempDir dir;
   ASSERT_FALSE(dir.path().empty());

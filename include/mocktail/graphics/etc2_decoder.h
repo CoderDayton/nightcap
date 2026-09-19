@@ -66,6 +66,14 @@ struct EtcDecodeJob {
 void DecodeEtcJobs(EtcDecodeJob* jobs, std::size_t count,
                    unsigned worker_count);
 
+// Calls run(context) worker_count times, once on the caller and the rest on
+// pooled decode workers that run alongside it, and returns when every call
+// has returned. `run` must be safe to call from several threads at once, so
+// it should drain a shared queue. When the pool is busy with another batch,
+// or no worker could be started, run is called on the caller alone.
+void RunOnDecodeWorkers(void (*run)(void*), void* context,
+                        unsigned worker_count);
+
 }  // namespace mocktail::graphics
 
 #endif  // MOCKTAIL_GRAPHICS_ETC2_DECODER_H_

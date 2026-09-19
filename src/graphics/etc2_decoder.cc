@@ -5,7 +5,9 @@
 #include <pthread.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
 #include <vector>
 
 namespace mocktail::graphics {
@@ -213,10 +215,11 @@ std::size_t EtcDecodedTexelBytes(EtcFormat format) {
 
 namespace {
 
-// Blocks per band handed to one worker: about a 256x256 texel image.
-constexpr std::uint64_t kBlocksPerBand = 16384;
-// Batches smaller than a 1024x1024 texel image decode on the caller.
-constexpr std::uint64_t kParallelMinimumBlocks = 65536;
+// Blocks per band handed to one worker: about a 128x128 texel image.
+constexpr std::uint64_t kBlocksPerBand = 4096;
+// Batches smaller than a 128x128 texel image decode on the caller. Waking a
+// pooled worker costs microseconds, so the floor only has to cover that.
+constexpr std::uint64_t kParallelMinimumBlocks = 4096;
 
 bool ImageFits(EtcFormat format, const std::uint8_t* source,
                std::size_t source_bytes, std::uint32_t width,
@@ -274,10 +277,97 @@ struct DecodeBandQueue {
   }
 };
 
-void* RunDecodeBandQueue(void* queue) {
-  static_cast<DecodeBandQueue*>(queue)->Run();
-  return nullptr;
-}
+// Decode workers outlive the batches that use them: creating and joining a
+// thread per batch costs more than decoding a small one. The threads park on
+// a condition variable and are never joined, so the pool is leaked at exit.
+class DecodePool {
+ public:
+  static DecodePool& Instance() {
+    static DecodePool* pool = new DecodePool();
+    return *pool;
+  }
+
+  // Calls run(context) on the calling thread and on pooled workers, `workers`
+  // calls in all. Returns false without calling it when another batch
+  // already holds the pool or no worker could be started, leaving the whole
+  // batch to the caller.
+  bool Run(void (*run)(void*), void* context, std::size_t workers) {
+    if (workers < 2) {
+      return false;
+    }
+    std::unique_lock<std::mutex> batch(batch_mutex_, std::try_to_lock);
+    if (!batch.owns_lock()) {
+      return false;
+    }
+    const std::size_t helpers = Reserve(workers - 1);
+    if (helpers == 0) {
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      run_ = run;
+      context_ = context;
+      unclaimed_ = helpers;
+      running_ = helpers;
+    }
+    ready_.notify_all();
+    run(context);
+    std::unique_lock<std::mutex> lock(mutex_);
+    done_.wait(lock, [this] { return running_ == 0; });
+    run_ = nullptr;
+    context_ = nullptr;
+    return true;
+  }
+
+ private:
+  DecodePool() = default;
+
+  // Grows the pool towards `wanted` and reports how many workers exist, so a
+  // pthread_create failure degrades instead of deadlocking the wait below.
+  std::size_t Reserve(std::size_t wanted) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    while (threads_ < wanted) {
+      pthread_t worker;
+      if (pthread_create(&worker, nullptr, &DecodePool::RunWorker, this) != 0) {
+        break;
+      }
+      pthread_detach(worker);
+      ++threads_;
+    }
+    return std::min(threads_, wanted);
+  }
+
+  static void* RunWorker(void* pool) {
+    static_cast<DecodePool*>(pool)->WorkerLoop();
+    return nullptr;
+  }
+
+  void WorkerLoop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+      ready_.wait(lock, [this] { return unclaimed_ > 0; });
+      --unclaimed_;
+      void (*run)(void*) = run_;
+      void* context = context_;
+      lock.unlock();
+      run(context);
+      lock.lock();
+      if (--running_ == 0) {
+        done_.notify_all();
+      }
+    }
+  }
+
+  std::mutex batch_mutex_;
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::condition_variable done_;
+  void (*run_)(void*) = nullptr;
+  void* context_ = nullptr;
+  std::size_t unclaimed_ = 0;
+  std::size_t running_ = 0;
+  std::size_t threads_ = 0;
+};
 
 }  // namespace
 
@@ -311,19 +401,20 @@ void DecodeEtcJobs(EtcDecodeJob* jobs, std::size_t count,
       total_blocks < kParallelMinimumBlocks
           ? 1
           : std::min<std::size_t>(std::max(worker_count, 1U), bands.size());
-  std::vector<pthread_t> workers;
-  workers.reserve(threads > 0 ? threads - 1 : 0);
-  for (std::size_t index = 1; index < threads; ++index) {
-    pthread_t worker;
-    // The caller decodes whatever workers that failed to start leave behind.
-    if (pthread_create(&worker, nullptr, RunDecodeBandQueue, &queue) != 0) {
-      break;
-    }
-    workers.push_back(worker);
+  RunOnDecodeWorkers(
+      [](void* context) { static_cast<DecodeBandQueue*>(context)->Run(); },
+      &queue, static_cast<unsigned>(threads));
+}
+
+void RunOnDecodeWorkers(void (*run)(void*), void* context,
+                        unsigned worker_count) {
+  if (run == nullptr) {
+    return;
   }
-  queue.Run();
-  for (pthread_t worker : workers) {
-    pthread_join(worker, nullptr);
+  // The pool declines when it is already busy; the caller drains the whole
+  // batch itself then, exactly as a single-threaded batch does.
+  if (!DecodePool::Instance().Run(run, context, worker_count)) {
+    run(context);
   }
 }
 

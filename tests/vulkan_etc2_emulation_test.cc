@@ -127,6 +127,10 @@ VkExtent3D g_copied_extent{};
 VkDeviceSize g_created_buffer_size = 0;
 std::uintptr_t g_next_image = 0x100;
 std::uint32_t g_copy_image_calls = 0;
+std::uint32_t g_create_buffer_calls = 0;
+std::uint32_t g_allocate_memory_calls = 0;
+std::uint32_t g_destroy_buffer_calls = 0;
+std::uint32_t g_free_memory_calls = 0;
 VkImageBlit g_blit{};
 VkFilter g_blit_filter = VK_FILTER_NEAREST;
 
@@ -159,6 +163,7 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeCreateBuffer(VkDevice,
                                                 const VkAllocationCallbacks*,
                                                 VkBuffer* buffer) {
   g_created_buffer_size = info->size;
+  ++g_create_buffer_calls;
   *buffer = FakeHandle<VkBuffer>(kStagingBuffer);
   return VK_SUCCESS;
 }
@@ -173,6 +178,7 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeAllocateMemory(
     VkDevice, const VkMemoryAllocateInfo*, const VkAllocationCallbacks*,
     VkDeviceMemory* memory) {
   *memory = FakeHandle<VkDeviceMemory>(kStagingMemory);
+  ++g_allocate_memory_calls;
   return VK_SUCCESS;
 }
 
@@ -193,9 +199,13 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeMapMemory(VkDevice, VkDeviceMemory memory,
 
 VKAPI_ATTR void VKAPI_CALL FakeUnmapMemory(VkDevice, VkDeviceMemory) {}
 VKAPI_ATTR void VKAPI_CALL FakeDestroyBuffer(VkDevice, VkBuffer,
-                                             const VkAllocationCallbacks*) {}
+                                             const VkAllocationCallbacks*) {
+  ++g_destroy_buffer_calls;
+}
 VKAPI_ATTR void VKAPI_CALL FakeFreeMemory(VkDevice, VkDeviceMemory,
-                                          const VkAllocationCallbacks*) {}
+                                          const VkAllocationCallbacks*) {
+  ++g_free_memory_calls;
+}
 VKAPI_ATTR void VKAPI_CALL FakeCopyBufferToImage(
     VkCommandBuffer, VkBuffer, VkImage, VkImageLayout, std::uint32_t count,
     const VkBufferImageCopy* regions) {
@@ -528,6 +538,135 @@ TEST(VulkanEtc2EmulationTest, FillsScaledMipsFromLevelZero) {
   emulation.ReleaseCommandBuffer(command_buffer);
 }
 
+// Level 0 carries the texels every scaled mip is built from, so a mip
+// recorded ahead of it must still resolve against it.
+TEST(VulkanEtc2EmulationTest, FillsScaledMipsFromLevelZeroRecordedLast) {
+  const VkDevice device = FakeHandle<VkDevice>(0x16);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x206);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x706);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2", 1), 0);
+
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VulkanEtc2Emulation emulation;
+  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x26), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.extent = {4, 4, 1};
+  image_info.mipLevels = 3;
+  image_info.arrayLayers = 1;
+  VkImage image = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                &mapped),
+            VK_SUCCESS);
+
+  const std::array<std::uint8_t, 8> level0 = {0x81, 0x81, 0x81, 0x02,
+                                              0,    0,    0,    0};
+  const std::array<std::uint8_t, 8> level1 = {0x88, 0x88, 0x88, 0x00,
+                                              0,    0,    0,    0};
+  std::memcpy(g_source.data(), level0.data(), level0.size());
+  std::memcpy(g_source.data() + 8, level1.data(), level1.size());
+
+  // Level 1 is recorded first, so its staging bytes lead the batch.
+  std::array<VkBufferImageCopy, 2> regions{};
+  regions[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  regions[0].imageSubresource.layerCount = 1;
+  regions[0].bufferOffset = 8;
+  regions[0].imageSubresource.mipLevel = 1;
+  regions[0].imageExtent = {2, 2, 1};
+  regions[1] = regions[0];
+  regions[1].bufferOffset = 0;
+  regions[1].imageSubresource.mipLevel = 0;
+  regions[1].imageExtent = {4, 4, 1};
+  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2,
+                                 regions.data());
+  emulation.PrepareSubmit(&command_buffer, 1);
+
+  RgbaImage level0_texels;
+  level0_texels.width = 4;
+  level0_texels.height = 4;
+  level0_texels.pixels.resize(4 * 4 * 4);
+  ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, level0.data(),
+                             level0.size(), 4, 4, level0_texels.pixels.data(),
+                             level0_texels.pixels.size()));
+  std::array<std::uint8_t, 4 * 4 * 4> expected{};
+  ResampleRgba(level0_texels, 4, 4, expected.data());
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    ASSERT_EQ(g_staging[index], expected[index]) << index;
+  }
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, ReusesStagingBuffersAcrossCommandBuffers) {
+  const VkDevice device = FakeHandle<VkDevice>(0x17);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x207);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  g_source.fill(0);
+
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x27), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.extent = {4, 4, 1};
+  VkImage image = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                &mapped),
+            VK_SUCCESS);
+
+  g_create_buffer_calls = 0;
+  g_allocate_memory_calls = 0;
+  g_destroy_buffer_calls = 0;
+  g_free_memory_calls = 0;
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = {4, 4, 1};
+  for (std::uintptr_t frame = 0; frame < 8; ++frame) {
+    const VkCommandBuffer command_buffer =
+        FakeHandle<VkCommandBuffer>(0x780 + frame);
+    emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &region);
+    emulation.PrepareSubmit(&command_buffer, 1);
+    emulation.ReleaseCommandBuffer(command_buffer);
+  }
+  EXPECT_EQ(g_create_buffer_calls, 1u);
+  EXPECT_EQ(g_allocate_memory_calls, 1u);
+  EXPECT_EQ(g_destroy_buffer_calls, 0u);
+
+  emulation.DestroyDevice(device);
+  EXPECT_EQ(g_destroy_buffer_calls, 1u);
+  EXPECT_EQ(g_free_memory_calls, 1u);
+}
+
 // Copies out of a scaled image cover its host bounds and shrink back onto
 // an unscaled destination, which a plain copy cannot do.
 TEST(VulkanEtc2EmulationTest, BlitsCopiesThatTouchScaledImages) {
@@ -589,6 +728,81 @@ TEST(VulkanEtc2EmulationTest, BlitsCopiesThatTouchScaledImages) {
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, large,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
   EXPECT_EQ(g_copy_image_calls, 1u);
+}
+
+// bufferRowLength counts texels of source pitch, not of the copied region, so
+// a padded row holds blocks the region does not cover.
+TEST(VulkanEtc2EmulationTest, ReadsCompressedRowsAtTheRequestedStride) {
+  const VkDevice device = FakeHandle<VkDevice>(0x18);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x208);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x708);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "1", 1), 0);
+
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VulkanEtc2Emulation emulation;
+  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x28), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.extent = {8, 8, 1};
+  image_info.mipLevels = 1;
+  image_info.arrayLayers = 1;
+  VkImage image = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  ASSERT_EQ(g_created_extent.width, 8u);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                &mapped),
+            VK_SUCCESS);
+
+  // Differential block: every texel decodes to 134.
+  const std::array<std::uint8_t, 8> covered = {0x81, 0x81, 0x81, 0x02,
+                                               0,    0,    0,    0};
+  // Individual block: every texel decodes to 138.
+  const std::array<std::uint8_t, 8> padding = {0x88, 0x88, 0x88, 0x00,
+                                               0,    0,    0,    0};
+  // 16 texels of pitch is 4 blocks per row; the 8x8 region covers the first 2.
+  const std::array<const std::uint8_t*, 6> layout = {
+      covered.data(), covered.data(), padding.data(),
+      padding.data(), covered.data(), covered.data()};
+  for (std::size_t block = 0; block < layout.size(); ++block) {
+    std::memcpy(g_source.data() + block * 8, layout[block], 8);
+  }
+
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = {8, 8, 1};
+  region.bufferRowLength = 16;
+  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                 &region);
+  emulation.PrepareSubmit(&command_buffer, 1);
+
+  std::array<std::uint8_t, 32> packed{};
+  for (std::size_t block = 0; block < 4; ++block) {
+    std::memcpy(packed.data() + block * 8, covered.data(), covered.size());
+  }
+  std::array<std::uint8_t, 8 * 8 * 4> expected{};
+  ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, packed.data(), packed.size(),
+                             8, 8, expected.data(), expected.size()));
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    ASSERT_EQ(g_staging[index], expected[index]) << "byte " << index;
+  }
+  emulation.ReleaseCommandBuffer(command_buffer);
 }
 
 }  // namespace

@@ -8,6 +8,7 @@
 #include <climits>
 #include <cstdlib>
 #include <optional>
+#include <tuple>
 
 #ifndef MOCKTAIL_DISCORD_APPLICATION_ID
 #define MOCKTAIL_DISCORD_APPLICATION_ID ""
@@ -40,11 +41,15 @@ bool IsDiscordApplicationId(std::string_view value) {
           }));
 }
 
-bool IsDiscordText(std::string_view value, std::size_t maximum) {
-  return !value.empty() && value.size() <= maximum &&
+bool IsDiscordOptionalText(std::string_view value, std::size_t maximum) {
+  return value.size() <= maximum &&
          std::none_of(value.begin(), value.end(), [](unsigned char byte) {
            return byte < 0x20 || byte == 0x7f;
          });
+}
+
+bool IsDiscordText(std::string_view value, std::size_t maximum) {
+  return !value.empty() && IsDiscordOptionalText(value, maximum);
 }
 
 bool ReadBoolean(const Environment& environment, std::string_view name,
@@ -357,18 +362,40 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       "MOCKTAIL_DISCORD_RPC_TEXT_JOINING", config.discord_rpc_.text.joining);
   config.discord_rpc_.text.playing = environment.GetOr(
       "MOCKTAIL_DISCORD_RPC_TEXT_PLAYING", config.discord_rpc_.text.playing);
-  config.discord_rpc_.text.state = environment.GetOr(
-      "MOCKTAIL_DISCORD_RPC_TEXT_STATE", config.discord_rpc_.text.state);
   config.discord_rpc_.text.unknown_place = environment.GetOr(
       "MOCKTAIL_DISCORD_RPC_TEXT_UNKNOWN_PLACE",
       config.discord_rpc_.text.unknown_place);
-  config.discord_rpc_valid_ = discord_booleans_valid &&
+  // An empty presence field hides it, so only an unset variable keeps the
+  // default.
+  bool discord_presence_valid = true;
+  for (const auto& [variable, field, maximum] : {
+           std::tuple<std::string_view, std::string*, std::size_t>(
+               "MOCKTAIL_DISCORD_RPC_TEXT_TITLE",
+               &config.discord_rpc_.text.title, 128),
+           {"MOCKTAIL_DISCORD_RPC_TEXT_STATE",
+            &config.discord_rpc_.text.state, 128},
+           {"MOCKTAIL_DISCORD_RPC_IMAGE_LARGE",
+            &config.discord_rpc_.images.large, 512},
+           {"MOCKTAIL_DISCORD_RPC_IMAGE_LARGE_TEXT",
+            &config.discord_rpc_.images.large_text, 128},
+           {"MOCKTAIL_DISCORD_RPC_IMAGE_SMALL",
+            &config.discord_rpc_.images.small, 512},
+           {"MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT",
+            &config.discord_rpc_.images.small_text, 128},
+       }) {
+    if (std::optional<std::string> value = environment.Get(variable)) {
+      *field = std::move(*value);
+    }
+    discord_presence_valid =
+        discord_presence_valid && IsDiscordOptionalText(*field, maximum);
+  }
+  config.discord_rpc_valid_ =
+      discord_booleans_valid && discord_presence_valid &&
       IsDiscordApplicationId(config.discord_rpc_.application_id) &&
       IsDiscordText(config.discord_rpc_.join_button_label, 32) &&
       IsDiscordText(config.discord_rpc_.text.browsing, 128) &&
       IsDiscordText(config.discord_rpc_.text.joining, 128) &&
       IsDiscordText(config.discord_rpc_.text.playing, 128) &&
-      IsDiscordText(config.discord_rpc_.text.state, 128) &&
       IsDiscordText(config.discord_rpc_.text.unknown_place, 128);
   for (const std::string_view name : kUnsafeDetachedThreadOverrides) {
     if (LegacyEnabled(environment, name)) {

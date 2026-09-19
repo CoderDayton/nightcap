@@ -3,9 +3,14 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <random>
+#include <set>
+#include <thread>
 #include <vector>
 
 namespace mocktail::graphics {
@@ -250,6 +255,94 @@ TEST(Etc2DecoderTest, DecodesJobsOnWorkersLikeSerialDecode) {
   }
   EXPECT_FALSE(jobs.back().ok);
   EXPECT_EQ(short_output, std::vector<std::uint8_t>(4 * 4 * 4 - 1, 0xAB));
+}
+
+// Batches of small textures stay under the old parallel floor; the pool has
+// to decode them exactly as the caller would.
+TEST(Etc2DecoderTest, DecodesManySmallJobsLikeSerialDecode) {
+  constexpr std::size_t kJobs = 24;
+  constexpr std::uint32_t kWidth = 64;
+  constexpr std::uint32_t kHeight = 64;
+  std::vector<std::vector<std::uint8_t>> sources;
+  std::vector<std::vector<std::uint8_t>> expected;
+  std::vector<std::vector<std::uint8_t>> outputs;
+  for (std::size_t index = 0; index < kJobs; ++index) {
+    sources.push_back(RandomBlocks(EtcFormat::kEtc2Rgb8, kWidth, kHeight,
+                                   static_cast<std::uint32_t>(index + 11)));
+    expected.push_back(
+        Decode(EtcFormat::kEtc2Rgb8, sources.back(), kWidth, kHeight));
+    outputs.emplace_back(expected.back().size(), 0xAB);
+  }
+  std::vector<EtcDecodeJob> jobs;
+  for (std::size_t index = 0; index < kJobs; ++index) {
+    jobs.push_back({EtcFormat::kEtc2Rgb8, sources[index].data(),
+                    sources[index].size(), kWidth, kHeight,
+                    outputs[index].data(), outputs[index].size()});
+  }
+
+  DecodeEtcJobs(jobs.data(), jobs.size(), 8);
+
+  for (std::size_t index = 0; index < kJobs; ++index) {
+    EXPECT_TRUE(jobs[index].ok) << index;
+    EXPECT_EQ(outputs[index], expected[index]) << index;
+  }
+}
+
+// The workers outlive each batch, so a later batch must find them idle.
+TEST(Etc2DecoderTest, DecodesCorrectlyAcrossRepeatedBatches) {
+  constexpr std::uint32_t kWidth = 260;
+  constexpr std::uint32_t kHeight = 132;
+  const std::vector<std::uint8_t> source =
+      RandomBlocks(EtcFormat::kEtc2Rgba8, kWidth, kHeight, 7);
+  const std::vector<std::uint8_t> expected =
+      Decode(EtcFormat::kEtc2Rgba8, source, kWidth, kHeight);
+
+  for (int round = 0; round < 40; ++round) {
+    std::vector<std::uint8_t> output(expected.size(), 0xAB);
+    EtcDecodeJob job{EtcFormat::kEtc2Rgba8, source.data(), source.size(),
+                     kWidth,                kHeight,      output.data(),
+                     output.size()};
+    DecodeEtcJobs(&job, 1, 8);
+    ASSERT_TRUE(job.ok) << round;
+    ASSERT_EQ(output, expected) << round;
+  }
+}
+
+std::size_t ThreadCount() {
+  return static_cast<std::size_t>(
+      std::distance(std::filesystem::directory_iterator("/proc/self/task"),
+                    std::filesystem::directory_iterator()));
+}
+
+// Other batch work (ETC2 emit) drains its own queue across the decode
+// workers. The function runs worker_count times, once of them on the caller,
+// and a second batch reuses the threads the first one started.
+TEST(Etc2DecoderTest, RunsAFunctionAcrossPooledWorkersWithoutNewThreads) {
+  struct Probe {
+    std::mutex mutex;
+    std::set<std::thread::id> threads;
+    std::atomic<int> calls{0};
+  };
+  const auto run = [](void* context) {
+    auto* probe = static_cast<Probe*>(context);
+    probe->calls.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(probe->mutex);
+    probe->threads.insert(std::this_thread::get_id());
+  };
+
+  Probe first;
+  RunOnDecodeWorkers(run, &first, 3);
+  EXPECT_EQ(first.calls.load(), 3);
+  // An idle worker may claim two of the slots.
+  EXPECT_GE(first.threads.size(), 2u);
+  EXPECT_LE(first.threads.size(), 3u);
+  EXPECT_EQ(first.threads.count(std::this_thread::get_id()), 1u);
+
+  const std::size_t pooled = ThreadCount();
+  Probe second;
+  RunOnDecodeWorkers(run, &second, 3);
+  EXPECT_EQ(second.calls.load(), 3);
+  EXPECT_EQ(ThreadCount(), pooled);
 }
 
 TEST(Etc2DecoderTest, RejectsShortBuffers) {

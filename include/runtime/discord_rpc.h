@@ -13,11 +13,14 @@ namespace mocktail {
 namespace runtime {
 
 struct DiscordRpcActivity {
+  std::string name;
   std::string details;
   std::string state;
   std::optional<int64_t> start_timestamp;
   std::string large_image;
   std::string large_text;
+  std::string small_image;
+  std::string small_text;
   std::string button_label;
   std::string button_url;
 };
@@ -27,7 +30,8 @@ std::string BuildDiscordJoinUrl(const RobloxExperienceLaunchRequest& request);
 DiscordRpcActivity BuildDiscordRpcActivity(
     const DiscordRpcConfig& config, RobloxExperiencePresencePhase phase,
     const RobloxExperienceLaunchRequest* request, std::string place_name,
-    int64_t session_started_at, std::string place_icon_url = {});
+    int64_t session_started_at, std::string place_icon_url = {},
+    std::string creator_name = {});
 
 // Maintains a direct, unauthenticated Discord Desktop RPC connection. The
 // worker owns all network and IPC work; lifecycle notifications only replace

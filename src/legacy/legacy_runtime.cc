@@ -58,6 +58,8 @@
 #include "libc_shim/libc_shim.h"
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
+#include "mocktail/graphics/chrome_trace_writer.h"
+#include "runtime/engine_pump_rest.h"
 #include "runtime/device_memory_profile.h"
 #include "runtime/display_size.h"
 #include "runtime/environment.h"
@@ -762,7 +764,12 @@ uint64_t MonotonicNanos() {
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
-JNIEnv* AttachMainThreadJniEnv() {
+// `attached` reports whether AttachCurrentThread itself succeeded, so a caller
+// that caches the env can tell a real attach from the GetJNIEnv fallback.
+JNIEnv* AttachMainThreadJniEnv(bool* attached = nullptr) {
+  if (attached != nullptr) {
+    *attached = false;
+  }
   if (g_vm_for_main_thread_pump == nullptr) {
     return nullptr;
   }
@@ -773,6 +780,9 @@ JNIEnv* AttachMainThreadJniEnv() {
     jint attach_result = java_vm->AttachCurrentThread(&raw_env, nullptr);
     if (attach_result == JNI_OK && raw_env != nullptr) {
       env = static_cast<JNIEnv*>(raw_env);
+      if (attached != nullptr) {
+        *attached = true;
+      }
     } else if (IsEnabled("MOCKTAIL_TRACE_MAIN_THREAD_PUMP")) {
       std::cerr << "  [main] AttachCurrentThread failed in pump: "
                 << attach_result << '\n'
@@ -784,6 +794,35 @@ JNIEnv* AttachMainThreadJniEnv() {
   }
   g_vm_for_main_thread_pump->RestoreFunctions();
   PublishCurrentJniEnv(env);
+  return env;
+}
+
+// The pseudo-VM attach is idempotent: once this thread holds a live env for
+// the VM, re-attaching hands back the same thread-local pointer. Only the
+// main thread calls this, so the cache needs no synchronization. The game
+// session installs RestoreGameSessionJniEnvironment, which restores the JNI
+// function tables when a guest JNI_OnLoad replaces them.
+JNIEnv* MainThreadPumpJniEnv() {
+  static JNIEnv* cached_env = nullptr;
+  static const jnivm::VM* cached_vm = nullptr;
+  if (cached_env != nullptr && cached_vm == g_vm_for_main_thread_pump) {
+    // Only the attach is cached. The table restore and the env publish run on
+    // every tick: a guest JNI_OnLoad can replace the function tables, and any
+    // other thread that publishes its own env overwrites the single global
+    // slot this one shares.
+    g_vm_for_main_thread_pump->RestoreFunctions();
+    PublishCurrentJniEnv(cached_env);
+    return cached_env;
+  }
+  // Only a real attach is worth caching. The GetJNIEnv fallback means this
+  // thread is not attached to the VM, and the next tick has to retry: a VM
+  // swap can make AttachCurrentThread fail for one tick and succeed after.
+  bool attached = false;
+  JNIEnv* env = AttachMainThreadJniEnv(&attached);
+  if (env != nullptr && attached) {
+    cached_env = env;
+    cached_vm = g_vm_for_main_thread_pump;
+  }
   return env;
 }
 
@@ -905,6 +944,43 @@ bool RunTaskSchedulerForegroundOnMainThread(
   }
 }
 
+// The profile trace writer is compiled into the Vulkan adapter, which the host
+// dlopens RTLD_GLOBAL, so the pump slice goes through symbols resolved from it.
+// Until the adapter is loaded there is no writer and nothing is recorded.
+struct PumpTraceHooks {
+  using ActiveFn = mocktail::graphics::ChromeTraceWriter* (*)();
+  using ClockFn = std::uint64_t (*)();
+  using SliceFn = void (*)(mocktail::graphics::ChromeTraceWriter*, const char*,
+                           const char*, std::uint64_t, std::uint64_t,
+                           const mocktail::graphics::TraceArg*, std::size_t);
+  ActiveFn active = nullptr;
+  ClockFn clock = nullptr;
+  SliceFn slice = nullptr;
+};
+
+const PumpTraceHooks& PumpTrace() {
+  static PumpTraceHooks hooks;
+  // The adapter loads during startup, so a few hundred ticks cover it. After
+  // that the lookups stop and the pump stays untraced.
+  static int attempts = 0;
+  if (hooks.active == nullptr && attempts++ < 1000) {
+    PumpTraceHooks resolved;
+    resolved.active = reinterpret_cast<PumpTraceHooks::ActiveFn>(
+        ::dlsym(RTLD_DEFAULT, "_ZN8mocktail8graphics18ActiveProfileTraceEv"));
+    resolved.clock = reinterpret_cast<PumpTraceHooks::ClockFn>(
+        ::dlsym(RTLD_DEFAULT, "_ZN8mocktail8graphics15TraceClockNanosEv"));
+    resolved.slice = reinterpret_cast<PumpTraceHooks::SliceFn>(::dlsym(
+        RTLD_DEFAULT,
+        "_ZN8mocktail8graphics17ChromeTraceWriter5SliceEPKcS3_mmPKNS0_"
+        "8TraceArgEm"));
+    if (resolved.active != nullptr && resolved.clock != nullptr &&
+        resolved.slice != nullptr) {
+      hooks = resolved;
+    }
+  }
+  return hooks;
+}
+
 void PumpRobloxMainThreadMessagesOnce() {
   static const bool force_early =
       IsEnabled("MOCKTAIL_FORCE_EARLY_MAIN_THREAD_MESSAGE_PUMP");
@@ -944,7 +1020,7 @@ void PumpRobloxMainThreadMessagesOnce() {
     return;
   }
 
-  JNIEnv* env = AttachMainThreadJniEnv();
+  JNIEnv* env = MainThreadPumpJniEnv();
   if (env == nullptr) {
     static bool logged_missing_env = false;
     if (!logged_missing_env && trace_pump) {
@@ -966,8 +1042,21 @@ void PumpRobloxMainThreadMessagesOnce() {
                 << std::flush;
     }
   }
+  const PumpTraceHooks& hooks = PumpTrace();
+  mocktail::graphics::ChromeTraceWriter* trace =
+      hooks.active != nullptr ? hooks.active() : nullptr;
+  const std::uint64_t pump_start_ns = trace != nullptr ? hooks.clock() : 0;
   g_native_call_messages_from_main_thread(
       env, g_native_gl_class_for_main_thread);
+  if (trace != nullptr) {
+    // Empty polls run at kilohertz rates and would swamp the trace, so only
+    // calls that ran a message are recorded.
+    const std::uint64_t pump_end_ns = hooks.clock();
+    if (pump_end_ns - pump_start_ns >= 20'000) {
+      hooks.slice(trace, "nativeCallMessagesFromMainThread", "pump",
+                  pump_start_ns, pump_end_ns, nullptr, 0);
+    }
+  }
   if (__builtin_expect(trace_pump, 0)) {
     if (pump_count <= 10 || pump_count % 100 == 0) {
       std::cerr << "  [main] nativeCallMessagesFromMainThread returned #"
@@ -1414,8 +1503,11 @@ void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
 
 void PublishCurrentJniEnv(JNIEnv* env) {
   using SetCurrentJniEnvFn = void (*)(void*);
-  auto* set_current_jni_env = reinterpret_cast<SetCurrentJniEnvFn>(
-      ::dlsym(RTLD_DEFAULT, "mocktail_set_current_jni_env"));
+  // RTLD_DEFAULT resolves this to the runtime's own exported setter, so the
+  // address is fixed for the life of the process.
+  static SetCurrentJniEnvFn set_current_jni_env =
+      reinterpret_cast<SetCurrentJniEnvFn>(
+          ::dlsym(RTLD_DEFAULT, "mocktail_set_current_jni_env"));
   if (set_current_jni_env) {
     set_current_jni_env(env);
   }
@@ -6831,6 +6923,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   bool input_shutdown_completed = window_input_runtime == nullptr;
   bool resize_readiness_completed = true;
   if (mocktail::window::IsInitialised()) {
+    std::cout << "  [main] engine pump rest: "
+              << mocktail::runtime::EnginePumpRestModeName(
+                     mocktail::runtime::ActiveEnginePumpRestMode())
+              << " (MOCKTAIL_ENGINE_PUMP_REST=sleep|tpause|spin)\n";
     std::cout << "  [main] entering SDL event loop (close the window to quit)\n"
               << std::flush;
     std::unique_ptr<mocktail::window::WindowGameSurfaceBridge> surface_bridge;
@@ -6946,7 +7042,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         }
       }
       const uint64_t fps_after_launch_ns = fps_trace ? MonotonicNanos() : 0;
-      const uint64_t fps_pace_ns = mocktail::window::PaceInputPump();
+      // The pacer sleeps only under throttled presentation. Unthrottled, the
+      // engine pump above is a poll, and the rest between polls is what keeps
+      // it from spinning.
+      uint64_t fps_pace_ns = mocktail::window::PaceInputPump();
+      if (fps_pace_ns == 0 &&
+          mocktail::window::UnthrottledPresentationRequested()) {
+        fps_pace_ns = mocktail::runtime::RestAfterEnginePump();
+      }
       if (fps_trace) {
         const uint64_t fps_tick_end_ns = MonotonicNanos();
         ++fps_samples;

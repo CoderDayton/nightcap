@@ -112,12 +112,24 @@ integrations:
       public_servers_only: true
       # button_label: Join Server
     # English defaults. Uncomment only the lines you want to customize.
+    # Text and image fields accept {place_name}, {place_icon}, and
+    # {creator_name}. A field that expands an empty placeholder is left out,
+    # and a "" title shows the app name.
+    # title, state, and the images fields may be "" to hide them.
     # text:
     #   browsing: Browsing experiences
     #   joining: Joining an experience
-    #   playing: "{place_name}"
-    #   state: Playing Roblox
+    #   playing: "Playing {place_name}"
+    #   state: "by {creator_name}"
     #   unknown_place: Unknown experience
+    #   title: Roblox
+    # Images take an https:// URL, or an asset key uploaded to application_id.
+    # large: "" hides both images; the small image needs a large one.
+    # images:
+    #   large: "{place_icon}"
+    #   large_text: "{place_name}"
+    #   small: roblox_small
+    #   small_text: Roblox
     # Advanced: overrides the application bundled by the package maintainer.
     # application_id: 123456789012345678
 

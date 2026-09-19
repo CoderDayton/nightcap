@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
@@ -1085,6 +1086,99 @@ TEST_F(JniVmTest, FloatArrayElementsAreMutable) {
   EXPECT_FLOAT_EQ(elements[0], 60.0f);
   EXPECT_FLOAT_EQ(elements[1], 120.0f);
   env->ReleaseFloatArrayElements(array, elements, 0);
+}
+
+constexpr int kMoreThanHandleCapacity = 150000;
+
+TEST_F(JniVmTest, RepeatedFindClassDoesNotExhaustHandles) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  for (int i = 0; i < kMoreThanHandleCapacity; ++i) {
+    jclass cls = env->FindClass("android/view/Surface");
+    ASSERT_NE(cls, nullptr) << "iteration " << i;
+    env->DeleteLocalRef(cls);
+  }
+  jstring text = env->NewStringUTF("still allocatable");
+  ASSERT_NE(text, nullptr);
+  env->DeleteLocalRef(text);
+}
+
+TEST_F(JniVmTest, RepeatedGetObjectClassDoesNotExhaustHandles) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass surface_class = env->FindClass("android/view/Surface");
+  jobject surface = env->AllocObject(surface_class);
+  ASSERT_NE(surface, nullptr);
+  for (int i = 0; i < kMoreThanHandleCapacity; ++i) {
+    jclass cls = env->GetObjectClass(surface);
+    ASSERT_NE(cls, nullptr) << "iteration " << i;
+    env->DeleteLocalRef(cls);
+  }
+  env->DeleteLocalRef(surface);
+}
+
+TEST_F(JniVmTest, ClassHandlesStayValidAfterDeleteLocalRef) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass first = env->FindClass("android/view/Surface");
+  env->DeleteLocalRef(first);
+  jclass second = env->FindClass("android/view/Surface");
+  ASSERT_NE(second, nullptr);
+  EXPECT_NE(env->GetMethodID(second, "isValid", "()Z"), nullptr);
+  jobject surface = env->AllocObject(second);
+  ASSERT_NE(surface, nullptr);
+  EXPECT_TRUE(env->IsInstanceOf(surface, second));
+  env->DeleteLocalRef(surface);
+}
+
+TEST_F(JniVmTest, LocalRefsDeletedInCreationOrderFreeTheirSlots) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  const auto start = std::chrono::steady_clock::now();
+  for (int round = 0; round < 3; ++round) {
+    std::vector<jstring> strings;
+    strings.reserve(60000);
+    for (int i = 0; i < 60000; ++i) {
+      jstring text = env->NewStringUTF("x");
+      ASSERT_NE(text, nullptr) << "round " << round << " string " << i;
+      strings.push_back(text);
+    }
+    for (jstring text : strings) {
+      env->DeleteLocalRef(text);
+    }
+  }
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+}
+
+TEST_F(JniVmTest, FullHandleTableReportsLiveObjectsByClassOnce) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  std::vector<jstring> strings;
+  ::testing::internal::CaptureStderr();
+  for (int i = 0; i < kMoreThanHandleCapacity; ++i) {
+    jstring text = env->NewStringUTF("fill");
+    if (text == nullptr) {
+      break;
+    }
+    strings.push_back(text);
+  }
+  EXPECT_EQ(env->NewStringUTF("still full"), nullptr);
+  const std::string output = ::testing::internal::GetCapturedStderr();
+  for (jstring text : strings) {
+    env->DeleteLocalRef(text);
+  }
+  EXPECT_LT(strings.size(), static_cast<std::size_t>(kMoreThanHandleCapacity));
+  const std::size_t report = output.find("[JNI] handle table full");
+  ASSERT_NE(report, std::string::npos) << output;
+  EXPECT_NE(output.find("java/lang/String", report), std::string::npos)
+      << output;
+  EXPECT_EQ(output.find("[JNI] handle table full", report + 1),
+            std::string::npos);
+  EXPECT_NE(env->NewStringUTF("free again"), nullptr);
+}
+
+TEST_F(JniVmTest, PopLocalFrameFreesLocalsCreatedInsideIt) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  for (int i = 0; i < kMoreThanHandleCapacity; ++i) {
+    ASSERT_EQ(env->PushLocalFrame(4), JNI_OK);
+    ASSERT_NE(env->NewStringUTF("frame local"), nullptr) << "iteration " << i;
+    env->PopLocalFrame(nullptr);
+  }
 }
 
 TEST_F(JniVmTest, ObjectMethodCanReturnMockClassLoader) {
@@ -2699,6 +2793,87 @@ TEST_F(JniVmTest, NativeQuoteInterfaceReportsKeystoreUnavailable) {
   const std::string message(reinterpret_cast<const char*>(bytes.data() + 2),
                             static_cast<std::size_t>(length - 2));
   EXPECT_NE(message.find("AndroidKeyStore"), std::string::npos);
+}
+
+TEST_F(JniVmTest, DetachCurrentThreadReleasesThatThreadsLocalRefs) {
+  JavaVM *java_vm = vm_->GetJavaVM();
+  for (int round = 0; round < 4; ++round) {
+    bool all_allocated = true;
+    std::thread worker([java_vm, &all_allocated]() {
+      JNIEnv *env = nullptr;
+      if (java_vm->AttachCurrentThread(reinterpret_cast<void **>(&env), nullptr) !=
+          JNI_OK) {
+        all_allocated = false;
+        return;
+      }
+      for (int i = 0; i < 40000; ++i) {
+        if (env->NewStringUTF("thread local") == nullptr) {
+          all_allocated = false;
+          break;
+        }
+      }
+      java_vm->DetachCurrentThread();
+    });
+    worker.join();
+    ASSERT_TRUE(all_allocated) << "round " << round;
+  }
+}
+
+TEST_F(JniVmTest, DetachCurrentThreadKeepsVmOwnedObjectsAlive) {
+  JavaVM *java_vm = vm_->GetJavaVM();
+  jobject implementation = nullptr;
+  jobject params = nullptr;
+  std::thread worker([java_vm, &implementation, &params]() {
+    JNIEnv *env = nullptr;
+    if (java_vm->AttachCurrentThread(reinterpret_cast<void **>(&env), nullptr) !=
+        JNI_OK) {
+      return;
+    }
+    jclass gl_class =
+        env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+    implementation = env->CallStaticObjectMethod(
+        gl_class,
+        env->GetStaticMethodID(gl_class, "getImplementation",
+                               "()Lcom/roblox/engine/jni/EngineJavaCallback2;"));
+    params = env->CallStaticObjectMethod(
+        gl_class,
+        env->GetStaticMethodID(
+            gl_class, "getDeviceStaticParams",
+            "()Lcom/roblox/engine/jni/model/DeviceStaticParams;"));
+    java_vm->DetachCurrentThread();
+  });
+  worker.join();
+  ASSERT_NE(implementation, nullptr);
+  ASSERT_NE(params, nullptr);
+
+  JNIEnv *env = vm_->GetJNIEnv();
+  for (int i = 0; i < 64; ++i) {
+    EXPECT_NE(reinterpret_cast<jobject>(env->NewStringUTF("reused slot")),
+              implementation);
+  }
+  jclass params_class =
+      env->FindClass("com/roblox/engine/jni/model/DeviceStaticParams");
+  jfieldID os_version =
+      env->GetFieldID(params_class, "osVersion", "Ljava/lang/String;");
+  EXPECT_EQ(ReadJavaString(env, static_cast<jstring>(
+                                    env->GetObjectField(params, os_version))),
+            "Android 13");
+}
+
+TEST_F(JniVmTest, DeletedHighIndexStringHandleReadsAsEmpty) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  std::vector<jstring> strings;
+  for (int i = 0; i < 8000; ++i) {
+    strings.push_back(env->NewStringUTF("filler"));
+  }
+  jstring high = strings.back();
+  ASSERT_GT(reinterpret_cast<uintptr_t>(high), uintptr_t{0x10000000});
+  for (jstring text : strings) {
+    env->DeleteLocalRef(text);
+  }
+  EXPECT_EQ(env->GetStringUTFLength(high), 0);
+  EXPECT_STREQ(env->GetStringUTFChars(high, nullptr), "");
+  EXPECT_EQ(env->GetStringLength(high), 0);
 }
 
 } // namespace

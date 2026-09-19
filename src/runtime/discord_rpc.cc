@@ -84,14 +84,50 @@ std::string DumpJson(const Json& value) {
   return value.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 
-std::string RenderPlaceTemplate(std::string text, std::string_view place_name) {
-  constexpr std::string_view placeholder = "{place_name}";
+// Expands in one pass, so placeholder text inside a place name stays literal.
+// A template that expands an empty placeholder renders empty, so "by
+// {creator_name}" never shows a dangling "by".
+std::string RenderPresenceTemplate(std::string_view text,
+                                   std::string_view place_name,
+                                   std::string_view place_icon,
+                                   std::string_view creator_name) {
+  constexpr std::string_view kPlaceName = "{place_name}";
+  constexpr std::string_view kPlaceIcon = "{place_icon}";
+  constexpr std::string_view kCreatorName = "{creator_name}";
+  std::string rendered;
+  rendered.reserve(text.size());
   std::size_t offset = 0;
-  while ((offset = text.find(placeholder, offset)) != std::string::npos) {
-    text.replace(offset, placeholder.size(), place_name);
-    offset += place_name.size();
+  const auto expand = [&](std::string_view token, std::string_view value) {
+    if (value.empty()) {
+      return false;
+    }
+    rendered += value;
+    offset += token.size();
+    return true;
+  };
+  while (offset < text.size()) {
+    const std::string_view rest = text.substr(offset);
+    if (rest.substr(0, kPlaceName.size()) == kPlaceName) {
+      if (!expand(kPlaceName, place_name)) return {};
+    } else if (rest.substr(0, kPlaceIcon.size()) == kPlaceIcon) {
+      if (!expand(kPlaceIcon, place_icon)) return {};
+    } else if (rest.substr(0, kCreatorName.size()) == kCreatorName) {
+      if (!expand(kCreatorName, creator_name)) return {};
+    } else {
+      rendered.push_back(text[offset]);
+      ++offset;
+    }
   }
-  return TruncateUtf8(std::move(text), 128);
+  return rendered;
+}
+
+bool IsDiscordAssetKey(std::string_view key) {
+  return !key.empty() && key.size() <= 32 &&
+         std::all_of(key.begin(), key.end(), [](unsigned char byte) {
+           return (byte >= 'a' && byte <= 'z') ||
+                  (byte >= 'A' && byte <= 'Z') ||
+                  (byte >= '0' && byte <= '9') || byte == '_' || byte == '-';
+         });
 }
 
 std::string PercentEncode(std::string_view value) {
@@ -329,8 +365,14 @@ bool HandshakeDiscord(int descriptor, std::string_view application_id) {
 }
 
 Json ActivityJson(const DiscordRpcActivity& activity) {
-  Json result = {
-      {"type", 0}, {"details", activity.details}, {"instance", true}};
+  // Discord rejects the whole activity when a text field is an empty string.
+  Json result = {{"type", 0}, {"instance", true}};
+  if (!activity.details.empty()) {
+    result["details"] = activity.details;
+  }
+  if (!activity.name.empty()) {
+    result["name"] = activity.name;
+  }
   if (!activity.state.empty()) {
     result["state"] = activity.state;
   }
@@ -341,6 +383,12 @@ Json ActivityJson(const DiscordRpcActivity& activity) {
     result["assets"] = {{"large_image", activity.large_image}};
     if (!activity.large_text.empty()) {
       result["assets"]["large_text"] = activity.large_text;
+    }
+    if (!activity.small_image.empty()) {
+      result["assets"]["small_image"] = activity.small_image;
+      if (!activity.small_text.empty()) {
+        result["assets"]["small_text"] = activity.small_text;
+      }
     }
   }
   if (!activity.button_label.empty() && !activity.button_url.empty()) {
@@ -446,6 +494,7 @@ std::optional<Json> GetRobloxJson(std::string url) {
 
 struct ResolvedPlaceMetadata {
   std::string name;
+  std::string creator_name;
   std::string icon_url;
 };
 
@@ -493,6 +542,13 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
     if (first.contains("name") && first["name"].is_string()) {
       metadata.name =
           TruncateUtf8(first["name"].get<std::string>(), 128);
+    }
+    if (first.contains("creator") && first["creator"].is_object()) {
+      const Json& creator = first["creator"];
+      if (creator.contains("name") && creator["name"].is_string()) {
+        metadata.creator_name =
+            TruncateUtf8(creator["name"].get<std::string>(), 128);
+      }
     }
   }
 
@@ -542,46 +598,74 @@ std::string BuildDiscordJoinUrl(const RobloxExperienceLaunchRequest& request) {
 DiscordRpcActivity BuildDiscordRpcActivity(
     const DiscordRpcConfig& config, RobloxExperiencePresencePhase phase,
     const RobloxExperienceLaunchRequest* request, std::string place_name,
-    int64_t session_started_at, std::string place_icon_url) {
+    int64_t session_started_at, std::string place_icon_url,
+    std::string creator_name) {
+  const bool browsing = phase == RobloxExperiencePresencePhase::kBrowsing;
+  const bool joining_without_place =
+      phase == RobloxExperiencePresencePhase::kJoining && place_name.empty();
+  if (!browsing && place_name.empty()) {
+    place_name = config.text.unknown_place;
+  }
+  // Hidden or absent places expose nothing to any template, icons included.
+  const bool show_place =
+      !browsing && !joining_without_place && config.show_place_name;
+  const std::string_view shown_name =
+      show_place ? std::string_view(place_name) : std::string_view();
+  const std::string_view shown_icon =
+      show_place && IsSafeExternalImageUrl(place_icon_url)
+          ? std::string_view(place_icon_url)
+          : std::string_view();
+  const std::string_view shown_creator =
+      show_place ? std::string_view(creator_name) : std::string_view();
+  const auto render = [&](std::string_view text) {
+    return RenderPresenceTemplate(text, shown_name, shown_icon,
+                                  shown_creator);
+  };
+  const auto render_text = [&](std::string_view text) {
+    return TruncateUtf8(render(text), 128);
+  };
+  const auto is_image = [](std::string_view image) {
+    return IsSafeExternalImageUrl(image) || IsDiscordAssetKey(image);
+  };
+
   DiscordRpcActivity activity;
-  activity.state = TruncateUtf8(config.text.state, 128);
-  switch (phase) {
-    case RobloxExperiencePresencePhase::kBrowsing:
-      activity.details = TruncateUtf8(config.text.browsing, 128);
-      break;
-    case RobloxExperiencePresencePhase::kJoining:
-    case RobloxExperiencePresencePhase::kPlaying: {
-      if (place_name.empty()) {
-        if (phase == RobloxExperiencePresencePhase::kJoining) {
-          activity.details = TruncateUtf8(config.text.joining, 128);
-          break;
-        }
-        place_name = config.text.unknown_place;
-      }
-      if (config.show_place_name) {
-        activity.details = RenderPlaceTemplate(config.text.playing, place_name);
-      } else {
-        activity.details = activity.state;
-        activity.state.clear();
-      }
-      if (phase == RobloxExperiencePresencePhase::kPlaying &&
-          config.show_elapsed_time && session_started_at > 0) {
-        activity.start_timestamp = session_started_at;
-      }
-      if (IsSafeExternalImageUrl(place_icon_url)) {
-        activity.large_image = std::move(place_icon_url);
-        activity.large_text = TruncateUtf8(place_name, 128);
-      }
-      if (phase == RobloxExperiencePresencePhase::kPlaying &&
-          config.join_enabled && request != nullptr &&
-          (!config.public_servers_only || IsPublicDiscordJoin(*request))) {
-        activity.button_url = BuildDiscordJoinUrl(*request);
-        if (!activity.button_url.empty()) {
-          activity.button_label = config.join_button_label;
-        }
-      }
-      break;
+  activity.name = render_text(config.text.title);
+  activity.state = render_text(config.text.state);
+  if (browsing) {
+    activity.details = render_text(config.text.browsing);
+  } else if (joining_without_place) {
+    activity.details = render_text(config.text.joining);
+  } else {
+    if (config.show_place_name) {
+      activity.details = render_text(config.text.playing);
+    } else {
+      activity.details = std::move(activity.state);
+      activity.state.clear();
     }
+    if (phase == RobloxExperiencePresencePhase::kPlaying &&
+        config.show_elapsed_time && session_started_at > 0) {
+      activity.start_timestamp = session_started_at;
+    }
+    if (phase == RobloxExperiencePresencePhase::kPlaying &&
+        config.join_enabled && request != nullptr &&
+        (!config.public_servers_only || IsPublicDiscordJoin(*request))) {
+      activity.button_url = BuildDiscordJoinUrl(*request);
+      if (!activity.button_url.empty()) {
+        activity.button_label = config.join_button_label;
+      }
+    }
+  }
+  activity.large_image = render(config.images.large);
+  if (!is_image(activity.large_image)) {
+    activity.large_image.clear();
+    return activity;
+  }
+  activity.large_text = render_text(config.images.large_text);
+  activity.small_image = render(config.images.small);
+  if (is_image(activity.small_image)) {
+    activity.small_text = render_text(config.images.small_text);
+  } else {
+    activity.small_image.clear();
   }
   return activity;
 }
@@ -697,6 +781,7 @@ class DiscordRpcSession::Impl final {
 
   struct CachedPlaceMetadata {
     std::string name;
+    std::string creator_name;
     std::string icon_url;
     std::chrono::steady_clock::time_point next_attempt{};
     unsigned failures = 0;
@@ -734,6 +819,7 @@ class DiscordRpcSession::Impl final {
       Desired desired = Snapshot();
       std::string place_name;
       std::string place_icon_url;
+      std::string creator_name;
       bool resolve_metadata_after_publish = false;
       if ((desired.phase == RobloxExperiencePresencePhase::kJoining ||
            desired.phase == RobloxExperiencePresencePhase::kPlaying) &&
@@ -742,6 +828,7 @@ class DiscordRpcSession::Impl final {
             place_metadata_[desired.request.place_id];
         place_name = cached.name;
         place_icon_url = cached.icon_url;
+        creator_name = cached.creator_name;
         if ((cached.name.empty() || cached.icon_url.empty()) &&
             std::chrono::steady_clock::now() >= cached.next_attempt) {
           resolve_metadata_after_publish = true;
@@ -787,7 +874,7 @@ class DiscordRpcSession::Impl final {
                 ? nullptr
                 : &desired.request,
             std::move(place_name), desired.started_at,
-            std::move(place_icon_url));
+            std::move(place_icon_url), std::move(creator_name));
         if (!SetDiscordActivity(descriptor, &activity, nonce++)) {
           (void)close(descriptor);
           descriptor = -1;
@@ -809,6 +896,11 @@ class DiscordRpcSession::Impl final {
         bool changed = false;
         if (!resolved.name.empty() && resolved.name != cached.name) {
           cached.name = resolved.name;
+          changed = true;
+        }
+        if (!resolved.creator_name.empty() &&
+            resolved.creator_name != cached.creator_name) {
+          cached.creator_name = resolved.creator_name;
           changed = true;
         }
         if (!resolved.icon_url.empty() &&

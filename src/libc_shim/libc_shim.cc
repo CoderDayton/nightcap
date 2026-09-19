@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <iostream>
 #include <limits.h>
+#include <algorithm>
+#include <string_view>
 #include <unordered_map>
 #include <unistd.h>
 #include <vector>
@@ -20,7 +22,18 @@ namespace libc_shim {
 namespace {
 
 std::unordered_map<std::string, std::string> g_path_mappings;
+// g_path_mappings ordered longest Android prefix first, so the first match
+// is the most specific one. Rebuilt whenever the mappings change.
+std::vector<std::pair<std::string, std::string>> g_ordered_mappings;
 std::vector<std::string> g_ca_bundle_aliases;
+
+void RebuildOrderedMappings() {
+  g_ordered_mappings.assign(g_path_mappings.begin(), g_path_mappings.end());
+  std::stable_sort(g_ordered_mappings.begin(), g_ordered_mappings.end(),
+                   [](const auto& a, const auto& b) {
+                     return a.first.size() > b.first.size();
+                   });
+}
 
 bool g_installed = false;
 std::atomic<GuestAllocator> g_guest_allocator{nullptr};
@@ -72,11 +85,9 @@ std::string DefaultDataRoot() {
   return RuntimeRoot() + "/data";
 }
 
-bool PrefixMatchesPath(const std::string& path, const std::string& prefix) {
-  if (path.size() < prefix.size()) {
-    return false;
-  }
-  if (path.compare(0, prefix.size(), prefix) != 0) {
+bool PrefixMatchesPath(std::string_view path, std::string_view prefix) {
+  if (path.size() < prefix.size() ||
+      std::memcmp(path.data(), prefix.data(), prefix.size()) != 0) {
     return false;
   }
   return path.size() == prefix.size() || path[prefix.size()] == '/';
@@ -202,6 +213,7 @@ HostCaBundleResolution ResolveHostCaBundle() {
 
 HostCaBundleResolution ConfigureHostCaBundlePathMappings() {
   for (const auto& alias : g_ca_bundle_aliases) g_path_mappings.erase(alias);
+  RebuildOrderedMappings();
   g_ca_bundle_aliases.assign(kAndroidCaBundlePaths.begin(), kAndroidCaBundlePaths.end());
   if (const char* content = GetEnvNonEmpty("MOCKTAIL_ASSET_PATH")) {
     auto root = std::filesystem::path(content).lexically_normal();
@@ -297,31 +309,33 @@ void Install() {
             << g_path_mappings.size() << " prefix mappings)\n";
 }
 
-std::string TranslatePath(const std::string& android_path) {
-  const std::string* best_android_prefix = nullptr;
-  const std::string* best_host_prefix = nullptr;
-  for (const auto& [android_prefix, host_prefix] : g_path_mappings) {
-    if (PrefixMatchesPath(android_path, android_prefix) &&
-        (best_android_prefix == nullptr ||
-         android_prefix.size() > best_android_prefix->size())) {
-      best_android_prefix = &android_prefix;
-      best_host_prefix = &host_prefix;
+bool TranslatePathInto(std::string_view android_path, std::string* host_path) {
+  for (const auto& [android_prefix, host_prefix] : g_ordered_mappings) {
+    if (PrefixMatchesPath(android_path, android_prefix)) {
+      const std::string_view rest = android_path.substr(android_prefix.size());
+      host_path->reserve(host_prefix.size() + rest.size());
+      host_path->assign(host_prefix);
+      host_path->append(rest);
+      return true;
     }
   }
-  if (best_android_prefix != nullptr && best_host_prefix != nullptr) {
-    return *best_host_prefix +
-           android_path.substr(best_android_prefix->size());
-  }
-  return android_path;
+  return false;
+}
+
+std::string TranslatePath(const std::string& android_path) {
+  std::string host_path;
+  return TranslatePathInto(android_path, &host_path) ? host_path : android_path;
 }
 
 void RegisterPathMapping(const std::string& android_prefix,
                          const std::string& host_prefix) {
   g_path_mappings[android_prefix] = host_prefix;
+  RebuildOrderedMappings();
 }
 
 void ClearPathMappings() {
   g_path_mappings.clear();
+  g_ordered_mappings.clear();
   g_ca_bundle_aliases.clear();
 }
 
@@ -333,13 +347,16 @@ const char* HostPath(const char* path, std::string* storage) {
   if (path == nullptr) {
     return nullptr;
   }
-  *storage = libc_shim::TranslatePath(path);
-  return storage->c_str();
+  return libc_shim::TranslatePathInto(path, storage) ? storage->c_str() : path;
 }
 
+// Read once: the guest calls these shims on every file operation.
 bool PathTraceEnabled() {
-  const char* value = std::getenv("MOCKTAIL_PATH_TRACE");
-  return value != nullptr && value[0] != '\0' && value[0] != '0';
+  static const bool enabled = [] {
+    const char* value = std::getenv("MOCKTAIL_PATH_TRACE");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+  }();
+  return enabled;
 }
 
 void TracePathCall(const char* name, const char* path, const char* host_path,

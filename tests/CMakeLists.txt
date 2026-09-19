@@ -208,6 +208,13 @@ target_link_libraries(external_launch_broker_test PRIVATE
 )
 mocktail_apply_compile_options(external_launch_broker_test)
 
+add_executable(engine_pump_rest_test engine_pump_rest_test.cc)
+target_link_libraries(engine_pump_rest_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(engine_pump_rest_test)
+
 add_executable(supported_launch_policy_test supported_launch_policy_test.cc)
 target_link_libraries(supported_launch_policy_test PRIVATE
   Mocktail::Runtime
@@ -454,6 +461,16 @@ target_link_libraries(input_pump_pacer_test PRIVATE
 )
 mocktail_apply_compile_options(input_pump_pacer_test)
 
+add_executable(input_pump_pacing_runtime_test
+  input_pump_pacing_runtime_test.cc
+)
+target_link_libraries(input_pump_pacing_runtime_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(input_pump_pacing_runtime_test)
+
 add_executable(vulkan_surface_recovery_gate_test
   vulkan_surface_recovery_gate_test.cc
 )
@@ -513,9 +530,21 @@ target_link_libraries(texture_override_test PRIVATE GTest::gtest_main
   PkgConfig::LIBPNG)
 mocktail_apply_compile_options(texture_override_test)
 
+add_executable(chrome_trace_writer_test
+  chrome_trace_writer_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
+)
+target_include_directories(chrome_trace_writer_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(chrome_trace_writer_test PRIVATE GTest::gtest_main
+  Threads::Threads nlohmann_json::nlohmann_json)
+mocktail_apply_compile_options(chrome_trace_writer_test)
+
 add_executable(vulkan_etc2_emulation_test
   vulkan_etc2_emulation_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
@@ -964,6 +993,7 @@ gtest_discover_tests(browser_tracker_service_test)
 gtest_discover_tests(command_line_test)
 gtest_discover_tests(roblox_launch_uri_test)
 gtest_discover_tests(external_launch_broker_test)
+gtest_discover_tests(engine_pump_rest_test)
 gtest_discover_tests(webview_helper_launcher_test)
 gtest_discover_tests(webview_helper_policy_test)
 gtest_discover_tests(webview_roblox_cookie_test)
@@ -985,10 +1015,12 @@ gtest_discover_tests(jnivm_native_text_box_info_test)
 gtest_discover_tests(jnivm_webrtc_audio_manager_test)
 gtest_discover_tests(vulkan_present_observer_test)
 gtest_discover_tests(input_pump_pacer_test)
+gtest_discover_tests(input_pump_pacing_runtime_test)
 gtest_discover_tests(vulkan_surface_recovery_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(video_driver_policy_test)
 gtest_discover_tests(window_surface_lifecycle_test)

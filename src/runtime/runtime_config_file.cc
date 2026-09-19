@@ -205,6 +205,11 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "integrations.discord_rpc.text.playing",
       "integrations.discord_rpc.text.state",
       "integrations.discord_rpc.text.unknown_place",
+      "integrations.discord_rpc.text.title",
+      "integrations.discord_rpc.images.large",
+      "integrations.discord_rpc.images.large_text",
+      "integrations.discord_rpc.images.small",
+      "integrations.discord_rpc.images.small_text",
   };
   for (const auto& [key, ignored] : yaml) {
     if (supported.find(key) == supported.end()) {
@@ -554,8 +559,6 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
             "MOCKTAIL_DISCORD_RPC_TEXT_JOINING", 128},
            {"integrations.discord_rpc.text.playing",
             "MOCKTAIL_DISCORD_RPC_TEXT_PLAYING", 128},
-           {"integrations.discord_rpc.text.state",
-            "MOCKTAIL_DISCORD_RPC_TEXT_STATE", 128},
            {"integrations.discord_rpc.text.unknown_place",
             "MOCKTAIL_DISCORD_RPC_TEXT_UNKNOWN_PLACE", 128},
        }) {
@@ -570,6 +573,36 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
                     })) {
       *error = std::string(field.yaml) +
                " must be non-empty, bounded, and contain no control bytes";
+      return false;
+    }
+    (*environment)[std::string(field.variable)] = *configured;
+  }
+  // Presence fields may be empty: an empty value hides that field.
+  for (const DiscordStringField& field : {
+           DiscordStringField{"integrations.discord_rpc.text.title",
+                              "MOCKTAIL_DISCORD_RPC_TEXT_TITLE", 128},
+           {"integrations.discord_rpc.text.state",
+            "MOCKTAIL_DISCORD_RPC_TEXT_STATE", 128},
+           {"integrations.discord_rpc.images.large",
+            "MOCKTAIL_DISCORD_RPC_IMAGE_LARGE", 512},
+           {"integrations.discord_rpc.images.large_text",
+            "MOCKTAIL_DISCORD_RPC_IMAGE_LARGE_TEXT", 128},
+           {"integrations.discord_rpc.images.small",
+            "MOCKTAIL_DISCORD_RPC_IMAGE_SMALL", 512},
+           {"integrations.discord_rpc.images.small_text",
+            "MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT", 128},
+       }) {
+    const std::optional<std::string> configured = value(field.yaml);
+    if (!configured.has_value()) {
+      continue;
+    }
+    if (configured->size() > field.maximum ||
+        std::any_of(configured->begin(), configured->end(),
+                    [](unsigned char byte) {
+                      return byte < 0x20 || byte == 0x7f;
+                    })) {
+      *error = std::string(field.yaml) +
+               " must be bounded and contain no control bytes";
       return false;
     }
     (*environment)[std::string(field.variable)] = *configured;
@@ -940,7 +973,17 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_TEXT_STATE",
                           config.discord_rpc().text.state, error) &&
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_TEXT_UNKNOWN_PLACE",
-                          config.discord_rpc().text.unknown_place, error);
+                          config.discord_rpc().text.unknown_place, error) &&
+      SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_TEXT_TITLE",
+                          config.discord_rpc().text.title, error) &&
+      SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_IMAGE_LARGE",
+                          config.discord_rpc().images.large, error) &&
+      SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_IMAGE_LARGE_TEXT",
+                          config.discord_rpc().images.large_text, error) &&
+      SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_IMAGE_SMALL",
+                          config.discord_rpc().images.small, error) &&
+      SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT",
+                          config.discord_rpc().images.small_text, error);
   if (!base_exported) {
     return false;
   }
