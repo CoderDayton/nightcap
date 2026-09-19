@@ -1,12 +1,14 @@
-# Maintainer: komaruworld <rtysus228@gmail.com>
+# Maintainer: vii <coderdayton14@gmail.com>
 
-pkgname=mocktail
-pkgver=1.0.3
-pkgrel=2
+pkgname=nightcap
+pkgver=0.3.1
+pkgrel=1
 pkgdesc='Android x86-64 Roblox compatibility runtime for Linux'
 arch=('x86_64')
-url='https://github.com/komaruworld/mocktail'
+url='https://github.com/CoderDayton/nightcap'
 license=('Apache-2.0')
+provides=('mocktail')
+conflicts=('mocktail')
 depends=(
   'capstone'
   'curl'

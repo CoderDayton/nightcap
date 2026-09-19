@@ -1,11 +1,11 @@
-# Maintainer: komaruworld <rtysus228 at gmail dot com>
+# Maintainer: vii <coderdayton14 at gmail dot com>
 
-pkgname=mocktail
-pkgver=1.0.4
+pkgname=nightcap
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Android x86-64 Roblox compatibility runtime for Linux'
 arch=('x86_64')
-url='https://github.com/komaruworld/mocktail'
+url='https://github.com/CoderDayton/nightcap'
 license=('Apache-2.0')
 depends=(
   'capstone'
@@ -42,17 +42,18 @@ makedepends=(
   'vulkan-headers'
 )
 optdepends=('gamemode: Feral GameMode integration')
-conflicts=('mocktail-bin' 'mocktail-git')
+provides=('mocktail')
+conflicts=('mocktail' 'nightcap-bin' 'nightcap-git')
 options=('!debug' '!lto')
 source=(
-  "mocktail::git+https://github.com/komaruworld/mocktail.git#tag=${pkgver}"
+  "nightcap::git+https://github.com/CoderDayton/nightcap.git#tag=v${pkgver}"
 )
 sha256sums=(
   'SKIP'
 )
 
 prepare() {
-  cd mocktail
+  cd nightcap
 
   sed -i \
     's|add_subdirectory(third_party/Vulkan-Headers EXCLUDE_FROM_ALL)|find_package(VulkanHeaders CONFIG REQUIRED)|' \
@@ -60,7 +61,7 @@ prepare() {
 }
 
 build() {
-  cmake -S mocktail -B build -G Ninja \
+  cmake -S nightcap -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_INSTALL_LIBDIR=lib \
@@ -73,6 +74,6 @@ build() {
 
 package() {
   DESTDIR="${pkgdir}" cmake --install build
-  install -Dm644 mocktail/LICENSE \
+  install -Dm644 nightcap/LICENSE \
     "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

@@ -61,10 +61,24 @@ chmod +x Nightcap-x86_64.AppImage
 ./Nightcap-x86_64.AppImage
 ```
 
-Or build and install it from source using the steps under
-[Building](#building). There are no AUR, DEB, or RPM packages of Nightcap.
-Upstream ships those for unmodified Mocktail, see
-[komaruworld/mocktail](https://github.com/komaruworld/mocktail#readme).
+## Distribution packages
+
+Each release also carries a DEB, an RPM, and a pacman package, with a
+`.sha256` beside every file on the
+[releases page](https://github.com/CoderDayton/nightcap/releases/latest):
+
+```bash
+sudo apt install ./nightcap_<version>-1_amd64.deb
+sudo dnf install ./nightcap-<version>-1.x86_64.rpm
+sudo pacman -U nightcap-<version>-1-x86_64.pkg.tar.zst
+```
+
+They install `/usr/bin/mocktail`, so they conflict with upstream's `mocktail`
+package. Nightcap is not in any distribution repository or the AUR; the
+recipes under `packaging/aur` are kept for local builds only.
+
+Or build and install from source using the steps under
+[Building](#building).
 
 ## How it works
 

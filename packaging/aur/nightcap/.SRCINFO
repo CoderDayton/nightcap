@@ -1,8 +1,8 @@
-pkgbase = mocktail
+pkgbase = nightcap
 	pkgdesc = Android x86-64 Roblox compatibility runtime for Linux
-	pkgver = 1.0.4
+	pkgver = 0.3.1
 	pkgrel = 1
-	url = https://github.com/komaruworld/mocktail
+	url = https://github.com/CoderDayton/nightcap
 	arch = x86_64
 	license = Apache-2.0
 	makedepends = cmake>=3.20
@@ -36,11 +36,13 @@ pkgbase = mocktail
 	depends = webkitgtk-6.0
 	depends = zlib
 	optdepends = gamemode: Feral GameMode integration
-	conflicts = mocktail-bin
-	conflicts = mocktail-git
+	provides = mocktail
+	conflicts = mocktail
+	conflicts = nightcap-bin
+	conflicts = nightcap-git
 	options = !debug
 	options = !lto
-	source = mocktail::git+https://github.com/komaruworld/mocktail.git#tag=1.0.4
+	source = nightcap::git+https://github.com/CoderDayton/nightcap.git#tag=v0.3.1
 	sha256sums = SKIP
 
-pkgname = mocktail
+pkgname = nightcap
