@@ -6,6 +6,8 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-18
+
 ### Added
 
 - Custom Discord presence. `integrations.discord_rpc.text.title` replaces the
@@ -133,6 +135,7 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The AppImage build no longer fails on stale checksums for the slimmed
   Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.0
 [0.2.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.2.0
 [0.1.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.1.0
