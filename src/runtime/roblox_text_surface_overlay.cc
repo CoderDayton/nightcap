@@ -301,6 +301,7 @@ Status RobloxTextSurfaceOverlay::Shutdown() {
   }
   state_.Reset();
   ClearFrameLocked();
+  CloseFontsLocked();
   viewport_ = {};
   initialized_ = false;
   if (owned_active_overlay) {
@@ -445,10 +446,6 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   const bool wrapped_layout =
       presentation.multiline || presentation.text_wrapped;
 
-  if (!TTF_Init()) {
-    SecureClear(&candidate);
-    return RasterizationFailure("unable to initialize SDL3_ttf");
-  }
   const RobloxTextFontSelection font_selection =
       ResolveRobloxTextFont(presentation.font);
   const float native_point_size =
@@ -458,23 +455,12 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
           ? std::clamp(native_point_size * font_selection.size_scale, 1.0F,
                        512.0F)
           : std::clamp(static_cast<float>(height) * 0.38F, 12.0F, 28.0F);
-  const std::vector<std::string> font_files = ResolveFontFiles(font_selection);
-  std::vector<TTF_Font*> fonts;
-  fonts.reserve(font_files.size());
-  for (const std::string& file : font_files) {
-    TTF_Font* font = TTF_OpenFont(file.c_str(), point_size);
-    if (font != nullptr) {
-      fonts.push_back(font);
-    }
-  }
-  if (fonts.empty()) {
-    TTF_Quit();
+  if (Status status = OpenFontsLocked(presentation.font, point_size);
+      !status.ok()) {
     SecureClear(&candidate);
-    return RasterizationFailure("unable to open a Roblox or fallback font");
+    return status;
   }
-  for (std::size_t index = 1; index < fonts.size(); ++index) {
-    (void)TTF_AddFallbackFont(fonts.front(), fonts[index]);
-  }
+  const std::vector<TTF_Font*>& fonts = fonts_;
   if (wrapped_layout) {
     TTF_HorizontalAlignment alignment = TTF_HORIZONTAL_ALIGN_LEFT;
     if (presentation.x_alignment == 1) {
@@ -629,11 +615,6 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   if (layout != nullptr) {
     TTF_DestroyText(layout);
   }
-  TTF_ClearFallbackFonts(fonts.front());
-  for (auto iterator = fonts.rbegin(); iterator != fonts.rend(); ++iterator) {
-    TTF_CloseFont(*iterator);
-  }
-  TTF_Quit();
 
   if (!status.ok()) {
     SecureClear(&candidate);
@@ -649,6 +630,58 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
                  "(SDL3_ttf/FreeType/HarfBuzz)\n");
   }
   return Status::Ok();
+}
+
+Status RobloxTextSurfaceOverlay::OpenFontsLocked(std::int32_t font,
+                                                 float point_size) {
+  if (!fonts_.empty() && fonts_font_ == font &&
+      fonts_point_size_ == point_size) {
+    return Status::Ok();
+  }
+  if (!TTF_Init()) {
+    return RasterizationFailure("unable to initialize SDL3_ttf");
+  }
+  const std::vector<std::string> files =
+      ResolveFontFiles(ResolveRobloxTextFont(font));
+  std::vector<TTF_Font*> opened;
+  opened.reserve(files.size());
+  for (const std::string& file : files) {
+    TTF_Font* candidate = TTF_OpenFont(file.c_str(), point_size);
+    if (candidate != nullptr) {
+      opened.push_back(candidate);
+    }
+  }
+  // A failed reopen leaves the fonts already rendering in place.
+  if (opened.empty()) {
+    TTF_Quit();
+    return RasterizationFailure("unable to open a Roblox or fallback font");
+  }
+  for (std::size_t index = 1; index < opened.size(); ++index) {
+    (void)TTF_AddFallbackFont(opened.front(), opened[index]);
+  }
+  CloseFontsLocked();
+  fonts_ = std::move(opened);
+  ttf_initialized_ = true;
+  fonts_font_ = font;
+  fonts_point_size_ = point_size;
+  return Status::Ok();
+}
+
+void RobloxTextSurfaceOverlay::CloseFontsLocked() {
+  if (!fonts_.empty()) {
+    TTF_ClearFallbackFonts(fonts_.front());
+    for (auto iterator = fonts_.rbegin(); iterator != fonts_.rend();
+         ++iterator) {
+      TTF_CloseFont(*iterator);
+    }
+    fonts_.clear();
+  }
+  fonts_font_ = 0;
+  fonts_point_size_ = 0.0F;
+  if (ttf_initialized_) {
+    TTF_Quit();
+    ttf_initialized_ = false;
+  }
 }
 
 void RobloxTextSurfaceOverlay::ClearFrameLocked() {
