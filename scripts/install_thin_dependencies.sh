@@ -119,6 +119,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libpng
 util-linux'
       INSTALL_ARGS='-S --needed --noconfirm'
       ;;
@@ -144,6 +145,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libpng
 util-linux'
       if HostUsesMusl; then
         PACKAGES="$PACKAGES gcompat"
@@ -172,6 +174,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libpng
 coreutils
 findutils
 util-linux'
