@@ -8,6 +8,8 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 namespace mocktail::graphics {
 namespace {
@@ -206,10 +208,67 @@ VKAPI_ATTR void VKAPI_CALL FakeFreeMemory(VkDevice, VkDeviceMemory,
                                           const VkAllocationCallbacks*) {
   ++g_free_memory_calls;
 }
+// Records the host-write barrier that must precede each staged copy, so the
+// decode's writes are visible to the device even though they land after the
+// submit that reads them.
+std::uint32_t g_barriers_before_copy = 0;
+VkPipelineStageFlags g_barrier_src_stage = 0;
+VkPipelineStageFlags g_barrier_dst_stage = 0;
+VkAccessFlags g_barrier_src_access = 0;
+VkAccessFlags g_barrier_dst_access = 0;
+std::uint32_t g_pending_barriers = 0;
+
+VKAPI_ATTR void VKAPI_CALL FakePipelineBarrier(
+    VkCommandBuffer, VkPipelineStageFlags src_stage,
+    VkPipelineStageFlags dst_stage, VkDependencyFlags, std::uint32_t count,
+    const VkMemoryBarrier* barriers, std::uint32_t, const VkBufferMemoryBarrier*,
+    std::uint32_t, const VkImageMemoryBarrier*) {
+  g_barrier_src_stage = src_stage;
+  g_barrier_dst_stage = dst_stage;
+  if (count > 0) {
+    g_barrier_src_access = barriers[0].srcAccessMask;
+    g_barrier_dst_access = barriers[0].dstAccessMask;
+  }
+  ++g_pending_barriers;
+}
+
 VKAPI_ATTR void VKAPI_CALL FakeCopyBufferToImage(
     VkCommandBuffer, VkBuffer, VkImage, VkImageLayout, std::uint32_t count,
     const VkBufferImageCopy* regions) {
   g_copied_extent = count > 0 ? regions[0].imageExtent : VkExtent3D{};
+  g_barriers_before_copy = g_pending_barriers;
+}
+
+constexpr std::uintptr_t kTimelineSemaphore = 0x900;
+
+std::mutex g_signal_mutex;
+std::vector<std::uint64_t> g_signalled;
+
+VKAPI_ATTR VkResult VKAPI_CALL FakeCreateSemaphore(
+    VkDevice, const VkSemaphoreCreateInfo*, const VkAllocationCallbacks*,
+    VkSemaphore* semaphore) {
+  *semaphore = FakeHandle<VkSemaphore>(kTimelineSemaphore);
+  return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+FakeSignalSemaphore(VkDevice, const VkSemaphoreSignalInfo* info) {
+  std::lock_guard<std::mutex> lock(g_signal_mutex);
+  g_signalled.push_back(info->value);
+  return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeDestroySemaphore(VkDevice, VkSemaphore,
+                                                const VkAllocationCallbacks*) {}
+
+std::vector<std::uint64_t> SignalledValues() {
+  std::lock_guard<std::mutex> lock(g_signal_mutex);
+  return g_signalled;
+}
+
+void ResetSignalledValues() {
+  std::lock_guard<std::mutex> lock(g_signal_mutex);
+  g_signalled.clear();
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakeGetDeviceProcAddr(
@@ -217,6 +276,12 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakeGetDeviceProcAddr(
   const auto is = [name](const char* candidate) {
     return std::strcmp(name, candidate) == 0;
   };
+  if (is("vkCreateSemaphore"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateSemaphore);
+  if (is("vkSignalSemaphore"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeSignalSemaphore);
+  if (is("vkDestroySemaphore"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeDestroySemaphore);
   if (is("vkCreateImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateImage);
   if (is("vkCreateBuffer")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateBuffer);
   if (is("vkGetBufferMemoryRequirements"))
@@ -229,6 +294,8 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakeGetDeviceProcAddr(
   if (is("vkFreeMemory")) return reinterpret_cast<PFN_vkVoidFunction>(FakeFreeMemory);
   if (is("vkCmdCopyBufferToImage"))
     return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyBufferToImage);
+  if (is("vkCmdPipelineBarrier"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakePipelineBarrier);
   if (is("vkCmdCopyImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyImage);
   if (is("vkCmdBlitImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeBlitImage);
   return nullptr;
@@ -803,6 +870,214 @@ TEST(VulkanEtc2EmulationTest, ReadsCompressedRowsAtTheRequestedStride) {
     ASSERT_EQ(g_staging[index], expected[index]) << "byte " << index;
   }
   emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+// Records one 4x4 ETC2 upload whose every texel decodes to 134, and returns
+// the image it targets.
+VkImage RecordDecodeOf134(VulkanEtc2Emulation* emulation, VkDevice device,
+                          VkBuffer source, VkDeviceMemory source_memory,
+                          VkCommandBuffer command_buffer) {
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.extent = {4, 4, 1};
+  VkImage image = VK_NULL_HANDLE;
+  EXPECT_EQ(emulation->CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  EXPECT_EQ(emulation->BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  EXPECT_EQ(emulation->MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                 &mapped),
+            VK_SUCCESS);
+
+  const std::array<std::uint8_t, 8> block = {0x81, 0x81, 0x81, 0x02,
+                                             0,    0,    0,    0};
+  std::memcpy(g_source.data(), block.data(), block.size());
+
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = {4, 4, 1};
+  emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &region);
+  return image;
+}
+
+VkPhysicalDeviceMemoryProperties HostVisibleMemory() {
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  return memory;
+}
+
+TEST(VulkanEtc2EmulationTest, DecodesOffTheCallingThreadWithATimeline) {
+  const VkDevice device = FakeHandle<VkDevice>(0x18);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x208);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x708);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ResetSignalledValues();
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x28), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, true);
+  RecordDecodeOf134(&emulation, device, source, source_memory, command_buffer);
+
+  const Etc2SubmitWait wait =
+      emulation.PrepareSubmit(&command_buffer, 1, true);
+  EXPECT_EQ(wait.semaphore, FakeHandle<VkSemaphore>(kTimelineSemaphore));
+  EXPECT_GT(wait.value, 0U);
+
+  // Releasing the command buffer waits for the decode that writes its staging.
+  emulation.ReleaseCommandBuffer(command_buffer);
+  EXPECT_EQ(g_staging[0], 134);
+  EXPECT_EQ(SignalledValues(), std::vector<std::uint64_t>{wait.value});
+}
+
+TEST(VulkanEtc2EmulationTest, DecodesOnTheCallerWithoutATimeline) {
+  const VkDevice device = FakeHandle<VkDevice>(0x19);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x209);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x709);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ResetSignalledValues();
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x29), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, false);
+  RecordDecodeOf134(&emulation, device, source, source_memory, command_buffer);
+
+  const Etc2SubmitWait wait =
+      emulation.PrepareSubmit(&command_buffer, 1, true);
+  EXPECT_EQ(wait.semaphore, VK_NULL_HANDLE);
+  EXPECT_EQ(wait.value, 0U);
+  // Decoded before the call returned, so no wait is owed.
+  EXPECT_EQ(g_staging[0], 134);
+  EXPECT_TRUE(SignalledValues().empty());
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, UnmapWaitsForDecodesReadingThatMemory) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1C);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20C);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x70D);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ResetSignalledValues();
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x2C), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, true);
+  RecordDecodeOf134(&emulation, device, source, source_memory, command_buffer);
+
+  const Etc2SubmitWait wait =
+      emulation.PrepareSubmit(&command_buffer, 1, true);
+  ASSERT_NE(wait.semaphore, VK_NULL_HANDLE);
+
+  // A deferred gather reads the application's mapping on a worker, so the
+  // unmap must not return while a decode can still dereference it.
+  emulation.UnmapMemory(device, source_memory);
+  const std::vector<std::uint64_t> signalled = SignalledValues();
+  ASSERT_FALSE(signalled.empty()) << "unmap returned with a decode in flight";
+  EXPECT_GE(signalled.back(), wait.value);
+  EXPECT_EQ(g_staging[0], 134);
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, FreeMemoryWaitsForDecodesReadingThatMemory) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1D);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20D);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x70E);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ResetSignalledValues();
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x2D), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, true);
+  RecordDecodeOf134(&emulation, device, source, source_memory, command_buffer);
+
+  const Etc2SubmitWait wait =
+      emulation.PrepareSubmit(&command_buffer, 1, true);
+  ASSERT_NE(wait.semaphore, VK_NULL_HANDLE);
+
+  emulation.FreeMemory(device, source_memory, nullptr);
+  const std::vector<std::uint64_t> signalled = SignalledValues();
+  ASSERT_FALSE(signalled.empty()) << "free returned with a decode in flight";
+  EXPECT_GE(signalled.back(), wait.value);
+  EXPECT_EQ(g_staging[0], 134);
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, GuardsStagedCopiesWithAHostWriteBarrier) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1B);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20B);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x70C);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  g_pending_barriers = 0;
+  g_barriers_before_copy = 0;
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x2B), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, true);
+  RecordDecodeOf134(&emulation, device, source, source_memory, command_buffer);
+
+  // An asynchronous decode writes the staging after the submit that reads it,
+  // so the queue submission's host-to-device domain operation does not cover
+  // those writes; the copy must be preceded by an explicit barrier.
+  EXPECT_EQ(g_barriers_before_copy, 1U);
+  EXPECT_EQ(g_barrier_src_stage,
+            static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_HOST_BIT));
+  EXPECT_NE(g_barrier_dst_stage &
+                static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_TRANSFER_BIT),
+            0U);
+  EXPECT_EQ(g_barrier_src_access,
+            static_cast<VkAccessFlags>(VK_ACCESS_HOST_WRITE_BIT));
+  EXPECT_NE(g_barrier_dst_access &
+                static_cast<VkAccessFlags>(VK_ACCESS_TRANSFER_READ_BIT),
+            0U);
+  emulation.PrepareSubmit(&command_buffer, 1, true);
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, SignalsDecodeValuesInHandOutOrder) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1A);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20A);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer first = FakeHandle<VkCommandBuffer>(0x70A);
+  const VkCommandBuffer second = FakeHandle<VkCommandBuffer>(0x70B);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ResetSignalledValues();
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x2A), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, true);
+  RecordDecodeOf134(&emulation, device, source, source_memory, first);
+  RecordDecodeOf134(&emulation, device, source, source_memory, second);
+
+  const Etc2SubmitWait one = emulation.PrepareSubmit(&first, 1, true);
+  const Etc2SubmitWait two = emulation.PrepareSubmit(&second, 1, true);
+  EXPECT_GT(two.value, one.value);
+
+  emulation.ReleaseCommandBuffer(first);
+  emulation.ReleaseCommandBuffer(second);
+
+  const std::vector<std::uint64_t> signalled = SignalledValues();
+  ASSERT_FALSE(signalled.empty());
+  EXPECT_EQ(signalled.back(), two.value);
+  for (std::size_t index = 1; index < signalled.size(); ++index) {
+    EXPECT_GT(signalled[index], signalled[index - 1]) << "at " << index;
+  }
 }
 
 }  // namespace

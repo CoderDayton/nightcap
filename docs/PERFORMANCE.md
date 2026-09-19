@@ -27,19 +27,47 @@ request. If GameMode narrowed it, Nightcap ends the request and prints:
 ```
 
 The trade is that GameMode's governor and priority boost go with it. To keep
-those and lose only the pinning, turn pinning off for every game on the host:
+those and lose only the pinning, turn pinning off for every game on the host.
+
+These are the settings to run with:
 
 ```ini
 # ~/.config/gamemode.ini
+[general]
+desiredgov=performance
+
 [cpu]
 pin_cores=no
 park_cores=no
 ```
 
+`desiredgov` is the one to check first. The packaged default in
+`/usr/share/gamemode/gamemode.ini` is already `performance`, but a value in
+your own file replaces it, and `desiredgov=powersave` there means GameMode
+clocks the CPU **down** for the whole session while still reporting
+`[gamemode] performance request active`. The symptoms are a low CPU clock
+under load, a GPU that never leaves its lower SM clocks, and the engine pump
+falling back to `tpause` — which costs about 70% of a core instead of 3%,
+because `sleep` is only chosen when the governor reads `performance`. On one
+13900K host, correcting `powersave` to `performance` took the process from
+177% CPU to 42% and the package from 70°C to 53-63°C, at the same frame rate.
+
 GameMode reads `$XDG_CONFIG_HOME`, `/usr/share/gamemode` and `/etc`, in that
 order. It does not read anything under Nightcap's own config directory, so this
 file has to live in one of those three places. The daemon reads it when it
 starts, so restart it after editing: `systemctl --user restart gamemoded`.
+
+Restarting the daemon drops the session of any game already running; relaunch
+the game for new settings to apply to it.
+
+`gamemoded` is D-Bus activated through
+`com.feralinteractive.GameMode.service`, so `systemctl --user stop gamemoded`
+does not hold — the next client request starts it again within seconds. To
+measure with GameMode genuinely off, mask it:
+
+```bash
+systemctl --user mask gamemoded     # and --unmask afterwards
+```
 
 The governor switch runs through polkit. Debian and Ubuntu only allow it for
 members of the `gamemode` group; without that, the daemon's journal shows
@@ -59,8 +87,19 @@ to the affinity. `off` never contacts the daemon.
 To see which CPUs the process may use:
 
 ```bash
-taskset -pc $(pgrep -x mocktail)
+pid=$(pgrep -x Main)
+for t in /proc/$pid/task/*; do taskset -pc "${t##*/}"; done
 ```
+
+Two traps here. The engine process reports its name as `Main`, not
+`mocktail`; `pgrep -x mocktail` finds only the launcher, which sits near 0%
+CPU and tells you nothing. And `taskset -p` reads one thread, not the whole
+process, so a single call reports the main thread's mask and says nothing
+about the workers — which is where the game's load actually is.
+
+For the same reason, `ps -L -o psr=` shows which core each thread is running
+on right now, not which cores it is allowed on. On a hybrid CPU the scheduler
+preferring P-cores for runnable work is normal and is not a mask.
 
 ## The main-thread pump
 
@@ -98,6 +137,13 @@ The cost lands in two places. Decoding and resampling is CPU work on up to 8
 threads while textures load, which shows up as a burst rather than a steady
 load. The enlarged textures then stay in GPU memory for the session and cost
 extra sampling bandwidth on every frame that uses them.
+
+That decode does not run on the thread that submits the frame. On a device
+with a timeline semaphore, uploads decode on a background dispatcher and the
+submit carries a semaphore wait, so the GPU waits for the texture instead of
+the render thread. In the trace this is the `etc2 decode` slice on its own
+thread, with only a negligible `etc2 gather` left on the submitting one. A
+device without that feature decodes inline as before.
 
 Set it to `1` to turn upscaling off:
 

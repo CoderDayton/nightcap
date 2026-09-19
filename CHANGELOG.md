@@ -6,6 +6,30 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- ETC2 texture decoding no longer blocks the thread that submits the frame.
+  Uploads decode on a background dispatcher and the submit carries a timeline
+  semaphore wait, so the GPU waits for the texture instead of the render
+  thread. Reading the application's compressed bytes moves to that dispatcher
+  too whenever they are already mapped. In Blade Ball the worst
+  `vkQueueSubmit` fell from 140ms to 1ms, its p99 from 4.9ms to 0.05ms, and
+  the total time spent in submits from 2534ms to 309ms. Frame interval is
+  unchanged: the remaining tail is the engine's own main-thread step. A device
+  without the `timelineSemaphore` feature decodes inline as before, as does a
+  submit whose `pNext` already sizes arrays by its semaphore counts.
+- Staged ETC2 copies now carry an explicit host-write barrier. A queue
+  submission only makes host writes from before it visible to the device, and
+  an asynchronous decode writes after the submit, so without the barrier those
+  texels were not guaranteed to reach the copy that reads them.
+
+### Changed
+
+- `docs/PERFORMANCE.md` documents the GameMode settings to run with. A
+  `desiredgov=powersave` in `~/.config/gamemode.ini` overrides the packaged
+  `performance` default and clocks the CPU down for the whole session while
+  still reporting an active performance request.
+
 ## [0.3.0] - 2026-09-18
 
 ### Added
