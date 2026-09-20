@@ -6,6 +6,16 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Each release carries a DEB, an RPM, and a pacman package beside the
+  AppImage, with a `.sha256` for every file. They install `/usr/bin/mocktail`
+  and conflict with each other and with upstream's `mocktail` package.
+  Nightcap is in no distribution repository or the AUR; the recipes under
+  `packaging/aur/nightcap{,-bin,-git}` build from this repository locally.
+- The AppStream metadata lists the Nightcap releases, so software centres
+  show the release history instead of upstream's.
+
 ### Fixed
 
 - ETC2 texture decoding no longer blocks the thread that submits the frame.
@@ -18,6 +28,25 @@ GitHub are taken from the matching section here.
   unchanged: the remaining tail is the engine's own main-thread step. A device
   without the `timelineSemaphore` feature decodes inline as before, as does a
   submit whose `pNext` already sizes arrays by its semaphore counts.
+- The mouse pointer jumped when a right-click camera drag ended, and drifted
+  to the viewport edge during one. The input router inferred pointer capture
+  from SDL reporting zero absolute coordinates, which holds on X11 but not on
+  Wayland, where the reported position accumulates the relative deltas and
+  leaves the window. Motion, button, and wheel events now carry the window's
+  relative mouse mode. The right-click camera fallback also only captures
+  inside an experience, so the cursor stays free over the app surface.
+- Shutting the window down while an experience was starting or leaving could
+  free the pointer capture owner underneath the thread using it. Callers off
+  the SDL thread now hold a reference for the length of their call.
+- The TextBox caret did not move when a trailing space was typed in a
+  single-line field. The final cluster rect SDL_ttf reports stops at the last
+  inked glyph, so the laid-out width is used there instead. Wrapped layouts
+  keep the clamp, because their width is the widest line rather than the last.
+- Every TextBox keystroke re-ran `TTF_Init`, a fontconfig sort, six
+  `TTF_OpenFont` calls, and `TTF_Quit` on the render thread. The overlay holds
+  its opened fonts and reopens them only when the Roblox font or the point
+  size changes, keeping the current set when a reopen fails. Measured over 100
+  rasters, 1.59ms to 0.12ms per keystroke.
 - Staged ETC2 copies now carry an explicit host-write barrier. A queue
   submission only makes host writes from before it visible to the device, and
   an asynchronous decode writes after the submit, so without the barrier those
