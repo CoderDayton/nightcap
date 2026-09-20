@@ -302,9 +302,25 @@ jobs:
           set -Eeuo pipefail
           tag="${GITHUB_REF_NAME}"
           mv release/Mocktail-x86_64.AppImage release/Nightcap-x86_64.AppImage
+          # An unmatched glob would otherwise reach sha256sum and gh as its own
+          # literal text, so every package pattern has to match before upload.
+          shopt -s nullglob
+          assets=(Nightcap-x86_64.AppImage)
+          for glob in '*.deb' '*.rpm' '*.pkg.tar.zst'; do
+            matched=(release/$glob)
+            if [[ ${#matched[@]} -eq 0 ]]; then
+              echo "::error::no ${glob} package among the release artifacts"
+              exit 1
+            fi
+            assets+=("${matched[@]#release/}")
+          done
+          uploads=()
+          for asset in "${assets[@]}"; do
+            uploads+=("release/$asset" "release/$asset.sha256")
+          done
           (
             cd release
-            for asset in Nightcap-x86_64.AppImage *.deb *.rpm *.pkg.tar.zst; do
+            for asset in "${assets[@]}"; do
               sha256sum "$asset" > "$asset.sha256"
             done
           )
@@ -319,8 +335,4 @@ jobs:
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
             --title "Nightcap $tag" --notes-file release/notes.md
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
-            release/Nightcap-x86_64.AppImage \
-            release/Nightcap-x86_64.AppImage.sha256 \
-            release/*.deb release/*.deb.sha256 \
-            release/*.rpm release/*.rpm.sha256 \
-            release/*.pkg.tar.zst release/*.pkg.tar.zst.sha256
+            "${uploads[@]}"
