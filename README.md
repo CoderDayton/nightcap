@@ -68,7 +68,7 @@ Each release also carries a DEB, an RPM, and a pacman package, with a
 [releases page](https://github.com/CoderDayton/nightcap/releases/latest):
 
 ```bash
-sudo apt install ./nightcap_<version>-1_amd64.deb
+sudo apt install ./nightcap_<version>_amd64.deb
 sudo dnf install ./nightcap-<version>-1.x86_64.rpm
 sudo pacman -U nightcap-<version>-1-x86_64.pkg.tar.zst
 ```
