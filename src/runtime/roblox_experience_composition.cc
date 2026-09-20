@@ -1242,6 +1242,7 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
       if (active_launch_ != nullptr) {
         completed_result = active_launch_->result;
         game_active_ = completed_result.ok();
+        window::SetGameSessionActive(game_active_);
         active_game_canonical_json_ =
             completed_result.ok() ? active_launch_->request.canonical_json
                                   : std::string();
@@ -1279,6 +1280,7 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
         return observed;
       }
       game_active_ = false;
+      window::SetGameSessionActive(false);
       active_game_canonical_json_.clear();
       presence_request_.reset();
       playing_presence_published_ = false;
@@ -1454,6 +1456,7 @@ Status RobloxExperienceComposition::LeaveGame() {
   if (status.ok()) {
     std::lock_guard<std::mutex> lock(mutex_);
     game_active_ = false;
+    window::SetGameSessionActive(false);
     active_game_canonical_json_.clear();
   }
   return status;
@@ -1552,6 +1555,7 @@ Status RobloxExperienceComposition::Shutdown() {
     std::lock_guard<std::mutex> lock(mutex_);
     subscribed_ = false;
     game_active_ = false;
+    window::SetGameSessionActive(false);
     active_game_canonical_json_.clear();
     presence_request_.reset();
     playing_presence_published_ = false;

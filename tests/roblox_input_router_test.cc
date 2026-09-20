@@ -277,6 +277,67 @@ TEST_F(RobloxInputRouterTest, HoldsPointerPositionDuringRelativeMotion) {
   EXPECT_FLOAT_EQ(probe_.mouse_moves[3].y, 100.0f);
 }
 
+TEST_F(RobloxInputRouterTest, HoldsPointerWhenRelativeMotionCarriesAPosition) {
+  // Wayland reports a drifting absolute position during relative mode instead
+  // of zeroes, and it can leave the window. The capture flag decides, not the
+  // coordinates, so the held position survives the drift and the reversal.
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      640.0f, 360.0f, 0.0f, 0.0f, 0, false}))
+                  .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      1840.0f, 470.0f, 1200.0f, 110.0f, 0, true}))
+                  .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      -510.0f, 430.0f, -2350.0f, -40.0f, 0, true}))
+                  .dispatched());
+
+  ASSERT_EQ(probe_.mouse_moves.size(), 3U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].y, 360.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].delta_x, 1200.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].y, 360.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[2].delta_x, -2350.0f);
+}
+
+TEST_F(RobloxInputRouterTest, HoldsPointerWhenRelativeButtonCarriesAPosition) {
+  // The release that ends a Wayland camera drag carries the drifted position
+  // too. It must not move the pointer Roblox draws.
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      640.0f, 360.0f, 0.0f, 0.0f, 0, false}))
+                  .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      false, SDL_BUTTON_RIGHT, 1, 1840.0f, 470.0f, true}))
+                  .dispatched());
+
+  ASSERT_FALSE(probe_.mouse_buttons.empty());
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons.back().x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons.back().y, 360.0f);
+}
+
+TEST_F(RobloxInputRouterTest, HoldsPointerWhenRelativeWheelCarriesAPosition) {
+  // Zooming the camera mid-drag scrolls while capture is held. Wayland stamps
+  // the drifted position on the wheel event too, so the capture flag decides
+  // there as well.
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      640.0f, 360.0f, 0.0f, 0.0f, 0, false}))
+                  .dispatched());
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseWheelEvent{
+                      0.0f, -1.0f, 1840.0f, 470.0f, true}))
+                  .dispatched());
+
+  ASSERT_FALSE(probe_.mouse_wheels.empty());
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().y, 360.0f);
+}
+
 TEST_F(RobloxInputRouterTest,
        AnchorsUnknownPointerAtViewportCenterForRelativeMotion) {
   // No absolute position has been seen yet, so the held position is the

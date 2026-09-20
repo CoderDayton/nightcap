@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_WINDOW_WINDOW_POINTER_CAPTURE_OWNER_H_
 #define MOCKTAIL_WINDOW_WINDOW_POINTER_CAPTURE_OWNER_H_
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -31,6 +32,10 @@ class WindowPointerCaptureOwner final {
   // Android's lock-center query does not represent desktop RMB camera drag,
   // so the SDL owner tracks that transient capture source independently.
   bool OnRightButton(bool pressed, bool text_input_active);
+  // The RMB fallback only stands in for a camera. Outside an experience there
+  // is none, and capturing there freezes the cursor over Roblox's own UI.
+  // Starts false: the app surface is what the client shows first.
+  void SetGameSessionActive(bool active);
   // Shift can enable Roblox's persistent mouse lock while a transient RMB
   // camera drag is active. Refresh the native state after dispatching that
   // key so the subsequent RMB release preserves the intentional lock.
@@ -62,6 +67,8 @@ class WindowPointerCaptureOwner final {
   bool clearing_ = false;
   bool focused_ = true;
   bool right_button_held_ = false;
+  // Written by the experience composition, read on the SDL thread.
+  std::atomic<bool> game_session_active_{false};
   bool native_lock_observed_ = false;
   bool native_lock_was_active_before_right_drag_ = false;
   bool shift_key_pressed_during_right_drag_ = false;

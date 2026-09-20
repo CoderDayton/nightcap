@@ -1488,6 +1488,12 @@ bool SetMouseLockQueryCallback(MouseLockQueryCallback callback, void* context) {
          g_pointer_capture_owner->RegisterQuery(callback, context);
 }
 
+void SetGameSessionActive(bool active) {
+  if (g_pointer_capture_owner != nullptr) {
+    g_pointer_capture_owner->SetGameSessionActive(active);
+  }
+}
+
 void ClearMouseLockQueryCallback() {
   if (g_pointer_capture_owner != nullptr) {
     g_pointer_capture_owner->ClearQuery();

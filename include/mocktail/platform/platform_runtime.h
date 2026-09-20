@@ -152,6 +152,10 @@ struct MouseMotionEvent {
   float delta_x = 0.0f;
   float delta_y = 0.0f;
   std::uint32_t buttons = 0;
+  // True while the window holds relative mouse mode. The absolute coordinates
+  // are meaningless then: X11 reports zeroes, Wayland reports a position that
+  // accumulates the deltas and can leave the window entirely.
+  bool relative = false;
 };
 
 struct MouseButtonEvent {
@@ -160,6 +164,8 @@ struct MouseButtonEvent {
   std::uint8_t clicks = 0;
   float x = 0.0f;
   float y = 0.0f;
+  // See MouseMotionEvent::relative.
+  bool relative = false;
 };
 
 struct MouseWheelEvent {
@@ -167,6 +173,8 @@ struct MouseWheelEvent {
   float delta_y = 0.0f;
   float mouse_x = 0.0f;
   float mouse_y = 0.0f;
+  // See MouseMotionEvent::relative.
+  bool relative = false;
 };
 
 struct TouchEvent {

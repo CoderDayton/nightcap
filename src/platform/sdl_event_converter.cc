@@ -61,14 +61,17 @@ bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
       return true;
     case SDL_EVENT_MOUSE_MOTION:
       destination->payload = MouseMotionEvent{
-          source.motion.x, source.motion.y, source.motion.xrel,
-          source.motion.yrel, static_cast<std::uint32_t>(source.motion.state)};
+          source.motion.x,   source.motion.y,
+          source.motion.xrel, source.motion.yrel,
+          static_cast<std::uint32_t>(source.motion.state),
+          SDL_GetWindowRelativeMouseMode(window)};
       return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
       destination->payload = MouseButtonEvent{
-          source.button.down, source.button.button, source.button.clicks,
-          source.button.x, source.button.y};
+          source.button.down,  source.button.button, source.button.clicks,
+          source.button.x,     source.button.y,
+          SDL_GetWindowRelativeMouseMode(window)};
       return true;
     case SDL_EVENT_MOUSE_WHEEL: {
       float delta_x = source.wheel.x;
@@ -77,8 +80,10 @@ bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
         delta_x = -delta_x;
         delta_y = -delta_y;
       }
-      destination->payload = MouseWheelEvent{
-          delta_x, delta_y, source.wheel.mouse_x, source.wheel.mouse_y};
+      destination->payload =
+          MouseWheelEvent{delta_x, delta_y, source.wheel.mouse_x,
+                          source.wheel.mouse_y,
+                          SDL_GetWindowRelativeMouseMode(window)};
       return true;
     }
     case SDL_EVENT_FINGER_DOWN:

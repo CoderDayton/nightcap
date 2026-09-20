@@ -83,6 +83,10 @@ void ClearPlatformEventObserver();
 bool SetMouseLockQueryCallback(MouseLockQueryCallback callback, void* context);
 void ClearMouseLockQueryCallback();
 
+// Gates the RMB camera-drag fallback, which only stands in for a camera and
+// must not capture over the app surface's own UI.
+void SetGameSessionActive(bool active);
+
 // Clear waits for a pre-input callback already in flight.
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
                                  void* context);
