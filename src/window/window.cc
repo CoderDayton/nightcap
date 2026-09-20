@@ -151,12 +151,32 @@ static std::unique_ptr<WindowResizeReadinessGate> g_resize_readiness_gate;
 static std::unique_ptr<SdlTextInputBackend> g_text_input_backend;
 static std::unique_ptr<WindowTextInputOwner> g_text_input_owner;
 static std::unique_ptr<SdlPointerCaptureBackend> g_pointer_capture_backend;
-static std::unique_ptr<WindowPointerCaptureOwner> g_pointer_capture_owner;
+// The owner is created and destroyed on the SDL thread, but the experience
+// composition reaches it from its own thread. The mutex guards the pointer
+// only; a caller off the SDL thread holds a strong reference for its call.
+static std::mutex g_pointer_capture_owner_mutex;
+static std::shared_ptr<WindowPointerCaptureOwner> g_pointer_capture_owner;
 static std::unique_ptr<graphics::GlesTextOverlayCompositor> g_gles_text_overlay;
 static char g_preferred_egl_library[4096];
 static char g_preferred_gles_library[4096];
 static bool g_auto_angle_retry_attempted = false;
 static std::filesystem::path g_window_state_path;
+
+// Keeps the owner alive past a concurrent Shutdown on the SDL thread.
+static std::shared_ptr<WindowPointerCaptureOwner> SharedPointerCaptureOwner() {
+  std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
+  return g_pointer_capture_owner;
+}
+
+// Drops the reference under the lock and destroys the owner outside it, so a
+// concurrent caller finishing its call cannot block the lock.
+static void ResetPointerCaptureOwner() {
+  std::shared_ptr<WindowPointerCaptureOwner> owner;
+  {
+    std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
+    owner.swap(g_pointer_capture_owner);
+  }
+}
 
 WindowStartupPresentationPlan RestoredWindowPresentationPlan() {
   if (!g_state.state_persistence_active) {
@@ -865,8 +885,11 @@ bool ActivateWindowEventLifecycles() {
       std::make_unique<WindowTextInputOwner>(g_text_input_backend.get());
   g_pointer_capture_backend =
       std::make_unique<SdlPointerCaptureBackend>(g_state.sdl_window);
-  g_pointer_capture_owner = std::make_unique<WindowPointerCaptureOwner>(
-      g_pointer_capture_backend.get());
+  {
+    std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
+    g_pointer_capture_owner = std::make_shared<WindowPointerCaptureOwner>(
+        g_pointer_capture_backend.get());
+  }
   fprintf(stderr,
           "  [input] SDL event pump target=%llu Hz raw-motion, no smoothing\n",
           static_cast<unsigned long long>(kProductionInputPumpHz));
@@ -1484,13 +1507,24 @@ bool SetPlatformEventObserver(PlatformEventObserver observer, void* context) {
 void ClearPlatformEventObserver() { g_platform_event_observer.Clear(); }
 
 bool SetMouseLockQueryCallback(MouseLockQueryCallback callback, void* context) {
-  return g_pointer_capture_owner != nullptr &&
-         g_pointer_capture_owner->RegisterQuery(callback, context);
+  const std::shared_ptr<WindowPointerCaptureOwner> owner =
+      SharedPointerCaptureOwner();
+  return owner != nullptr && owner->RegisterQuery(callback, context);
+}
+
+void SetGameSessionActive(bool active) {
+  const std::shared_ptr<WindowPointerCaptureOwner> owner =
+      SharedPointerCaptureOwner();
+  if (owner != nullptr) {
+    owner->SetGameSessionActive(active);
+  }
 }
 
 void ClearMouseLockQueryCallback() {
-  if (g_pointer_capture_owner != nullptr) {
-    g_pointer_capture_owner->ClearQuery();
+  const std::shared_ptr<WindowPointerCaptureOwner> owner =
+      SharedPointerCaptureOwner();
+  if (owner != nullptr) {
+    owner->ClearQuery();
   }
 }
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
@@ -2336,7 +2370,7 @@ void Shutdown() {
   if (!g_state.initialised) {
     g_fullscreen_request_gate.Reset();
     g_fullscreen_menu_request_gate.Reset();
-    g_pointer_capture_owner.reset();
+    ResetPointerCaptureOwner();
     g_pointer_capture_backend.reset();
     g_text_input_owner.reset();
     g_text_input_backend.reset();
@@ -2355,7 +2389,7 @@ void Shutdown() {
       !g_pointer_capture_owner->Shutdown()) {
     fprintf(stderr, "  [input] SDL pointer capture shutdown failed\n");
   }
-  g_pointer_capture_owner.reset();
+  ResetPointerCaptureOwner();
   g_pointer_capture_backend.reset();
   g_text_input_owner.reset();
   g_text_input_backend.reset();

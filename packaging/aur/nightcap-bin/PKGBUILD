@@ -1,11 +1,11 @@
-# Maintainer: komaruworld <rtysus228 at gmail dot com>
+# Maintainer: vii <coderdayton14 at gmail dot com>
 
-pkgname=mocktail-bin
-pkgver=1.0.4
+pkgname=nightcap-bin
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Android x86-64 Roblox compatibility runtime for Linux (prebuilt)'
 arch=('x86_64')
-url='https://github.com/komaruworld/mocktail'
+url='https://github.com/CoderDayton/nightcap'
 license=('Apache-2.0')
 depends=(
   'capstone'
@@ -33,17 +33,18 @@ depends=(
   'zlib'
 )
 optdepends=('gamemode: Feral GameMode integration')
-provides=('mocktail')
-conflicts=('mocktail' 'mocktail-git')
+provides=('mocktail' 'nightcap')
+conflicts=('mocktail' 'nightcap' 'nightcap-git')
 options=('!debug' '!strip')
-# Release asset names do not include the AUR package release.
-_archive="mocktail-${pkgver}-${CARCH}.pkg.tar.zst"
-source=("${_archive}::https://github.com/komaruworld/mocktail/releases/download/${pkgver}/${_archive}")
+# The release asset carries the pacman package release built by release.yml.
+_archive="nightcap-${pkgver}-1-${CARCH}.pkg.tar.zst"
+source=("${_archive}::https://github.com/CoderDayton/nightcap/releases/download/v${pkgver}/${_archive}")
 noextract=("${_archive}")
-sha256sums=('d5cc7216e88fd2889369e8eb7fba4276b2746c2b084dce566aaaa7505bc2ffb7')
+# Replace with the checksum published beside the release asset.
+sha256sums=('SKIP')
 
 package() {
   bsdtar -xf "${srcdir}/${_archive}" -C "${pkgdir}" usr
-  install -Dm644 "${pkgdir}/usr/share/licenses/mocktail/LICENSE" \
+  install -Dm644 "${pkgdir}/usr/share/licenses/nightcap/LICENSE" \
     "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

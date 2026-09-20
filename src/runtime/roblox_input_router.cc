@@ -550,13 +550,14 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
   const float delta_x = transform.HostLogicalToGuestX(event.delta_x);
   const float delta_y = transform.HostLogicalToGuestY(event.delta_y);
 
-  // Relative-mode motion reports zero absolute coordinates and a delta. The
-  // pointer holds its captured position while the delta passes through, so a
-  // long camera turn neither parks the reported position at the viewport edge
+  // The pointer holds its captured position while the delta passes through, so
+  // a long camera turn neither parks the reported position at the viewport edge
   // nor swallows the reversal. Roblox draws its cursor at the held position
   // when the capture ends, which matches where the host pointer is warped.
-  if (event.x == 0.0f && event.y == 0.0f &&
-      (delta_x != 0.0f || delta_y != 0.0f)) {
+  // Capture is read from the event, not inferred: only X11 zeroes the absolute
+  // coordinates, while Wayland reports a position that accumulates the deltas.
+  if (event.relative || (event.x == 0.0f && event.y == 0.0f &&
+                         (delta_x != 0.0f || delta_y != 0.0f))) {
     HoldPointerLocked(transform);
   } else {
     const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
@@ -595,9 +596,10 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
       CoordinateTransform(snapshot_.viewport);
   const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
   const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
-  // Button events during pointer capture carry zero coordinates and must not
-  // move the held position.
-  if (event.x > 0.0f || event.y > 0.0f) {
+  // Button events during pointer capture must not move the held position.
+  // Their coordinates are zeroed on X11 and drifted on Wayland, so the capture
+  // flag decides.
+  if (!event.relative && (event.x > 0.0f || event.y > 0.0f)) {
     mouse_x_ = std::clamp(transform.HostLogicalToGuestX(event.x), 0.0f, max_x);
     mouse_y_ = std::clamp(transform.HostLogicalToGuestY(event.y), 0.0f, max_y);
     pointer_anchored_ = true;
@@ -638,9 +640,10 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseWheelLocked(
   }
   const platform::SurfaceCoordinateTransform transform =
       CoordinateTransform(snapshot_.viewport);
-  // Wheel events during pointer capture carry zero coordinates and must not
-  // move the held position.
-  if (event.mouse_x > 0.0f || event.mouse_y > 0.0f) {
+  // Wheel events during pointer capture must not move the held position.
+  // Their coordinates are zeroed on X11 and drifted on Wayland, so the capture
+  // flag decides.
+  if (!event.relative && (event.mouse_x > 0.0f || event.mouse_y > 0.0f)) {
     const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
     const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
     mouse_x_ = std::clamp(transform.HostLogicalToGuestX(event.mouse_x), 0.0f,

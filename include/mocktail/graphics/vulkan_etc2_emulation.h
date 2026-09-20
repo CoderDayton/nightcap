@@ -47,6 +47,14 @@ inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
 inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
 std::uint32_t SmallTextureUpscale(const char* value);
 
+// A timeline semaphore and the value an asynchronous decode will signal.
+// `semaphore` is VK_NULL_HANDLE when the decode already finished on the
+// calling thread and the submit needs no extra wait.
+struct Etc2SubmitWait {
+  VkSemaphore semaphore = VK_NULL_HANDLE;
+  std::uint64_t value = 0;
+};
+
 // Reports ETC2/EAC support on hosts without native ETC2 (desktop GPUs) and
 // stores those textures decoded. Images are created with the host format;
 // each staged upload into one is redirected to a host-visible staging buffer
@@ -66,10 +74,14 @@ class VulkanEtc2Emulation final {
   bool PhysicalDeviceNeedsEmulation(VkPhysicalDevice physical_device,
                                     PFN_vkGetPhysicalDeviceFeatures host);
 
+  // `timeline_semaphore` states whether the device was created with the
+  // timelineSemaphore feature enabled. Without it every decode runs on the
+  // calling thread.
   void RegisterDevice(VkDevice device, VkPhysicalDevice physical_device,
                       bool emulated,
                       const VkPhysicalDeviceMemoryProperties& memory,
-                      PFN_vkGetDeviceProcAddr get_device_proc_addr);
+                      PFN_vkGetDeviceProcAddr get_device_proc_addr,
+                      bool timeline_semaphore = false);
   void DestroyDevice(VkDevice device);
 
   VkResult CreateImage(VkDevice device, const VkImageCreateInfo* create_info,
@@ -112,12 +124,27 @@ class VulkanEtc2Emulation final {
                           const VkCommandBuffer* secondaries);
 
   // Decodes every upload recorded into these command buffers and the
-  // secondary command buffers they execute. Large batches decode on worker
-  // threads; this returns once every upload is decoded.
-  void PrepareSubmit(const VkCommandBuffer* command_buffers,
-                     std::uint32_t count);
+  // secondary command buffers they execute.
+  //
+  // With `allow_async` on a device that has a timeline semaphore, the decode
+  // runs on worker threads, and so does the gather of the compressed bytes
+  // whenever the application already has them mapped. The returned semaphore
+  // and value must then be added to the submit's waits, so the GPU copy
+  // cannot execute before the decode finishes. Values are signalled in the
+  // order they are handed out.
+  //
+  // Those threads read the application's source bytes after this returns,
+  // which Vulkan allows: the application may not write them between the
+  // submit and the copy's completion. Unmapping or freeing that memory waits
+  // for the decodes still reading it.
+  //
+  // Returns `{VK_NULL_HANDLE, 0}` when there was nothing to decode, when
+  // `allow_async` is false, or when the device has no timeline semaphore. In
+  // those cases every upload is already decoded when this returns.
+  Etc2SubmitWait PrepareSubmit(const VkCommandBuffer* command_buffers,
+                               std::uint32_t count, bool allow_async = false);
   // Destroys the staging buffers owned by a command buffer that is no longer
-  // pending.
+  // pending, after waiting for any decode still writing into them.
   void ReleaseCommandBuffer(VkCommandBuffer command_buffer);
 
   struct State;

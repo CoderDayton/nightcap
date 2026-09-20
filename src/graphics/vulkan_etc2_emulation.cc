@@ -6,9 +6,11 @@
 #include <algorithm>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -157,6 +159,13 @@ struct HostDevice {
   PFN_vkCreateBuffer create_buffer = nullptr;
   PFN_vkAllocateMemory allocate_memory = nullptr;
   PFN_vkGetBufferMemoryRequirements get_buffer_memory_requirements = nullptr;
+  PFN_vkCmdPipelineBarrier pipeline_barrier = nullptr;
+  PFN_vkSignalSemaphore signal_semaphore = nullptr;
+  PFN_vkDestroySemaphore destroy_semaphore = nullptr;
+  // Signalled by the decode dispatcher so a submit can wait for its uploads
+  // on the GPU instead of on the submitting thread. Null when the device was
+  // created without the timelineSemaphore feature.
+  VkSemaphore timeline = VK_NULL_HANDLE;
 };
 
 template <typename Function>
@@ -215,6 +224,29 @@ struct Staging {
 // texture uploads would otherwise stall the frame that records it.
 constexpr VkDeviceSize kMaxIdleStagingBytes = 64 * 1024 * 1024;
 constexpr std::size_t kMaxIdleStagingBuffers = 64;
+// Decode batches kept for their buffers once they complete.
+constexpr std::size_t kMaxSpareBatches = 8;
+
+// A growable byte buffer that leaves new bytes uninitialized. The gather
+// writes every byte it later reads, and zeroing a multi-megabyte buffer is
+// itself frame-visible work.
+class RawBuffer {
+ public:
+  void EnsureSize(std::size_t bytes) {
+    if (bytes <= size_) {
+      return;
+    }
+    // new[] on a trivial type default-initializes, so nothing is zeroed.
+    data_.reset(new std::uint8_t[bytes]);
+    size_ = bytes;
+  }
+  std::uint8_t* data() { return data_.get(); }
+  std::size_t size() const { return size_; }
+
+ private:
+  std::unique_ptr<std::uint8_t[]> data_;
+  std::size_t size_ = 0;
+};
 // A request may take an idle buffer up to this size, or up to 4x its own
 // size when larger, so small uploads share buffers without pinning big ones.
 constexpr VkDeviceSize kStagingReuseSlack = 64 * 1024;
@@ -257,6 +289,32 @@ struct CommandRecord {
   std::vector<PendingUpload> uploads;
   std::vector<Staging> staging;
   std::vector<VkCommandBuffer> secondaries;
+  // Highest decode ticket dispatched for this command buffer. Its staging
+  // must not be released before that ticket completes.
+  std::uint64_t last_ticket = 0;
+};
+
+// One submit's worth of uploads, decoded off the submitting thread. The
+// buffers and the upload list are owned so nothing in them depends on the
+// caller's stack.
+struct DecodeBatch {
+  VkDevice device = VK_NULL_HANDLE;
+  std::uint64_t ticket = 0;
+  RawBuffer source;
+  std::vector<std::uint8_t> decoded;
+  // Bytes each buffer must hold. Both are grown on the dispatcher, since
+  // sizing them on the submitting thread puts that cost back on the frame.
+  // `decoded` stays a zeroed vector so a failed decode leaves defined bytes
+  // rather than whatever the allocator handed back.
+  VkDeviceSize source_bytes = 0;
+  VkDeviceSize decoded_bytes = 0;
+  std::vector<PendingUpload> uploads;
+  // The application's mapped pointer for each upload, parallel to `uploads`.
+  // Non-empty when the gather was deferred to the dispatcher, which Vulkan
+  // allows: the application may not write these bytes between the submit and
+  // the copy's completion. Unmapping or freeing that memory drains pending
+  // decodes first, so the pointers stay dereferenceable.
+  std::vector<const std::uint8_t*> deferred_sources;
 };
 
 std::atomic<unsigned> g_image_logs{0};
@@ -327,6 +385,55 @@ bool CreateStaging(const HostDevice& dev, VkDeviceSize size, Staging* staging,
 }
 
 // Freeing mapped memory unmaps it implicitly.
+// Packs each upload's compressed bytes into `destination`, dropping the row
+// and layer padding the application may have asked for. Sources are parallel
+// to `uploads`.
+void GatherCompressed(const std::vector<PendingUpload>& uploads,
+                      const std::vector<const std::uint8_t*>& sources,
+                      std::uint8_t* destination) {
+  VkDeviceSize offset = 0;
+  for (std::size_t index = 0; index < uploads.size(); ++index) {
+    const PendingUpload& upload = uploads[index];
+    const std::uint8_t* source = sources[index];
+    std::uint8_t* target = destination + offset;
+    const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
+    if (upload.source_span == upload.compressed) {
+      std::memcpy(target, source, upload.compressed);
+    } else {
+      const VkDeviceSize block_rows =
+          (static_cast<VkDeviceSize>(upload.height) + 3) / 4;
+      const VkDeviceSize packed_row = compressed_layer / block_rows;
+      for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
+        for (VkDeviceSize row = 0; row < block_rows; ++row) {
+          std::memcpy(target + layer * compressed_layer + row * packed_row,
+                      source + layer * upload.source_layer_stride +
+                          row * upload.source_row_stride,
+                      packed_row);
+        }
+      }
+    }
+    offset += upload.compressed;
+  }
+}
+
+// Makes the decode's host writes to staging visible to the transfer that
+// reads them. A queue submission performs the host-to-device domain operation
+// only for writes that happened before it, and an asynchronous decode writes
+// after the submit, so the dependency has to be recorded explicitly.
+void RecordHostWriteBarrier(const HostDevice& dev,
+                            VkCommandBuffer command_buffer) {
+  if (dev.pipeline_barrier == nullptr) {
+    return;
+  }
+  VkMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  dev.pipeline_barrier(command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0,
+                       nullptr, 0, nullptr);
+}
+
 void DestroyStaging(const HostDevice& dev, const Staging& staging) {
   if (dev.destroy_buffer != nullptr) {
     dev.destroy_buffer(dev.device, staging.buffer, nullptr);
@@ -509,7 +616,7 @@ struct VulkanEtc2Emulation::State {
   VkDeviceSize idle_staging_bytes = 0;
   // Heap buffers reused across submits; they only grow.
   std::mutex scratch_mutex;
-  std::vector<std::uint8_t> scratch_source;
+  RawBuffer scratch_source;
   std::vector<std::uint8_t> scratch_decoded;
   TextureOverrides overrides = TextureOverrides::FromEnvironment();
   const std::uint32_t upscale =
@@ -745,11 +852,203 @@ struct VulkanEtc2Emulation::State {
     record.staging.push_back(staging);
     has_commands.store(true, std::memory_order_release);
   }
+
+  // Asynchronous decode. One dispatcher runs batches in the order tickets
+  // were handed out, so the timeline semaphore is always signalled with an
+  // increasing value and a waiter never observes a later batch's signal.
+  std::mutex queue_mutex;
+  std::condition_variable queue_ready;
+  std::condition_variable queue_done;
+  std::deque<std::unique_ptr<DecodeBatch>> queue;
+  std::vector<std::unique_ptr<DecodeBatch>> spare_batches;
+  std::uint64_t issued_ticket = 0;
+  std::uint64_t completed_ticket = 0;
+  bool stopping = false;
+  std::thread dispatcher;
+
+  // Recycles a batch's buffers; they only grow, as the scratch buffers do.
+  std::unique_ptr<DecodeBatch> AcquireBatch() {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    if (spare_batches.empty()) {
+      return std::make_unique<DecodeBatch>();
+    }
+    std::unique_ptr<DecodeBatch> batch = std::move(spare_batches.back());
+    spare_batches.pop_back();
+    batch->uploads.clear();
+    return batch;
+  }
+
+  void StartDispatcher() {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    if (dispatcher.joinable() || stopping) {
+      return;
+    }
+    dispatcher = std::thread([this] { RunDispatcher(); });
+  }
+
+  // Hands out the next ticket and queues the batch behind it.
+  std::uint64_t Enqueue(std::unique_ptr<DecodeBatch> batch) {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    batch->ticket = ++issued_ticket;
+    const std::uint64_t ticket = batch->ticket;
+    queue.push_back(std::move(batch));
+    queue_ready.notify_one();
+    return ticket;
+  }
+
+  void RunDispatcher() {
+    for (;;) {
+      std::unique_ptr<DecodeBatch> batch;
+      {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        queue_ready.wait(lock, [this] { return stopping || !queue.empty(); });
+        if (queue.empty()) {
+          if (stopping) {
+            return;
+          }
+          continue;
+        }
+        batch = std::move(queue.front());
+        queue.pop_front();
+      }
+      RunBatch(*batch);
+      {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        completed_ticket = batch->ticket;
+        if (spare_batches.size() < kMaxSpareBatches) {
+          spare_batches.push_back(std::move(batch));
+        }
+        queue_done.notify_all();
+      }
+    }
+  }
+
+  void RunBatch(DecodeBatch& batch) {
+    TraceScope trace_scope(ActiveProfileTrace(), "etc2 decode", "texture");
+    trace_scope.Arg("uploads", static_cast<std::int64_t>(batch.uploads.size()));
+    trace_scope.Arg("compressed_bytes",
+                    static_cast<std::int64_t>(batch.source_bytes));
+    trace_scope.Arg("decoded_bytes",
+                    static_cast<std::int64_t>(batch.decoded_bytes));
+    batch.source.EnsureSize(batch.source_bytes);
+    if (batch.decoded.size() < batch.decoded_bytes) {
+      batch.decoded.resize(batch.decoded_bytes);
+    }
+    if (!batch.deferred_sources.empty()) {
+      GatherCompressed(batch.uploads, batch.deferred_sources,
+                       batch.source.data());
+      batch.deferred_sources.clear();
+    }
+    DecodeAndEmit(batch.uploads, batch.source.data(), batch.decoded.data());
+    SignalDecoded(batch.device, batch.ticket);
+  }
+
+  void SignalDecoded(VkDevice device, std::uint64_t value) {
+    const HostDevice* dev = Find(device);
+    if (dev == nullptr || dev->timeline == VK_NULL_HANDLE ||
+        dev->signal_semaphore == nullptr) {
+      return;
+    }
+    VkSemaphoreSignalInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+    info.semaphore = dev->timeline;
+    info.value = value;
+    if (dev->signal_semaphore(dev->device, &info) != VK_SUCCESS) {
+      LogFailure("could not signal the decode timeline semaphore");
+    }
+  }
+
+  // Decodes every layer of every upload and writes the host texels. Shared by
+  // the dispatcher and by the synchronous path.
+  void DecodeAndEmit(const std::vector<PendingUpload>& uploads,
+                     std::uint8_t* source_base, std::uint8_t* decoded_base) {
+    std::vector<EtcDecodeJob> jobs;
+    VkDeviceSize compressed_offset = 0;
+    VkDeviceSize decoded_offset = 0;
+    for (const PendingUpload& upload : uploads) {
+      std::uint8_t* source = source_base + compressed_offset;
+      std::uint8_t* decoded = decoded_base + decoded_offset;
+      const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
+      const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
+      for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
+        EtcDecodeJob job;
+        job.format = upload.format;
+        job.source = source + layer * compressed_layer;
+        job.source_bytes = compressed_layer;
+        job.width = upload.width;
+        job.height = upload.height;
+        job.destination = decoded + layer * decoded_layer;
+        job.destination_bytes = decoded_layer;
+        jobs.push_back(job);
+      }
+      compressed_offset += upload.compressed;
+      decoded_offset += upload.decoded;
+      if (ShouldLog(&g_decode_logs, 4)) {
+        std::fprintf(stderr, "  [vulkan] ETC2 upload decoded %ux%u layers=%u\n",
+                     upload.width, upload.height, upload.layers);
+      }
+    }
+    DecodeEtcJobs(jobs.data(), jobs.size(), DecodeWorkerCount());
+    for (const EtcDecodeJob& job : jobs) {
+      if (!job.ok) {
+        LogFailure("could not decode an upload layer");
+      }
+    }
+    compressed_offset = 0;
+    decoded_offset = 0;
+    std::vector<EmitJob> emit_jobs;
+    emit_jobs.reserve(uploads.size());
+    for (const PendingUpload& upload : uploads) {
+      emit_jobs.push_back({&upload, source_base + compressed_offset,
+                           decoded_base + decoded_offset});
+      compressed_offset += upload.compressed;
+      decoded_offset += upload.decoded;
+    }
+    EmitBatch(std::move(emit_jobs), DecodeWorkerCount());
+  }
+
+  // Blocks until every batch up to `ticket` has been decoded and emitted.
+  void WaitForTicket(std::uint64_t ticket) {
+    if (ticket == 0) {
+      return;
+    }
+    std::unique_lock<std::mutex> lock(queue_mutex);
+    queue_done.wait(lock, [this, ticket] {
+      return completed_ticket >= ticket || stopping;
+    });
+  }
+
+  // Blocks until nothing is queued or in flight.
+  void DrainDecodes() {
+    std::uint64_t ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      ticket = issued_ticket;
+    }
+    WaitForTicket(ticket);
+  }
+
+  void StopDispatcher() {
+    std::thread worker;
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      stopping = true;
+      queue_ready.notify_all();
+      queue_done.notify_all();
+      worker = std::move(dispatcher);
+    }
+    if (worker.joinable()) {
+      worker.join();
+    }
+  }
 };
 
 VulkanEtc2Emulation::VulkanEtc2Emulation() : state_(new State) {}
 
-VulkanEtc2Emulation::~VulkanEtc2Emulation() { delete state_; }
+VulkanEtc2Emulation::~VulkanEtc2Emulation() {
+  state_->StopDispatcher();
+  delete state_;
+}
 
 bool VulkanEtc2Emulation::PhysicalDeviceNeedsEmulation(
     VkPhysicalDevice physical_device, PFN_vkGetPhysicalDeviceFeatures host) {
@@ -775,7 +1074,7 @@ bool VulkanEtc2Emulation::PhysicalDeviceNeedsEmulation(
 void VulkanEtc2Emulation::RegisterDevice(
     VkDevice device, VkPhysicalDevice physical_device, bool emulated,
     const VkPhysicalDeviceMemoryProperties& memory,
-    PFN_vkGetDeviceProcAddr get_device_proc_addr) {
+    PFN_vkGetDeviceProcAddr get_device_proc_addr, bool timeline_semaphore) {
   static_cast<void>(physical_device);
   if (device == VK_NULL_HANDLE || get_device_proc_addr == nullptr) {
     return;
@@ -821,6 +1120,31 @@ void VulkanEtc2Emulation::RegisterDevice(
   dev->get_buffer_memory_requirements =
       DeviceProc<PFN_vkGetBufferMemoryRequirements>(
           get, device, "vkGetBufferMemoryRequirements");
+  dev->pipeline_barrier =
+      DeviceProc<PFN_vkCmdPipelineBarrier>(get, device, "vkCmdPipelineBarrier");
+  dev->signal_semaphore = DeviceProc<PFN_vkSignalSemaphore>(
+      get, device, "vkSignalSemaphore", "vkSignalSemaphoreKHR");
+  dev->destroy_semaphore =
+      DeviceProc<PFN_vkDestroySemaphore>(get, device, "vkDestroySemaphore");
+  if (emulated && timeline_semaphore && dev->signal_semaphore != nullptr) {
+    const auto create_semaphore =
+        DeviceProc<PFN_vkCreateSemaphore>(get, device, "vkCreateSemaphore");
+    VkSemaphoreTypeCreateInfo type{};
+    type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    type.initialValue = 0;
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    info.pNext = &type;
+    if (create_semaphore != nullptr &&
+        create_semaphore(device, &info, nullptr, &dev->timeline) !=
+            VK_SUCCESS) {
+      dev->timeline = VK_NULL_HANDLE;
+    }
+    if (dev->timeline != VK_NULL_HANDLE) {
+      state_->StartDispatcher();
+    }
+  }
   if (emulated) {
     std::fprintf(stderr,
                  "  [vulkan] ETC2/EAC emulation enabled: compressed uploads "
@@ -837,6 +1161,8 @@ void VulkanEtc2Emulation::RegisterDevice(
 }
 
 void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
+  // Nothing may free staging or the semaphore while a decode still writes it.
+  state_->DrainDecodes();
   std::vector<Staging> doomed;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
@@ -871,6 +1197,9 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   if (const HostDevice* dev = state_->Find(device); dev != nullptr) {
     for (const Staging& staging : doomed) {
       DestroyStaging(*dev, staging);
+    }
+    if (dev->timeline != VK_NULL_HANDLE && dev->destroy_semaphore != nullptr) {
+      dev->destroy_semaphore(device, dev->timeline, nullptr);
     }
   }
   std::lock_guard<std::mutex> lock(state_->devices_mutex);
@@ -1035,6 +1364,9 @@ void VulkanEtc2Emulation::UnmapMemory(VkDevice device, VkDeviceMemory memory) {
     return;
   }
   if (dev->emulated) {
+    // A deferred gather reads this mapping on a worker, so it must finish
+    // before the pointer stops being valid.
+    state_->DrainDecodes();
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(memory);
   }
@@ -1048,6 +1380,7 @@ VkResult VulkanEtc2Emulation::UnmapMemory2(VkDevice device,
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   if (dev->emulated && info != nullptr) {
+    state_->DrainDecodes();
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(info->memory);
   }
@@ -1061,6 +1394,7 @@ void VulkanEtc2Emulation::FreeMemory(VkDevice device, VkDeviceMemory memory,
     return;
   }
   if (dev->emulated) {
+    state_->DrainDecodes();
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(memory);
   }
@@ -1111,6 +1445,7 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
     upload.target = staging.mapped + upload.target_offset;
   }
   state_->Record(command_buffer, std::move(uploads), staging);
+  RecordHostWriteBarrier(*dev, command_buffer);
   dev->copy_buffer_to_image(command_buffer, staging.buffer, destination,
                             layout, region_count, rewritten.data());
 }
@@ -1146,6 +1481,7 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
     upload.target = staging.mapped + upload.target_offset;
   }
   state_->Record(command_buffer, std::move(uploads), staging);
+  RecordHostWriteBarrier(*dev, command_buffer);
   VkCopyBufferToImageInfo2 host_info = *info;
   host_info.srcBuffer = staging.buffer;
   host_info.pRegions = rewritten.data();
@@ -1261,11 +1597,12 @@ void VulkanEtc2Emulation::CmdExecuteCommands(
   dev->execute_commands(command_buffer, count, secondaries);
 }
 
-void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
-                                        std::uint32_t count) {
+Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
+    const VkCommandBuffer* command_buffers, std::uint32_t count,
+    bool allow_async) {
   if (command_buffers == nullptr || count == 0 ||
       !state_->has_commands.load(std::memory_order_acquire)) {
-    return;
+    return {};
   }
   struct Work {
     PendingUpload upload;
@@ -1323,8 +1660,26 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
       }
     }
   }
-  TraceScope trace_scope(work.empty() ? nullptr : ActiveProfileTrace(),
-                         "etc2 decode", "texture");
+  if (work.empty()) {
+    return {};
+  }
+  // A submit carries one device, but a batch that somehow spans two cannot be
+  // signalled by a single timeline, so it decodes on this thread instead.
+  VkDevice batch_device = work.front().upload.device;
+  bool single_device = true;
+  for (const Work& item : work) {
+    if (item.upload.device != batch_device) {
+      single_device = false;
+      break;
+    }
+  }
+  const HostDevice* batch_dev = state_->Find(batch_device);
+  const bool async = allow_async && single_device && batch_dev != nullptr &&
+                     batch_dev->timeline != VK_NULL_HANDLE &&
+                     batch_dev->signal_semaphore != nullptr;
+
+  TraceScope trace_scope(ActiveProfileTrace(),
+                         async ? "etc2 gather" : "etc2 decode", "texture");
   // Mapped Vulkan memory is uncached or write-combined, which makes the
   // decoder's scattered byte reads and writes tens of times slower than on
   // heap memory. Compressed bytes are streamed into a heap scratch buffer,
@@ -1377,89 +1732,110 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
                   static_cast<std::int64_t>(compressed_total));
   trace_scope.Arg("decoded_bytes", static_cast<std::int64_t>(decoded_total));
 
-  std::lock_guard<std::mutex> scratch_lock(state_->scratch_mutex);
-  std::vector<std::uint8_t>& scratch_source = state_->scratch_source;
-  std::vector<std::uint8_t>& scratch_decoded = state_->scratch_decoded;
-  if (scratch_source.size() < compressed_total) {
-    scratch_source.resize(compressed_total);
+  std::unique_ptr<DecodeBatch> batch;
+  if (async) {
+    batch = state_->AcquireBatch();
+    batch->device = batch_device;
   }
-  if (scratch_decoded.size() < decoded_total) {
-    scratch_decoded.resize(decoded_total);
+  // Owned copies, so the decode never reads the caller's stack.
+  std::vector<PendingUpload> uploads;
+  uploads.reserve(copied_uploads.size());
+  for (const PendingUpload* upload : copied_uploads) {
+    uploads.push_back(*upload);
   }
-  std::vector<EtcDecodeJob> jobs;
-  VkDeviceSize compressed_offset = 0;
-  VkDeviceSize decoded_offset = 0;
-  for (std::size_t index = 0; index < copies.size(); ++index) {
-    const Copy& copy = copies[index];
-    const PendingUpload& upload = *copied_uploads[index];
-    std::uint8_t* source = scratch_source.data() + compressed_offset;
-    std::uint8_t* decoded = scratch_decoded.data() + decoded_offset;
-    const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
-    if (upload.source_span == copy.compressed) {
-      std::memcpy(source, copy.source, copy.compressed);
-    } else {
-      // Padded rows: gather the covered blocks into the packed layout the
-      // decoder expects.
-      const VkDeviceSize block_rows =
-          (static_cast<VkDeviceSize>(upload.height) + 3) / 4;
-      const VkDeviceSize packed_row = compressed_layer / block_rows;
-      for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
-        for (VkDeviceSize row = 0; row < block_rows; ++row) {
-          std::memcpy(source + layer * compressed_layer + row * packed_row,
-                      copy.source + layer * upload.source_layer_stride +
-                          row * upload.source_row_stride,
-                      packed_row);
-        }
+  std::vector<const std::uint8_t*> sources;
+  sources.reserve(copies.size());
+  for (const Copy& copy : copies) {
+    sources.push_back(copy.source);
+  }
+
+  // Reading the application's staging means reading write-combined memory,
+  // which is slow enough to show in a frame. When nothing had to be mapped
+  // for this batch, the application's own mapping stays valid until the copy
+  // completes, so the gather moves to the dispatcher with the decode and the
+  // submitting thread keeps only the bookkeeping.
+  const bool defer_gather = async && temporary.empty();
+
+  if (!async) {
+    std::lock_guard<std::mutex> scratch_lock(state_->scratch_mutex);
+    state_->scratch_source.EnsureSize(compressed_total);
+    if (state_->scratch_decoded.size() < decoded_total) {
+      state_->scratch_decoded.resize(decoded_total);
+    }
+    GatherCompressed(uploads, sources, state_->scratch_source.data());
+    for (const auto& [memory, mapping] : temporary) {
+      if (mapping.dev->unmap_memory != nullptr) {
+        mapping.dev->unmap_memory(mapping.dev->device, memory);
       }
     }
-    const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
-    for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
-      EtcDecodeJob job;
-      job.format = upload.format;
-      job.source = source + layer * compressed_layer;
-      job.source_bytes = compressed_layer;
-      job.width = upload.width;
-      job.height = upload.height;
-      job.destination = decoded + layer * decoded_layer;
-      job.destination_bytes = decoded_layer;
-      jobs.push_back(job);
-    }
-    compressed_offset += copy.compressed;
-    decoded_offset += copy.decoded;
-    if (ShouldLog(&g_decode_logs, 4)) {
-      std::fprintf(stderr,
-                   "  [vulkan] ETC2 upload decoded %ux%u layers=%u\n",
-                   upload.width, upload.height, upload.layers);
+    state_->DecodeAndEmit(uploads, state_->scratch_source.data(),
+                          state_->scratch_decoded.data());
+    return {};
+  }
+
+  batch->source_bytes = compressed_total;
+  batch->decoded_bytes = decoded_total;
+  if (defer_gather) {
+    batch->deferred_sources = std::move(sources);
+  } else {
+    batch->source.EnsureSize(compressed_total);
+    GatherCompressed(uploads, sources, batch->source.data());
+    for (const auto& [memory, mapping] : temporary) {
+      if (mapping.dev->unmap_memory != nullptr) {
+        mapping.dev->unmap_memory(mapping.dev->device, memory);
+      }
     }
   }
-  for (const auto& [memory, mapping] : temporary) {
-    if (mapping.dev->unmap_memory != nullptr) {
-      mapping.dev->unmap_memory(mapping.dev->device, memory);
+
+  batch->uploads = std::move(uploads);
+  // The staging these uploads write into must outlive the decode, so the
+  // command buffers that own it remember the ticket. The batch is queued
+  // while the state lock is held, so a concurrent ReleaseCommandBuffer cannot
+  // read a stale ticket and recycle staging the dispatcher is still writing.
+  // Tickets only ever go up, so a record keeps the highest one it has seen.
+  std::uint64_t ticket = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    ticket = state_->Enqueue(std::move(batch));
+    const auto remember = [this, ticket](VkCommandBuffer command_buffer) {
+      const auto record = state_->commands.find(command_buffer);
+      if (record != state_->commands.end()) {
+        record->second.last_ticket =
+            std::max(record->second.last_ticket, ticket);
+      }
+    };
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const auto record = state_->commands.find(command_buffers[index]);
+      if (record == state_->commands.end()) {
+        continue;
+      }
+      record->second.last_ticket =
+          std::max(record->second.last_ticket, ticket);
+      for (VkCommandBuffer secondary : record->second.secondaries) {
+        remember(secondary);
+      }
     }
   }
-  DecodeEtcJobs(jobs.data(), jobs.size(), DecodeWorkerCount());
-  for (const EtcDecodeJob& job : jobs) {
-    if (!job.ok) {
-      LogFailure("could not decode an upload layer");
-    }
-  }
-  compressed_offset = 0;
-  decoded_offset = 0;
-  std::vector<State::EmitJob> emit_jobs;
-  emit_jobs.reserve(copied_uploads.size());
-  for (const PendingUpload* upload : copied_uploads) {
-    emit_jobs.push_back({upload, scratch_source.data() + compressed_offset,
-                         scratch_decoded.data() + decoded_offset});
-    compressed_offset += upload->compressed;
-    decoded_offset += upload->decoded;
-  }
-  state_->EmitBatch(std::move(emit_jobs), DecodeWorkerCount());
+  trace_scope.Arg("ticket", static_cast<std::int64_t>(ticket));
+  return {batch_dev->timeline, ticket};
 }
 
 void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
   if (!state_->has_commands.load(std::memory_order_acquire)) {
     return;
   }
+  std::uint64_t ticket = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto record = state_->commands.find(command_buffer);
+    if (record == state_->commands.end()) {
+      return;
+    }
+    ticket = record->second.last_ticket;
+  }
+  // Waited on without holding the state lock, which the decode itself takes.
+  state_->WaitForTicket(ticket);
+
   std::vector<Staging> doomed;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);

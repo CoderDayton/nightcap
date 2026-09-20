@@ -135,11 +135,44 @@ TEST(WindowPointerCaptureOwnerTest, QueryCanClearItselfWithoutDeadlock) {
   EXPECT_TRUE(owner.RegisterQuery(Query, &replacement));
 }
 
+TEST(WindowPointerCaptureOwnerTest, RightDragDoesNotCaptureOutsideAnExperience) {
+  // The app surface has no camera. Capturing there would freeze the cursor
+  // over Roblox's own menu UI.
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+}
+
+TEST(WindowPointerCaptureOwnerTest, RightDragCapturesOnceTheGameSurfaceIsLive) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  owner.SetGameSessionActive(true);
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+
+  // Leaving the experience releases a capture that is still held.
+  owner.SetGameSessionActive(false);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+}
+
 TEST(WindowPointerCaptureOwnerTest, RightDragCapturesUntilButtonRelease) {
   FakeBackend backend;
   QueryState query{true, false};
   WindowPointerCaptureOwner owner(&backend);
   ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
   ASSERT_TRUE(owner.Pump(false));
 
   EXPECT_TRUE(owner.OnRightButton(true, false));
@@ -230,6 +263,7 @@ TEST(WindowPointerCaptureOwnerTest, RightDragDoesNotDependOnNativeLockQuery) {
   QueryState query{false, false};
   WindowPointerCaptureOwner owner(&backend);
   ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
 
   EXPECT_TRUE(owner.OnRightButton(true, false));
   EXPECT_TRUE(owner.captured());
@@ -244,6 +278,7 @@ TEST(WindowPointerCaptureOwnerTest, TextAndFocusCancelRightDragCapture) {
   QueryState query{true, false};
   WindowPointerCaptureOwner owner(&backend);
   ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
 
   EXPECT_TRUE(owner.OnRightButton(true, true));
   EXPECT_FALSE(owner.captured());

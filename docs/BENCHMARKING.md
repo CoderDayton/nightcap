@@ -44,7 +44,8 @@ Each slice is named after the call it times, on the thread that made it.
 | `present` | `host present`: the host driver's present, nested inside the slice above | |
 | `wait` | `vkAcquireNextImageKHR`, `vkAcquireNextImage2KHR`, `vkWaitForFences`, `vkWaitSemaphores`, `vkWaitSemaphoresKHR`, `vkQueueWaitIdle`, `vkDeviceWaitIdle` | |
 | `submit` | `vkQueueSubmit`, `vkQueueSubmit2`, `vkQueueSubmit2KHR` | `submits` |
-| `texture` | `etc2 decode`: CPU decode of ETC2 textures before a submit | `uploads`, `compressed_bytes`, `decoded_bytes` |
+| `texture` | `etc2 decode`: CPU decode of ETC2 textures. On a device with a timeline semaphore this runs on the decode dispatcher, not the submitting thread | `uploads`, `compressed_bytes`, `decoded_bytes` |
+| `texture` | `etc2 gather`: the part of an asynchronous upload that stays on the submitting thread. Absent when the decode ran inline | `uploads`, `compressed_bytes`, `decoded_bytes`, `ticket` |
 | `pipeline` | `vkCreateGraphicsPipelines`, `vkCreateComputePipelines` | `count`, `cache` (1 when a pipeline cache was passed), `result` |
 | `pipeline` | `vkCreateShaderModule` | `bytes`, `result` |
 | `pipeline` | `vkCreatePipelineCache` | `initial_bytes`, `result` |
@@ -60,6 +61,17 @@ Run every scenario before and after the change, on the same build type
 (`make build`), with the same `config.yaml`. Close other GPU-heavy apps.
 Record `graphics.frame_rate_limit` and `graphics.vsync` in the pull request,
 because a frame cap hides frame time gains.
+
+Record `~/.config/gamemode.ini` too, and do not change it between the before
+and after runs. `desiredgov` there decides the CPU governor for the whole
+session and therefore which engine pump mode is chosen, which moves process
+CPU by more than most changes under test. See
+[PERFORMANCE.md](PERFORMANCE.md).
+
+Frame interval p99 varies by 2 ms or more between identical runs, so a
+difference that size is not a result. Three runs per scenario is the minimum
+for any frame-time claim; slice totals for a specific subsystem are far less
+noisy and can be read from fewer.
 
 | Scenario | How to start | What to do | What it shows |
 | --- | --- | --- | --- |

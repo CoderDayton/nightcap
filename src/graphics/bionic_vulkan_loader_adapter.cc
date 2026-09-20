@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -1300,18 +1301,134 @@ void ReleaseEtc2PoolCommandBuffers(VkDevice device,
   }
 }
 
-void PrepareEtc2Submit2(std::uint32_t submit_count,
-                        const VkSubmitInfo2* submits) {
-  if (submits == nullptr) {
-    return;
+// The stage the decoded staging bytes are read at. Every emulated upload is
+// a buffer-to-image copy, so the transfer stage is the earliest point the GPU
+// may touch them.
+constexpr VkPipelineStageFlags kEtc2WaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+// Holds the arrays a rewritten submit points at, so they outlive the call.
+// Deques keep earlier elements addressable as later ones are appended.
+struct Etc2SubmitRewrite {
+  std::deque<std::vector<VkSemaphore>> wait_semaphores;
+  std::deque<std::vector<VkPipelineStageFlags>> wait_stages;
+  std::deque<std::vector<std::uint64_t>> wait_values;
+  std::deque<std::vector<std::uint64_t>> signal_values;
+  std::deque<VkTimelineSemaphoreSubmitInfo> timelines;
+  std::deque<std::vector<VkSemaphoreSubmitInfo>> wait_infos;
+  std::vector<VkSubmitInfo> rewritten;
+  std::vector<VkSubmitInfo2> rewritten2;
+};
+
+// Adds each submit's decode wait to its wait list. A submit whose pNext chain
+// already sizes arrays by its own semaphore counts is decoded on this thread
+// instead: a VkTimelineSemaphoreSubmitInfo would have to be rebuilt, and a
+// VkDeviceGroupSubmitInfo's pWaitSemaphoreDeviceIndices would be left one
+// entry short of the grown wait list.
+const VkSubmitInfo* PrepareEtc2Submit(std::uint32_t submit_count,
+                                      const VkSubmitInfo* submits,
+                                      Etc2SubmitRewrite* rewrite) {
+  if (submits == nullptr || submit_count == 0) {
+    return submits;
   }
+  bool rewritten_any = false;
   for (std::uint32_t index = 0; index < submit_count; ++index) {
-    for (std::uint32_t info = 0; info < submits[index].commandBufferInfoCount;
-         ++info) {
-      State().etc2.PrepareSubmit(
-          &submits[index].pCommandBufferInfos[info].commandBuffer, 1);
+    const VkSubmitInfo& original = submits[index];
+    const bool fixed_wait_list =
+        FindFeature(original.pNext,
+                    VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) !=
+            nullptr ||
+        FindFeature(original.pNext,
+                    VK_STRUCTURE_TYPE_DEVICE_GROUP_SUBMIT_INFO) != nullptr;
+    const mocktail::graphics::Etc2SubmitWait wait = State().etc2.PrepareSubmit(
+        original.pCommandBuffers, original.commandBufferCount,
+        !fixed_wait_list);
+    if (wait.semaphore == VK_NULL_HANDLE) {
+      continue;
     }
+    if (!rewritten_any) {
+      rewrite->rewritten.assign(submits, submits + submit_count);
+      rewritten_any = true;
+    }
+    std::vector<VkSemaphore>& semaphores = rewrite->wait_semaphores.emplace_back(
+        original.pWaitSemaphores,
+        original.pWaitSemaphores + original.waitSemaphoreCount);
+    semaphores.push_back(wait.semaphore);
+    std::vector<VkPipelineStageFlags>& stages =
+        rewrite->wait_stages.emplace_back(
+            original.pWaitDstStageMask,
+            original.pWaitDstStageMask + original.waitSemaphoreCount);
+    stages.push_back(kEtc2WaitStage);
+    // Binary semaphores ignore their value; only the appended entry is read.
+    std::vector<std::uint64_t>& values = rewrite->wait_values.emplace_back(
+        original.waitSemaphoreCount, 0);
+    values.push_back(wait.value);
+
+    VkTimelineSemaphoreSubmitInfo& timeline =
+        rewrite->timelines.emplace_back();
+    timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timeline.pNext = original.pNext;
+    timeline.waitSemaphoreValueCount = static_cast<std::uint32_t>(values.size());
+    timeline.pWaitSemaphoreValues = values.data();
+    if (original.signalSemaphoreCount != 0) {
+      std::vector<std::uint64_t>& signals =
+          rewrite->signal_values.emplace_back(original.signalSemaphoreCount, 0);
+      timeline.signalSemaphoreValueCount =
+          static_cast<std::uint32_t>(signals.size());
+      timeline.pSignalSemaphoreValues = signals.data();
+    }
+
+    VkSubmitInfo& target = rewrite->rewritten[index];
+    target.pNext = &timeline;
+    target.waitSemaphoreCount = static_cast<std::uint32_t>(semaphores.size());
+    target.pWaitSemaphores = semaphores.data();
+    target.pWaitDstStageMask = stages.data();
   }
+  return rewritten_any ? rewrite->rewritten.data() : submits;
+}
+
+const VkSubmitInfo2* PrepareEtc2Submit2(std::uint32_t submit_count,
+                                        const VkSubmitInfo2* submits,
+                                        Etc2SubmitRewrite* rewrite) {
+  if (submits == nullptr || submit_count == 0) {
+    return submits;
+  }
+  bool rewritten_any = false;
+  for (std::uint32_t index = 0; index < submit_count; ++index) {
+    const VkSubmitInfo2& original = submits[index];
+    std::vector<VkCommandBuffer> command_buffers;
+    command_buffers.reserve(original.commandBufferInfoCount);
+    for (std::uint32_t info = 0; info < original.commandBufferInfoCount;
+         ++info) {
+      command_buffers.push_back(
+          original.pCommandBufferInfos[info].commandBuffer);
+    }
+    const mocktail::graphics::Etc2SubmitWait wait = State().etc2.PrepareSubmit(
+        command_buffers.data(),
+        static_cast<std::uint32_t>(command_buffers.size()), true);
+    if (wait.semaphore == VK_NULL_HANDLE) {
+      continue;
+    }
+    if (!rewritten_any) {
+      rewrite->rewritten2.assign(submits, submits + submit_count);
+      rewritten_any = true;
+    }
+    std::vector<VkSemaphoreSubmitInfo>& waits = rewrite->wait_infos.emplace_back(
+        original.pWaitSemaphoreInfos,
+        original.pWaitSemaphoreInfos + original.waitSemaphoreInfoCount);
+    VkSemaphoreSubmitInfo decoded{};
+    decoded.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    decoded.semaphore = wait.semaphore;
+    decoded.value = wait.value;
+    // Matches kEtc2WaitStage: the staging bytes are read by transfer
+    // commands, which includes the blits an upscaled upload records.
+    decoded.stageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    waits.push_back(decoded);
+
+    VkSubmitInfo2& target = rewrite->rewritten2[index];
+    target.waitSemaphoreInfoCount = static_cast<std::uint32_t>(waits.size());
+    target.pWaitSemaphoreInfos = waits.data();
+  }
+  return rewritten_any ? rewrite->rewritten2.data() : submits;
 }
 
 }  // namespace
@@ -1664,7 +1781,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
     host_memory_properties(physical_device, &memory_properties);
   }
   State().etc2.RegisterDevice(*device, physical_device, etc2_emulated,
-                              memory_properties, host_get_device_proc_addr);
+                              memory_properties, host_get_device_proc_addr,
+                              enabled.vulkan12.timelineSemaphore == VK_TRUE);
 
   std::uint32_t queue_family_count = 0;
   const auto host_get_queue_families =
@@ -2143,14 +2261,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueSubmit", "submit");
   scope.Arg("submits", submit_count);
-  if (submits != nullptr) {
-    for (std::uint32_t index = 0; index < submit_count; ++index) {
-      State().etc2.PrepareSubmit(submits[index].pCommandBuffers,
-                                 submits[index].commandBufferCount);
-    }
-  }
+  Etc2SubmitRewrite rewrite;
+  const VkSubmitInfo* prepared =
+      PrepareEtc2Submit(submit_count, submits, &rewrite);
   const VkResult result = State().text_overlay.QueueSubmit(
-      queue, submit_count, submits, fence, host_submit);
+      queue, submit_count, prepared, fence, host_submit);
   observation.SetResult(result);
   return result;
 }
@@ -2168,9 +2283,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueSubmit2", "submit");
   scope.Arg("submits", submit_count);
-  PrepareEtc2Submit2(submit_count, submits);
+  Etc2SubmitRewrite rewrite;
+  const VkSubmitInfo2* prepared =
+      PrepareEtc2Submit2(submit_count, submits, &rewrite);
   const VkResult result = State().text_overlay.QueueSubmit2(
-      queue, submit_count, submits, fence, host_submit);
+      queue, submit_count, prepared, fence, host_submit);
   observation.SetResult(result);
   return result;
 }
@@ -2188,9 +2305,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueSubmit2KHR", "submit");
   scope.Arg("submits", submit_count);
-  PrepareEtc2Submit2(submit_count, submits);
+  Etc2SubmitRewrite rewrite;
+  const VkSubmitInfo2* prepared =
+      PrepareEtc2Submit2(submit_count, submits, &rewrite);
   const VkResult result = State().text_overlay.QueueSubmit2(
-      queue, submit_count, submits, fence,
+      queue, submit_count, prepared, fence,
       reinterpret_cast<PFN_vkQueueSubmit2>(host_submit));
   observation.SetResult(result);
   return result;

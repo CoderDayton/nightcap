@@ -569,6 +569,85 @@ TEST(RobloxTextDisplayStateTest, WrapsMultilineTextInsideNativeTextBox) {
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 
+TEST(RobloxTextDisplayStateTest, AdvancesCaretForTrailingSpace) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
+  RobloxTextDisplaySink sink = overlay.sink();
+  const auto rightmost_pixel = [&](const std::string& text,
+                                   RobloxTextDisplayEvent event) {
+    RobloxTextDisplayUpdate update =
+        Show(1, text, static_cast<int32_t>(text.size()));
+    update.event = event;
+    update.font_size = 18.0F;
+    sink.update(sink.context, update);
+    MocktailTextOverlayFrameInfo frame;
+    EXPECT_TRUE(overlay.QueryFrame(&frame));
+    std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+    EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+    return FindAlphaBounds(frame, rgba).maximum_x;
+  };
+
+  const int typed = rightmost_pixel("hi", RobloxTextDisplayEvent::kShow);
+  const int spaced = rightmost_pixel("hi ", RobloxTextDisplayEvent::kUpdate);
+
+  EXPECT_GT(spaced, typed);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
+TEST(RobloxTextDisplayStateTest, KeepsCaretBeforeTrailingSpaceDistinct) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
+  RobloxTextDisplaySink sink = overlay.sink();
+  const std::string text = "hi ";
+  const auto rightmost_pixel = [&](int32_t cursor_utf16,
+                                   RobloxTextDisplayEvent event) {
+    RobloxTextDisplayUpdate update = Show(1, text, cursor_utf16);
+    update.event = event;
+    update.font_size = 18.0F;
+    sink.update(sink.context, update);
+    MocktailTextOverlayFrameInfo frame;
+    EXPECT_TRUE(overlay.QueryFrame(&frame));
+    std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+    EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+    const auto bounds = FindAlphaBounds(frame, rgba);
+    EXPECT_TRUE(bounds.valid());
+    return bounds.valid() ? bounds.maximum_x : -1;
+  };
+
+  const int before_space = rightmost_pixel(2, RobloxTextDisplayEvent::kShow);
+  const int after_space = rightmost_pixel(3, RobloxTextDisplayEvent::kUpdate);
+
+  EXPECT_GT(after_space, before_space);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
+TEST(RobloxTextDisplayStateTest, ReopensFontsAfterPointSizeChange) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
+  RobloxTextDisplaySink sink = overlay.sink();
+  const std::string text = "size";
+  const auto text_width = [&](float font_size, RobloxTextDisplayEvent event) {
+    RobloxTextDisplayUpdate update = Show(1, text, 4);
+    update.event = event;
+    update.area_height = 64;
+    update.font_size = font_size;
+    sink.update(sink.context, update);
+    MocktailTextOverlayFrameInfo frame;
+    EXPECT_TRUE(overlay.QueryFrame(&frame));
+    std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+    EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+    const auto bounds = FindAlphaBounds(frame, rgba);
+    EXPECT_TRUE(bounds.valid());
+    return bounds.valid() ? bounds.maximum_x - bounds.minimum_x : 0;
+  };
+
+  const int small = text_width(14.0F, RobloxTextDisplayEvent::kShow);
+  const int large = text_width(28.0F, RobloxTextDisplayEvent::kUpdate);
+
+  EXPECT_GT(large, small);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

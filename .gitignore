@@ -177,3 +177,6 @@ lsan.log*
 # Test fixtures
 !/third_party/mcpelauncher-linker/core/libziparchive/**/*.zip
 !/third_party/mcpelauncher-linker/core/libziparchive/**/*.apk
+
+# Working plans, not part of the shipped documentation
+/docs/plans/

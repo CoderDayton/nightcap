@@ -21,8 +21,9 @@
       Sign in to Roblox, browse experiences, and play them on Linux.
     </p>
     <p>
-      Mocktail is an independent community project. It is not affiliated with
-      Roblox Corporation or VinegarHQ, and the Roblox client is not included.
+      Nightcap is an independent community project, forked from Mocktail. It
+      is not affiliated with Roblox Corporation or VinegarHQ, and the Roblox
+      client is not included.
     </p>
   </description>
   <screenshots>
@@ -56,45 +57,49 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
-    <release version="1.0.4" date="2026-09-11">
+    <release version="0.3.1" date="2026-09-20">
       <description>
         <ul>
-          <li>Fixed login issues</li>
-          <li>Fixed low-resolution textures, skybox rendering and HiDPI scaling.</li>
-          <li>Added vc support.</li>
-          <li>Added Xbox and PlayStation gamepad support.</li>
-          <li>Added Nix support</li>
-          <li>Improved text input, fullscreen mode, window sizing, and mouse controls.</li>
-          <li>Updated support for Roblox 2.736.1408.</li>
+          <li>Added DEB, RPM, and pacman packages to every release.</li>
+          <li>Smoother frames: textures no longer decode on the thread that submits the frame.</li>
+          <li>Fixed the mouse pointer jumping when a right-click camera drag ended.</li>
+          <li>Fixed the text caret not moving when a trailing space was typed.</li>
+          <li>Faster typing in text boxes.</li>
         </ul>
       </description>
     </release>
-    <release version="1.0.3" date="2026-08-16">
+    <release version="0.3.0" date="2026-09-18">
       <description>
         <ul>
-          <li>Fixed issues with downloading Roblox on first launch</li>
-          <li>Added fflags.json for custom FFlags</li>
-          <li>Added a message if your cookies have expired</li>
+          <li>Added a custom Discord presence: set the title, state, and icons.</li>
+          <li>Added --profile to record a trace of the renderer's work.</li>
+          <li>Faster texture loading: compressed textures decode and resample on worker threads.</li>
+          <li>Lower CPU use while playing.</li>
+          <li>Fixed GameMode pinning the game to a few CPU cores.</li>
         </ul>
       </description>
     </release>
-    <release version="1.0.2" date="2026-08-14">
+    <release version="0.2.0" date="2026-09-16">
       <description>
         <ul>
-          <li>Fixed the “Roblox is out of date” bug</li>
-          <li>Improved logging</li>
-          <li>Fixed issues with Discord RPC where the game you were playing wasn’t displayed</li>
+          <li>Discord Rich Presence is on by default.</li>
+          <li>Added input.raw_mouse for mouse look in the host's own units.</li>
+          <li>Fixed mouse look after a long turn.</li>
+          <li>Fixed a first-run failure with "cannot lock appStorage".</li>
+          <li>Values in fflags.json now win over the performance preset.</li>
         </ul>
       </description>
     </release>
-    <release version="1.0.1" date="2026-08-13">
+    <release version="0.1.0" date="2026-09-15">
       <description>
         <ul>
-          <li>Fix issues with GameMode</li>
-          <li>Add Discord RPC support</li>
+          <li>First Nightcap release, forked from Mocktail.</li>
+          <li>Added ETC2 and EAC texture emulation on Vulkan.</li>
+          <li>Added PNG texture overrides.</li>
+          <li>Lower input latency.</li>
+          <li>Roblox now sees the real host RAM and display size.</li>
         </ul>
       </description>
     </release>
-    <release version="0.1.0" date="2026-08-12"/>
   </releases>
 </component>

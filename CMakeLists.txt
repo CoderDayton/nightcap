@@ -786,23 +786,29 @@ install(CODE "
   endif()
 ")
 
+set(MOCKTAIL_PACKAGE_NAMES mocktail mocktail-nightly nightcap nightcap-nightly)
 set(MOCKTAIL_PACKAGE_NAME "mocktail" CACHE STRING
   "Native package name"
+)
+set(MOCKTAIL_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING
+  "Native package version"
 )
 set(MOCKTAIL_PACKAGE_VERSION_SUFFIX "" CACHE STRING
   "Native package version suffix"
 )
-if(NOT MOCKTAIL_PACKAGE_NAME STREQUAL "mocktail" AND
-   NOT MOCKTAIL_PACKAGE_NAME STREQUAL "mocktail-nightly")
+if(NOT MOCKTAIL_PACKAGE_NAME IN_LIST MOCKTAIL_PACKAGE_NAMES)
+  string(JOIN ", " MOCKTAIL_PACKAGE_NAMES_TEXT ${MOCKTAIL_PACKAGE_NAMES})
   message(FATAL_ERROR
-    "MOCKTAIL_PACKAGE_NAME must be mocktail or mocktail-nightly")
+    "MOCKTAIL_PACKAGE_NAME must be one of ${MOCKTAIL_PACKAGE_NAMES_TEXT}")
 endif()
 
 set(CPACK_PACKAGE_NAME "${MOCKTAIL_PACKAGE_NAME}")
-set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}${MOCKTAIL_PACKAGE_VERSION_SUFFIX}")
-set(CPACK_PACKAGE_VENDOR "Mocktail Project")
-set(CPACK_PACKAGE_CONTACT "komaruworld <rtysus228@gmail.com>")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/komaruworld/mocktail")
+set(CPACK_PACKAGE_VERSION
+  "${MOCKTAIL_PACKAGE_VERSION}${MOCKTAIL_PACKAGE_VERSION_SUFFIX}"
+)
+set(CPACK_PACKAGE_VENDOR "Nightcap")
+set(CPACK_PACKAGE_CONTACT "vii <coderdayton14@gmail.com>")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/CoderDayton/nightcap")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
 set(CPACK_PACKAGE_DESCRIPTION
   "Runs the Android x86-64 Roblox client on Linux."
@@ -812,7 +818,7 @@ set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 set(CPACK_STRIP_FILES TRUE)
 
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "komaruworld <rtysus228@gmail.com>")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "vii <coderdayton14@gmail.com>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "games")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
@@ -822,15 +828,14 @@ set(CPACK_RPM_PACKAGE_LICENSE "Apache-2.0")
 set(CPACK_RPM_PACKAGE_GROUP "Amusements/Games")
 set(CPACK_RPM_PACKAGE_AUTOREQPROV ON)
 
-if(MOCKTAIL_PACKAGE_NAME STREQUAL "mocktail-nightly")
-  set(CPACK_DEBIAN_PACKAGE_CONFLICTS "mocktail")
-  set(CPACK_DEBIAN_PACKAGE_REPLACES "mocktail")
-  set(CPACK_RPM_PACKAGE_CONFLICTS "mocktail")
-else()
-  set(CPACK_DEBIAN_PACKAGE_CONFLICTS "mocktail-nightly")
-  set(CPACK_DEBIAN_PACKAGE_REPLACES "mocktail-nightly")
-  set(CPACK_RPM_PACKAGE_CONFLICTS "mocktail-nightly")
-endif()
+# Every variant installs the same /usr/bin/mocktail and /usr/share/mocktail,
+# so only one of them can be present at a time.
+set(MOCKTAIL_PACKAGE_SIBLINGS ${MOCKTAIL_PACKAGE_NAMES})
+list(REMOVE_ITEM MOCKTAIL_PACKAGE_SIBLINGS "${MOCKTAIL_PACKAGE_NAME}")
+string(JOIN ", " MOCKTAIL_PACKAGE_CONFLICTS ${MOCKTAIL_PACKAGE_SIBLINGS})
+set(CPACK_DEBIAN_PACKAGE_CONFLICTS "${MOCKTAIL_PACKAGE_CONFLICTS}")
+set(CPACK_DEBIAN_PACKAGE_REPLACES "${MOCKTAIL_PACKAGE_CONFLICTS}")
+set(CPACK_RPM_PACKAGE_CONFLICTS "${MOCKTAIL_PACKAGE_CONFLICTS}")
 include(CPack)
 
 add_dependencies(mocktail all_stubs)
