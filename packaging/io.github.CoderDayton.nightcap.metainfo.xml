@@ -57,6 +57,17 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.3.1" date="2026-09-20">
+      <description>
+        <ul>
+          <li>Added DEB, RPM, and pacman packages to every release.</li>
+          <li>Smoother frames: textures no longer decode on the thread that submits the frame.</li>
+          <li>Fixed the mouse pointer jumping when a right-click camera drag ended.</li>
+          <li>Fixed the text caret not moving when a trailing space was typed.</li>
+          <li>Faster typing in text boxes.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-09-18">
       <description>
         <ul>
