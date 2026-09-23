@@ -312,6 +312,69 @@ TEST(ChromeTraceWriterTest, ActiveProfileTraceIsOffWithoutEnvironment) {
   EXPECT_EQ(ActiveProfileTrace(), nullptr);
 }
 
+TEST(ChromeTraceWriterTest, CpuClocksAdvanceWithWork) {
+  // The process window encloses the thread window.
+  const std::uint64_t process_before = TraceProcessCpuNanos();
+  const std::uint64_t thread_before = TraceThreadCpuNanos();
+  volatile std::uint64_t sink = 0;
+  const auto until =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
+  while (std::chrono::steady_clock::now() < until) {
+    sink = sink + 1;
+  }
+  const std::uint64_t thread_used = TraceThreadCpuNanos() - thread_before;
+  const std::uint64_t process_used = TraceProcessCpuNanos() - process_before;
+  EXPECT_GE(thread_used, 10'000'000U);
+  EXPECT_GE(process_used, thread_used);
+}
+
+TEST(FrameCpuSamplerTest, FirstPresentHasNoFrame) {
+  FrameCpuSampler sampler;
+  FrameCpuSample sample;
+  EXPECT_FALSE(sampler.Sample(1, 10'000'000, 50'000'000, &sample));
+}
+
+TEST(FrameCpuSamplerTest, MeasuresCpuSpentSinceThePreviousPresent) {
+  FrameCpuSampler sampler;
+  FrameCpuSample sample;
+  sampler.Sample(1, 10'000'000, 50'000'000, &sample);
+  ASSERT_TRUE(sampler.Sample(1, 18'000'000, 90'000'000, &sample));
+  EXPECT_TRUE(sample.has_thread);
+  EXPECT_DOUBLE_EQ(sample.thread_ms, 8.0);
+  EXPECT_DOUBLE_EQ(sample.process_ms, 40.0);
+}
+
+TEST(FrameCpuSamplerTest, SkipsThreadCpuWhenAnotherThreadPresentedLast) {
+  FrameCpuSampler sampler;
+  FrameCpuSample sample;
+  sampler.Sample(1, 10'000'000, 50'000'000, &sample);
+  ASSERT_TRUE(sampler.Sample(2, 3'000'000, 70'000'000, &sample));
+  EXPECT_FALSE(sample.has_thread);
+  EXPECT_DOUBLE_EQ(sample.process_ms, 20.0);
+
+  // Thread 2 presented last, so its next frame measures from here.
+  ASSERT_TRUE(sampler.Sample(2, 7'000'000, 80'000'000, &sample));
+  EXPECT_TRUE(sample.has_thread);
+  EXPECT_DOUBLE_EQ(sample.thread_ms, 4.0);
+}
+
+TEST(FrameCpuSamplerTest, ClocksReadOutOfOrderDoNotWrap) {
+  // Two presenting threads may read the process clock in one order and take
+  // the lock in the other; a reused thread id restarts its thread clock.
+  FrameCpuSampler sampler;
+  FrameCpuSample sample;
+  sampler.Sample(1, 10'000'000, 50'000'000, &sample);
+  ASSERT_TRUE(sampler.Sample(1, 4'000'000, 45'000'000, &sample));
+  EXPECT_DOUBLE_EQ(sample.process_ms, 0.0);
+  EXPECT_FALSE(sample.has_thread);
+
+  // The later process reading stays the baseline.
+  ASSERT_TRUE(sampler.Sample(1, 6'000'000, 60'000'000, &sample));
+  EXPECT_DOUBLE_EQ(sample.process_ms, 10.0);
+  EXPECT_TRUE(sample.has_thread);
+  EXPECT_DOUBLE_EQ(sample.thread_ms, 2.0);
+}
+
 }  // namespace
 }  // namespace graphics
 }  // namespace mocktail

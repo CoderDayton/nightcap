@@ -123,7 +123,9 @@ constexpr std::uintptr_t kStagingBuffer = 0x500;
 constexpr std::uintptr_t kStagingMemory = 0x600;
 
 std::array<std::uint8_t, 64> g_source{};
-std::array<std::uint8_t, 512> g_staging{};
+// Every staging allocation maps here. Staging blocks are larger, but these
+// tests write only the first few kilobytes of any block.
+std::array<std::uint8_t, 64 * 1024> g_staging{};
 VkExtent3D g_created_extent{};
 VkExtent3D g_copied_extent{};
 VkDeviceSize g_created_buffer_size = 0;
@@ -165,14 +167,14 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeCreateBuffer(VkDevice,
                                                 const VkAllocationCallbacks*,
                                                 VkBuffer* buffer) {
   g_created_buffer_size = info->size;
+  *buffer = FakeHandle<VkBuffer>(kStagingBuffer + g_create_buffer_calls);
   ++g_create_buffer_calls;
-  *buffer = FakeHandle<VkBuffer>(kStagingBuffer);
   return VK_SUCCESS;
 }
 
 VKAPI_ATTR void VKAPI_CALL FakeBufferRequirements(
     VkDevice, VkBuffer, VkMemoryRequirements* requirements) {
-  requirements->size = g_staging.size();
+  requirements->size = g_created_buffer_size;
   requirements->memoryTypeBits = 1;
 }
 
@@ -232,11 +234,21 @@ VKAPI_ATTR void VKAPI_CALL FakePipelineBarrier(
   ++g_pending_barriers;
 }
 
+// Staging buffer and offset of each recorded copy's first region.
+struct StagedCopy {
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VkDeviceSize offset = 0;
+};
+std::vector<StagedCopy> g_staged_copies;
+
 VKAPI_ATTR void VKAPI_CALL FakeCopyBufferToImage(
-    VkCommandBuffer, VkBuffer, VkImage, VkImageLayout, std::uint32_t count,
-    const VkBufferImageCopy* regions) {
+    VkCommandBuffer, VkBuffer buffer, VkImage, VkImageLayout,
+    std::uint32_t count, const VkBufferImageCopy* regions) {
   g_copied_extent = count > 0 ? regions[0].imageExtent : VkExtent3D{};
   g_barriers_before_copy = g_pending_barriers;
+  if (count > 0) {
+    g_staged_copies.push_back({buffer, regions[0].bufferOffset});
+  }
 }
 
 constexpr std::uintptr_t kTimelineSemaphore = 0x900;
@@ -516,7 +528,6 @@ TEST(VulkanEtc2EmulationTest, ClampsScaledUploadsToTheHostMip) {
                                  &region);
   EXPECT_EQ(g_copied_extent.width, 2u);
   EXPECT_EQ(g_copied_extent.height, 2u);
-  EXPECT_EQ(g_created_buffer_size, 2u * 2u * 4u);
 
   // Differential block: every texel decodes to 134.
   const std::array<std::uint8_t, 8> block = {0x81, 0x81, 0x81, 0x02,
@@ -732,6 +743,161 @@ TEST(VulkanEtc2EmulationTest, ReusesStagingBuffersAcrossCommandBuffers) {
   emulation.DestroyDevice(device);
   EXPECT_EQ(g_destroy_buffer_calls, 1u);
   EXPECT_EQ(g_free_memory_calls, 1u);
+}
+
+// Registers `device` and creates an EAC R11 image of `extent` whose uploads
+// read from `source`. EAC is never upscaled, so staging bytes are the
+// decoded size: two bytes per texel.
+VkImage SetUpStagingTest(VulkanEtc2Emulation& emulation, VkDevice device,
+                         VkBuffer source, VkExtent3D extent) {
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x28), true,
+                           memory, FakeGetDeviceProcAddr);
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_EAC_R11_UNORM_BLOCK;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.extent = extent;
+  image_info.mipLevels = 1;
+  image_info.arrayLayers = 1;
+  VkImage image = VK_NULL_HANDLE;
+  EXPECT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  EXPECT_EQ(emulation.BindBufferMemory(
+                device, source, FakeHandle<VkDeviceMemory>(kSourceMemory), 0),
+            VK_SUCCESS);
+  g_create_buffer_calls = 0;
+  g_destroy_buffer_calls = 0;
+  g_staged_copies.clear();
+  return image;
+}
+
+void RecordUpload(VulkanEtc2Emulation& emulation, VkDevice device,
+                  VkCommandBuffer command_buffer, VkBuffer source,
+                  VkImage image, VkExtent3D extent) {
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = extent;
+  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                 &region);
+}
+
+// One buffer and allocation per upload costs the render thread a driver call
+// on each side of the upload's life, so uploads share large blocks.
+TEST(VulkanEtc2EmulationTest, SubAllocatesUploadsFromOneStagingBlock) {
+  const VkDevice device = FakeHandle<VkDevice>(0x18);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x208);
+  VulkanEtc2Emulation emulation;
+  const VkImage image = SetUpStagingTest(emulation, device, source, {4, 4, 1});
+
+  std::vector<VkCommandBuffer> command_buffers;
+  for (std::uintptr_t index = 0; index < 8; ++index) {
+    command_buffers.push_back(FakeHandle<VkCommandBuffer>(0x790 + index));
+    RecordUpload(emulation, device, command_buffers.back(), source, image,
+                 {4, 4, 1});
+  }
+  EXPECT_EQ(g_create_buffer_calls, 1u);
+  ASSERT_EQ(g_staged_copies.size(), 8u);
+  for (std::size_t index = 0; index < g_staged_copies.size(); ++index) {
+    EXPECT_EQ(g_staged_copies[index].buffer, g_staged_copies[0].buffer);
+    EXPECT_EQ(g_staged_copies[index].offset % 4, 0u) << index;
+    if (index > 0) {
+      // Each upload takes 4 x 4 texels of 2 bytes, clear of the one before.
+      EXPECT_GE(g_staged_copies[index].offset,
+                g_staged_copies[index - 1].offset + 4 * 4 * 2)
+          << index;
+    }
+  }
+  for (VkCommandBuffer command_buffer : command_buffers) {
+    emulation.ReleaseCommandBuffer(command_buffer);
+  }
+  EXPECT_EQ(g_destroy_buffer_calls, 0u);
+  emulation.DestroyDevice(device);
+  EXPECT_EQ(g_destroy_buffer_calls, 1u);
+}
+
+TEST(VulkanEtc2EmulationTest, StartsANewStagingBlockWhenTheCurrentIsFull) {
+  const VkDevice device = FakeHandle<VkDevice>(0x19);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x209);
+  VulkanEtc2Emulation emulation(1024);
+  // 16 x 16 texels of 2 bytes: two uploads fill a block.
+  const VkImage image =
+      SetUpStagingTest(emulation, device, source, {16, 16, 1});
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x7a0);
+  for (int upload = 0; upload < 3; ++upload) {
+    RecordUpload(emulation, device, command_buffer, source, image,
+                 {16, 16, 1});
+  }
+  EXPECT_EQ(g_create_buffer_calls, 2u);
+  ASSERT_EQ(g_staged_copies.size(), 3u);
+  EXPECT_EQ(g_staged_copies[1].buffer, g_staged_copies[0].buffer);
+  EXPECT_NE(g_staged_copies[2].buffer, g_staged_copies[0].buffer);
+  EXPECT_EQ(g_staged_copies[2].offset, 0u);
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, GivesAnUploadLargerThanABlockItsOwnBlock) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1a);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20a);
+  VulkanEtc2Emulation emulation(1024);
+  const VkImage image =
+      SetUpStagingTest(emulation, device, source, {32, 32, 1});
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x7a1);
+  RecordUpload(emulation, device, command_buffer, source, image, {32, 32, 1});
+  EXPECT_EQ(g_create_buffer_calls, 1u);
+  EXPECT_GE(g_created_buffer_size, 32u * 32u * 2u);
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, RefillsAStagingBlockOnceItsCopiesAreReleased) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1b);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20b);
+  VulkanEtc2Emulation emulation(1024);
+  const VkImage image =
+      SetUpStagingTest(emulation, device, source, {16, 16, 1});
+  const VkCommandBuffer first = FakeHandle<VkCommandBuffer>(0x7a2);
+  const VkCommandBuffer second = FakeHandle<VkCommandBuffer>(0x7a3);
+  RecordUpload(emulation, device, first, source, image, {16, 16, 1});
+  RecordUpload(emulation, device, first, source, image, {16, 16, 1});
+  emulation.ReleaseCommandBuffer(first);
+  RecordUpload(emulation, device, second, source, image, {16, 16, 1});
+  EXPECT_EQ(g_create_buffer_calls, 1u);
+  ASSERT_EQ(g_staged_copies.size(), 3u);
+  EXPECT_EQ(g_staged_copies[2].buffer, g_staged_copies[0].buffer);
+  EXPECT_EQ(g_staged_copies[2].offset, 0u);
+  emulation.ReleaseCommandBuffer(second);
+}
+
+TEST(VulkanEtc2EmulationTest, KeepsFourIdleStagingBlocksAndDestroysTheRest) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1c);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20c);
+  VulkanEtc2Emulation emulation(1024);
+  const VkImage image =
+      SetUpStagingTest(emulation, device, source, {16, 16, 1});
+  // Six command buffers each fill a block of their own.
+  std::vector<VkCommandBuffer> command_buffers;
+  for (std::uintptr_t index = 0; index < 6; ++index) {
+    command_buffers.push_back(FakeHandle<VkCommandBuffer>(0x7b0 + index));
+    RecordUpload(emulation, device, command_buffers.back(), source, image,
+                 {16, 16, 1});
+    RecordUpload(emulation, device, command_buffers.back(), source, image,
+                 {16, 16, 1});
+  }
+  ASSERT_EQ(g_create_buffer_calls, 6u);
+  for (VkCommandBuffer command_buffer : command_buffers) {
+    emulation.ReleaseCommandBuffer(command_buffer);
+  }
+  EXPECT_EQ(g_destroy_buffer_calls, 2u);
+
+  const VkCommandBuffer again = FakeHandle<VkCommandBuffer>(0x7c0);
+  RecordUpload(emulation, device, again, source, image, {16, 16, 1});
+  EXPECT_EQ(g_create_buffer_calls, 6u);
+  emulation.ReleaseCommandBuffer(again);
 }
 
 // Copies out of a scaled image cover its host bounds and shrink back onto

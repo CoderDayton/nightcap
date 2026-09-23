@@ -1046,6 +1046,15 @@ void PumpRobloxMainThreadMessagesOnce() {
   mocktail::graphics::ChromeTraceWriter* trace =
       hooks.active != nullptr ? hooks.active() : nullptr;
   const std::uint64_t pump_start_ns = trace != nullptr ? hooks.clock() : 0;
+  // CPU time separates a step that computes from one that waits.
+  const auto thread_cpu_ns = [] {
+    timespec now{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+    return static_cast<std::uint64_t>(now.tv_sec) * 1'000'000'000ULL +
+           static_cast<std::uint64_t>(now.tv_nsec);
+  };
+  const std::uint64_t pump_start_cpu_ns =
+      trace != nullptr ? thread_cpu_ns() : 0;
   g_native_call_messages_from_main_thread(
       env, g_native_gl_class_for_main_thread);
   if (trace != nullptr) {
@@ -1053,8 +1062,11 @@ void PumpRobloxMainThreadMessagesOnce() {
     // calls that ran a message are recorded.
     const std::uint64_t pump_end_ns = hooks.clock();
     if (pump_end_ns - pump_start_ns >= 20'000) {
+      const mocktail::graphics::TraceArg args[] = {
+          {"cpu_us", static_cast<std::int64_t>(
+                         (thread_cpu_ns() - pump_start_cpu_ns) / 1000)}};
       hooks.slice(trace, "nativeCallMessagesFromMainThread", "pump",
-                  pump_start_ns, pump_end_ns, nullptr, 0);
+                  pump_start_ns, pump_end_ns, args, 1);
     }
   }
   if (__builtin_expect(trace_pump, 0)) {

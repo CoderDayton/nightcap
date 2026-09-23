@@ -2,6 +2,7 @@
 // Android Vulkan loader ABI -> host Vulkan loader + SDL3 WSI.
 
 #include <dlfcn.h>
+#include <pthread.h>
 #include <time.h>
 #include <vulkan/vulkan.h>
 
@@ -1150,15 +1151,27 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   return result;
 }
 
-// Samples the time between successive adapter present calls.
+// Samples the time between successive adapter present calls, and the CPU
+// time the presenting thread and the whole process used in it.
 void RecordProfiledFrame(mocktail::graphics::ChromeTraceWriter* trace,
                          std::uint64_t present_start_ns) {
   static std::atomic<std::uint64_t> previous_start_ns{0};
+  static mocktail::graphics::FrameCpuSampler cpu_sampler;
   const std::uint64_t previous =
       previous_start_ns.exchange(present_start_ns, std::memory_order_relaxed);
   if (previous != 0 && present_start_ns > previous) {
     trace->Counter("frame interval (ms)", present_start_ns,
                    static_cast<double>(present_start_ns - previous) / 1e6);
+  }
+  mocktail::graphics::FrameCpuSample cpu;
+  if (cpu_sampler.Sample(static_cast<std::uint64_t>(pthread_self()),
+                         mocktail::graphics::TraceThreadCpuNanos(),
+                         mocktail::graphics::TraceProcessCpuNanos(), &cpu)) {
+    trace->Counter("process cpu (ms)", present_start_ns, cpu.process_ms);
+    if (cpu.has_thread) {
+      trace->Counter("present thread cpu (ms)", present_start_ns,
+                     cpu.thread_ms);
+    }
   }
 }
 
@@ -1241,7 +1254,32 @@ VkResult VKAPI_CALL ProfiledCreatePipelineCache(
   return result;
 }
 
+VkResult VKAPI_CALL ProfiledAllocateMemory(
+    VkDevice device, const VkMemoryAllocateInfo* allocate_info,
+    const VkAllocationCallbacks* allocator, VkDeviceMemory* memory) {
+  const auto host = reinterpret_cast<PFN_vkAllocateMemory>(
+      HostDeviceProc(device, "vkAllocateMemory"));
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkAllocateMemory", "memory");
+  const VkResult result = host(device, allocate_info, allocator, memory);
+  scope.Arg("bytes", allocate_info != nullptr
+                         ? static_cast<std::int64_t>(
+                               allocate_info->allocationSize)
+                         : 0);
+  scope.Arg("type", allocate_info != nullptr
+                        ? static_cast<std::int64_t>(
+                              allocate_info->memoryTypeIndex)
+                        : -1);
+  scope.Arg("result", result);
+  return result;
+}
+
 // Null unless profiling is on and `name` is a profiled device command.
+// These take precedence over the ETC2 wrappers, so a command both wrap is
+// timed inside its adapter function instead.
 PFN_vkVoidFunction ProfileAdapterProc(const char* name) {
   if (name == nullptr || mocktail::graphics::ActiveProfileTrace() == nullptr) {
     return nullptr;
@@ -1259,6 +1297,9 @@ PFN_vkVoidFunction ProfileAdapterProc(const char* name) {
   }
   if (std::strcmp(name, "vkCreatePipelineCache") == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(ProfiledCreatePipelineCache);
+  }
+  if (std::strcmp(name, "vkAllocateMemory") == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(ProfiledAllocateMemory);
   }
   return nullptr;
 }
@@ -2652,11 +2693,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties2(
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(
     VkDevice device, const VkImageCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkImage* image) {
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkCreateImage", "memory");
   return State().etc2.CreateImage(device, create_info, allocator, image);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkDestroyImage(
     VkDevice device, VkImage image, const VkAllocationCallbacks* allocator) {
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkDestroyImage", "memory");
   State().etc2.DestroyImage(device, image, allocator);
 }
 
@@ -2685,6 +2730,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory(VkDevice device,
                                            VkDeviceSize size,
                                            VkMemoryMapFlags flags,
                                            void** data) {
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkMapMemory", "memory");
   return State().etc2.MapMemory(device, memory, offset, size, flags, data);
 }
 
@@ -2696,6 +2743,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory2(VkDevice device,
 
 VKAPI_ATTR void VKAPI_CALL vkUnmapMemory(VkDevice device,
                                          VkDeviceMemory memory) {
+  // Includes waiting for ETC2 decodes that still read this memory.
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkUnmapMemory", "memory");
   State().etc2.UnmapMemory(device, memory);
 }
 
@@ -2707,6 +2757,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkUnmapMemory2(VkDevice device,
 VKAPI_ATTR void VKAPI_CALL vkFreeMemory(
     VkDevice device, VkDeviceMemory memory,
     const VkAllocationCallbacks* allocator) {
+  // Includes waiting for ETC2 decodes that still read this memory.
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkFreeMemory", "memory");
   State().etc2.FreeMemory(device, memory, allocator);
 }
 

@@ -6,6 +6,17 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Performance recordings made with `--profile` now show how busy the CPU was
+  during each frame, which makes it easier to tell what caused a stutter.
+
+### Fixed
+
+- Less stutter while joining a game and while textures load in. In Blade
+  Ball, loading hitches dropped by about half, and the worst one went from
+  0.8 seconds to 0.55 seconds.
+
 ## [0.3.1] - 2026-09-20
 
 ### Added

@@ -24,6 +24,35 @@ struct TraceArg {
 
 // CLOCK_MONOTONIC in nanoseconds.
 std::uint64_t TraceClockNanos();
+// CPU time used so far by the calling thread, in nanoseconds.
+std::uint64_t TraceThreadCpuNanos();
+// CPU time used so far by every thread of the process, in nanoseconds.
+std::uint64_t TraceProcessCpuNanos();
+
+// CPU time spent between two successive presents.
+struct FrameCpuSample {
+  double process_ms = 0;
+  // Set only when the previous present came from the same thread; thread CPU
+  // clocks of different threads cannot be subtracted.
+  bool has_thread = false;
+  double thread_ms = 0;
+};
+
+// Turns CPU clocks read at each present into per-frame CPU time.
+// Thread-safe.
+class FrameCpuSampler final {
+ public:
+  // Returns false for the first present, which ends no frame.
+  bool Sample(std::uint64_t thread_id, std::uint64_t thread_cpu_ns,
+              std::uint64_t process_cpu_ns, FrameCpuSample* sample);
+
+ private:
+  std::mutex mutex_;
+  bool has_previous_ = false;
+  std::uint64_t previous_thread_id_ = 0;
+  std::uint64_t previous_thread_cpu_ns_ = 0;
+  std::uint64_t previous_process_cpu_ns_ = 0;
+};
 
 // Writes the Trace Event Format JSON array read by chrome://tracing and
 // ui.perfetto.dev. Recording threads only format into a shared buffer; a

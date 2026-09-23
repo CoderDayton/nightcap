@@ -4,6 +4,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -104,6 +105,53 @@ std::uint64_t TraceClockNanos() {
   clock_gettime(CLOCK_MONOTONIC, &now);
   return static_cast<std::uint64_t>(now.tv_sec) * 1'000'000'000ULL +
          static_cast<std::uint64_t>(now.tv_nsec);
+}
+
+namespace {
+
+std::uint64_t ClockNanos(clockid_t clock) {
+  timespec now{};
+  clock_gettime(clock, &now);
+  return static_cast<std::uint64_t>(now.tv_sec) * 1'000'000'000ULL +
+         static_cast<std::uint64_t>(now.tv_nsec);
+}
+
+}  // namespace
+
+std::uint64_t TraceThreadCpuNanos() {
+  return ClockNanos(CLOCK_THREAD_CPUTIME_ID);
+}
+
+std::uint64_t TraceProcessCpuNanos() {
+  return ClockNanos(CLOCK_PROCESS_CPUTIME_ID);
+}
+
+bool FrameCpuSampler::Sample(std::uint64_t thread_id,
+                             std::uint64_t thread_cpu_ns,
+                             std::uint64_t process_cpu_ns,
+                             FrameCpuSample* sample) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const bool had_previous = has_previous_;
+  // Clocks are read before the lock, so a reading can arrive after a later
+  // one; a reused thread id restarts its thread clock. Neither may wrap.
+  if (had_previous) {
+    *sample = {};
+    if (process_cpu_ns > previous_process_cpu_ns_) {
+      sample->process_ms =
+          static_cast<double>(process_cpu_ns - previous_process_cpu_ns_) / 1e6;
+    }
+    if (thread_id == previous_thread_id_ &&
+        thread_cpu_ns >= previous_thread_cpu_ns_) {
+      sample->has_thread = true;
+      sample->thread_ms =
+          static_cast<double>(thread_cpu_ns - previous_thread_cpu_ns_) / 1e6;
+    }
+  }
+  has_previous_ = true;
+  previous_thread_id_ = thread_id;
+  previous_thread_cpu_ns_ = thread_cpu_ns;
+  previous_process_cpu_ns_ = std::max(previous_process_cpu_ns_, process_cpu_ns);
+  return had_previous;
 }
 
 std::unique_ptr<ChromeTraceWriter> ChromeTraceWriter::Open(
