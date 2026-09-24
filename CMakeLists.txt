@@ -10,7 +10,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
   VERSION 1.0.4
-  DESCRIPTION "Android x86-64 Roblox compatibility runtime for Linux"
+  DESCRIPTION "Android Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
 
@@ -650,6 +650,11 @@ target_link_options(mocktail PRIVATE
 )
 
 # Native FreeBSD helper for Linuxulator's unsupported DF socket option.
+# The helper is x86-64 assembly; other host architectures have nothing to
+# assemble.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER OFF)
+endif()
 option(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER
   "Build the native FreeBSD Linuxulator socket helper" ON)
 if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER)
@@ -811,7 +816,7 @@ set(CPACK_PACKAGE_CONTACT "vii <coderdayton14@gmail.com>")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/CoderDayton/nightcap")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
 set(CPACK_PACKAGE_DESCRIPTION
-  "Runs the Android x86-64 Roblox client on Linux."
+  "Runs the Android Roblox client on Linux."
 )
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")

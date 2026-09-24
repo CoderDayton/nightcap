@@ -16,7 +16,7 @@ Usage() {
   cat <<'EOF'
 Usage: scripts/build_flatpak.sh [OPTIONS]
 
-Build and install Mocktail as a per-user x86-64 Flatpak.
+Build and install Mocktail as a per-user Flatpak for the host architecture.
 
 Options:
   --build-dir DIR  Builder output directory (default: build-flatpak).
@@ -93,8 +93,11 @@ done
 [[ "${JOBS}" =~ ^[1-9][0-9]*$ && "${JOBS}" -le 256 ]] ||
   Die "--jobs must be an integer between 1 and 256"
 
-[[ "$(uname -m)" == x86_64 ]] ||
-  Die "the Roblox payload and Flatpak manifest currently require x86-64"
+HOST_ARCH="$(uname -m)"
+case "${HOST_ARCH}" in
+  x86_64|aarch64) ;;
+  *) Die "Flatpak builds require an x86_64 or aarch64 Linux host" ;;
+esac
 command -v flatpak >/dev/null 2>&1 || Die "flatpak is required"
 
 MANIFEST="$(realpath -e -- "${MANIFEST}")" ||
@@ -123,7 +126,7 @@ CleanupStaleBuilderMounts
 
 cd -- "${PROJECT_ROOT}"
 exec "${builder[@]}" \
-  --arch=x86_64 \
+  --arch="${HOST_ARCH}" \
   --jobs="${JOBS}" \
   --force-clean \
   --install-deps-from=flathub \
