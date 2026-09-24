@@ -11,6 +11,9 @@
 #include <cerrno>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
+
+#include "compat/guest_abi.h"
 
 namespace mocktail::update {
 namespace {
@@ -81,6 +84,16 @@ CompatibilityCatalogResult LoadCompatibilityCatalog(
         profile.value("allow_legacy_binary_patches", true)) {
       continue;
     }
+    const auto declared_abi = profile.find("abi");
+    if (declared_abi != profile.end() && !declared_abi->is_string()) {
+      result.error = "supported compatibility profile is incomplete";
+      return result;
+    }
+    const std::string_view profile_abi =
+        declared_abi == profile.end()
+            ? std::string_view("x86_64")
+            : std::string_view(declared_abi->get_ref<const std::string&>());
+    if (profile_abi != compat::kGuestAbi) continue;
     if (!profile.contains("version_name") ||
         !profile["version_name"].is_string() ||
         !profile.contains("version_code") ||
