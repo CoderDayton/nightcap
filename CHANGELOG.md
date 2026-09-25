@@ -16,6 +16,8 @@ GitHub are taken from the matching section here.
 - Less stutter while joining a game and while textures load in. In Blade
   Ball, loading hitches dropped by about half, and the worst one went from
   0.8 seconds to 0.55 seconds.
+- Clicking Play on a private server now joins right away. Before, nothing
+  happened until you clicked a sidebar tab like Home.
 
 ## [0.3.1] - 2026-09-20
 
