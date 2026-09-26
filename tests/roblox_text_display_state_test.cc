@@ -594,6 +594,7 @@ TEST(RobloxTextDisplayStateTest, AdvancesCaretForTrailingSpace) {
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 
+
 TEST(RobloxTextDisplayStateTest, KeepsCaretBeforeTrailingSpaceDistinct) {
   RobloxTextSurfaceOverlay overlay;
   ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
@@ -647,6 +648,7 @@ TEST(RobloxTextDisplayStateTest, ReopensFontsAfterPointSizeChange) {
   EXPECT_GT(large, small);
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
+
 
 }  // namespace
 }  // namespace runtime

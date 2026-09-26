@@ -1650,9 +1650,13 @@ jlong ParseLocalStorageUserIdFromEnv() {
   if (!value || value[0] == '\0') {
     return 0;
   }
+  errno = 0;
   char* end = nullptr;
   long long parsed = std::strtoll(value, &end, 10);
-  return end == value ? 0 : static_cast<jlong>(parsed);
+  if (errno == ERANGE || end == value || *end != '\0') {
+    return 0;
+  }
+  return static_cast<jlong>(parsed);
 }
 
 jlong CurrentLocalStorageUserLocked() {
