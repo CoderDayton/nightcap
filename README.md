@@ -1,9 +1,14 @@
 <!-- Modified by vii from komaruworld/mocktail. See "About this fork" below. -->
-# Nightcap
-
-[![CI](https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml/badge.svg)](https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml)
-[![Stars](https://img.shields.io/github/stars/CoderDayton/nightcap?style=flat&logo=github)](https://github.com/CoderDayton/nightcap/stargazers)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<div align="center">
+  <img src="https://raw.githubusercontent.com/CoderDayton/nightcap/main/packaging/io.github.CoderDayton.nightcap.svg" alt="Nightcap logo" width="128">
+  <h1 style="margin-top: 5px;">
+    Nightcap
+    <br>
+    <a href="https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml"><img src="https://github.com/CoderDayton/nightcap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/CoderDayton/nightcap/stargazers"><img src="https://img.shields.io/github/stars/CoderDayton/nightcap?style=flat&logo=github" alt="Stars"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  </h1>
+</div>
 
 Nightcap is Mocktail, tuned for playing on a real PC. It runs the Android
 `x86_64` Roblox client on Linux, including a Linux userspace hosted by
