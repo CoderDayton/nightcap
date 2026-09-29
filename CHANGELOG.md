@@ -10,14 +10,35 @@ GitHub are taken from the matching section here.
 
 - Performance recordings made with `--profile` now show how busy the CPU was
   during each frame, which makes it easier to tell what caused a stutter.
+- Experimental support for ARM64 (`aarch64`) Linux, running Roblox's Android
+  `arm64-v8a` client.
 
 ### Fixed
 
+- When Roblox asks for a Google Play device check during login, Nightcap now
+  answers right away that it isn't supported. Before, the "Verifying you're
+  not a bot" screen waited about a minute for an answer and then sent you
+  back to the login screen.
+- Solving a login challenge now closes its window. Before, Roblox's
+  "challenge completed" signal was ignored and the window stayed open.
+  Thanks to @glook9001.
+- Login check windows and other web pages get 5 seconds to start instead of
+  3, so a slow start no longer closes them. The log says how long each one
+  took to open.
 - Less stutter while joining a game and while textures load in. In Blade
   Ball, loading hitches dropped by about half, and the worst one went from
   0.8 seconds to 0.55 seconds.
 - Clicking Play on a private server now joins right away. Before, nothing
   happened until you clicked a sidebar tab like Home.
+- Middle click now reaches Roblox as the middle mouse button.
+- Scrolling follows your system's natural scrolling setting.
+- Fixed a crash on some x86_64 hosts when Roblox asked about a thread other
+  than the one making the call.
+- Roblox updates no longer mix up the ARM64 and x86_64 compatibility profiles
+  for the same version.
+- A partial or out-of-range user id in `MOCKTAIL_ROBLOX_USER_ID` or
+  `MOCKTAIL_LOCAL_STORAGE_CURRENT_USER_ID` is now ignored instead of being
+  partly read.
 
 ## [0.3.1] - 2026-09-20
 
