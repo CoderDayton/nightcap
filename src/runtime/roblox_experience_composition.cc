@@ -310,12 +310,14 @@ RobloxExperienceComposition::RobloxExperienceComposition(
     const SecureRobloxCredential* initial_web_view_credential,
     RobloxExperienceSurfaceProvider surface_provider,
     RobloxExperiencePresenceObserver presence_observer,
-    bool clear_persisted_web_view_cookie, bool microphone_enabled)
+    bool clear_persisted_web_view_cookie, bool microphone_enabled,
+    RobloxAccountProtocolSymbols account_symbols)
     : environment_(environment),
       message_bus_symbols_(message_bus_symbols),
       web_view_symbols_(web_view_symbols),
       browser_service_symbols_(browser_service_symbols),
       permissions_symbols_(permissions_symbols),
+      account_symbols_(account_symbols),
       microphone_enabled_(microphone_enabled),
       game_symbols_(game_symbols),
       jni_factory_(jni_factory),
@@ -436,11 +438,33 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     (void)ReleaseGlobalObjects();
     return status;
   }
+  // AccountProtocol only shortens a device-integrity login challenge that
+  // cannot succeed here, so its absence or failure never blocks startup.
+  std::unique_ptr<RobloxAccountBridge> account_bridge;
+  if (account_symbols_.complete()) {
+    account_bridge = std::make_unique<RobloxAccountBridge>(
+        environment_, account_symbols_,
+        RobloxAccountProtocolObjects{web_view_objects.message_bus,
+                                     jni_factory_.context,
+                                     jni_factory_.create_request_handler,
+                                     jni_factory_.clear_request_handler});
+    const Status account_status = account_bridge->Initialize();
+    if (!account_status.ok()) {
+      std::fprintf(stderr, "  [account] AccountProtocol unavailable: %s\n",
+                   account_status.message().c_str());
+      account_bridge.reset();
+    }
+  } else {
+    std::fprintf(stderr,
+                 "  [account] AccountProtocol entrypoints are missing; "
+                 "device-integrity challenges wait for Roblox's timeout\n");
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     web_view_bridge_ = std::move(web_view_bridge);
     browser_service_bridge_ = std::move(browser_service_bridge);
     permissions_bridge_ = std::move(permissions_bridge);
+    account_bridge_ = std::move(account_bridge);
     platform_protocols_initialized_ = true;
   }
   std::fprintf(stderr,
@@ -1568,6 +1592,7 @@ Status RobloxExperienceComposition::Shutdown() {
   std::unique_ptr<RobloxWebViewBridge> web_view_bridge;
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge;
+  std::unique_ptr<RobloxAccountBridge> account_bridge;
   std::shared_ptr<WebViewHelperProcess> web_surface_process;
   jnivm::VM* late_lifecycle_vm = nullptr;
   {
@@ -1592,6 +1617,7 @@ Status RobloxExperienceComposition::Shutdown() {
     web_view_bridge = std::move(web_view_bridge_);
     browser_service_bridge = std::move(browser_service_bridge_);
     permissions_bridge = std::move(permissions_bridge_);
+    account_bridge = std::move(account_bridge_);
     web_surface_process = std::move(web_surface_process_);
     web_surface_logical_exit_observer_ = {};
     web_surface_route_ = WebSurfaceRoute::kNone;
@@ -1608,8 +1634,12 @@ Status RobloxExperienceComposition::Shutdown() {
   if (web_surface_process != nullptr) {
     (void)web_surface_process->RequestClose();
   }
-  Status status = permissions_bridge != nullptr ? permissions_bridge->Shutdown()
-                                                : Status::Ok();
+  Status status =
+      account_bridge != nullptr ? account_bridge->Shutdown() : Status::Ok();
+  const Status permissions_status = permissions_bridge != nullptr
+                                        ? permissions_bridge->Shutdown()
+                                        : Status::Ok();
+  if (status.ok()) status = permissions_status;
   const Status browser_status = browser_service_bridge != nullptr
                                     ? browser_service_bridge->Shutdown()
                                     : Status::Ok();
@@ -1625,6 +1655,7 @@ Status RobloxExperienceComposition::Shutdown() {
     status = bridge_status;
   }
   browser_service_bridge.reset();
+  account_bridge.reset();
   permissions_bridge.reset();
   web_view_bridge.reset();
   bridge.reset();

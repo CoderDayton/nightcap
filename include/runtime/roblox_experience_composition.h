@@ -17,6 +17,7 @@
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_experience_presence.h"
 #include "runtime/roblox_fresh_game_launch_controller.h"
+#include "runtime/roblox_account_bridge.h"
 #include "runtime/roblox_permissions_bridge.h"
 #include "runtime/roblox_web_view_bridge.h"
 #include "runtime/webview_roblox_cookie.h"
@@ -120,7 +121,8 @@ class RobloxExperienceComposition final {
       RobloxExperienceSurfaceProvider surface_provider = {},
       RobloxExperiencePresenceObserver presence_observer = {},
       bool clear_persisted_web_view_cookie = false,
-      bool microphone_enabled = false);
+      bool microphone_enabled = false,
+      RobloxAccountProtocolSymbols account_symbols = {});
   ~RobloxExperienceComposition();
 
   RobloxExperienceComposition(const RobloxExperienceComposition&) = delete;
@@ -229,6 +231,7 @@ class RobloxExperienceComposition final {
   const RobloxWebViewMessageBusSymbols web_view_symbols_;
   const RobloxBrowserServiceSymbols browser_service_symbols_;
   const RobloxPermissionsMessageBusSymbols permissions_symbols_;
+  const RobloxAccountProtocolSymbols account_symbols_;
   const bool microphone_enabled_;
   const RobloxGameSessionSymbols game_symbols_;
   const RobloxExperienceJniFactory jni_factory_;
@@ -248,6 +251,8 @@ class RobloxExperienceComposition final {
   std::unique_ptr<RobloxWebViewBridge> web_view_bridge_;
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge_;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge_;
+  // Optional: a payload without the AccountProtocol entrypoints still starts.
+  std::unique_ptr<RobloxAccountBridge> account_bridge_;
   std::shared_ptr<WebViewHelperProcess> web_surface_process_;
   std::shared_ptr<WebSurfaceExitTarget> web_surface_exit_target_;
   std::shared_ptr<LifecycleTarget> lifecycle_target_;

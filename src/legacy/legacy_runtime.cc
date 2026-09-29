@@ -6722,7 +6722,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               mocktail::runtime::RobloxExperienceSurfaceProvider{},
               discord_rpc.observer(),
               dependencies.clear_persisted_web_view_cookie(),
-              runtime_config.microphone_enabled());
+              runtime_config.microphone_enabled(),
+              platform_web_symbols.account);
       const mocktail::Status platform_protocol_status =
           experience_composition->InitializePlatformProtocols();
       if (!platform_protocol_status.ok()) {

@@ -50,6 +50,8 @@ struct Probe {
   int permission_disconnects = 0;
   int permission_handlers_cleared = 0;
   std::map<std::string, jobject> permission_handlers;
+  std::map<std::string, jobject> account_handlers;
+  int account_handlers_cleared = 0;
   std::string permission_response;
   int browser_bindings = 0;
   int browser_disconnects = 0;
@@ -266,6 +268,45 @@ nlohmann::json QueryMicrophone(Probe* probe) {
 }
 
 void SetRequestHandler(JNIEnv*, jobject, jstring, jstring, jobject) {}
+
+std::string CopyJavaString(JNIEnv* env, jstring value) {
+  const char* chars = value ? env->GetStringUTFChars(value, nullptr) : nullptr;
+  const std::string copy = chars ? chars : "";
+  if (chars) env->ReleaseStringUTFChars(value, chars);
+  return copy;
+}
+
+jstring AccountProtocolName(JNIEnv* env, jclass) {
+  return env->NewStringUTF("AccountProtocol");
+}
+jstring AccountAvailableMethod(JNIEnv* env, jclass) {
+  return env->NewStringUTF("DeviceIntegrityAvailable");
+}
+jstring AccountTokenMethod(JNIEnv* env, jclass) {
+  return env->NewStringUTF("GetIntegrityToken");
+}
+jstring AccountSupportKey(JNIEnv* env, jclass) {
+  return env->NewStringUTF("support");
+}
+jstring AccountTokenKey(JNIEnv* env, jclass) {
+  return env->NewStringUTF("token");
+}
+jstring AccountResultKey(JNIEnv* env, jclass) {
+  return env->NewStringUTF("result");
+}
+void SetAccountHandler(JNIEnv* env, jobject, jstring, jstring method,
+                       jobject handler) {
+  g_probe->account_handlers[CopyJavaString(env, method)] = handler;
+}
+void ClearAccountHandler(JNIEnv*, jobject, jstring, jstring) {
+  ++g_probe->account_handlers_cleared;
+}
+
+RobloxAccountProtocolSymbols AccountSymbols() {
+  return {AccountProtocolName, AccountAvailableMethod, AccountTokenMethod,
+          AccountSupportKey,   AccountTokenKey,        AccountResultKey,
+          SetAccountHandler,   ClearAccountHandler};
+}
 void ClearNativeRequestHandler(JNIEnv*, jobject, jstring, jstring) {}
 void PublishRaw(JNIEnv*, jobject, jstring, jstring) {}
 void BroadcastDataModelFocus(JNIEnv*, jclass, jstring, jstring, jstring) {}
@@ -911,6 +952,49 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_EQ(probe.browser_disconnects, 4);
   EXPECT_EQ(probe.browser_releases, 4);
   EXPECT_EQ(probe.browser_callbacks_cleared, 4);
+  EXPECT_TRUE(probe.account_handlers.empty());
+  g_probe = nullptr;
+}
+
+TEST(RobloxExperienceCompositionTest,
+     AnswersDeviceIntegrityAsUnsupportedWithPlatformProtocols) {
+  jnivm::VM vm;
+  Probe probe{&vm};
+  g_probe = &probe;
+  for (const char* class_name : {
+           "com/roblox/protocols/webview/WebViewProtocol",
+           "com/roblox/universalapp/messagebus/MessageBus",
+           "com/roblox/universalapp/messagebus/Connection",
+           "com/roblox/engine/jni/memstorage/MemStorage",
+           "com/roblox/engine/jni/memstorage/Connection",
+           "com/roblox/engine/jni/memstorage/Callback",
+       }) {
+    vm.RegisterClass(class_name);
+  }
+  RobloxExperienceComposition composition(
+      {vm.GetJavaVM(), &vm, Prepare}, {},
+      {GetWebViewOpenId, GetWebViewHandleWindowCloseId, GetWebViewProtocolName,
+       GetWebViewAvailabilityId, GetWebViewMessageId, InitializeWebViewProtocol,
+       Subscribe, Disconnect, SetRequestHandler, ClearNativeRequestHandler,
+       PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
+       GetWebViewCloseId, SignalWebViewJavascriptCallback,
+       UpdateCookieSetHandler},
+      BrowserServiceSymbols(), PermissionsSymbols(), {}, JniFactory(&probe),
+      {}, {}, nullptr, {}, {}, false, false, AccountSymbols());
+
+  ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
+  ASSERT_EQ(probe.account_handlers.size(), 2u);
+  JNIEnv* env = vm.GetJNIEnv();
+  jstring request = env->NewStringUTF("{}");
+  jstring response = vm.DispatchMessageBusRequestHandler(
+      probe.account_handlers.at("DeviceIntegrityAvailable"), env, request);
+  EXPECT_EQ(nlohmann::json::parse(CopyJavaString(env, response)),
+            (nlohmann::json{{"support", false}}));
+  env->DeleteLocalRef(request);
+  if (response) env->DeleteLocalRef(response);
+
+  EXPECT_TRUE(composition.Shutdown().ok());
+  EXPECT_EQ(probe.account_handlers_cleared, 2);
   g_probe = nullptr;
 }
 

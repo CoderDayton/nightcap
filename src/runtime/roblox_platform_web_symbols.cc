@@ -118,6 +118,24 @@ RobloxPlatformWebSymbols ResolveRobloxPlatformWebSymbols(
           roblox_library,
           "Java_com_roblox_universalapp_messagebus_MessageBus_"
           "callResponseHandlerRaw");
+  using AccountStringFn = RobloxAccountProtocolSymbols::GetStringFn;
+  constexpr char kAccountPrefix[] =
+      "Java_com_roblox_universalapp_account_JNIAccountProtocol_";
+  const auto account_getter = [&](const char* name) {
+    return Resolve<AccountStringFn>(roblox_library,
+                                    (std::string(kAccountPrefix) + name).c_str());
+  };
+  symbols.account.get_protocol_name = account_getter("getProtocolName");
+  symbols.account.get_device_integrity_available_method_name =
+      account_getter("getDeviceIntegrityAvailableMethodName");
+  symbols.account.get_integrity_token_method_name =
+      account_getter("getGetIntegrityTokenMethodName");
+  symbols.account.get_support_key = account_getter("getSupportKey");
+  symbols.account.get_token_key = account_getter("getTokenKey");
+  symbols.account.get_result_key = account_getter("getResultKey");
+  symbols.account.set_request_handler_raw =
+      symbols.web_view.set_request_handler_raw;
+  symbols.account.clear_request_handler = symbols.web_view.clear_request_handler;
   return symbols;
 }
 
