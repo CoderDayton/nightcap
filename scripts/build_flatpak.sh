@@ -124,6 +124,9 @@ fi
 
 CleanupStaleBuilderMounts
 
+export FLATPAK_BUILDER_N_JOBS="${JOBS}"
+export NINJAFLAGS="-j${JOBS}"
+
 cd -- "${PROJECT_ROOT}"
 exec "${builder[@]}" \
   --arch="${HOST_ARCH}" \

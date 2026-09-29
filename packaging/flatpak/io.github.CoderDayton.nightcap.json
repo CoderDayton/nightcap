@@ -26,7 +26,11 @@
   ],
   "build-options": {
     "strip": true,
-    "no-debuginfo": true
+    "no-debuginfo": true,
+    "env": {
+      "FLATPAK_BUILDER_N_JOBS": "2",
+      "NINJAFLAGS": "-j2"
+    }
   },
   "cleanup": [
     "/include",
