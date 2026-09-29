@@ -23,7 +23,7 @@ constexpr size_t kMaxPendingLaunchRequests = 8;
 // libroblox's static TLS requires the proven 16 MiB guest-thread stack floor.
 constexpr size_t kLaunchWorkerStackSize = 64ULL * 1024 * 1024;
 // Covers helper exec through window creation, including cold Flatpak starts.
-constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{5000};
+constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{10000};
 constexpr char kRobloxBaseUrl[] = "https://www.roblox.com/";
 
 Status Invalid(std::string message) {

@@ -127,11 +127,6 @@ void PromptFirstLaunchSignIn(
       environment.Get("MOCKTAIL_SKIP_FIRST_LAUNCH_LOGIN") == "1") {
     return;
   }
-  if (environment.Get("MOCKTAIL_NATIVE_LOGIN") != "0") {
-    std::cout << "  [auth] native sign-in selected; opening Roblox welcome screen\n";
-    return;
-  }
-
   std::filesystem::path helper;
   const char* helper_override = std::getenv("MOCKTAIL_WEBVIEW_HELPER");
   if (helper_override != nullptr && helper_override[0] != '\0') {
@@ -175,7 +170,7 @@ void PromptFirstLaunchSignIn(
   if (!launched || launched.process == nullptr) {
     return;
   }
-  if (!launched.process->WaitUntilReady(std::chrono::milliseconds(5000))) {
+  if (!launched.process->WaitUntilReady(std::chrono::milliseconds(10000))) {
     (void)launched.process->RequestClose();
     return;
   }

@@ -283,12 +283,8 @@ std::string CommandLineUsage(const std::string& program_name) {
          "work for ui.perfetto.dev\n"
       << "  --help, -h               Show this help\n\n"
       << "Auth:\n"
-      << "  When no saved Roblox session is found, Roblox's welcome screen "
-         "opens with the native sign-in flow.\n"
-      << "  Set MOCKTAIL_NATIVE_LOGIN=0 to use the optional WebView sign-in "
+      << "  When no saved Roblox session is found, Roblox opens a desktop sign-in "
          "window.\n"
-      << "  Roblox may still open a WebView for required verification "
-         "challenges.\n"
       << "  New credentials are stored privately.\n\n"
       << "Additional runtime options are available as MOCKTAIL_* environment "
          "variables.\n";
