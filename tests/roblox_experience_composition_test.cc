@@ -1023,7 +1023,7 @@ TEST(RobloxExperienceCompositionTest,
 class RobloxExperienceCompositionWebSurfaceTest : public ::testing::Test {
  protected:
   struct Helper {
-    Helper() {
+    explicit Helper(const char* before_ready = "") {
       char pattern[] = "/tmp/mocktail_surface_close_XXXXXX";
       const char* created = mkdtemp(pattern);
       if (created == nullptr) return;
@@ -1035,6 +1035,7 @@ import socket, sys
 sys.stdin.buffer.read()
 s = socket.socket(fileno=198)
 s.settimeout(5)
+)PY" << before_ready << R"PY(
 s.send(b'MWVE' + bytes([1, 3, 0, 0]) + bytes(4))
 while True:
     packet = s.recv(1024 * 1024)
@@ -1069,6 +1070,14 @@ while True:
 
   static void ObserveExit(void* context) {
     ++static_cast<ExitProbe*>(context)->calls;
+  }
+
+  static Status Open(RobloxExperienceComposition* composition,
+                     const std::shared_ptr<ExitProbe>& probe) {
+    return composition->OpenWebSurface(
+        "https://www.roblox.com/challenge/cdn/hybrid", "webview",
+        RobloxExperienceComposition::WebSurfaceRoute::kWebView,
+        {probe, &RobloxExperienceCompositionWebSurfaceTest::ObserveExit}, {});
   }
 
   static std::unique_ptr<RobloxExperienceComposition> MakeComposition(
@@ -1276,6 +1285,47 @@ TEST_F(RobloxExperienceCompositionWebSurfaceTest,
   PhysicalExit(composition.get(), 9);
   PhysicalExit(composition.get(), 9);
   EXPECT_EQ(probe->calls, 1);
+}
+
+TEST_F(RobloxExperienceCompositionWebSurfaceTest,
+       WaitsForSlowHelperStartupBeforeRejectingSurface) {
+  Helper helper("import time\ntime.sleep(3.5)\n");
+  ASSERT_FALSE(helper.path.empty());
+  ASSERT_EQ(setenv("MOCKTAIL_WEBVIEW_HELPER", helper.path.c_str(), 1), 0);
+  SecureRobloxCredential credential{".ROBLOSECURITY=typed-secret"};
+  auto composition = MakeComposition(&credential);
+  auto probe = std::make_shared<ExitProbe>();
+
+  ::testing::internal::CaptureStderr();
+  const Status status = Open(composition.get(), probe);
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  unsetenv("MOCKTAIL_WEBVIEW_HELPER");
+
+  EXPECT_TRUE(status.ok()) << status.message();
+  const std::string marker = "Roblox web surface launched in ";
+  const size_t at = log.find(marker);
+  ASSERT_NE(at, std::string::npos) << log;
+  EXPECT_GE(std::stol(log.substr(at + marker.size())), 3500) << log;
+  EXPECT_TRUE(Close(composition.get()).ok());
+}
+
+TEST_F(RobloxExperienceCompositionWebSurfaceTest,
+       ReportsElapsedStartupTimeWhenHelperNeverBecomesReady) {
+  Helper helper("sys.exit(0)\n");
+  ASSERT_FALSE(helper.path.empty());
+  ASSERT_EQ(setenv("MOCKTAIL_WEBVIEW_HELPER", helper.path.c_str(), 1), 0);
+  SecureRobloxCredential credential{".ROBLOSECURITY=typed-secret"};
+  auto composition = MakeComposition(&credential);
+  auto probe = std::make_shared<ExitProbe>();
+
+  const Status status = Open(composition.get(), probe);
+  unsetenv("MOCKTAIL_WEBVIEW_HELPER");
+
+  ASSERT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("did not become ready"), std::string::npos)
+      << status.message();
+  EXPECT_NE(status.message().find(" ms of 5000 ms"), std::string::npos)
+      << status.message();
 }
 
 namespace {}  // namespace

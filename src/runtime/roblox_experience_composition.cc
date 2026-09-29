@@ -22,7 +22,8 @@ namespace {
 constexpr size_t kMaxPendingLaunchRequests = 8;
 // libroblox's static TLS requires the proven 16 MiB guest-thread stack floor.
 constexpr size_t kLaunchWorkerStackSize = 64ULL * 1024 * 1024;
-constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{3000};
+// Covers helper exec through window creation, including cold Flatpak starts.
+constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{5000};
 constexpr char kRobloxBaseUrl[] = "https://www.roblox.com/";
 
 Status Invalid(std::string message) {
@@ -159,24 +160,33 @@ Status LaunchRobloxWebSurface(
   }
   std::fprintf(stderr, "  [%s] opening validated Roblox web surface\n",
                transport);
+  const auto started = std::chrono::steady_clock::now();
   const WebViewHelperLaunchResult launched =
       LaunchWebViewHelper(helper, url, std::move(exit_observer));
   if (!launched) {
     return Unavailable("could not display Roblox web surface: " +
                        launched.error);
   }
-  if (launched.process == nullptr ||
-      !launched.process->WaitUntilReady(kWebSurfaceReadyTimeout)) {
+  const bool ready = launched.process != nullptr &&
+                     launched.process->WaitUntilReady(kWebSurfaceReadyTimeout);
+  const long long elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started)
+          .count();
+  if (!ready) {
     if (launched.process != nullptr) {
       (void)launched.process->RequestClose();
     }
     return Unavailable(
-        "Roblox web surface did not become ready before the deadline");
+        "Roblox web surface did not become ready before the deadline (" +
+        std::to_string(elapsed_ms) + " ms of " +
+        std::to_string(kWebSurfaceReadyTimeout.count()) + " ms)");
   }
   if (process != nullptr) {
     *process = launched.process;
   }
-  std::fprintf(stderr, "  [%s] Roblox web surface launched\n", transport);
+  std::fprintf(stderr, "  [%s] Roblox web surface launched in %lld ms\n",
+               transport, elapsed_ms);
   return Status::Ok();
 }
 
