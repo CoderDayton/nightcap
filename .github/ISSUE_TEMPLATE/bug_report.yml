@@ -11,14 +11,14 @@ body:
       value: |
         Please include enough detail for someone else to reproduce the bug.
 
-        Use any language you are comfortable with. The maintainer can read Russian and English directly, so either is preferred. If you are more comfortable in another language, use it.
+        Use any language you are comfortable with.
 
-        Please write issues and pull requests yourself. Do not use AI-generated text.
+        Please write issues and pull requests yourself.
 
   - type: input
     id: version
     attributes:
-      label: Mocktail version
+      label: Nightcap version
       description: Provide the release version, package version, or commit hash.
       placeholder: "For example: v0.4.0 or 1a2b3c4"
     validations:
@@ -37,7 +37,7 @@ body:
     id: installation
     attributes:
       label: Installation method
-      description: Tell us how Mocktail was installed or built.
+      description: Tell us how Nightcap was installed or built.
       placeholder: "For example: AppImage, Flatpak, AUR, or built from source"
     validations:
       required: true
@@ -56,7 +56,7 @@ body:
       label: Steps to reproduce
       description: List the smallest reliable sequence of actions that triggers the problem.
       placeholder: |
-        1. Start Mocktail with ...
+        1. Start Nightcap with ...
         2. Open ...
         3. Select ...
         4. Observe ...
