@@ -188,6 +188,12 @@ TEST(WebViewHelperPolicyTest, ParsesOnlyTypedCaptchaNavigationEvents) {
   EXPECT_EQ(event.type, CaptchaEventType::kSuccess);
   EXPECT_TRUE(event.callback_id.empty());
 
+  EXPECT_TRUE(ParseCaptchaEvent(
+      R"({"moduleID":"Navigation","functionName":"navigateToFeature","params":{"params":{"data":{"challengeType":"captcha"},"feature":"challengeCompleted"}},"callbackID":"challenge-complete-1"})",
+      &event));
+  EXPECT_EQ(event.type, CaptchaEventType::kSuccess);
+  EXPECT_EQ(event.callback_id, "challenge-complete-1");
+
   for (
       std::string_view rejected : {
           R"({"moduleID":"Browser","functionName":"navigateToFeature","params":{"params":{"feature":"CaptchaSuccess"}}})",
