@@ -306,7 +306,8 @@ bool ParseCaptchaEvent(std::string_view command, CaptchaEvent* event) {
     event->type = CaptchaEventType::kShown;
     return true;
   }
-  if (feature == "CaptchaSuccess") {
+  if (feature == "CaptchaSuccess" || feature == "challengeCompleted" ||
+      feature == "ChallengeCompleted") {
     event->type = CaptchaEventType::kSuccess;
     return true;
   }
