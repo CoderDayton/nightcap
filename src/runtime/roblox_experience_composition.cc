@@ -22,7 +22,7 @@ namespace {
 constexpr size_t kMaxPendingLaunchRequests = 8;
 // libroblox's static TLS requires the proven 16 MiB guest-thread stack floor.
 constexpr size_t kLaunchWorkerStackSize = 64ULL * 1024 * 1024;
-constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{3000};
+constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{10000};
 constexpr char kRobloxBaseUrl[] = "https://www.roblox.com/";
 
 Status Invalid(std::string message) {
