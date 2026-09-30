@@ -24,6 +24,11 @@ constexpr size_t kMaxPendingLaunchRequests = 8;
 constexpr size_t kLaunchWorkerStackSize = 64ULL * 1024 * 1024;
 // Covers helper exec through window creation, including cold Flatpak starts.
 constexpr std::chrono::milliseconds kWebSurfaceReadyTimeout{5000};
+// Roblox closes a solved WebViewProtocol challenge itself with closeWindow,
+// as on Android. The host closes it only if Roblox has not done so within
+// this period. Captcha windows close at once instead (see
+// RobloxWebViewOpenRequest::close_when_challenge_solved).
+constexpr std::chrono::milliseconds kSolvedChallengeCloseGrace{3000};
 constexpr char kRobloxBaseUrl[] = "https://www.roblox.com/";
 
 Status Invalid(std::string message) {
@@ -637,6 +642,8 @@ Status RobloxExperienceComposition::OpenWebSurface(
     web_surface_process_generation_ = process_generation;
     web_surface_route_ = route;
     web_surface_logical_generation_ = logical_generation;
+    web_surface_close_when_challenge_solved_ =
+        presentation.close_when_challenge_solved;
     web_surface_logical_exit_observer_ = std::move(exit_observer);
   }
   if (superseded_observer.valid()) {
@@ -649,13 +656,16 @@ Status RobloxExperienceComposition::OpenWebSurface(
   return Status::Ok();
 }
 
-Status RobloxExperienceComposition::CloseWebSurface() {
+Status RobloxExperienceComposition::CloseWebSurface(
+    uint64_t expected_logical_generation) {
   std::lock_guard<std::mutex> operation_lock(web_surface_operation_mutex_);
   std::shared_ptr<WebViewHelperProcess> process;
   WebViewHelperExitObserver exit_observer;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (web_surface_route_ == WebSurfaceRoute::kNone) {
+    if (web_surface_route_ == WebSurfaceRoute::kNone ||
+        (expected_logical_generation != 0 &&
+         expected_logical_generation != web_surface_logical_generation_)) {
       return Status::Ok();
     }
     process = std::move(web_surface_process_);
@@ -663,6 +673,7 @@ Status RobloxExperienceComposition::CloseWebSurface() {
     exit_observer = std::move(web_surface_logical_exit_observer_);
     web_surface_route_ = WebSurfaceRoute::kNone;
     web_surface_logical_generation_ = 0;
+    web_surface_close_when_challenge_solved_ = false;
   }
   // A closed challenge must stop executing. Reusing its hidden document lets
   // late callbacks from the old attempt reach the next login attempt. The APK
@@ -676,6 +687,33 @@ Status RobloxExperienceComposition::CloseWebSurface() {
     return Unavailable("could not close Roblox web surface");
   }
   return Status::Ok();
+}
+
+Status RobloxExperienceComposition::CloseUnclaimedSolvedChallenge() {
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!solved_challenge_close_deadline_.has_value()) {
+      return Status::Ok();
+    }
+    const bool still_open =
+        web_surface_route_ != WebSurfaceRoute::kNone &&
+        solved_challenge_logical_generation_ == web_surface_logical_generation_;
+    if (still_open &&
+        std::chrono::steady_clock::now() < *solved_challenge_close_deadline_) {
+      return Status::Ok();
+    }
+    solved_challenge_close_deadline_.reset();
+    if (!still_open) {
+      return Status::Ok();
+    }
+    generation = solved_challenge_logical_generation_;
+  }
+  std::fprintf(stderr,
+               "  [webview] closing solved challenge window; Roblox did not "
+               "close it within %lld ms\n",
+               static_cast<long long>(kSolvedChallengeCloseGrace.count()));
+  return CloseWebSurface(generation);
 }
 
 void RobloxExperienceComposition::WebSurfaceExited(void* context) {
@@ -703,6 +741,7 @@ void RobloxExperienceComposition::HandleWebSurfaceExit(
     web_surface_process_generation_ = 0;
     web_surface_route_ = WebSurfaceRoute::kNone;
     web_surface_logical_generation_ = 0;
+    web_surface_close_when_challenge_solved_ = false;
     exit_observer = std::move(web_surface_logical_exit_observer_);
   }
   if (exit_observer.valid()) {
@@ -728,6 +767,8 @@ Status RobloxExperienceComposition::DispatchWebViewOpen(
   // host back navigation too.
   presentation.back_navigation_disabled =
       request.back_button_visible.has_value() && !*request.back_button_visible;
+  presentation.close_when_challenge_solved =
+      request.close_when_challenge_solved;
   return composition->OpenWebSurface(request.url, "webview",
                                      WebSurfaceRoute::kWebView,
                                      std::move(exit_observer), presentation);
@@ -990,9 +1031,9 @@ Status RobloxExperienceComposition::RouteCurrentWebSurfaceEvent(
     return AcceptWebViewRobloxCookie(event.payload);
   }
   if (event.type == WebViewHelperEventType::kExecuteRoblox) {
-    // Roblox defers a signalled launchGame until the Lua app next navigates.
-    // A parsed launchGame is launched here and never forwarded, so a deferred
-    // copy cannot start a second join later.
+    // A web Play button's launchGame is launched through the experience
+    // pipeline and closes the surface. It is never forwarded, so Roblox
+    // cannot start a second join from the same command.
     RobloxExperienceLaunchRequest request;
     if (ParseRobloxWebViewLaunchGame(event.payload, &request).ok() &&
         Dispatch(request).ok()) {
@@ -1002,7 +1043,29 @@ Status RobloxExperienceComposition::RouteCurrentWebSurfaceEvent(
       return CloseWebSurface();
     }
   }
-  return RouteWebSurfaceEvent(route, event, web_view_bridge);
+  const Status status = RouteWebSurfaceEvent(route, event, web_view_bridge);
+  if (!status.ok() || !IsRobloxWebViewChallengeSuccess(event.payload)) {
+    return status;
+  }
+  std::fprintf(stderr, "  [webview] solved challenge forwarded to Roblox\n");
+  bool close_now = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (logical_generation != web_surface_logical_generation_) {
+      return status;
+    }
+    close_now = web_surface_close_when_challenge_solved_;
+    if (!close_now) {
+      solved_challenge_close_deadline_ =
+          std::chrono::steady_clock::now() + kSolvedChallengeCloseGrace;
+      solved_challenge_logical_generation_ = logical_generation;
+    }
+  }
+  if (!close_now) {
+    return status;
+  }
+  std::fprintf(stderr, "  [webview] closing solved captcha window\n");
+  return CloseWebSurface(logical_generation);
 }
 
 Status RobloxExperienceComposition::DrainPlatformEvents() {
@@ -1050,6 +1113,9 @@ Status RobloxExperienceComposition::DrainPlatformEvents() {
   if (status.ok()) {
     status = drain_helper(web_surface_process, process_generation,
                           logical_generation);
+  }
+  if (status.ok()) {
+    status = CloseUnclaimedSolvedChallenge();
   }
   if (status.ok() && browser_service_bridge != nullptr) {
     status = browser_service_bridge->DrainOutgoingEvents();

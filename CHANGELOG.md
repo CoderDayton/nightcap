@@ -22,6 +22,11 @@ GitHub are taken from the matching section here.
 - Solving a login challenge now closes its window. Before, Roblox's
   "challenge completed" signal was ignored and the window stayed open.
   Thanks to @glook9001.
+- Login no longer stalls after you pass a verification check. Before, Roblox
+  only saw the page's "challenge completed" signal after a one-minute
+  timeout, so it gave up and the login failed. On a Roblox build Nightcap
+  can't handle this way, the log says "WebViewProtocol getter not
+  recognized" and web pages behave as before.
 - Login check windows and other web pages get 5 seconds to start instead of
   3, so a slow start no longer closes them. The log says how long each one
   took to open.

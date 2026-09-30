@@ -162,6 +162,13 @@ void InitializeAndroidWebViewProtocol(JNIEnv *, jclass) {
   g_web_view_probe->initialization_order.push_back("initialize");
 }
 
+int g_fake_protocol_holder = 0;
+
+RobloxWebViewProtocolHandle AcquireWebViewProtocol() {
+  g_web_view_probe->initialization_order.push_back("acquire_protocol");
+  return RobloxWebViewProtocolHandle(&g_fake_protocol_holder);
+}
+
 void SignalJavascriptCallback(JNIEnv* env, jclass, jstring payload) {
   g_web_view_probe->hybrid_callback_payload = ReadJavaString(env, payload);
 }
@@ -473,6 +480,34 @@ TEST(RobloxWebViewParserTest, BuildsExactCaptchaRoutesWithoutGuessingSuccess) {
           .ok());
 }
 
+TEST(RobloxWebViewParserTest, RecognizesOnlyChallengeSuccessNavigation) {
+  const auto navigation = [](const std::string& feature) {
+    return R"({"moduleID":"Navigation","functionName":"navigateToFeature",)"
+           R"("params":{"params":{"data":{"captchaData":{}},"feature":")" +
+           feature + R"("}},"callbackID":"challenge-1"})";
+  };
+  EXPECT_TRUE(IsRobloxWebViewChallengeSuccess(navigation("CaptchaSuccess")));
+  EXPECT_TRUE(
+      IsRobloxWebViewChallengeSuccess(navigation("challengeCompleted")));
+  EXPECT_TRUE(
+      IsRobloxWebViewChallengeSuccess(navigation("ChallengeCompleted")));
+
+  EXPECT_FALSE(IsRobloxWebViewChallengeSuccess(navigation("CaptchaShown")));
+  EXPECT_FALSE(
+      IsRobloxWebViewChallengeSuccess(navigation("ChallengeDisplayed")));
+  EXPECT_FALSE(IsRobloxWebViewChallengeSuccess(
+      R"({"moduleID":"Game","functionName":"navigateToFeature",)"
+      R"("params":{"params":{"feature":"CaptchaSuccess"}}})"));
+  EXPECT_FALSE(IsRobloxWebViewChallengeSuccess(
+      R"({"moduleID":"Navigation","functionName":"navigateToFeature",)"
+      R"("params":{"feature":"CaptchaSuccess"}})"));
+  EXPECT_FALSE(IsRobloxWebViewChallengeSuccess(
+      R"({"moduleID":7,"functionName":["navigateToFeature"],)"
+      R"("params":{"params":{"feature":{"CaptchaSuccess":true}}}})"));
+  EXPECT_FALSE(IsRobloxWebViewChallengeSuccess("CaptchaSuccess"));
+  EXPECT_FALSE(IsRobloxWebViewChallengeSuccess(""));
+}
+
 TEST(RobloxWebViewParserTest, AcceptsOnlyCanonicalProfileRoutes) {
   RobloxWebViewOpenRequest request;
   Status status = ParseRobloxProfileViewUrl(
@@ -656,6 +691,7 @@ TEST(RobloxWebViewBridgeTest,
   ASSERT_EQ(probe.dispatches, 2);
   EXPECT_EQ(probe.request.url,
             "https://www.roblox.com/games/servers-section/10148749921");
+  EXPECT_FALSE(probe.request.close_when_challenge_solved);
   ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
   EXPECT_EQ(probe.data_model_focus_states,
             (std::vector<std::string>{"Unfocused"}));
@@ -677,6 +713,7 @@ TEST(RobloxWebViewBridgeTest,
   ASSERT_EQ(probe.dispatches, 3);
   EXPECT_EQ(probe.request.url, "https://www.roblox.com/login");
   EXPECT_EQ(probe.request.title, "Roblox sign in");
+  EXPECT_TRUE(probe.request.close_when_challenge_solved);
   EXPECT_TRUE(bridge.HandleCloseWindow().ok());
   EXPECT_EQ(probe.close_dispatches, 1);
   ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
@@ -1215,6 +1252,45 @@ TEST(RobloxWebViewBridgeTest,
   EXPECT_FALSE(bridge.initialized());
   EXPECT_TRUE(probe.initialization_order.empty());
   EXPECT_EQ(probe.native_initializations, 0);
+  g_web_view_probe = nullptr;
+}
+
+TEST(RobloxWebViewBridgeTest, HoldsWebViewProtocolFromBeforeNativeInitialization) {
+  const ScopedNativeLogin native_login(false);
+  jnivm::VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass bus_class =
+      env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+  jobject bus = env->AllocObject(bus_class);
+  WebViewBridgeProbe probe;
+  g_web_view_probe = &probe;
+  {
+    RobloxWebViewBridge bridge(
+        {vm.GetJavaVM(), nullptr, nullptr},
+        {&GetOpenWindowId, &GetHandleWindowCloseId, &GetProtocolName,
+         &GetIsAvailableId, &GetMessageId, &InitializeAndroidWebViewProtocol,
+         &SubscribeRaw, &DeleteConnection, &SetRequestHandler,
+         &ClearRequestHandler, &PublishRaw, &BroadcastDataModelFocus,
+         &GetMutateWindowId, &GetCloseWindowId, &SignalJavascriptCallback,
+         &UpdateCookieSetHandler, &AcquireWebViewProtocol},
+        {bus, &vm, &CreateRawCallback, &ClearRawCallback, &CreateRequestHandler,
+         &ClearRequestHandlerObject, &SetPlatformWebCallbacks,
+         &ClearPlatformWebCallbacks},
+        {&probe, &DispatchOpen, &DispatchMutate, &DispatchClose,
+         &DispatchCookie});
+
+    ASSERT_TRUE(bridge.Initialize().ok());
+    ASSERT_TRUE(bridge.Shutdown().ok());
+  }
+
+  // Roblox's own app start keeps this handle for the process lifetime.
+  // Releasing it deletes the protocol and its handleJavascriptCallback
+  // subscriber.
+  EXPECT_EQ(probe.initialization_order,
+            (std::vector<std::string>{
+                "message_id:openWindow", "message_id:mutateWindow",
+                "message_id:closeWindow", "availability", "subscribe",
+                "subscribe", "subscribe", "acquire_protocol", "initialize"}));
   g_web_view_probe = nullptr;
 }
 

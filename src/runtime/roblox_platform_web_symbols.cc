@@ -1,7 +1,11 @@
 #include "runtime/roblox_platform_web_symbols.h"
 
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
+#include "compat/web_view_protocol_contract.h"
 #include "linker/linker.h"
 
 namespace mocktail {
@@ -12,6 +16,41 @@ template <typename Function>
 Function Resolve(void* library, const char* name) {
   return reinterpret_cast<Function>(
       linker::ResolveSymbol(library, std::string(name)));
+}
+
+// Reads the mapped initializer and follows its getter call only when both
+// match the code contract for this host's architecture. Both reads stay
+// inside libroblox.so's text segment: the initializer is longer than the scan
+// window, and the getter address comes from a verified call site.
+AcquireWebViewProtocolFn FindWebViewProtocolGetter(const void* initializer) {
+  if (initializer == nullptr) return nullptr;
+  const auto address = reinterpret_cast<std::uintptr_t>(initializer);
+  const std::string_view code(static_cast<const char*>(initializer),
+                              compat::kWebViewProtocolInitializerScanBytes);
+#if defined(__x86_64__)
+  const std::optional<std::uintptr_t> getter =
+      compat::FindWebViewProtocolGetterCallX86_64(code, address);
+  const bool getter_matches =
+      getter.has_value() &&
+      compat::HasWebViewProtocolGetterContractX86_64(std::string_view(
+          reinterpret_cast<const char*>(*getter),
+          compat::kWebViewProtocolGetterBytesX86_64));
+#elif defined(__aarch64__)
+  const std::optional<std::uintptr_t> getter =
+      compat::FindWebViewProtocolGetterCallArm64(code, address);
+  const bool getter_matches =
+      getter.has_value() &&
+      compat::HasWebViewProtocolGetterContractArm64(std::string_view(
+          reinterpret_cast<const char*>(*getter),
+          compat::kWebViewProtocolGetterBytesArm64));
+#else
+  const std::optional<std::uintptr_t> getter;
+  const bool getter_matches = false;
+  (void)code;
+  (void)address;
+#endif
+  return getter_matches ? reinterpret_cast<AcquireWebViewProtocolFn>(*getter)
+                        : nullptr;
 }
 
 }  // namespace
@@ -46,6 +85,9 @@ RobloxPlatformWebSymbols ResolveRobloxPlatformWebSymbols(
           roblox_library,
           "Java_com_roblox_protocols_webview_WebViewProtocol_"
           "initializeAndroidWebViewProtocol");
+  symbols.web_view.acquire_web_view_protocol = FindWebViewProtocolGetter(
+      reinterpret_cast<const void*>(
+          symbols.web_view.initialize_android_web_view_protocol));
   symbols.web_view.subscribe_raw = subscribe_raw;
   symbols.web_view.delete_connection = delete_connection;
   symbols.web_view.set_request_handler_raw =

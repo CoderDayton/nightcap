@@ -13,6 +13,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <type_traits>
 
 #include "mocktail/status.h"
 #include "runtime/roblox_game_session_native_adapter.h"
@@ -42,6 +44,10 @@ struct RobloxWebViewOpenRequest {
   std::optional<bool> show_domain_as_title;
   std::optional<bool> back_button_visible;
   std::optional<bool> hide_header;
+  // Set by the bridge, never parsed. The host closes an OPEN_CAPTCHA_VIEW
+  // window once its solved captcha has been forwarded, as Android's captcha
+  // activity finishes itself on success.
+  bool close_when_challenge_solved = false;
 };
 
 // WebViewProtocol.mutateWindow is a partial update. Field absence must remain
@@ -61,6 +67,9 @@ Status ParseRobloxWebViewMutationJson(const std::string& json,
                                       RobloxWebViewMutationRequest* request);
 Status ParseRobloxCaptchaOpenJson(const std::string& json,
                                   RobloxWebViewOpenRequest* request);
+// True for a page's Navigation.navigateToFeature command reporting a solved
+// verification (see webview::IsRobloxChallengeSolvedFeature).
+bool IsRobloxWebViewChallengeSuccess(std::string_view command);
 Status ParseRobloxProfileViewUrl(const std::string& url,
                                  RobloxWebViewOpenRequest* request);
 Status ParseRobloxPurchaseRobuxNotification(const std::string& json,
@@ -108,6 +117,33 @@ using BroadcastWebViewDataModelFocusFn = void (*)(JNIEnv *, jclass, jstring,
 using SignalWebViewJavascriptCallbackFn = void (*)(JNIEnv*, jclass, jstring);
 using UpdateRobloxCookieSetHandlerFn =
     void (*)(JNIEnv*, jobject, jobject);
+// Roblox's counted handle to its Subsystem<IWebViewProtocol>. The protocol,
+// and its handleJavascriptCallback subscriber, exist only while a handle is
+// held. Roblox's handle type is not trivially destructible, so its getter
+// returns it through the caller-supplied result slot (rdi on x86-64, x8 on
+// AArch64). The user-provided destructor gives this type the same calling
+// convention. It does not release the handle.
+class RobloxWebViewProtocolHandle final {
+ public:
+  RobloxWebViewProtocolHandle() = default;
+  explicit RobloxWebViewProtocolHandle(void* holder) : holder_(holder) {}
+  RobloxWebViewProtocolHandle(const RobloxWebViewProtocolHandle&) = default;
+  RobloxWebViewProtocolHandle& operator=(const RobloxWebViewProtocolHandle&) =
+      default;
+  ~RobloxWebViewProtocolHandle() {}
+
+  void* holder() const { return holder_; }
+
+ private:
+  void* holder_ = nullptr;
+};
+static_assert(sizeof(RobloxWebViewProtocolHandle) == sizeof(void*));
+static_assert(!std::is_trivially_destructible_v<RobloxWebViewProtocolHandle>);
+
+// Roblox's Subsystem<IWebViewProtocol> getter. It is not exported; the
+// resolver finds it through the first call in
+// WebViewProtocol.initializeAndroidWebViewProtocol.
+using AcquireWebViewProtocolFn = RobloxWebViewProtocolHandle (*)();
 
 struct RobloxWebViewMessageBusSymbols {
   GetWebViewOpenWindowIdFn get_open_window_id = nullptr;
@@ -129,6 +165,8 @@ struct RobloxWebViewMessageBusSymbols {
   GetWebViewCloseWindowIdFn get_close_window_id = nullptr;
   SignalWebViewJavascriptCallbackFn signal_javascript_callback = nullptr;
   UpdateRobloxCookieSetHandlerFn update_cookie_set_handler = nullptr;
+  // Optional: found by code contract, not by symbol name.
+  AcquireWebViewProtocolFn acquire_web_view_protocol = nullptr;
 
   bool complete() const {
     return get_open_window_id != nullptr &&
@@ -287,6 +325,10 @@ private:
   std::array<std::shared_ptr<RawCallbackTarget>, kSubscriptionCount>
       raw_callback_targets_{};
   std::shared_ptr<HostWindowCloseTarget> host_window_close_target_;
+  // The reference this counts is kept for the process lifetime, as Roblox's
+  // Android app start keeps its own. Neither Shutdown nor destruction
+  // releases it.
+  RobloxWebViewProtocolHandle web_view_protocol_handle_;
   std::size_t in_flight_dispatches_ = 0;
   bool initializing_ = false;
   bool shutting_down_ = false;

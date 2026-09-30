@@ -9,6 +9,8 @@
 #include <string>
 #include <string_view>
 
+#include "webview/roblox_challenge_features.h"
+
 namespace mocktail {
 namespace webview {
 namespace {
@@ -306,8 +308,7 @@ bool ParseCaptchaEvent(std::string_view command, CaptchaEvent* event) {
     event->type = CaptchaEventType::kShown;
     return true;
   }
-  if (feature == "CaptchaSuccess" || feature == "challengeCompleted" ||
-      feature == "ChallengeCompleted") {
+  if (IsRobloxChallengeSolvedFeature(feature)) {
     event->type = CaptchaEventType::kSuccess;
     return true;
   }

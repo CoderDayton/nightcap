@@ -722,6 +722,15 @@ target_link_libraries(elf_build_id_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(web_view_protocol_contract_test
+  web_view_protocol_contract_test.cc
+)
+target_link_libraries(web_view_protocol_contract_test PRIVATE
+  Mocktail::Compat
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(web_view_protocol_contract_test)
+
 add_executable(build_profile_test build_profile_test.cc)
 target_link_libraries(build_profile_test PRIVATE
   Mocktail::Compat
@@ -1049,6 +1058,7 @@ gtest_discover_tests(auth_service_test)
 gtest_discover_tests(auth_runtime_composition_test)
 gtest_discover_tests(client_settings_service_test)
 gtest_discover_tests(elf_build_id_test)
+gtest_discover_tests(web_view_protocol_contract_test)
 gtest_discover_tests(build_profile_test)
 gtest_discover_tests(host_abi_profile_test)
 gtest_discover_tests(payload_compatibility_host_abi_gate_test)

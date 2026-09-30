@@ -108,15 +108,9 @@ struct SurfaceState {
   unsigned int resource_retries = 0;
 };
 
+// A solved challenge stays open: the host forwards the event to Roblox, and
+// Roblox or the host closes the window after Roblox has received it.
 struct CallbackConfirmation {
-  CallbackConfirmation(GtkWindow* surface_window, CaptchaEventType event_type)
-      : type(event_type) {
-    g_weak_ref_init(&window, G_OBJECT(surface_window));
-  }
-
-  ~CallbackConfirmation() { g_weak_ref_clear(&window); }
-
-  GWeakRef window;
   CaptchaEventType type = CaptchaEventType::kShown;
 };
 
@@ -612,16 +606,6 @@ void FinishCallbackConfirmation(GObject* source_object, GAsyncResult* result,
   if (value != nullptr) {
     g_object_unref(value);
   }
-
-  auto* window_object =
-      static_cast<GObject*>(g_weak_ref_get(&confirmation->window));
-  if (confirmed && confirmation->type == CaptchaEventType::kSuccess &&
-      window_object != nullptr) {
-    gtk_window_close(GTK_WINDOW(window_object));
-  }
-  if (window_object != nullptr) {
-    g_object_unref(window_object);
-  }
   delete confirmation;
 }
 
@@ -644,9 +628,8 @@ void HandleHybridCommand(WebKitUserContentManager* manager,
   if (window_object == nullptr) {
     return;
   }
-  auto* confirmation =
-      new CallbackConfirmation(GTK_WINDOW(window_object), event.type);
   g_object_unref(window_object);
+  auto* confirmation = new CallbackConfirmation{event.type};
   const std::string script = BuildCallbackScript(event.callback_id);
   WebKitWebView* web_view = WEBKIT_WEB_VIEW(
       g_object_get_data(G_OBJECT(manager), "mocktail-web-view"));

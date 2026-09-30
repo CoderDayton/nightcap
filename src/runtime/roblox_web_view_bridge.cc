@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "runtime/environment.h"
+#include "webview/roblox_challenge_features.h"
 
 namespace mocktail {
 namespace runtime {
@@ -399,6 +400,39 @@ Status ParseRobloxCaptchaOpenJson(const std::string& json,
                  normalized_type + "&credentialsValue=" + escaped_value +
                  "&hybrid-return-token=1";
   return Status::Ok();
+}
+
+bool IsRobloxWebViewChallengeSuccess(std::string_view command) {
+  if (command.empty() || command.size() > kMaximumRobloxWebViewJsonBytes) {
+    return false;
+  }
+  const nlohmann::json document =
+      nlohmann::json::parse(command.begin(), command.end(), nullptr, false);
+  const auto string_field = [](const nlohmann::json& object,
+                               const char* key) -> const std::string* {
+    const auto field = object.find(key);
+    return field != object.end() && field->is_string()
+               ? &field->get_ref<const std::string&>()
+               : nullptr;
+  };
+  const auto object_field = [](const nlohmann::json& object,
+                               const char* key) -> const nlohmann::json* {
+    const auto field = object.find(key);
+    return field != object.end() && field->is_object() ? &*field : nullptr;
+  };
+  if (!document.is_object()) {
+    return false;
+  }
+  const std::string* module = string_field(document, "moduleID");
+  const std::string* function = string_field(document, "functionName");
+  const nlohmann::json* outer = object_field(document, "params");
+  const nlohmann::json* navigation =
+      outer != nullptr ? object_field(*outer, "params") : nullptr;
+  const std::string* feature =
+      navigation != nullptr ? string_field(*navigation, "feature") : nullptr;
+  return module != nullptr && *module == "Navigation" && function != nullptr &&
+         *function == "navigateToFeature" && feature != nullptr &&
+         webview::IsRobloxChallengeSolvedFeature(*feature);
 }
 
 Status ParseRobloxProfileViewUrl(const std::string& url,
@@ -911,6 +945,20 @@ Status RobloxWebViewBridge::Initialize() {
   // handler and window subscriptions are installed before the native Android
   // protocol is initialized. Calling the native initializer earlier loses
   // messages that it can publish synchronously during startup.
+  // Roblox's Android app start holds a WebViewProtocol handle for the process
+  // lifetime. Without one, the protocol is deleted as soon as each caller
+  // releases it, and page callbacks wait for the next Lua WebView call to
+  // recreate it. Taking it before the native initializer keeps the protocol
+  // that initializer configures.
+  if (symbols_.acquire_web_view_protocol != nullptr) {
+    if (web_view_protocol_handle_.holder() == nullptr) {
+      web_view_protocol_handle_ = symbols_.acquire_web_view_protocol();
+    }
+  } else {
+    std::fprintf(stderr,
+                 "  [webview] WebViewProtocol getter not recognized; page "
+                 "callbacks may wait for the next Roblox WebView call\n");
+  }
   jclass initialization_class = env->FindClass(kWebViewProtocolClass);
   if (initialization_class != nullptr) {
     symbols_.initialize_android_web_view_protocol(env, initialization_class);
@@ -1266,6 +1314,7 @@ Status RobloxWebViewBridge::DispatchOpenRequest(
           exit_context->target->browser_login_fallback = browser_login_fallback;
         }
       }
+      request.close_when_challenge_solved = source == OpenSource::kCaptcha;
       if (status.ok()) {
         status = sink_.dispatch_open(
             sink_.context, request,

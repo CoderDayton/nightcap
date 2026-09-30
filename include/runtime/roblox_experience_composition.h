@@ -3,6 +3,7 @@
 
 #include <jni.h>
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -164,6 +165,7 @@ class RobloxExperienceComposition final {
     bool visible = true;
     bool back_navigation_disabled = false;
     bool show_domain_as_title = false;
+    bool close_when_challenge_solved = false;
   };
 
   static Status DispatchLaunch(void* context,
@@ -203,8 +205,11 @@ class RobloxExperienceComposition final {
                         const WebSurfacePresentation& presentation);
   // WebViewProtocol and BrowserService are two logical transports over the
   // APK's single physical WebView container. Either protocol may close or
-  // mutate the surface that the other one opened.
-  Status CloseWebSurface();
+  // mutate the surface that the other one opened. A nonzero
+  // expected_logical_generation closes only that surface.
+  Status CloseWebSurface(uint64_t expected_logical_generation = 0);
+  // Closes a solved challenge that Roblox left open past its grace period.
+  Status CloseUnclaimedSolvedChallenge();
   void HandleWebSurfaceExit(uint64_t process_generation);
   Status Dispatch(const RobloxExperienceLaunchRequest& request);
   Status PromoteAuthenticatedSession();
@@ -262,6 +267,13 @@ class RobloxExperienceComposition final {
   uint64_t web_surface_logical_generation_ = 0;
   uint64_t next_web_surface_process_generation_ = 1;
   uint64_t next_web_surface_logical_generation_ = 1;
+  // The current surface closes as soon as its solved challenge is forwarded.
+  bool web_surface_close_when_challenge_solved_ = false;
+  // Set when a solved challenge is forwarded; applies only to that logical
+  // surface generation.
+  std::optional<std::chrono::steady_clock::time_point>
+      solved_challenge_close_deadline_;
+  uint64_t solved_challenge_logical_generation_ = 0;
   SecureWebViewRobloxCookie web_view_cookie_;
   std::string web_view_cookie_initialization_error_;
   bool web_view_cookie_synchronized_ = false;
