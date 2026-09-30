@@ -176,8 +176,10 @@ grep -Fq './scripts/build_flatpak.sh' <<<"${dry_run}" ||
   Fail 'make flatpak does not invoke the guarded Flatpak builder'
 grep -Fq -- '--manifest packaging/flatpak/io.github.CoderDayton.nightcap.json' \
   <<<"${dry_run}" || Fail 'make flatpak lost the canonical manifest'
-grep -Fq -- '--jobs 4' <<<"${dry_run}" ||
+grep -Fq -- '--jobs 2' <<<"${dry_run}" ||
   Fail 'make flatpak does not cap local build parallelism'
+grep -Fq 'JOBS="${MOCKTAIL_FLATPAK_JOBS:-2}"' "${BUILD_HELPER}" ||
+  Fail 'Flatpak helper does not cap local build parallelism'
 
 mkdir -p -- "${TEMP_DIR}/bin"
 cat >"${TEMP_DIR}/bin/uname" <<'EOF'

@@ -21,7 +21,7 @@ ANYLINUX_APPIMAGETOOL ?= appimagetool
 PREFIX ?= /usr
 FLATPAK_BUILD_DIR ?= build-flatpak
 FLATPAK_MANIFEST ?= packaging/flatpak/io.github.CoderDayton.nightcap.json
-FLATPAK_JOBS ?= 4
+FLATPAK_JOBS ?= 2
 
 define build_native_runtime
 	@git submodule update --init --recursive

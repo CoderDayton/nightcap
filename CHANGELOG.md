@@ -45,6 +45,13 @@ GitHub are taken from the matching section here.
   `MOCKTAIL_LOCAL_STORAGE_CURRENT_USER_ID` is now ignored instead of being
   partly read.
 
+### Changed
+
+- `make flatpak` and `scripts/build_flatpak.sh` now build with 2 jobs by
+  default instead of 4, so a local Flatpak build is less likely to run out
+  of memory. Set `FLATPAK_JOBS` or `MOCKTAIL_FLATPAK_JOBS` to use more.
+  Thanks to @glook9001.
+
 ## [0.3.1] - 2026-09-20
 
 ### Added

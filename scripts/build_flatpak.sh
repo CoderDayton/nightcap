@@ -10,7 +10,7 @@ readonly PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 
 BUILD_DIR="${PROJECT_ROOT}/build-flatpak"
 MANIFEST="${PROJECT_ROOT}/packaging/flatpak/io.github.CoderDayton.nightcap.json"
-JOBS="${MOCKTAIL_FLATPAK_JOBS:-4}"
+JOBS="${MOCKTAIL_FLATPAK_JOBS:-2}"
 
 Usage() {
   cat <<'EOF'
@@ -21,7 +21,7 @@ Build and install Mocktail as a per-user Flatpak for the host architecture.
 Options:
   --build-dir DIR  Builder output directory (default: build-flatpak).
   --manifest FILE  Flatpak manifest path.
-  --jobs N         Maximum parallel build jobs (default: 4).
+  --jobs N         Maximum parallel build jobs (default: 2).
   -h, --help       Show this help.
 EOF
 }
