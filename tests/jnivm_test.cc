@@ -2130,7 +2130,7 @@ TEST_F(JniVmTest, RobloxTextInputCapturesExactStaticDirectVAndACalls) {
 
   CallStaticVoidMethodVForTest(env, cls, show, static_cast<jlong>(42), JNI_TRUE,
                                text, info);
-  EXPECT_EQ(probe->show_calls, 1);
+  EXPECT_EQ(probe->show_calls, 2);
 
   jvalue show_args[4] = {};
   show_args[0].j = 43;
@@ -2138,7 +2138,7 @@ TEST_F(JniVmTest, RobloxTextInputCapturesExactStaticDirectVAndACalls) {
   show_args[2].l = text;
   show_args[3].l = info;
   env->CallStaticVoidMethodA(cls, show, show_args);
-  EXPECT_EQ(probe->show_calls, 2);
+  EXPECT_EQ(probe->show_calls, 3);
   EXPECT_EQ(probe->request.text_box, 43);
 
   jmethodID wrong_signature =
@@ -2148,7 +2148,7 @@ TEST_F(JniVmTest, RobloxTextInputCapturesExactStaticDirectVAndACalls) {
   jclass wrong_cls = env->FindClass("example/NativeGLJavaInterface");
   env->CallStaticVoidMethod(wrong_cls, show, static_cast<jlong>(44), JNI_FALSE,
                             text, info);
-  EXPECT_EQ(probe->show_calls, 2);
+  EXPECT_EQ(probe->show_calls, 3);
 
   jstring replacement = env->NewStringUTF("engine replacement");
   env->CallStaticVoidMethod(cls, replace, replacement);

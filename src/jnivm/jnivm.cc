@@ -5064,33 +5064,6 @@ struct VM::RobloxTextInputBinding {
   RobloxTextInputShowRequest last_request;
 };
 
-namespace {
-
-bool SameRobloxTextBoxInfo(const RobloxTextBoxInfo& left,
-                           const RobloxTextBoxInfo& right) {
-  return left.x == right.x && left.y == right.y &&
-         left.width == right.width && left.height == right.height &&
-         left.font_size == right.font_size &&
-         left.multiline == right.multiline &&
-         left.x_alignment == right.x_alignment &&
-         left.y_alignment == right.y_alignment &&
-         left.text_color == right.text_color && left.font == right.font &&
-         left.text_input_type == right.text_input_type &&
-         left.return_key_type == right.return_key_type &&
-         left.manual_focus_release == right.manual_focus_release &&
-         left.text_wrapped == right.text_wrapped;
-}
-
-bool SameRobloxTextInputShowRequest(
-    const RobloxTextInputShowRequest& left,
-    const RobloxTextInputShowRequest& right) {
-  return left.text_box == right.text_box &&
-         left.show_native_input == right.show_native_input &&
-         left.text == right.text && SameRobloxTextBoxInfo(left.info, right.info);
-}
-
-}  // namespace
-
 void VM::SetRobloxTextInputCallbacks(
     std::shared_ptr<void> context,
     const RobloxTextInputCallbacks& callbacks) {
@@ -5125,10 +5098,7 @@ bool VM::DispatchRobloxTextInputShow(
     return false;
   }
   std::lock_guard<std::recursive_mutex> lock(binding->callback_mutex);
-  if (binding->active &&
-      SameRobloxTextInputShowRequest(binding->last_request, request)) {
-    return true;
-  }
+  // An identical show may reopen a TextBox closed without a hide callback.
   ClearSensitiveString(&binding->last_request.text);
   binding->last_request = request;
   binding->active = true;
