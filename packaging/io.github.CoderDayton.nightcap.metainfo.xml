@@ -57,6 +57,18 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.3.2" date="2026-09-29">
+      <description>
+        <ul>
+          <li>Added experimental support for ARM64 Linux.</li>
+          <li>Fixed login stalling after passing a verification check.</li>
+          <li>Fixed login check windows staying open after they were solved.</li>
+          <li>Fixed Play on a private server doing nothing until a sidebar tab was clicked.</li>
+          <li>Less stutter while joining a game and while textures load in.</li>
+          <li>Middle click and natural scrolling now work as expected.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-09-20">
       <description>
         <ul>

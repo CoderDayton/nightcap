@@ -6,6 +6,8 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-29
+
 ### Added
 
 - Performance recordings made with `--profile` now show how busy the CPU was
@@ -236,7 +238,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The AppImage build no longer fails on stale checksums for the slimmed
   Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.2
 [0.3.1]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.1
 [0.3.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.0
 [0.2.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.2.0
