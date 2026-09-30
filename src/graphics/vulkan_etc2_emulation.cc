@@ -130,8 +130,20 @@ bool ShouldLog(std::atomic<unsigned>* counter, unsigned limit) {
 // Decode threads for one submit, the submitting thread included. Half the
 // host's hardware threads, at most 8, leave cores for the game's own threads.
 unsigned DecodeWorkerCount() {
-  static const unsigned count =
-      std::min(8U, std::max(1U, std::thread::hardware_concurrency() / 2));
+  static const unsigned count = [] {
+    if (const char* env = std::getenv("MOCKTAIL_DECODE_WORKERS")) {
+      char* end = nullptr;
+      unsigned long val = std::strtoul(env, &end, 10);
+      if (end != env && val > 0) {
+        return static_cast<unsigned>(std::min<unsigned long>(val, 32));
+      }
+    }
+    const unsigned hw = std::thread::hardware_concurrency();
+    if (hw <= 4) {
+      return std::max(1U, hw);
+    }
+    return std::min(8U, hw / 2);
+  }();
   return count;
 }
 
@@ -976,16 +988,38 @@ struct VulkanEtc2Emulation::State {
                     static_cast<std::int64_t>(batch.source_bytes));
     trace_scope.Arg("decoded_bytes",
                     static_cast<std::int64_t>(batch.decoded_bytes));
-    batch.source.EnsureSize(batch.source_bytes);
-    if (batch.decoded.size() < batch.decoded_bytes) {
-      batch.decoded.resize(batch.decoded_bytes);
-    }
+    bool needs_gather = false;
     if (!batch.deferred_sources.empty()) {
-      GatherCompressed(batch.uploads, batch.deferred_sources,
-                       batch.source.data());
-      batch.deferred_sources.clear();
+      for (const PendingUpload& upload : batch.uploads) {
+        if (upload.source_span != upload.compressed) {
+          needs_gather = true;
+          break;
+        }
+      }
+      if (needs_gather) {
+        batch.source.EnsureSize(batch.source_bytes);
+        GatherCompressed(batch.uploads, batch.deferred_sources,
+                         batch.source.data());
+      }
     }
-    DecodeAndEmit(batch.uploads, batch.source.data(), batch.decoded.data());
+    VkDeviceSize indirect_decoded_bytes = 0;
+    if (overrides.enabled()) {
+      indirect_decoded_bytes = batch.decoded_bytes;
+    } else {
+      for (const PendingUpload& upload : batch.uploads) {
+        if (upload.scale != 1) {
+          indirect_decoded_bytes += upload.decoded;
+        }
+      }
+    }
+    if (indirect_decoded_bytes > 0 && batch.decoded.size() < indirect_decoded_bytes) {
+      batch.decoded.resize(indirect_decoded_bytes);
+    }
+    DecodeAndEmit(
+        batch.uploads,
+        needs_gather ? std::vector<const std::uint8_t*>{} : batch.deferred_sources,
+        batch.source.data(), batch.decoded.data());
+    batch.deferred_sources.clear();
     SignalDecoded(batch.device, batch.ticket);
   }
 
@@ -1007,13 +1041,20 @@ struct VulkanEtc2Emulation::State {
   // Decodes every layer of every upload and writes the host texels. Shared by
   // the dispatcher and by the synchronous path.
   void DecodeAndEmit(const std::vector<PendingUpload>& uploads,
+                     const std::vector<const std::uint8_t*>& sources,
                      std::uint8_t* source_base, std::uint8_t* decoded_base) {
     std::vector<EtcDecodeJob> jobs;
     VkDeviceSize compressed_offset = 0;
     VkDeviceSize decoded_offset = 0;
-    for (const PendingUpload& upload : uploads) {
-      std::uint8_t* source = source_base + compressed_offset;
-      std::uint8_t* decoded = decoded_base + decoded_offset;
+    for (std::size_t i = 0; i < uploads.size(); ++i) {
+      const PendingUpload& upload = uploads[i];
+      const bool direct = (upload.scale == 1 && !overrides.enabled());
+      const std::uint8_t* source = (!sources.empty() && sources[i] != nullptr &&
+                                    upload.source_span == upload.compressed)
+                                        ? sources[i]
+                                        : (source_base + compressed_offset);
+      std::uint8_t* decoded =
+          direct ? upload.target : (decoded_base + decoded_offset);
       const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
       const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
       for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
@@ -1028,7 +1069,9 @@ struct VulkanEtc2Emulation::State {
         jobs.push_back(job);
       }
       compressed_offset += upload.compressed;
-      decoded_offset += upload.decoded;
+      if (!direct) {
+        decoded_offset += upload.decoded;
+      }
       if (ShouldLog(&g_decode_logs, 4)) {
         std::fprintf(stderr, "  [vulkan] ETC2 upload decoded %ux%u layers=%u\n",
                      upload.width, upload.height, upload.layers);
@@ -1044,13 +1087,22 @@ struct VulkanEtc2Emulation::State {
     decoded_offset = 0;
     std::vector<EmitJob> emit_jobs;
     emit_jobs.reserve(uploads.size());
-    for (const PendingUpload& upload : uploads) {
-      emit_jobs.push_back({&upload, source_base + compressed_offset,
-                           decoded_base + decoded_offset});
+    for (std::size_t i = 0; i < uploads.size(); ++i) {
+      const PendingUpload& upload = uploads[i];
+      const bool direct = (upload.scale == 1 && !overrides.enabled());
+      if (!direct) {
+        const std::uint8_t* source = (!sources.empty() && sources[i] != nullptr &&
+                                      upload.source_span == upload.compressed)
+                                         ? sources[i]
+                                         : (source_base + compressed_offset);
+        emit_jobs.push_back({&upload, source, decoded_base + decoded_offset});
+        decoded_offset += upload.decoded;
+      }
       compressed_offset += upload.compressed;
-      decoded_offset += upload.decoded;
     }
-    EmitBatch(std::move(emit_jobs), DecodeWorkerCount());
+    if (!emit_jobs.empty()) {
+      EmitBatch(std::move(emit_jobs), DecodeWorkerCount());
+    }
   }
 
   // Blocks until every batch up to `ticket` has been decoded and emitted.
@@ -1805,19 +1857,41 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   const bool defer_gather = async && temporary.empty();
 
   if (!async) {
-    std::lock_guard<std::mutex> scratch_lock(state_->scratch_mutex);
-    state_->scratch_source.EnsureSize(compressed_total);
-    if (state_->scratch_decoded.size() < decoded_total) {
-      state_->scratch_decoded.resize(decoded_total);
+    bool needs_gather = false;
+    for (const PendingUpload& upload : uploads) {
+      if (upload.source_span != upload.compressed) {
+        needs_gather = true;
+        break;
+      }
     }
-    GatherCompressed(uploads, sources, state_->scratch_source.data());
+    std::unique_lock<std::mutex> scratch_lock(state_->scratch_mutex);
+    if (needs_gather) {
+      state_->scratch_source.EnsureSize(compressed_total);
+      GatherCompressed(uploads, sources, state_->scratch_source.data());
+    }
+    VkDeviceSize indirect_decoded_bytes = 0;
+    if (state_->overrides.enabled()) {
+      indirect_decoded_bytes = decoded_total;
+    } else {
+      for (const PendingUpload& upload : uploads) {
+        if (upload.scale != 1) {
+          indirect_decoded_bytes += upload.decoded;
+        }
+      }
+    }
+    if (indirect_decoded_bytes > 0 &&
+        state_->scratch_decoded.size() < indirect_decoded_bytes) {
+      state_->scratch_decoded.resize(indirect_decoded_bytes);
+    }
+    state_->DecodeAndEmit(
+        uploads,
+        needs_gather ? std::vector<const std::uint8_t*>{} : sources,
+        state_->scratch_source.data(), state_->scratch_decoded.data());
     for (const auto& [memory, mapping] : temporary) {
       if (mapping.dev->unmap_memory != nullptr) {
         mapping.dev->unmap_memory(mapping.dev->device, memory);
       }
     }
-    state_->DecodeAndEmit(uploads, state_->scratch_source.data(),
-                          state_->scratch_decoded.data());
     return {};
   }
 
