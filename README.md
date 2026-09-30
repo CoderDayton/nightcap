@@ -197,6 +197,11 @@ Use `sudo make install` instead to install system-wide under `/usr`. To make
 Roblox website links open the build tree copy without installing, run
 `make register-url-handler`.
 
+To build and install the Flatpak from source, install `flatpak-builder` and run
+`make flatpak`. It builds with 2 parallel jobs to keep memory use low. Pass
+`FLATPAK_JOBS=N` to `make flatpak`, or set `MOCKTAIL_FLATPAK_JOBS=N` for
+`scripts/build_flatpak.sh`, to change that.
+
 To run the same checks as CI before each commit and push, install
 [lefthook](https://github.com/evilmartians/lefthook) and run once:
 
