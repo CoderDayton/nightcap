@@ -313,7 +313,7 @@ TEST(CommandLineTest, UsageContainsEverySupportedOption) {
   }
   EXPECT_EQ(usage.find("--login"), std::string::npos);
   EXPECT_EQ(usage.find("--import-cookie"), std::string::npos);
-  EXPECT_NE(usage.find("native sign-in flow"), std::string::npos);
+  EXPECT_NE(usage.find("desktop sign-in window"), std::string::npos);
   EXPECT_NE(
       usage.find("verified managed " +
                  std::string(mocktail::compat::kGuestAbi) + " Roblox payload"),

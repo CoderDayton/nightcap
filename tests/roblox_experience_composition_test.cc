@@ -1408,7 +1408,7 @@ TEST_F(RobloxExperienceCompositionWebSurfaceTest,
   ASSERT_FALSE(status.ok());
   EXPECT_NE(status.message().find("did not become ready"), std::string::npos)
       << status.message();
-  EXPECT_NE(status.message().find(" ms of 5000 ms"), std::string::npos)
+  EXPECT_NE(status.message().find(" ms of 10000 ms"), std::string::npos)
       << status.message();
 }
 

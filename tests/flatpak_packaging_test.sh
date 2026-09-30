@@ -91,7 +91,10 @@ assert "--libdir=lib" in libplacebo_options
 
 assert manifest["build-options"]["strip"] is True
 assert manifest["build-options"]["no-debuginfo"] is True
-assert "env" not in manifest["build-options"]
+assert manifest["build-options"]["env"] == {
+    "FLATPAK_BUILDER_N_JOBS": "2",
+    "NINJAFLAGS": "-j2",
+}
 
 project_sources = modules["mocktail"]["sources"]
 assert project_sources == [
@@ -179,7 +182,13 @@ grep -Fq -- '--manifest packaging/flatpak/io.github.CoderDayton.nightcap.json' \
 grep -Fq -- '--jobs 4' <<<"${dry_run}" ||
   Fail 'make flatpak does not cap local build parallelism'
 
-mkdir -p -- "${TEMP_DIR}/bin"
+mkdir -p -- "${TEMP_DIR}/bin" "${TEMP_DIR}/system_bin"
+for tool in /bin/* /usr/bin/*; do
+  [[ -x "${tool}" && ! -d "${tool}" ]] || continue
+  tool_name="${tool##*/}"
+  [[ "${tool_name}" != "flatpak-builder" ]] || continue
+  [[ -e "${TEMP_DIR}/system_bin/${tool_name}" ]] || ln -s "${tool}" "${TEMP_DIR}/system_bin/${tool_name}"
+done
 cat >"${TEMP_DIR}/bin/uname" <<'EOF'
 #!/usr/bin/env bash
 printf 'x86_64\n'
@@ -191,7 +200,7 @@ EOF
 chmod 0755 "${TEMP_DIR}/bin/uname" "${TEMP_DIR}/bin/flatpak"
 
 set +e
-PATH="${TEMP_DIR}/bin:/usr/bin:/bin" \
+PATH="${TEMP_DIR}/bin:${TEMP_DIR}/system_bin" \
   "${BUILD_HELPER}" --build-dir "${ROOT}/build-flatpak-test" \
   >"${TEMP_DIR}/stdout" 2>"${TEMP_DIR}/stderr"
 helper_status=$?
