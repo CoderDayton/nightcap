@@ -6,6 +6,12 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `make update-roblox` no longer deletes your previous Roblox install when an
+  import fails partway through. If a step fails, the old files are put back,
+  or kept in a folder whose path is printed. Thanks to @kimlherme.
+
 ## [0.3.2] - 2026-09-29
 
 ### Added
