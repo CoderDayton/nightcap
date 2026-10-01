@@ -28,6 +28,7 @@ STORE_ROOT=""
 TEMP_DIR=""
 ROLLBACK_DIR=""
 ROLLBACK_NEEDED=false
+BACKUP_COMPLETE=false
 
 usage() {
   cat <<'EOF'
@@ -146,34 +147,54 @@ certificate_digests() {
 }
 
 restore_payload() {
-  [[ "${ROLLBACK_NEEDED}" == true && -d "${ROLLBACK_DIR}" ]] || return 0
+  [[ "${ROLLBACK_NEEDED}" == true ]] || return 0
+  [[ -d "${ROLLBACK_DIR}" ]] || return 1
 
   log WARN "restoring the previous payload"
-  mkdir -p "${RBX_BIN_DIR}" "$(dirname -- "${METADATA_PATH}")"
+  mkdir -p "${RBX_BIN_DIR}" "$(dirname -- "${METADATA_PATH}")" || return 1
 
-  local path
-  for path in libroblox.so sober_apk assets; do
-    if [[ -e "${RBX_BIN_DIR}/${path}" ]]; then
-      mv -- "${RBX_BIN_DIR}/${path}" "${TEMP_DIR}/failed-${path}"
+  local path active_path failed_path restore_status=0
+  for path in libroblox.so sober_apk assets roblox_payload.json; do
+    active_path="${RBX_BIN_DIR}/${path}"
+    failed_path="${TEMP_DIR}/failed-${path}"
+    if [[ "${path}" == roblox_payload.json ]]; then
+      active_path="${METADATA_PATH}"
+      failed_path="${TEMP_DIR}/failed-metadata.json"
     fi
-    if [[ -e "${ROLLBACK_DIR}/${path}" ]]; then
-      mv -- "${ROLLBACK_DIR}/${path}" "${RBX_BIN_DIR}/${path}"
+
+    # Before activation, anything still active belongs to the old payload.
+    # Only components removed by the backup need restoring in this phase.
+    if [[ "${BACKUP_COMPLETE}" == false ]]; then
+      if [[ -e "${active_path}" || -L "${active_path}" ||
+            ! -e "${ROLLBACK_DIR}/${path}" && ! -L "${ROLLBACK_DIR}/${path}" ]]; then
+        continue
+      fi
+    fi
+
+    if [[ -e "${active_path}" || -L "${active_path}" ]]; then
+      # Do not restore onto an occupied destination if removing the new
+      # component fails: mv could overwrite a file or nest a directory.
+      if ! mv -- "${active_path}" "${failed_path}"; then
+        restore_status=1
+        continue
+      fi
+    fi
+    if [[ -e "${ROLLBACK_DIR}/${path}" || -L "${ROLLBACK_DIR}/${path}" ]]; then
+      mv -- "${ROLLBACK_DIR}/${path}" "${active_path}" || restore_status=1
     fi
   done
-
-  if [[ -e "${METADATA_PATH}" ]]; then
-    mv -- "${METADATA_PATH}" "${TEMP_DIR}/failed-metadata.json"
-  fi
-  if [[ -e "${ROLLBACK_DIR}/roblox_payload.json" ]]; then
-    mv -- "${ROLLBACK_DIR}/roblox_payload.json" "${METADATA_PATH}"
-  fi
+  return "${restore_status}"
 }
 
 cleanup() {
-  local -r status=$?
+  local status=$?
   trap - EXIT
   set +e
-  restore_payload
+  if ! restore_payload; then
+    log ERROR "payload restoration failed; recovery files retained at ${TEMP_DIR}"
+    (( status != 0 )) || status=1
+    exit "${status}"
+  fi
   if [[ -n "${TEMP_DIR}" && -d "${TEMP_DIR}" ]]; then
     rm -rf -- "${TEMP_DIR}"
   fi
@@ -401,17 +422,18 @@ main() {
   mkdir -p "${VERSIONS_DIR}" "$(dirname -- "${METADATA_PATH}")"
   ROLLBACK_DIR="${TEMP_DIR}/rollback"
   mkdir -p "${ROLLBACK_DIR}"
+  ROLLBACK_NEEDED=true
 
   local active_path
   for active_path in libroblox.so sober_apk assets; do
-    if [[ -e "${RBX_BIN_DIR}/${active_path}" ]]; then
+    if [[ -e "${RBX_BIN_DIR}/${active_path}" || -L "${RBX_BIN_DIR}/${active_path}" ]]; then
       mv -- "${RBX_BIN_DIR}/${active_path}" "${ROLLBACK_DIR}/${active_path}"
     fi
   done
-  if [[ -e "${METADATA_PATH}" ]]; then
+  if [[ -e "${METADATA_PATH}" || -L "${METADATA_PATH}" ]]; then
     mv -- "${METADATA_PATH}" "${ROLLBACK_DIR}/roblox_payload.json"
   fi
-  ROLLBACK_NEEDED=true
+  BACKUP_COMPLETE=true
 
   mv -- "${stage_dir}/libroblox.so" "${RBX_BIN_DIR}/libroblox.so"
   mv -- "${stage_dir}/sober_apk" "${RBX_BIN_DIR}/sober_apk"

@@ -22,6 +22,13 @@ target_link_libraries(fleasion_probe PRIVATE Mocktail::Services libc_shim)
 mocktail_apply_compile_options(fleasion_probe)
 find_program(MOCKTAIL_TEST_PYTHON python3)
 find_program(MOCKTAIL_TEST_OPENSSL openssl)
+if(MOCKTAIL_TEST_PYTHON)
+  add_test(NAME PayloadImportRollbackTest.PreservesPreviousInstallation
+    COMMAND ${MOCKTAIL_TEST_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/payload_import_rollback_test.py)
+  set_tests_properties(PayloadImportRollbackTest.PreservesPreviousInstallation
+    PROPERTIES TIMEOUT 180)
+endif()
 if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
   add_test(NAME FleasionIntegrationTest.ProxyAndTrust
     COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/fleasion_integration_test.py
