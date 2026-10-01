@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 namespace mocktail::graphics {
 
 bool LookupEmulatedEtc2Format(VkFormat format, Etc2EmulatedFormat* out) {
@@ -398,6 +402,45 @@ bool CreateStagingBlock(const HostDevice& dev, VkDeviceSize size,
   return true;
 }
 
+#if defined(__x86_64__)
+__attribute__((target("sse4.1")))
+inline void CopyHostVisibleMemory(std::uint8_t* dst, const std::uint8_t* src,
+                                  std::size_t bytes) {
+  if ((reinterpret_cast<std::uintptr_t>(src) & 15) != 0 || bytes < 16) {
+    std::memcpy(dst, src, bytes);
+    return;
+  }
+  std::size_t i = 0;
+  for (; i + 64 <= bytes; i += 64) {
+    __m128i c0 = _mm_stream_load_si128(
+        reinterpret_cast<__m128i*>(const_cast<std::uint8_t*>(src + i)));
+    __m128i c1 = _mm_stream_load_si128(
+        reinterpret_cast<__m128i*>(const_cast<std::uint8_t*>(src + i + 16)));
+    __m128i c2 = _mm_stream_load_si128(
+        reinterpret_cast<__m128i*>(const_cast<std::uint8_t*>(src + i + 32)));
+    __m128i c3 = _mm_stream_load_si128(
+        reinterpret_cast<__m128i*>(const_cast<std::uint8_t*>(src + i + 48)));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), c0);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i + 16), c1);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i + 32), c2);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i + 48), c3);
+  }
+  for (; i + 16 <= bytes; i += 16) {
+    __m128i c = _mm_stream_load_si128(
+        reinterpret_cast<__m128i*>(const_cast<std::uint8_t*>(src + i)));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), c);
+  }
+  if (i < bytes) {
+    std::memcpy(dst + i, src + i, bytes - i);
+  }
+}
+#else
+inline void CopyHostVisibleMemory(std::uint8_t* dst, const std::uint8_t* src,
+                                  std::size_t bytes) {
+  std::memcpy(dst, src, bytes);
+}
+#endif
+
 // Packs each upload's compressed bytes into `destination`, dropping the row
 // and layer padding the application may have asked for. Sources are parallel
 // to `uploads`.
@@ -411,17 +454,18 @@ void GatherCompressed(const std::vector<PendingUpload>& uploads,
     std::uint8_t* target = destination + offset;
     const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
     if (upload.source_span == upload.compressed) {
-      std::memcpy(target, source, upload.compressed);
+      CopyHostVisibleMemory(target, source, upload.compressed);
     } else {
       const VkDeviceSize block_rows =
           (static_cast<VkDeviceSize>(upload.height) + 3) / 4;
       const VkDeviceSize packed_row = compressed_layer / block_rows;
       for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
         for (VkDeviceSize row = 0; row < block_rows; ++row) {
-          std::memcpy(target + layer * compressed_layer + row * packed_row,
-                      source + layer * upload.source_layer_stride +
-                          row * upload.source_row_stride,
-                      packed_row);
+          CopyHostVisibleMemory(
+              target + layer * compressed_layer + row * packed_row,
+              source + layer * upload.source_layer_stride +
+                  row * upload.source_row_stride,
+              packed_row);
         }
       }
     }
@@ -710,21 +754,11 @@ struct VulkanEtc2Emulation::State {
                      upload.target);
         return;
       }
-      const std::uint8_t* source = decoded;
-      std::vector<std::uint8_t> cropped;
-      if (upload.source_width != upload.width ||
-          upload.source_height != upload.height) {
-        const std::size_t row = static_cast<std::size_t>(upload.source_width) * 4;
-        cropped.resize(row * upload.source_height);
-        for (std::uint32_t y = 0; y < upload.source_height; ++y) {
-          std::memcpy(cropped.data() + y * row,
-                      decoded + static_cast<std::size_t>(y) * upload.width * 4,
-                      row);
-        }
-        source = cropped.data();
-      }
-      ResampleRgba(source, upload.source_width, upload.source_height,
-                   upload.target_width, upload.target_height, upload.target);
+      const std::size_t source_stride =
+          static_cast<std::size_t>(upload.width) * 4;
+      ResampleRgba(decoded, upload.source_width, upload.source_height,
+                   source_stride, upload.target_width, upload.target_height,
+                   upload.target);
     } else {
       std::memcpy(upload.target, decoded, upload.decoded);
     }
@@ -1700,9 +1734,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       collect(command_buffers[index]);
       const auto record = state_->commands.find(command_buffers[index]);
       if (record != state_->commands.end()) {
-        const std::vector<VkCommandBuffer> secondaries =
-            record->second.secondaries;
-        for (VkCommandBuffer secondary : secondaries) {
+        for (VkCommandBuffer secondary : record->second.secondaries) {
           collect(secondary);
         }
       }

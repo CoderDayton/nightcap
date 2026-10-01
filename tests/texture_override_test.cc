@@ -96,6 +96,21 @@ TEST(TextureOverrideTest, ResampleAveragesSourceBoxes) {
     EXPECT_EQ(grown[pixel * 4 + 0], 9);
     EXPECT_EQ(grown[pixel * 4 + 3], 6);
   }
+
+  // 4x4 image with row stride = 16 bytes, but we only resample the top-left 2x2 region
+  std::vector<std::uint8_t> padded(4 * 16, 0);
+  for (std::uint32_t y = 0; y < 2; ++y) {
+    for (std::uint32_t x = 0; x < 2; ++x) {
+      padded[y * 16 + x * 4 + 0] = source.pixels[(y * 2 + x) * 4 + 0];
+      padded[y * 16 + x * 4 + 1] = source.pixels[(y * 2 + x) * 4 + 1];
+      padded[y * 16 + x * 4 + 2] = source.pixels[(y * 2 + x) * 4 + 2];
+      padded[y * 16 + x * 4 + 3] = source.pixels[(y * 2 + x) * 4 + 3];
+    }
+  }
+  std::uint8_t strided_four[16] = {};
+  ResampleRgba(padded.data(), 2, 2, 16, 2, 2, strided_four);
+  EXPECT_EQ(std::vector<std::uint8_t>(strided_four, strided_four + 16),
+            source.pixels);
 }
 
 // Rounded mean of the source box [x*sw/w, (x+1)*sw/w) per axis, at least one
