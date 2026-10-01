@@ -73,13 +73,24 @@ CompatibilityCatalogResult LoadCompatibilityCatalog(
   const nlohmann::json document =
       nlohmann::json::parse(contents, nullptr, false, true);
   if (document.is_discarded() || !document.is_object() ||
-      document.value("schema_version", 0) != 1 ||
-      !document.contains("profiles") || !document["profiles"].is_array()) {
+      !document.contains("schema_version") ||
+      !document["schema_version"].is_number_integer() ||
+      document["schema_version"] != 1 || !document.contains("profiles") ||
+      !document["profiles"].is_array()) {
     result.error = "compatibility manifest has an unsupported schema";
     return result;
   }
   for (const nlohmann::json& profile : document["profiles"]) {
-    if (!profile.is_object() || profile.value("status", "") != "supported" ||
+    if (!profile.is_object()) continue;
+    if ((profile.contains("status") && !profile["status"].is_string()) ||
+        (profile.contains("default_allowed") &&
+         !profile["default_allowed"].is_boolean()) ||
+        (profile.contains("allow_legacy_binary_patches") &&
+         !profile["allow_legacy_binary_patches"].is_boolean())) {
+      result.error = "compatibility profile flags have invalid types";
+      return result;
+    }
+    if (profile.value("status", "") != "supported" ||
         !profile.value("default_allowed", false) ||
         profile.value("allow_legacy_binary_patches", true)) {
       continue;

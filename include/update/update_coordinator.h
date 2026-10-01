@@ -38,6 +38,7 @@ struct UpdateRequest {
   CanaryGraphicsBackend canary_graphics_backend =
       CanaryGraphicsBackend::kDirectVulkan;
   int progress_fd = -1;
+  CanarySpawn canary_spawn;
 };
 
 struct UpdateResult {

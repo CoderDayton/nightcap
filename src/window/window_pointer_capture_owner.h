@@ -56,6 +56,8 @@ class WindowPointerCaptureOwner final {
   bool cursor_visible() const { return cursor_visible_; }
 
  private:
+  friend class WindowPointerCaptureOwnerTestPeer;
+
   bool Apply(bool capture, bool cursor_visible);
 
   PointerCaptureBackend* backend_ = nullptr;

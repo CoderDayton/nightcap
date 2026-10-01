@@ -818,7 +818,13 @@ void ReleaseJniReference(jobject obj) {
   auto arr_it = g_array_storage.find(reinterpret_cast<jarray>(obj));
   if (arr_it != g_array_storage.end()) {
     std::unique_ptr<PseudoArray> dying_array = std::move(arr_it->second);
+    std::vector<jobject> elements = std::move(dying_array->objects);
     g_array_storage.erase(arr_it);
+    // Release after detaching the array: elements may recursively erase other
+    // arrays. Keep dying_array alive until those releases have completed.
+    for (jobject element : elements) {
+      ReleaseJniReference(element);
+    }
     return;
   }
   if (g_known_classes.find(reinterpret_cast<jclass>(obj)) !=
@@ -3929,6 +3935,11 @@ jobjectArray MakeObjectArray(jsize len, jobject init) {
   auto array = std::make_unique<PseudoArray>();
   if (len > 0) {
     array->objects.resize(static_cast<std::size_t>(len), init);
+    if (init != nullptr) {
+      for (jsize index = 0; index < len; ++index) {
+        RetainJniReference(init);
+      }
+    }
   }
   jobjectArray ref = reinterpret_cast<jobjectArray>(array.get());
   g_array_storage[ref] = std::move(array);

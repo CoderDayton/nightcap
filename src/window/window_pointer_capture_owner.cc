@@ -39,10 +39,14 @@ bool WindowPointerCaptureOwner::RegisterQuery(MouseLockQueryCallback callback,
 
 void WindowPointerCaptureOwner::ClearQuery() {
   std::unique_lock<std::mutex> lock(mutex_);
+  if (clearing_ && t_pointer_query_owner == this) {
+    return;
+  }
   condition_.wait(lock, [this] { return !clearing_; });
   clearing_ = true;
   callback_ = nullptr;
   context_ = nullptr;
+  condition_.notify_all();
   condition_.wait(lock, [this] {
     return in_flight_ == 0 || t_pointer_query_owner == this;
   });

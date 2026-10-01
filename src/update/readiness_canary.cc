@@ -419,8 +419,13 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
   }
   pid_t child = -1;
   if (spawn_status == 0) {
-    spawn_status = posix_spawn(&child, options.runtime_binary.c_str(), &actions,
-                               nullptr, arguments, environment_pointers.data());
+    result.spawn_error =
+        options.spawn
+            ? options.spawn(&child, options.runtime_binary.c_str(), &actions,
+                            nullptr, arguments, environment_pointers.data())
+            : posix_spawn(&child, options.runtime_binary.c_str(), &actions,
+                          nullptr, arguments, environment_pointers.data());
+    spawn_status = result.spawn_error;
   }
   posix_spawn_file_actions_destroy(&actions);
   close(log_descriptor);
