@@ -519,9 +519,10 @@ UpdateResult RunUnsafeLatest(
 bool RunCandidateCanaries(const UpdatePaths& paths, const Candidate& candidate,
                           bool run_canary,
                           CanaryGraphicsBackend graphics_backend,
-                          int progress_fd,
+                          int progress_fd, const CanarySpawn& spawn,
                           std::array<std::filesystem::path, 2>* logs,
-                          std::string* error) {
+                          std::string* error, bool* retryable) {
+  *retryable = false;
   if (!run_canary) {
     if (!candidate.exact_supported) {
       *error = "latest candidate cannot be activated without Tier C probation";
@@ -545,12 +546,14 @@ bool RunCandidateCanaries(const UpdatePaths& paths, const Candidate& candidate,
     canary.cache_root = paths.cache_root;
     canary.state_root = paths.state_root;
     canary.graphics_backend = graphics_backend;
+    canary.spawn = spawn;
     const CanaryResult canary_result = [&] {
       StageTimer timer("canary[" + std::to_string(index + 1) + "/" +
                        std::to_string(runs) + "]");
       return RunReadinessCanary(canary);
     }();
     if (!canary_result) {
+      *retryable = canary_result.spawn_error == EAGAIN;
       *error = canary_result.error;
       if (!canary_result.log_path.empty()) {
         *error += "; log: " + canary_result.log_path.string();
@@ -565,11 +568,13 @@ bool RunCandidateCanaries(const UpdatePaths& paths, const Candidate& candidate,
 PayloadStoreResult PromoteCandidate(const UpdatePaths& paths,
                                     const UpdateRequest& request,
                                     const Candidate& candidate,
-                                    PayloadStore* store, std::string* error) {
+                                    PayloadStore* store, std::string* error,
+                                    bool* retryable) {
+  *retryable = false;
   std::array<std::filesystem::path, 2> logs;
-  if (!RunCandidateCanaries(paths, candidate, request.run_canary,
-                            request.canary_graphics_backend,
-                            request.progress_fd, &logs, error)) {
+  if (!RunCandidateCanaries(
+          paths, candidate, request.run_canary, request.canary_graphics_backend,
+          request.progress_fd, request.canary_spawn, &logs, error, retryable)) {
     return {};
   }
   Progress(request.progress_fd, "Installing Roblox...");
@@ -824,14 +829,14 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     }
     examined.push_back(candidate.staged.payload_id);
     if (request.startup_preflight && current &&
-        RejectedForRuntime(paths, candidate,
-                           request.canary_graphics_backend)) {
+        RejectedForRuntime(paths, candidate, request.canary_graphics_backend)) {
       blocked = description + " already failed probation with this runtime";
       continue;
     }
 
     std::string candidate_error;
     bool candidate_rejected = false;
+    bool retryable = false;
     if (!candidate.exact_supported && candidate.profile.empty()) {
       const ReferenceProfile reference =
           ResolveReference(paths, installed, catalog.profiles, &provider,
@@ -865,9 +870,9 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     }
     PayloadStoreResult promoted;
     if (candidate_error.empty()) {
-      promoted =
-          PromoteCandidate(paths, request, candidate, &store, &candidate_error);
-      candidate_rejected = !candidate_error.empty();
+      promoted = PromoteCandidate(paths, request, candidate, &store,
+                                  &candidate_error, &retryable);
+      candidate_rejected = !candidate_error.empty() && !retryable;
     }
     if (candidate_error.empty() && promoted) {
       result.changed = !current || current.payload_id != promoted.payload_id;

@@ -111,22 +111,32 @@ std::string ReadRegular(const std::filesystem::path& path, std::size_t maximum,
 
 bool WriteAtomic(const std::filesystem::path& root,
                  const std::filesystem::path& destination,
-                 std::string_view contents, std::string* error) {
+                 std::string_view contents, std::string* error,
+                 const ManifestWriteFault& fault = {}) {
   static std::uint64_t generation = 0;
   const std::filesystem::path temporary =
       root / (".manifest-" + std::to_string(getpid()) + "-" +
               std::to_string(++generation));
+  const auto fail = [&](ManifestWritePhase phase) {
+    if (!fault || !fault(destination, phase)) return false;
+    errno = EIO;
+    return true;
+  };
   const int descriptor =
-      open(temporary.c_str(),
-           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
+      fail(ManifestWritePhase::kCreate)
+          ? -1
+          : open(temporary.c_str(),
+                 O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
   if (descriptor < 0) {
     *error = "cannot create atomic payload manifest";
     return false;
   }
   std::size_t offset = 0;
   while (offset < contents.size()) {
-    const ssize_t bytes =
-        write(descriptor, contents.data() + offset, contents.size() - offset);
+    const ssize_t bytes = fail(ManifestWritePhase::kWrite)
+                              ? -1
+                              : write(descriptor, contents.data() + offset,
+                                      contents.size() - offset);
     if (bytes < 0) {
       if (errno == EINTR) continue;
       close(descriptor);
@@ -137,7 +147,8 @@ bool WriteAtomic(const std::filesystem::path& root,
     }
     offset += static_cast<std::size_t>(bytes);
   }
-  const bool synced = fsync(descriptor) == 0;
+  const bool synced =
+      !fail(ManifestWritePhase::kFileFsync) && fsync(descriptor) == 0;
   close(descriptor);
   if (!synced) {
     std::error_code ignored;
@@ -146,7 +157,11 @@ bool WriteAtomic(const std::filesystem::path& root,
     return false;
   }
   std::error_code filesystem_error;
-  std::filesystem::rename(temporary, destination, filesystem_error);
+  if (fail(ManifestWritePhase::kRename)) {
+    filesystem_error = std::make_error_code(std::errc::io_error);
+  } else {
+    std::filesystem::rename(temporary, destination, filesystem_error);
+  }
   if (filesystem_error) {
     std::filesystem::remove(temporary, filesystem_error);
     *error = "cannot publish atomic payload manifest";
@@ -453,14 +468,19 @@ ManifestIdentity ReadManifest(const std::filesystem::path& path,
   const nlohmann::json document =
       nlohmann::json::parse(result.contents, nullptr, false, true);
   if (document.is_discarded() || !document.is_object() ||
-      document.value("schema_version", 0) != 1 ||
+      !document.contains("schema_version") ||
+      !document["schema_version"].is_number_integer() ||
+      document["schema_version"] != 1 ||
       !document.contains("payload_id") || !document["payload_id"].is_string()) {
     result.error = "active payload manifest is invalid";
     return result;
   }
   result.payload_id = document["payload_id"].get<std::string>();
   if (!ValidPayloadId(result.payload_id) ||
-      document.value("payload_path", "") != "payloads/" + result.payload_id) {
+      !document.contains("payload_path") ||
+      !document["payload_path"].is_string() ||
+      document["payload_path"].get_ref<const std::string&>() !=
+          "payloads/" + result.payload_id) {
     result.error = "active payload manifest identity is invalid";
   }
   return result;
@@ -535,7 +555,14 @@ bool PopulateInspectedResult(
   if (verified_payload != nullptr) *verified_payload = payload;
   const nlohmann::json document =
       nlohmann::json::parse(manifest.contents, nullptr, false, true);
-  if (document.is_discarded() ||
+  if (document.is_discarded() || !document.is_object() ||
+      !document.contains("version_name") ||
+      !document["version_name"].is_string() ||
+      !document.contains("elf_build_id") ||
+      !document["elf_build_id"].is_string() ||
+      !document.contains("version_code") ||
+      !document["version_code"].is_number_unsigned() ||
+      document["version_code"] == 0 ||
       document.value("version_name", "") != payload.metadata.version_name ||
       document.value("version_code", 0ULL) != payload.metadata.version_code ||
       document.value("elf_build_id", "") != payload.metadata.build_id) {
@@ -549,6 +576,13 @@ bool PopulateInspectedResult(
            payload.metadata.library_sha256)) {
     result->error = "active payload manifest hash does not match payload";
     return false;
+  }
+  for (const char* field : {"host_abi_profile_path",
+                            "compatibility_manifest_path", "approval_path"}) {
+    if (document.contains(field) && !document[field].is_string()) {
+      result->error = "active payload approval reference set is invalid";
+      return false;
+    }
   }
   const std::string profile = document.value("host_abi_profile_path", "");
   const std::string compatibility =
@@ -591,14 +625,120 @@ bool PersistPayloadSha256(const std::filesystem::path& root,
                      error);
 }
 
+constexpr const char* kPreviousRecovery = ".previous_good-recovery.json";
+constexpr const char* kAbsentRecovery = ".previous_good-recovery.absent";
+
+// Inspect the directory entry itself: a dangling symlink is also a pending
+// recovery artifact, and an inspection failure must never authorize deletion.
+bool NoPendingRecovery(const std::filesystem::path& root, std::string* error) {
+  for (const char* name : {kPreviousRecovery, kAbsentRecovery}) {
+    std::error_code filesystem_error;
+    const auto status =
+        std::filesystem::symlink_status(root / name, filesystem_error);
+    if (filesystem_error &&
+        filesystem_error != std::errc::no_such_file_or_directory) {
+      *error = "cannot inspect previous_good recovery: " +
+               filesystem_error.message();
+      return false;
+    }
+    if (status.type() != std::filesystem::file_type::not_found) {
+      *error = "previous_good recovery is pending: " + (root / name).string();
+      return false;
+    }
+  }
+  return true;
+}
+
+bool RemoveRecovery(const std::filesystem::path& recovery, std::string* error,
+                    bool current_published = false) {
+  std::error_code filesystem_error;
+  std::filesystem::remove(recovery, filesystem_error);
+  if (!filesystem_error) return true;
+  if (!error->empty()) *error += "; ";
+  if (current_published) *error += "current manifest published; ";
+  *error +=
+      "cannot remove previous_good recovery: " + filesystem_error.message() +
+      "; recovery retained at " + recovery.string();
+  return false;
+}
+
+// Called only while StoreLock is held. This recovers a failed publication;
+// it does not make two manifest renames atomic against a process crash.
+bool PublishActivation(const std::filesystem::path& root,
+                       std::string_view payload_id, std::string_view contents,
+                       const ManifestWriteFault& fault, std::string* error) {
+  if (!NoPendingRecovery(root, error)) return false;
+  const auto current = ReadManifest(root / "current.json", true);
+  if (!current) {
+    *error = current.error;
+    return false;
+  }
+  if (current.contents.empty() || current.payload_id == payload_id) {
+    return WriteAtomic(root, root / "current.json", contents, error, fault);
+  }
+
+  std::error_code filesystem_error;
+  const auto previous_status = std::filesystem::symlink_status(
+      root / "previous_good.json", filesystem_error);
+  if (filesystem_error &&
+      filesystem_error != std::errc::no_such_file_or_directory) {
+    *error =
+        "cannot inspect previous_good manifest: " + filesystem_error.message();
+    return false;
+  }
+  const bool previous_present =
+      previous_status.type() != std::filesystem::file_type::not_found;
+  std::string previous;
+  if (previous_present) {
+    // Keep the original bytes, including an explicitly present empty file.
+    previous = ReadRegular(root / "previous_good.json", 1024U * 1024U, error);
+    if (!error->empty()) return false;
+  }
+  const auto recovery =
+      root / (previous_present ? kPreviousRecovery : kAbsentRecovery);
+  if (!WriteAtomic(root, recovery, previous_present ? previous : "absent\n",
+                   error, fault)) {
+    return false;
+  }
+  if (!WriteAtomic(root, root / "previous_good.json", current.contents, error,
+                   fault)) {
+    RemoveRecovery(recovery, error);
+    return false;
+  }
+  if (!WriteAtomic(root, root / "current.json", contents, error, fault)) {
+    std::string restore_error;
+    if (previous_present) {
+      WriteAtomic(root, root / "previous_good.json", previous, &restore_error,
+                  fault);
+    } else {
+      filesystem_error.clear();
+      std::filesystem::remove(root / "previous_good.json", filesystem_error);
+      if (filesystem_error) {
+        restore_error = "cannot restore absence of previous_good: " +
+                        filesystem_error.message();
+      }
+    }
+    if (!restore_error.empty()) {
+      *error += "; previous_good restoration failed: " + restore_error +
+                "; recovery retained at " + recovery.string();
+    } else {
+      RemoveRecovery(recovery, error);
+    }
+    return false;
+  }
+  return RemoveRecovery(recovery, error, true);
+}
+
 }  // namespace
 
 PayloadStore::PayloadStore(std::filesystem::path root,
                            std::filesystem::path compatibility_manifest,
-                           std::filesystem::path runtime_binary)
+                           std::filesystem::path runtime_binary,
+                           ManifestWriteFault manifest_write_fault)
     : root_(std::move(root)),
       compatibility_manifest_(std::move(compatibility_manifest)),
-      runtime_binary_(std::move(runtime_binary)) {}
+      runtime_binary_(std::move(runtime_binary)),
+      manifest_write_fault_(std::move(manifest_write_fault)) {}
 
 PayloadStoreResult PayloadStore::Stage(
     const std::filesystem::path& prepared_payload) {
@@ -679,20 +819,9 @@ PayloadStoreResult PayloadStore::Promote(std::string_view payload_id) {
   result.version_name = payload.metadata.version_name;
   result.version_code = payload.metadata.version_code;
   result.build_id = payload.metadata.build_id;
-  const ManifestIdentity current = ReadManifest(root_ / "current.json", true);
-  if (!current && !current.error.empty()) {
-    result.error = current.error;
-    return result;
-  }
-  if (!current.contents.empty() && current.payload_id != result.payload_id &&
-      !WriteAtomic(root_, root_ / "previous_good.json", current.contents,
-                   &result.error)) {
-    return result;
-  }
   const std::string contents = ActivationManifest(payload).dump(2) + "\n";
-  if (!WriteAtomic(root_, root_ / "current.json", contents, &result.error)) {
-    return result;
-  }
+  PublishActivation(root_, result.payload_id, contents, manifest_write_fault_,
+                    &result.error);
   return result;
 }
 
@@ -742,17 +871,8 @@ PayloadStoreResult PayloadStore::PromoteProbation(
                                  &result.error)) {
     return result;
   }
-  const ManifestIdentity current = ReadManifest(root_ / "current.json", true);
-  if (!current && !current.error.empty()) {
-    result.error = current.error;
-    return result;
-  }
-  if (!current.contents.empty() && current.payload_id != result.payload_id &&
-      !WriteAtomic(root_, root_ / "previous_good.json", current.contents,
-                   &result.error)) {
-    return result;
-  }
-  if (!WriteAtomic(root_, root_ / "current.json", contents, &result.error)) {
+  if (!PublishActivation(root_, result.payload_id, contents,
+                         manifest_write_fault_, &result.error)) {
     return result;
   }
   result.version_name = payload.metadata.version_name;
@@ -875,6 +995,7 @@ PayloadGarbageResult PayloadStore::CollectGarbage(
   PayloadGarbageResult result;
   StoreLock lock(root_, &result.error);
   if (!lock) return result;
+  if (!NoPendingRecovery(root_, &result.error)) return result;
   std::set<std::string> retained(keep.begin(), keep.end());
   for (const char* manifest : {"current.json", "previous_good.json"}) {
     const ManifestIdentity identity = ReadManifest(root_ / manifest, true);

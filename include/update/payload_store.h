@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -33,11 +34,18 @@ struct PayloadGarbageResult {
   explicit operator bool() const { return error.empty(); }
 };
 
+// Optional per-store fault hook for atomic manifest writes. Returning true
+// makes the selected operation fail through its normal cleanup path.
+enum class ManifestWritePhase { kCreate, kWrite, kFileFsync, kRename };
+using ManifestWriteFault =
+    std::function<bool(const std::filesystem::path&, ManifestWritePhase)>;
+
 class PayloadStore final {
  public:
   PayloadStore(std::filesystem::path root,
                std::filesystem::path compatibility_manifest,
-               std::filesystem::path runtime_binary = {});
+               std::filesystem::path runtime_binary = {},
+               ManifestWriteFault manifest_write_fault = {});
 
   PayloadStoreResult Stage(const std::filesystem::path& prepared_payload);
   PayloadStoreResult Promote(std::string_view payload_id);
@@ -60,6 +68,7 @@ class PayloadStore final {
   std::filesystem::path root_;
   std::filesystem::path compatibility_manifest_;
   std::filesystem::path runtime_binary_;
+  ManifestWriteFault manifest_write_fault_;
 };
 
 }  // namespace mocktail::update
