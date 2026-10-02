@@ -15,6 +15,49 @@ namespace {
 
 constexpr int kBionicAddressInfoFailure = 4;
 constexpr int kBionicAddressInfoMemory = 6;
+constexpr int kBionicAddressInfoBadFlags = 3;
+
+struct AddressInfoFlag {
+  int bionic;
+  int host;
+};
+
+// Bundled Android netdb.h AI_MASK includes only these five flags.
+constexpr std::array<AddressInfoFlag, 5> kAddressInfoFlags = {{
+    {0x00000001, AI_PASSIVE},
+    {0x00000002, AI_CANONNAME},
+    {0x00000004, AI_NUMERICHOST},
+    {0x00000008, AI_NUMERICSERV},
+    {0x00000400, AI_ADDRCONFIG},
+}};
+
+constexpr int SupportedBionicAddressInfoFlags() noexcept {
+  int flags = 0;
+  for (const AddressInfoFlag& entry : kAddressInfoFlags) {
+    flags |= entry.bionic;
+  }
+  return flags;
+}
+
+int HostAddressInfoFlags(int bionic_flags) noexcept {
+  int flags = 0;
+  for (const AddressInfoFlag& entry : kAddressInfoFlags) {
+    if ((bionic_flags & entry.bionic) != 0) {
+      flags |= entry.host;
+    }
+  }
+  return flags;
+}
+
+int BionicAddressInfoFlags(int host_flags) noexcept {
+  int flags = 0;
+  for (const AddressInfoFlag& entry : kAddressInfoFlags) {
+    if ((host_flags & entry.host) != 0) {
+      flags |= entry.bionic;
+    }
+  }
+  return flags;
+}
 
 constexpr std::array<std::string_view, 3> kBlockedUploadSuffixes = {
     "crashes.rbxinfra.com",
@@ -63,7 +106,7 @@ int BionicAddressInfoError(int host_error) noexcept {
     return 2;
   }
   if (host_error == EAI_BADFLAGS) {
-    return 3;
+    return kBionicAddressInfoBadFlags;
   }
   if (host_error == EAI_FAIL) {
     return kBionicAddressInfoFailure;
@@ -102,7 +145,7 @@ int BionicAddressInfoError(int host_error) noexcept {
 addrinfo HostHints(const BionicAddressInfo* hints) noexcept {
   addrinfo host_hints{};
   if (hints != nullptr) {
-    host_hints.ai_flags = hints->ai_flags;
+    host_hints.ai_flags = HostAddressInfoFlags(hints->ai_flags);
     host_hints.ai_family = hints->ai_family;
     host_hints.ai_socktype = hints->ai_socktype;
     host_hints.ai_protocol = hints->ai_protocol;
@@ -122,7 +165,7 @@ bool CopyHostAddressInfo(const addrinfo* host,
       BionicFreeAddressInfo(head);
       return false;
     }
-    node->ai_flags = current->ai_flags;
+    node->ai_flags = BionicAddressInfoFlags(current->ai_flags);
     node->ai_family = current->ai_family;
     node->ai_socktype = current->ai_socktype;
     node->ai_protocol = current->ai_protocol;
@@ -186,6 +229,10 @@ int BionicGetAddressInfo(const char* node, const char* service,
   *result = nullptr;
   if (node != nullptr && IsBlockedCrashReportUploadHost(node)) {
     return kBionicAddressInfoNameNotFound;
+  }
+  if (hints != nullptr &&
+      (hints->ai_flags & ~SupportedBionicAddressInfoFlags()) != 0) {
+    return kBionicAddressInfoBadFlags;
   }
 
   const addrinfo host_hints = HostHints(hints);
