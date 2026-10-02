@@ -1306,8 +1306,10 @@ TEST_P(PayloadStorePromotionTest,
     Write(compatibility, document.dump());
     const auto result = LoadCompatibilityCatalog(compatibility);
     ASSERT_TRUE(result) << result.error;
-    EXPECT_EQ(result.profiles.size(),
-              std::string_view(field) == "abi" ? 2U : 1U);
+    // A profile without abi means x86_64, so only an x86_64 host counts it.
+    const bool defaults_to_host =
+        std::string_view(field) == "abi" && compat::kGuestAbi == "x86_64";
+    EXPECT_EQ(result.profiles.size(), defaults_to_host ? 2U : 1U);
   }
   auto document = catalog;
   document["profiles"][0]["version_code"] =
