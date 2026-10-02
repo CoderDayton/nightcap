@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cerrno>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -322,12 +323,33 @@ PayloadIntegrityResult InspectPreparedPayload(
   const nlohmann::json document =
       nlohmann::json::parse(contents, nullptr, false, true);
   if (document.is_discarded() || !document.is_object() ||
-      document.value("schema_version", 0) != 1 ||
-      !document.contains("version_code") ||
+      !document.contains("schema_version") ||
+      !document["schema_version"].is_number_integer() ||
+      document["schema_version"] != 1 || !document.contains("version_code") ||
       !document["version_code"].is_number_unsigned() ||
       !document.contains("sha256") || !document["sha256"].is_object() ||
       !document.contains("assets") || !document["assets"].is_object()) {
     result.error = "payload metadata schema is invalid";
+    return result;
+  }
+  for (const char* field : {"package", "version_name", "elf_build_id"}) {
+    if (!document.contains(field) || !document[field].is_string()) {
+      result.error = "payload metadata identity or hashes are invalid";
+      return result;
+    }
+  }
+  for (const std::string& field :
+       {std::string("libroblox"), std::string("base_apk"),
+        std::string(compat::kGuestSplitApkHashKey)}) {
+    if (!document["sha256"].contains(field) ||
+        !document["sha256"][field].is_string()) {
+      result.error = "payload metadata identity or hashes are invalid";
+      return result;
+    }
+  }
+  if (!document["assets"].contains("sha256_tree") ||
+      !document["assets"]["sha256_tree"].is_string()) {
+    result.error = "payload metadata identity or hashes are invalid";
     return result;
   }
   result.metadata.package_name = document.value("package", "");
@@ -339,7 +361,9 @@ PayloadIntegrityResult InspectPreparedPayload(
   result.metadata.split_apk_sha256 =
       document["sha256"].value(std::string(compat::kGuestSplitApkHashKey), "");
   if (!document["assets"].contains("file_count") ||
-      !document["assets"]["file_count"].is_number_unsigned()) {
+      !document["assets"]["file_count"].is_number_unsigned() ||
+      document["assets"]["file_count"] >
+          std::numeric_limits<std::size_t>::max()) {
     result.error = "payload metadata asset count is invalid";
     return result;
   }

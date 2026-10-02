@@ -3,16 +3,19 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "compat/build_profile.h"
+#include "compat/elf_build_id.h"
 #include "compat/guest_abi.h"
 #include "compat/host_abi_profile.h"
 #include "update/apkpure_provider.h"
@@ -625,6 +628,969 @@ std::string ActivationManifestFixture(const std::string& payload_id) {
              .dump(2) +
          "\n";
 }
+
+// Both publication entry points must preserve the original rollback manifest.
+class PayloadStorePromotionTest : public ::testing::TestWithParam<bool> {
+ protected:
+  void SetUp() override {
+    root = temporary.root() / "store";
+    compatibility = temporary.root() / "compatibility.json";
+    profile = temporary.root() / "candidate.json";
+    candidate_compatibility = temporary.root() / "candidate-compatibility.json";
+    const auto prepared = temporary.root() / "prepared";
+    Write(prepared / "libroblox.so", "native-library");
+    Write(prepared / "sober_apk/base.apk", "base-apk");
+    Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split-apk");
+    Write(prepared / "assets/content/fixture", "asset");
+    std::string error;
+    std::size_t asset_count = 0;
+    const auto asset_hash =
+        HashAssetTree(prepared / "assets", &asset_count, &error);
+    ASSERT_TRUE(error.empty()) << error;
+    const std::string build_id =
+        GetParam() ? "a6c1f5c57f9d7aa3fb99a5fa30565e07e5c88f6a"
+                   : "1686400865ae0e408cd7bd67de7a439625c6fd13";
+    const auto library_hash = HashRegularFile(prepared / "libroblox.so");
+    const nlohmann::json metadata = {
+        {"schema_version", 1},
+        {"package", "com.roblox.client"},
+        {"version_name", "2.727.1199"},
+        {"version_code", 2628},
+        {"abi", std::string(compat::kGuestAbi)},
+        {"elf_build_id", build_id},
+        {"sha256",
+         {{"libroblox", library_hash},
+          {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
+          {std::string(compat::kGuestSplitApkHashKey),
+           HashRegularFile(prepared / "sober_apk" /
+                           compat::kGuestSplitApkFile)}}},
+        {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}}};
+    Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
+    Write(compatibility,
+          "{\"schema_version\":1,\"profiles\":[{"
+          "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
+          "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
+          "\"status\":\"supported\",\"default_allowed\":true,"
+          "\"allow_legacy_binary_patches\":false}]}\n");
+    runtime = std::filesystem::canonical("/proc/self/exe");
+    PayloadStore store(root, compatibility, runtime);
+    const auto staged = store.Stage(prepared);
+    ASSERT_TRUE(staged) << staged.error;
+    candidate_id = staged.payload_id;
+    Write(profile,
+          nlohmann::json(
+              {{"schema_version", 1},
+               {"elf_build_id", build_id},
+               {"payload_sha256", library_hash},
+               {"payload_id", candidate_id},
+               {"payload_path", "payloads/" + candidate_id},
+               {"reference",
+                {{"elf_build_id", "1686400865ae0e408cd7bd67de7a439625c6fd13"},
+                 {"payload_sha256",
+                  "3e9c26c81186f93458ff65d8a8bc240c220974db02b8388b91340b77b336"
+                  "997d"}}},
+               {"profile", {{"elf_build_id", build_id}}},
+               {"derivation_anchors", {{"signature_version", 1}}}})
+                  .dump(2) +
+              "\n");
+    Write(candidate_compatibility,
+          nlohmann::json(
+              {{"schema_version", 1},
+               {"profiles", nlohmann::json::array(
+                                {{{"version_name", "2.727.1199"},
+                                  {"version_code", 2628},
+                                  {"elf_build_id", build_id},
+                                  {"status", "experimental"},
+                                  {"default_allowed", true},
+                                  {"allow_legacy_binary_patches", false},
+                                  {"allow_host_abi_bridges", true},
+                                  {"allow_host_constructor_replay", true}}})}})
+                  .dump(2) +
+              "\n");
+    logs = {temporary.root() / "canary-1.log",
+            temporary.root() / "canary-2.log"};
+    Write(logs[0], "first independent Tier C pass\n");
+    Write(logs[1], "second independent Tier C pass\n");
+  }
+
+  PayloadStoreResult Promote(ManifestWriteFault fault = {}) {
+    PayloadStore store(root, compatibility, runtime, std::move(fault));
+    return GetParam() ? store.PromoteProbation(candidate_id, profile,
+                                               candidate_compatibility, logs)
+                      : store.Promote(candidate_id);
+  }
+
+  void ResetManifests(bool previous_present = true) {
+    Write(root / "current.json", current_bytes);
+    std::filesystem::remove(root / "previous_good.json");
+    if (previous_present) Write(root / "previous_good.json", previous_bytes);
+  }
+
+  void ExpectManifests(bool previous_present = true) {
+    EXPECT_EQ(ReadFile(root / "current.json"), current_bytes);
+    EXPECT_EQ(std::filesystem::exists(root / "previous_good.json"),
+              previous_present);
+    if (previous_present)
+      EXPECT_EQ(ReadFile(root / "previous_good.json"), previous_bytes);
+    EXPECT_FALSE(
+        std::filesystem::exists(root / ".previous_good-recovery.json"));
+    EXPECT_FALSE(
+        std::filesystem::exists(root / ".previous_good-recovery.absent"));
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+      EXPECT_NE(entry.path().filename().string().find(".manifest-"), 0U);
+    }
+  }
+
+  TemporaryDirectory temporary;
+  std::filesystem::path root, compatibility, runtime, profile,
+      candidate_compatibility;
+  std::array<std::filesystem::path, 2> logs;
+  std::string candidate_id;
+  const std::string previous_id = "2908-" + std::string(40, 'b');
+  const std::string current_bytes =
+      ActivationManifestFixture("2998-" + std::string(40, 'a'));
+  std::string previous_bytes =
+      "\n\t" + ActivationManifestFixture(previous_id) + " \n";
+  const std::array<ManifestWritePhase, 4> phases = {
+      ManifestWritePhase::kCreate, ManifestWritePhase::kWrite,
+      ManifestWritePhase::kFileFsync, ManifestWritePhase::kRename};
+};
+
+TEST_P(PayloadStorePromotionTest, CurrentWriteFailureRestoresPrevious) {
+  for (const auto phase : phases) {
+    for (const bool present : {true, false}) {
+      SCOPED_TRACE(static_cast<int>(phase));
+      SCOPED_TRACE(present);
+      ResetManifests(present);
+      int faults = 0;
+      const auto result = Promote([&](const auto& path, auto at) {
+        if (path.filename() != "current.json" || at != phase) return false;
+        ++faults;
+        return true;
+      });
+      EXPECT_FALSE(result);
+      EXPECT_EQ(faults, 1);
+      ExpectManifests(present);
+    }
+  }
+}
+
+TEST_P(PayloadStorePromotionTest, FirstWriteFailurePreservesBothManifests) {
+  for (const auto phase : phases) {
+    for (const bool present : {true, false}) {
+      SCOPED_TRACE(static_cast<int>(phase));
+      SCOPED_TRACE(present);
+      ResetManifests(present);
+      int faults = 0;
+      const auto result = Promote([&](const auto& path, auto at) {
+        if (path.filename() != "previous_good.json" || at != phase)
+          return false;
+        ++faults;
+        return true;
+      });
+      EXPECT_FALSE(result);
+      EXPECT_EQ(faults, 1);
+      ExpectManifests(present);
+    }
+  }
+}
+
+TEST_P(PayloadStorePromotionTest, SuccessfulPublicationKeepsOldCurrent) {
+  for (const bool present : {true, false}) {
+    ResetManifests(present);
+    const auto result = Promote();
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_EQ(
+        nlohmann::json::parse(ReadFile(root / "current.json"))["payload_id"],
+        candidate_id);
+    EXPECT_EQ(ReadFile(root / "previous_good.json"), current_bytes);
+    EXPECT_FALSE(
+        std::filesystem::exists(root / ".previous_good-recovery.json"));
+    EXPECT_FALSE(
+        std::filesystem::exists(root / ".previous_good-recovery.absent"));
+  }
+}
+
+TEST_P(PayloadStorePromotionTest,
+       FailedRestorationRetainsBytesAndBlocksGarbageCollection) {
+  for (const auto phase : phases) {
+    SCOPED_TRACE(static_cast<int>(phase));
+    ResetManifests();
+    Write(root / "payloads" / previous_id / "libroblox.so", "last fallback");
+    Write(root / "quarantine/collision/libroblox.so", "quarantined");
+    int previous_writes = 0;
+    const auto result = Promote([&](const auto& path, auto at) {
+      if (path.filename() == "current.json" &&
+          at == ManifestWritePhase::kCreate)
+        return true;
+      return path.filename() == "previous_good.json" && at == phase &&
+             ++previous_writes == 2;
+    });
+    EXPECT_FALSE(result);
+    EXPECT_EQ(previous_writes, 2);
+    EXPECT_NE(result.error.find("cannot create atomic payload manifest"),
+              std::string::npos);
+    EXPECT_NE(result.error.find("previous_good restoration failed:"),
+              std::string::npos);
+    EXPECT_NE(result.error.find("recovery retained at"), std::string::npos);
+    EXPECT_EQ(ReadFile(root / "current.json"), current_bytes);
+    EXPECT_EQ(ReadFile(root / "previous_good.json"), current_bytes);
+    EXPECT_EQ(ReadFile(root / ".previous_good-recovery.json"), previous_bytes);
+    PayloadStore store(root, compatibility);
+    const auto garbage = store.CollectGarbage({});
+    EXPECT_FALSE(garbage);
+    EXPECT_TRUE(garbage.removed.empty());
+    EXPECT_EQ(garbage.freed_bytes, 0U);
+    EXPECT_TRUE(std::filesystem::exists(root / "payloads" / previous_id));
+    EXPECT_TRUE(
+        std::filesystem::exists(root / "quarantine/collision/libroblox.so"));
+    EXPECT_FALSE(Promote());
+    EXPECT_EQ(ReadFile(root / ".previous_good-recovery.json"), previous_bytes);
+    std::filesystem::remove(root / ".previous_good-recovery.json");
+  }
+}
+
+TEST_P(PayloadStorePromotionTest, FailedAbsenceRestorationRetainsMarker) {
+  ResetManifests(false);
+  const auto result = Promote([&](const auto& path, auto phase) {
+    if (path.filename() != "current.json" ||
+        phase != ManifestWritePhase::kCreate)
+      return false;
+    std::filesystem::remove(root / "previous_good.json");
+    Write(root / "previous_good.json/blocked",
+          "cannot remove nonempty directory");
+    return true;
+  });
+  EXPECT_FALSE(result);
+  EXPECT_NE(result.error.find("cannot create atomic payload manifest"),
+            std::string::npos);
+  EXPECT_NE(result.error.find("cannot restore absence of previous_good"),
+            std::string::npos);
+  EXPECT_EQ(ReadFile(root / "current.json"), current_bytes);
+  EXPECT_EQ(ReadFile(root / ".previous_good-recovery.absent"), "absent\n");
+  PayloadStore store(root, compatibility);
+  EXPECT_FALSE(store.CollectGarbage({}));
+  EXPECT_TRUE(std::filesystem::exists(root / "payloads" / candidate_id));
+  EXPECT_FALSE(Promote());
+  EXPECT_EQ(ReadFile(root / ".previous_good-recovery.absent"), "absent\n");
+}
+
+TEST_P(PayloadStorePromotionTest, RestoresExplicitlyPresentEmptyPrevious) {
+  previous_bytes.clear();
+  ResetManifests();
+  const auto result = Promote([](const auto& path, auto phase) {
+    return path.filename() == "current.json" &&
+           phase == ManifestWritePhase::kRename;
+  });
+  EXPECT_FALSE(result);
+  ExpectManifests();
+}
+
+TEST_P(PayloadStorePromotionTest, SnapshotFailureDoesNotChangeManifests) {
+  for (const auto phase : phases) {
+    for (const bool present : {true, false}) {
+      SCOPED_TRACE(static_cast<int>(phase));
+      SCOPED_TRACE(present);
+      ResetManifests(present);
+      int faults = 0;
+      const auto result = Promote([&](const auto& path, auto at) {
+        if (path.filename() != (present ? ".previous_good-recovery.json"
+                                        : ".previous_good-recovery.absent") ||
+            at != phase)
+          return false;
+        ++faults;
+        return true;
+      });
+      EXPECT_FALSE(result);
+      EXPECT_EQ(faults, 1);
+      ExpectManifests(present);
+    }
+  }
+  ResetManifests();
+  std::filesystem::remove(root / "previous_good.json");
+  std::filesystem::create_directory(root / "previous_good.json");
+  EXPECT_FALSE(Promote());
+  EXPECT_EQ(ReadFile(root / "current.json"), current_bytes);
+  EXPECT_TRUE(std::filesystem::is_directory(root / "previous_good.json"));
+  EXPECT_FALSE(std::filesystem::exists(root / ".previous_good-recovery.json"));
+}
+
+TEST_P(PayloadStorePromotionTest,
+       PendingRecoveryIncludingSymlinksBlocksPublicationAndCollection) {
+  ResetManifests();
+  Write(root / "payloads" / previous_id / "libroblox.so", "last fallback");
+  for (const char* name :
+       {".previous_good-recovery.json", ".previous_good-recovery.absent"}) {
+    for (const bool symlink : {false, true}) {
+      SCOPED_TRACE(name);
+      SCOPED_TRACE(symlink);
+      const auto recovery = root / name;
+      if (symlink)
+        std::filesystem::create_symlink("missing-target", recovery);
+      else
+        Write(recovery, "pending recovery bytes");
+      const auto result = Promote();
+      EXPECT_FALSE(result);
+      EXPECT_NE(result.error.find("recovery is pending"), std::string::npos);
+      PayloadStore store(root, compatibility);
+      EXPECT_FALSE(store.CollectGarbage({}));
+      EXPECT_EQ(ReadFile(root / "current.json"), current_bytes);
+      EXPECT_EQ(ReadFile(root / "previous_good.json"), previous_bytes);
+      EXPECT_TRUE(std::filesystem::exists(root / "payloads" / previous_id));
+      if (symlink)
+        EXPECT_TRUE(std::filesystem::is_symlink(recovery));
+      else
+        EXPECT_EQ(ReadFile(recovery), "pending recovery bytes");
+      std::filesystem::remove(recovery);
+    }
+  }
+}
+
+TEST_P(PayloadStorePromotionTest,
+       NoPreviousExchangeForFirstInstallOrSamePayload) {
+  for (const bool same_payload : {false, true}) {
+    for (const bool fail_current : {false, true}) {
+      for (const bool present : {false, true}) {
+        ResetManifests(present);
+        if (same_payload)
+          Write(root / "current.json", ActivationManifestFixture(candidate_id));
+        else
+          std::filesystem::remove(root / "current.json");
+        const auto before = ReadFile(root / "current.json");
+        int other_writes = 0;
+        const auto result = Promote([&](const auto& path, auto phase) {
+          if (path.filename() != "current.json") ++other_writes;
+          return fail_current && path.filename() == "current.json" &&
+                 phase == ManifestWritePhase::kCreate;
+        });
+        EXPECT_EQ(static_cast<bool>(result), !fail_current);
+        EXPECT_EQ(other_writes, 0);
+        EXPECT_EQ(std::filesystem::exists(root / "previous_good.json"),
+                  present);
+        if (present)
+          EXPECT_EQ(ReadFile(root / "previous_good.json"), previous_bytes);
+        if (fail_current) {
+          EXPECT_EQ(ReadFile(root / "current.json"), before);
+          EXPECT_EQ(std::filesystem::exists(root / "current.json"),
+                    same_payload);
+        }
+      }
+    }
+  }
+}
+
+TEST_P(PayloadStorePromotionTest,
+       CleanupFailureReportsWhetherCurrentWasPublished) {
+  for (const bool publish : {false, true}) {
+    ResetManifests();
+    const auto recovery = root / ".previous_good-recovery.json";
+    const auto result = Promote([&](const auto& path, auto phase) {
+      if (path.filename() != "current.json" ||
+          phase != ManifestWritePhase::kCreate)
+        return false;
+      // Preserve the snapshot in a nonempty directory to make unlink fail.
+      const auto bytes = ReadFile(recovery);
+      std::filesystem::remove(recovery);
+      Write(recovery / "original", bytes);
+      return !publish;
+    });
+    EXPECT_FALSE(result);
+    EXPECT_NE(result.error.find("cannot remove previous_good recovery"),
+              std::string::npos);
+    EXPECT_EQ(
+        result.error.find("current manifest published") != std::string::npos,
+        publish);
+    EXPECT_EQ(ReadFile(recovery / "original"), previous_bytes);
+    if (publish) {
+      EXPECT_EQ(
+          nlohmann::json::parse(ReadFile(root / "current.json"))["payload_id"],
+          candidate_id);
+      EXPECT_EQ(ReadFile(root / "previous_good.json"), current_bytes);
+    } else {
+      EXPECT_EQ(ReadFile(root / "current.json"), current_bytes);
+      EXPECT_EQ(ReadFile(root / "previous_good.json"), previous_bytes);
+    }
+    PayloadStore store(root, compatibility);
+    EXPECT_FALSE(store.CollectGarbage({}));
+    EXPECT_FALSE(Promote());
+    std::filesystem::remove_all(recovery);
+  }
+}
+
+TEST_P(PayloadStorePromotionTest, JsonManifestSchemaTypeReturnsError) {
+  Write(root / "current.json", "{\"schema_version\":\"1\"}\n");
+  ASSERT_EXIT(
+      {
+        PayloadStore store(root, compatibility);
+        const auto result = store.InspectCurrent();
+        std::_Exit(!result && !result.error.empty() ? 0 : 10);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST_P(PayloadStorePromotionTest, JsonIntegrityNestedHashTypeReturnsError) {
+  const auto prepared = temporary.root() / "prepared";
+  auto metadata =
+      nlohmann::json::parse(ReadFile(prepared / "roblox_payload.json"));
+  metadata["sha256"]["libroblox"] = false;
+  Write(prepared / "roblox_payload.json", metadata.dump());
+  ASSERT_EXIT(
+      {
+        const auto result = InspectPreparedPayload(prepared);
+        std::_Exit(!result && !result.error.empty() ? 0 : 10);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST_P(PayloadStorePromotionTest, JsonCatalogFlagTypeReturnsError) {
+  auto catalog = nlohmann::json::parse(ReadFile(compatibility));
+  catalog["profiles"][0]["default_allowed"] = "true";
+  Write(compatibility, catalog.dump());
+  ASSERT_EXIT(
+      {
+        const auto result = LoadCompatibilityCatalog(compatibility);
+        std::_Exit(!result && !result.error.empty() ? 0 : 10);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+std::string JsonWithOverflowNumber(nlohmann::json document,
+                                   const nlohmann::json::json_pointer& field) {
+  document[field] = "overflow-number";
+  std::string contents = document.dump();
+  const auto offset = contents.find("\"overflow-number\"");
+  contents.replace(offset, std::string("\"overflow-number\"").size(),
+                   "18446744073709551616");
+  return contents;
+}
+
+TEST_P(PayloadStorePromotionTest, JsonManifestRejectsInvalidFields) {
+  ASSERT_TRUE(Promote());
+  const auto valid = nlohmann::json::parse(ReadFile(root / "current.json"));
+  std::vector<std::string> cases = {"null", "[]", "true", "1"};
+  for (const char* field :
+       {"schema_version", "payload_id", "payload_path", "version_name",
+        "version_code", "elf_build_id", "host_abi_profile_path",
+        "compatibility_manifest_path", "approval_path", "payload_sha256"}) {
+    for (const auto& bad :
+         nlohmann::json::array({nullptr, true, 42, nlohmann::json::object(),
+                                nlohmann::json::array()})) {
+      auto document = valid;
+      document[field] = bad;
+      cases.push_back(document.dump());
+    }
+    if (std::string_view(field).find("_path") == std::string_view::npos ||
+        std::string_view(field) == "payload_path") {
+      if (std::string_view(field) != "payload_sha256") {
+        auto document = valid;
+        document.erase(field);
+        cases.push_back(document.dump());
+      }
+    }
+  }
+  for (const auto& bad :
+       nlohmann::json::array({"1", 0, -1, 1.0, 4294967297ULL})) {
+    for (const char* field : {"schema_version", "version_code"}) {
+      auto document = valid;
+      document[field] = bad;
+      cases.push_back(document.dump());
+    }
+  }
+  cases.push_back(JsonWithOverflowNumber(
+      valid, nlohmann::json::json_pointer("/version_code")));
+  cases.push_back(JsonWithOverflowNumber(
+      valid, nlohmann::json::json_pointer("/schema_version")));
+  for (const auto& contents : cases) {
+    SCOPED_TRACE(contents);
+    Write(root / "current.json", contents);
+    ASSERT_EXIT(
+        {
+          PayloadStore store(root, compatibility);
+          const auto inspected = store.InspectCurrent();
+          const auto verified = store.VerifyCurrent();
+          std::_Exit(!inspected && !inspected.error.empty() && !verified &&
+                             !verified.error.empty()
+                         ? 0
+                         : 10);
+        },
+        ::testing::ExitedWithCode(0), "");
+  }
+}
+
+TEST_P(PayloadStorePromotionTest, JsonIntegrityRejectsInvalidFields) {
+  const auto prepared = temporary.root() / "prepared";
+  const auto valid =
+      nlohmann::json::parse(ReadFile(prepared / "roblox_payload.json"));
+  std::vector<std::string> cases = {"null", "[]", "true", "1"};
+  const std::vector<std::string> fields = {
+      "/schema_version",
+      "/package",
+      "/version_name",
+      "/version_code",
+      "/elf_build_id",
+      "/sha256",
+      "/assets",
+      "/sha256/libroblox",
+      "/sha256/base_apk",
+      "/sha256/" + std::string(compat::kGuestSplitApkHashKey),
+      "/assets/file_count",
+      "/assets/sha256_tree"};
+  for (const auto& field : fields) {
+    const nlohmann::json::json_pointer pointer(field);
+    auto missing = valid;
+    const auto slash = field.find_last_of('/');
+    missing[nlohmann::json::json_pointer(field.substr(0, slash))].erase(
+        field.substr(slash + 1));
+    cases.push_back(missing.dump());
+    for (const auto& bad : nlohmann::json::array(
+             {nullptr, true, -1, 1.5, nlohmann::json::array()})) {
+      auto document = valid;
+      document[pointer] = bad;
+      cases.push_back(document.dump());
+    }
+  }
+  for (const char* field :
+       {"/schema_version", "/version_code", "/assets/file_count"}) {
+    cases.push_back(
+        JsonWithOverflowNumber(valid, nlohmann::json::json_pointer(field)));
+  }
+  for (const char* field :
+       {"/schema_version", "/version_code", "/assets/file_count"}) {
+    auto string_number = valid;
+    string_number[nlohmann::json::json_pointer(field)] = "1";
+    cases.push_back(string_number.dump());
+  }
+  auto zero_version = valid;
+  zero_version["version_code"] = 0;
+  cases.push_back(zero_version.dump());
+  auto wrapped_schema = valid;
+  wrapped_schema["schema_version"] = 4294967297ULL;
+  cases.push_back(wrapped_schema.dump());
+  if (std::numeric_limits<std::size_t>::max() <
+      std::numeric_limits<std::uint64_t>::max()) {
+    auto too_many = valid;
+    too_many["assets"]["file_count"] =
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) + 1;
+    cases.push_back(too_many.dump());
+  }
+  for (const auto& contents : cases) {
+    SCOPED_TRACE(contents);
+    Write(prepared / "roblox_payload.json", contents);
+    ASSERT_EXIT(
+        {
+          const auto inspected = InspectPreparedPayload(prepared);
+          const auto verified = VerifyPreparedPayload(prepared);
+          PayloadStore store(root, compatibility);
+          const auto staged = store.Stage(prepared);
+          std::_Exit(!inspected && !inspected.error.empty() && !verified &&
+                             !verified.error.empty() && !staged &&
+                             !staged.error.empty()
+                         ? 0
+                         : 10);
+        },
+        ::testing::ExitedWithCode(0), "");
+  }
+}
+
+TEST_P(PayloadStorePromotionTest, JsonCatalogRejectsInvalidFields) {
+  const auto valid = nlohmann::json::parse(ReadFile(compatibility));
+  std::vector<std::string> cases = {"null", "[]", "true", "1"};
+  for (const char* field : {"schema_version", "profiles"}) {
+    auto missing = valid;
+    missing.erase(field);
+    cases.push_back(missing.dump());
+    for (const auto& bad : nlohmann::json::array(
+             {nullptr, true, "wrong", 1.5, nlohmann::json::object()})) {
+      auto document = valid;
+      document[field] = bad;
+      cases.push_back(document.dump());
+    }
+  }
+  for (const char* field :
+       {"status", "default_allowed", "allow_legacy_binary_patches",
+        "version_name", "version_code", "elf_build_id", "abi"}) {
+    for (const auto& bad :
+         nlohmann::json::array({nullptr, 1.5, nlohmann::json::object(),
+                                nlohmann::json::array()})) {
+      auto document = valid;
+      document["profiles"][0][field] = bad;
+      cases.push_back(document.dump());
+    }
+    if (std::string_view(field) == "version_name" ||
+        std::string_view(field) == "version_code" ||
+        std::string_view(field) == "elf_build_id") {
+      auto missing = valid;
+      missing["profiles"][0].erase(field);
+      cases.push_back(missing.dump());
+    }
+  }
+  for (const char* field : {"default_allowed", "allow_legacy_binary_patches"}) {
+    for (const auto& bad : nlohmann::json::array({"true", 1})) {
+      auto document = valid;
+      document["profiles"][0][field] = bad;
+      cases.push_back(document.dump());
+    }
+  }
+  for (const auto& bad : nlohmann::json::array({-1, "2628", 0})) {
+    auto document = valid;
+    document["profiles"][0]["version_code"] = bad;
+    cases.push_back(document.dump());
+  }
+  cases.push_back(JsonWithOverflowNumber(
+      valid, nlohmann::json::json_pointer("/profiles/0/version_code")));
+  cases.push_back(JsonWithOverflowNumber(
+      valid, nlohmann::json::json_pointer("/schema_version")));
+  auto wrapped_schema = valid;
+  wrapped_schema["schema_version"] = 4294967297ULL;
+  cases.push_back(wrapped_schema.dump());
+  for (const auto& contents : cases) {
+    SCOPED_TRACE(contents);
+    Write(compatibility, contents);
+    ASSERT_EXIT(
+        {
+          const auto result = LoadCompatibilityCatalog(compatibility);
+          std::_Exit(!result && !result.error.empty() ? 0 : 10);
+        },
+        ::testing::ExitedWithCode(0), "");
+  }
+}
+
+TEST_P(PayloadStorePromotionTest,
+       JsonOptionalDefaultsAndNumericLimitsStayValid) {
+  ASSERT_TRUE(Promote());
+  const auto activation =
+      nlohmann::json::parse(ReadFile(root / "current.json"));
+  PayloadStore store(root, compatibility);
+  for (const bool absent : {false, true}) {
+    auto document = activation;
+    for (const char* field : {"host_abi_profile_path",
+                              "compatibility_manifest_path", "approval_path"}) {
+      if (absent)
+        document.erase(field);
+      else
+        document[field] = "";
+    }
+    document.erase("payload_sha256");
+    Write(root / "current.json", document.dump());
+    ASSERT_TRUE(store.InspectCurrent());
+  }
+  Write(root / "current.json", activation.dump());
+  ASSERT_TRUE(store.VerifyCurrent());
+
+  const auto prepared = temporary.root() / "prepared";
+  auto metadata =
+      nlohmann::json::parse(ReadFile(prepared / "roblox_payload.json"));
+  metadata["version_code"] = std::numeric_limits<std::uint64_t>::max();
+  metadata["assets"]["file_count"] = 0;
+  Write(prepared / "roblox_payload.json", metadata.dump());
+  auto inspected = InspectPreparedPayload(prepared);
+  ASSERT_TRUE(inspected) << inspected.error;
+  EXPECT_EQ(inspected.metadata.version_code,
+            std::numeric_limits<std::uint64_t>::max());
+  EXPECT_EQ(inspected.metadata.asset_file_count, 0U);
+  metadata["assets"]["file_count"] = std::numeric_limits<std::size_t>::max();
+  Write(prepared / "roblox_payload.json", metadata.dump());
+  inspected = InspectPreparedPayload(prepared);
+  ASSERT_TRUE(inspected) << inspected.error;
+  EXPECT_EQ(inspected.metadata.asset_file_count,
+            std::numeric_limits<std::size_t>::max());
+
+  const auto catalog = nlohmann::json::parse(ReadFile(compatibility));
+  for (const char* field :
+       {"status", "default_allowed", "allow_legacy_binary_patches", "abi"}) {
+    auto document = catalog;
+    auto extra = catalog["profiles"][0];
+    extra.erase(field);
+    document["profiles"].push_back(extra);
+    Write(compatibility, document.dump());
+    const auto result = LoadCompatibilityCatalog(compatibility);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_EQ(result.profiles.size(),
+              std::string_view(field) == "abi" ? 2U : 1U);
+  }
+  auto document = catalog;
+  document["profiles"][0]["version_code"] =
+      std::numeric_limits<std::uint64_t>::max();
+  auto foreign = document["profiles"][0];
+  foreign["abi"] = "foreign-abi";
+  document["profiles"].push_back(foreign);
+  document["profiles"].push_back(nullptr);
+  document["profiles"].push_back(nlohmann::json::array());
+  Write(compatibility, document.dump());
+  const auto result = LoadCompatibilityCatalog(compatibility);
+  ASSERT_TRUE(result) << result.error;
+  ASSERT_EQ(result.profiles.size(), 1U);
+  EXPECT_EQ(result.profiles[0].version_code,
+            std::numeric_limits<std::uint64_t>::max());
+}
+
+INSTANTIATE_TEST_SUITE_P(Publication, PayloadStorePromotionTest,
+                         ::testing::Values(false, true));
+
+class UpdateCoordinatorTest : public PayloadStorePromotionTest {
+ protected:
+  void SetUp() override {
+    PayloadStorePromotionTest::SetUp();
+    ASSERT_FALSE(GetParam());
+    ASSERT_TRUE(Promote());
+    active_id = candidate_id;
+    const auto prepared = temporary.root() / "newer-prepared";
+    std::filesystem::copy(temporary.root() / "prepared", prepared,
+                          std::filesystem::copy_options::recursive);
+    Write(prepared / "libroblox.so", "newer-native-library");
+    auto metadata =
+        nlohmann::json::parse(ReadFile(prepared / "roblox_payload.json"));
+    metadata["version_name"] = "2.734.917";
+    metadata["version_code"] = 2908;
+    metadata["elf_build_id"] = std::string(40, 'b');
+    metadata["sha256"]["libroblox"] =
+        HashRegularFile(prepared / "libroblox.so");
+    Write(prepared / "roblox_payload.json", metadata.dump());
+    auto catalog = nlohmann::json::parse(ReadFile(compatibility));
+    auto newer = catalog["profiles"][0];
+    newer["version_name"] = metadata["version_name"];
+    newer["version_code"] = metadata["version_code"];
+    newer["elf_build_id"] = metadata["elf_build_id"];
+    catalog["profiles"].push_back(newer);
+    Write(compatibility, catalog.dump());
+    PayloadStore store(root, compatibility, runtime);
+    const auto staged = store.Stage(prepared);
+    ASSERT_TRUE(staged) << staged.error;
+    newer_id = staged.payload_id;
+    ASSERT_TRUE(store.VerifyCurrent());
+    const auto identity = compat::ReadElfBuildId(runtime.string());
+    ASSERT_TRUE(identity) << identity.error;
+    paths.config_file = temporary.root() / "config.yaml";
+    Write(paths.config_file,
+          "version: 1\nupdates:\n  automatic: true\n  source: apk-pure\n");
+    paths.data_root = root;
+    paths.cache_root = temporary.root() / "cache";
+    paths.state_root = temporary.root() / "state";
+    paths.compatibility_manifest = compatibility;
+    paths.runtime_binary = runtime;
+    request.startup_preflight = true;
+    request.check_latest = false;
+    request.run_canary = true;
+    script = temporary.root() / "canary.sh";
+    WriteScript();
+  }
+
+  void WriteScript(bool accepted = true) {
+    Write(
+        script,
+        "#!/bin/sh\ncat <<'READY'\n"
+        "[compat] legacy binary patches: disabled\n"
+        "[compat] signal-recovery handler disabled\n"
+        "[compat] native allocator retained; host allocator bridges disabled\n"
+        "[window] vkQueuePresentKHR #240 window=0x1234\n"
+        "[window] first Roblox Vulkan frame presented\n"
+        "[vulkan] SDL WSI adapter shut down\n"
+        "[window] OpenGL ES context version=3.2\n"
+        "[window] EGL context and surface initialized via SDL3\n"
+        "[window] SwapBuffers #1 window=0x1234\n"
+        "[window] first Roblox frame presented\n"
+        "[main] Roblox lifecycle shutdown: Stopped\nREADY\n" +
+            std::string(accepted ? "" : "echo '[FATAL] rejected graphics'\n"));
+    ASSERT_EQ(chmod(script.c_str(), 0700), 0);
+  }
+
+  CanarySpawn Spawn(int initial_error = 0) {
+    return [this, initial_error](pid_t* child, const char*,
+                                 const posix_spawn_file_actions_t* actions,
+                                 const posix_spawnattr_t* attributes,
+                                 char* const arguments[],
+                                 char* const environment[]) {
+      ++spawns;
+      if (spawns == 1 && initial_error != 0) return initial_error;
+      return posix_spawn(child, script.c_str(), actions, attributes, arguments,
+                         environment);
+    };
+  }
+
+  std::filesystem::path Marker() const {
+    const auto identity = compat::ReadElfBuildId(paths.runtime_binary.string());
+    EXPECT_TRUE(identity) << identity.error;
+    return root / "rejections" /
+           (newer_id + "-" + identity.build_id + "-" +
+            std::string(
+                CanaryGraphicsBackendName(request.canary_graphics_backend)) +
+            ".txt");
+  }
+
+  std::string CurrentId() const {
+    PayloadStore store(root, compatibility, paths.runtime_binary);
+    const auto current = store.VerifyCurrent();
+    EXPECT_TRUE(current) << current.error;
+    return current.payload_id;
+  }
+
+  void RejectOnce() {
+    WriteScript(false);
+    request.canary_spawn = Spawn();
+    const auto result = RunUpdate(paths, request);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_FALSE(result.changed);
+    EXPECT_EQ(result.payload_id, active_id);
+    EXPECT_EQ(CurrentId(), active_id);
+    EXPECT_EQ(spawns, 1);
+    EXPECT_TRUE(std::filesystem::exists(Marker()));
+    WriteScript();
+  }
+
+  CanaryOptions Options() const {
+    CanaryOptions options;
+    options.runtime_binary = paths.runtime_binary;
+    options.payload_directory = root / "payloads" / newer_id;
+    options.compatibility_manifest = compatibility;
+    options.cache_root = paths.cache_root;
+    options.state_root = paths.state_root;
+    options.timeout_seconds = 2;
+    return options;
+  }
+
+  UpdatePaths paths;
+  UpdateRequest request;
+  std::filesystem::path script;
+  std::string active_id, newer_id;
+  int spawns = 0;
+};
+
+TEST_P(UpdateCoordinatorTest, RetriesTheSameCandidateOnNextStartupAfterEagain) {
+  request.canary_spawn = Spawn(EAGAIN);
+  const auto first = RunUpdate(paths, request);
+  ASSERT_TRUE(first) << first.error;
+  EXPECT_FALSE(first.changed);
+  EXPECT_EQ(first.payload_id, active_id);
+  EXPECT_EQ(CurrentId(), active_id);
+  EXPECT_EQ(spawns, 1);
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+
+  const auto second = RunUpdate(paths, request);
+  ASSERT_TRUE(second) << second.error;
+  EXPECT_TRUE(second.changed);
+  EXPECT_EQ(second.payload_id, newer_id);
+  EXPECT_EQ(CurrentId(), newer_id);
+  EXPECT_EQ(spawns, 2);
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+}
+
+TEST_P(UpdateCoordinatorTest, RealRejectionIsFilteredOnNextStartup) {
+  RejectOnce();
+  const auto second = RunUpdate(paths, request);
+  ASSERT_TRUE(second) << second.error;
+  EXPECT_FALSE(second.changed);
+  EXPECT_EQ(second.payload_id, active_id);
+  EXPECT_EQ(CurrentId(), active_id);
+  EXPECT_EQ(spawns, 1);
+  EXPECT_TRUE(std::filesystem::exists(Marker()));
+  EXPECT_NE(second.message.find("already failed"), std::string::npos);
+}
+
+TEST_P(UpdateCoordinatorTest, DifferentBackendRetriesRejectedCandidate) {
+  RejectOnce();
+  const auto old_marker = Marker();
+  request.canary_graphics_backend = CanaryGraphicsBackend::kOpenGlEs;
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+  const auto result = RunUpdate(paths, request);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.changed);
+  EXPECT_EQ(CurrentId(), newer_id);
+  EXPECT_EQ(spawns, 2);
+  EXPECT_TRUE(std::filesystem::exists(old_marker));
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+}
+
+TEST_P(UpdateCoordinatorTest, DifferentRuntimeBuildIdRetriesRejectedCandidate) {
+  RejectOnce();
+  const auto old_marker = Marker();
+  const auto original = compat::ReadElfBuildId(paths.runtime_binary.string());
+  const auto different = std::filesystem::canonical("/usr/bin/true");
+  const auto identity = compat::ReadElfBuildId(different.string());
+  ASSERT_TRUE(original) << original.error;
+  ASSERT_TRUE(identity) << identity.error;
+  ASSERT_NE(identity.build_id, original.build_id);
+  paths.runtime_binary = different;
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+  const auto result = RunUpdate(paths, request);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.changed);
+  EXPECT_EQ(CurrentId(), newer_id);
+  EXPECT_EQ(spawns, 2);
+  EXPECT_TRUE(std::filesystem::exists(old_marker));
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+}
+
+TEST_P(UpdateCoordinatorTest, ExplicitUpdateCanRetryARejectedCandidate) {
+  RejectOnce();
+  request.startup_preflight = false;
+  const auto result = RunUpdate(paths, request);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.changed);
+  EXPECT_EQ(result.payload_id, newer_id);
+  EXPECT_EQ(CurrentId(), newer_id);
+  EXPECT_EQ(spawns, 2);
+}
+
+TEST_P(UpdateCoordinatorTest, FirstInstallCanRetryARejectedCandidate) {
+  RejectOnce();
+  ASSERT_TRUE(std::filesystem::remove(root / "current.json"));
+  const auto result = RunUpdate(paths, request);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.changed);
+  EXPECT_EQ(result.payload_id, newer_id);
+  EXPECT_EQ(CurrentId(), newer_id);
+  EXPECT_EQ(spawns, 2);
+}
+
+TEST_P(UpdateCoordinatorTest, NonEagainSpawnErrorKeepsExistingRejectionPolicy) {
+  request.canary_spawn = Spawn(ENOEXEC);
+  const auto first = RunUpdate(paths, request);
+  ASSERT_TRUE(first) << first.error;
+  EXPECT_FALSE(first.changed);
+  EXPECT_EQ(first.payload_id, active_id);
+  EXPECT_EQ(spawns, 1);
+  EXPECT_TRUE(std::filesystem::exists(Marker()));
+  request.canary_spawn = Spawn();
+  const auto second = RunUpdate(paths, request);
+  ASSERT_TRUE(second) << second.error;
+  EXPECT_FALSE(second.changed);
+  EXPECT_EQ(CurrentId(), active_id);
+  EXPECT_EQ(spawns, 1);
+}
+
+TEST_P(UpdateCoordinatorTest, CanaryReportsSpawnEagainAndCleansItsWorkspace) {
+  auto options = Options();
+  options.spawn = Spawn(EAGAIN);
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.spawn_error, EAGAIN);
+  EXPECT_EQ(result.exit_code, -1);
+  EXPECT_FALSE(result.error.empty());
+  EXPECT_EQ(spawns, 1);
+  EXPECT_TRUE(std::filesystem::is_regular_file(result.log_path));
+  EXPECT_EQ(CurrentId(), active_id);
+  for (const auto& entry :
+       std::filesystem::directory_iterator(paths.cache_root)) {
+    EXPECT_NE(entry.path().filename().string().find(".native-update-canary"),
+              0U);
+  }
+  EXPECT_FALSE(std::filesystem::exists(Marker()));
+}
+
+TEST_P(UpdateCoordinatorTest, CanaryFailureBeforeSpawnHasNoSpawnError) {
+  auto options = Options();
+  options.spawn = Spawn(EAGAIN);
+  options.timeout_seconds = 0;
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.spawn_error, 0);
+  EXPECT_EQ(result.exit_code, -1);
+  EXPECT_FALSE(result.error.empty());
+  EXPECT_EQ(spawns, 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(Startup, UpdateCoordinatorTest,
+                         ::testing::Values(false));
 
 TEST(PayloadStoreTest, CollectsSupersededPayloadsAndKeepsTheRollbackTarget) {
   TemporaryDirectory temporary;
