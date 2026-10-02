@@ -671,7 +671,8 @@ class PayloadStorePromotionTest : public ::testing::TestWithParam<bool> {
           "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
           "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
           "\"status\":\"supported\",\"default_allowed\":true,"
-          "\"allow_legacy_binary_patches\":false}]}\n");
+          "\"allow_legacy_binary_patches\":false,\"abi\":\"" +
+          std::string(compat::kGuestAbi) + "\"}]}\n");
     runtime = std::filesystem::canonical("/proc/self/exe");
     PayloadStore store(root, compatibility, runtime);
     const auto staged = store.Stage(prepared);
@@ -1721,7 +1722,8 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
-        "\"allow_legacy_binary_patches\":false}]}\n");
+        "\"allow_legacy_binary_patches\":false,\"abi\":\"" +
+        std::string(compat::kGuestAbi) + "\"}]}\n");
   PayloadStore store(temporary.root() / "store", compatibility);
   const PayloadStoreResult staged = store.Stage(prepared);
   ASSERT_TRUE(staged) << staged.error;
@@ -1852,7 +1854,8 @@ TEST(PayloadStoreTest, PromoteRehashesBytesTamperedAfterStaging) {
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
-        "\"allow_legacy_binary_patches\":false}]}\n");
+        "\"allow_legacy_binary_patches\":false,\"abi\":\"" +
+        std::string(compat::kGuestAbi) + "\"}]}\n");
 
   const std::filesystem::path store_root = temporary.root() / "store";
   PayloadStore store(store_root, compatibility);
@@ -1912,7 +1915,8 @@ TEST(PayloadStoreTest, PromoteRejectsALibraryTamperedAfterStaging) {
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
-        "\"allow_legacy_binary_patches\":false}]}\n");
+        "\"allow_legacy_binary_patches\":false,\"abi\":\"" +
+        std::string(compat::kGuestAbi) + "\"}]}\n");
 
   const std::filesystem::path store_root = temporary.root() / "store";
   PayloadStore store(store_root, compatibility);
@@ -1976,7 +1980,8 @@ TEST(PayloadStoreTest, RequiresTwoRuntimeBoundCanariesForLatestCandidate) {
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
-        "\"allow_legacy_binary_patches\":false}]}\n");
+        "\"allow_legacy_binary_patches\":false,\"abi\":\"" +
+        std::string(compat::kGuestAbi) + "\"}]}\n");
   std::error_code filesystem_error;
   const std::filesystem::path runtime =
       std::filesystem::canonical("/proc/self/exe", filesystem_error);
