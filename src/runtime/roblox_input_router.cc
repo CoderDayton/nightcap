@@ -609,13 +609,7 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
   }
   const float clamped_x = mouse_x_;
   const float clamped_y = mouse_y_;
-  if (event.pressed) {
-    const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
-    if (text.focused) {
-      (void)text_editor_.EndFocusSession(text.textbox_handle, text.generation,
-                                         true);
-    }
-  }
+  // Let Roblox decide whether a click releases TextBox focus.
   Status status = sink_.mouse_button(sink_.context, clamped_x, clamped_y,
                                      event.pressed, roblox_button);
   if (status.ok()) {

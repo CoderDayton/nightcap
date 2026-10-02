@@ -6006,6 +6006,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       experience_game_symbols;
   std::shared_ptr<mocktail::runtime::RobloxExperienceComposition>
       experience_composition;
+  std::unique_ptr<mocktail::runtime::RobloxPermissionsBridge>
+      eager_permissions_bridge;
+  std::unique_ptr<mocktail::runtime::RobloxCallProtocolBridge>
+      eager_call_protocol_bridge;
   std::shared_ptr<ExperienceLifecycleTarget> experience_lifecycle_target;
   std::shared_ptr<mocktail::runtime::RobloxWindowInputRuntime>
       window_input_runtime;
@@ -6665,6 +6669,75 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               << " run_start_app_with_params="
               << (run_start_app_with_params ? 1 : 0) << '\n' << std::flush;
 
+    // The direct GAME path still runs CoreScripts that query app protocols.
+    // Install these independently of ExperienceProtocol's dynamic launch path.
+    if (game_session_runtime != nullptr) {
+      mocktail::runtime::JniEnvironmentProvider environment{
+          raw_vm, jni_vm.get(), &RestoreGameSessionJniEnvironment};
+      JNIEnv* env = nullptr;
+      auto status = environment.Acquire(&env);
+      if (!status.ok()) {
+        std::cerr << "[FATAL] GAME protocol JNI environment unavailable\n";
+        return EXIT_FAILURE;
+      }
+      const auto symbols = mocktail::runtime::ResolveRobloxPlatformWebSymbols(
+          roblox_handle,
+          reinterpret_cast<mocktail::runtime::SubscribeExperienceLaunchRawFn>(
+              linker::ResolveSymbol(roblox_handle,
+                                    "Java_com_roblox_universalapp_messagebus_"
+                                    "MessageBus_doSubscribeRaw")),
+          reinterpret_cast<mocktail::runtime::DeleteMessageBusConnectionFn>(
+              linker::ResolveSymbol(roblox_handle,
+                                    "Java_com_roblox_universalapp_messagebus_"
+                                    "Connection_deleteSharedPtr")));
+      jclass bus_class =
+          env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+      jmethodID singleton =
+          bus_class ? env->GetStaticMethodID(
+                          bus_class, "f",
+                          "()Lcom/roblox/universalapp/messagebus/MessageBus;")
+                    : nullptr;
+      jobject bus = singleton
+                        ? env->CallStaticObjectMethod(bus_class, singleton)
+                        : nullptr;
+      if (bus_class)
+        env->DeleteLocalRef(bus_class);
+      if (!bus || env->ExceptionCheck()) {
+        if (env->ExceptionCheck())
+          env->ExceptionClear();
+        if (bus)
+          env->DeleteLocalRef(bus);
+        std::cerr << "[FATAL] GAME platform MessageBus is unavailable\n";
+        return EXIT_FAILURE;
+      }
+      const mocktail::runtime::RobloxMessageBusObjects objects{
+          bus,
+          jni_vm.get(),
+          &CreateExperienceRawCallback,
+          &ClearExperienceRawCallback,
+          &CreateAsyncMessageBusRequestHandler,
+          &ClearAsyncMessageBusRequestHandler};
+      eager_permissions_bridge =
+          std::make_unique<mocktail::runtime::RobloxPermissionsBridge>(
+              environment, symbols.permissions, objects,
+              runtime_config.microphone_enabled());
+      eager_call_protocol_bridge =
+          std::make_unique<mocktail::runtime::RobloxCallProtocolBridge>(
+              environment, symbols.permissions, objects);
+      status = eager_permissions_bridge->Initialize();
+      if (status.ok())
+        status = eager_call_protocol_bridge->Initialize();
+      env->DeleteLocalRef(bus);
+      if (!status.ok()) {
+        std::cerr << "[FATAL] GAME platform protocols did not initialize: "
+                  << status.message() << '\n';
+        return EXIT_FAILURE;
+      }
+      std::cout << "  [platform] direct GAME PermissionsProtocol and "
+                   "CallProtocol ready\n"
+                << std::flush;
+    }
+
     if (experience_game_symbols != nullptr) {
       mocktail::runtime::RobloxExperienceMessageBusSymbols message_bus_symbols;
       message_bus_symbols.get_launch_id =
@@ -7155,6 +7228,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (window_input_runtime != nullptr) {
       input_shutdown_completed = window_input_runtime->Shutdown().ok() &&
                                  input_shutdown_completed;
+    }
+    if (eager_call_protocol_bridge != nullptr) {
+      (void)eager_call_protocol_bridge->Shutdown();
+      eager_call_protocol_bridge.reset();
+    }
+    if (eager_permissions_bridge != nullptr) {
+      (void)eager_permissions_bridge->Shutdown();
+      eager_permissions_bridge.reset();
     }
     bool experience_destroyed_app = false;
     if (experience_composition != nullptr) {

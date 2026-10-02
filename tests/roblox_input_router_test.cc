@@ -698,6 +698,47 @@ TEST_F(RobloxInputRouterTest, ReportsHostTextFocusCompletion) {
   EXPECT_EQ(router_.Snapshot().text_focus_generation, 4U);
 }
 
+TEST_F(RobloxInputRouterTest, MouseClicksKeepTextFocusUntilEngineReleasesIt) {
+  RobloxTextFocusSession session{42, 1, "draft", false, false};
+  session.area_x = 40;
+  session.area_y = 300;
+  session.area_width = 400;
+  session.area_height = 30;
+  ASSERT_TRUE(router_.BeginTextFocusSession(session).ok());
+
+  for (const auto button : {SDL_BUTTON_LEFT, SDL_BUTTON_MIDDLE,
+                            SDL_BUTTON_RIGHT}) {
+    SCOPED_TRACE(button);
+    for (const bool pressed : {true, false}) {
+      ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+          pressed, static_cast<uint8_t>(button), 1, 100.0F, 310.0F}))
+                      .dispatched());
+      EXPECT_EQ(router_.Snapshot().text_focus_generation, 1U);
+    }
+  }
+  EXPECT_TRUE(probe_.text_operations.empty());
+  EXPECT_EQ(probe_.mouse_buttons.size(), 6U);
+  EXPECT_TRUE(router_.HandleEvent(Event(platform::TextInputEvent{" next"}))
+                  .dispatched());
+  EXPECT_EQ(probe_.text_operations,
+            (std::vector<std::string>{"sync", "pass"}));
+
+  ASSERT_TRUE(router_.EndTextFocusSession(42, 1, false).ok());
+  EXPECT_EQ(router_.Snapshot().text_focus_generation, 0U);
+  EXPECT_FALSE(router_.HandleEvent(Event(platform::TextInputEvent{"late"}))
+                   .dispatched());
+}
+
+TEST_F(RobloxInputRouterTest, MouseClickRespectsManualTextFocusRelease) {
+  ASSERT_TRUE(router_.BeginTextFocusSession({42, 1, "draft", true, false}).ok());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_LEFT, 1, 900.0F, 600.0F})).dispatched());
+  EXPECT_TRUE(probe_.text_operations.empty());
+  EXPECT_EQ(router_.Snapshot().text_focus_generation, 1U);
+  EXPECT_TRUE(router_.HandleEvent(Event(platform::TextInputEvent{" next"}))
+                  .dispatched());
+}
+
 TEST(RobloxInputRouterClipboardTest,
      CtrlVPastesWithoutForwardingTheLetterKeyToRoblox) {
   Probe probe;
