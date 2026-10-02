@@ -72,20 +72,33 @@ void ResampleRgba(const RgbaImage& source, std::uint32_t width,
       static_cast<std::size_t>(source.width) * source.height * 4) {
     return;
   }
-  ResampleRgba(source.pixels.data(), source.width, source.height, width,
-               height, destination);
+  ResampleRgba(source.pixels.data(), source.width, source.height,
+               static_cast<std::size_t>(source.width) * 4, width, height,
+               destination);
 }
 
 void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
                   std::uint32_t source_height, std::uint32_t width,
                   std::uint32_t height, std::uint8_t* destination) {
+  ResampleRgba(source, source_width, source_height,
+               static_cast<std::size_t>(source_width) * 4, width, height,
+               destination);
+}
+
+void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
+                  std::uint32_t source_height, std::size_t source_stride_bytes,
+                  std::uint32_t width, std::uint32_t height,
+                  std::uint8_t* destination) {
   if (source == nullptr || destination == nullptr || width == 0 ||
-      height == 0 || source_width == 0 || source_height == 0) {
+      height == 0 || source_width == 0 || source_height == 0 ||
+      source_stride_bytes < static_cast<std::size_t>(source_width) * 4) {
     return;
   }
   // Source box of destination column x is [columns[2x], columns[2x + 1]).
   thread_local std::vector<std::uint32_t> columns;
-  columns.resize(static_cast<std::size_t>(width) * 2);
+  if (columns.size() < static_cast<std::size_t>(width) * 2) {
+    columns.resize(static_cast<std::size_t>(width) * 2);
+  }
   bool one_texel_columns = true;
   for (std::uint32_t x = 0; x < width; ++x) {
     const std::uint32_t x0 = static_cast<std::uint32_t>(
@@ -115,11 +128,11 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
     previous_y0 = y0;
     previous_y1 = y1;
     if (one_texel_columns && y1 == y0 + 1) {
-      const std::uint8_t* source_row = source + y0 * source_width * 4;
+      const std::uint8_t* source_row = source + y0 * source_stride_bytes;
       for (std::uint32_t x = 0; x < width; ++x) {
-        std::memcpy(out_row + static_cast<std::size_t>(x) * 4,
-                    source_row + columns[2 * static_cast<std::size_t>(x)] * 4,
-                    4);
+        std::uint32_t pixel;
+        std::memcpy(&pixel, source_row + columns[2 * static_cast<std::size_t>(x)] * 4, 4);
+        std::memcpy(out_row + static_cast<std::size_t>(x) * 4, &pixel, 4);
       }
       continue;
     }
@@ -128,8 +141,9 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
       const std::uint64_t x1 = columns[2 * static_cast<std::size_t>(x) + 1];
       std::uint64_t sum[4] = {0, 0, 0, 0};
       for (std::uint64_t sy = y0; sy < y1; ++sy) {
+        const std::uint8_t* row_ptr = source + sy * source_stride_bytes;
         for (std::uint64_t sx = x0; sx < x1; ++sx) {
-          const std::uint8_t* pixel = source + (sy * source_width + sx) * 4;
+          const std::uint8_t* pixel = row_ptr + sx * 4;
           for (int channel = 0; channel < 4; ++channel) {
             sum[channel] += pixel[channel];
           }
@@ -137,9 +151,16 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
       }
       const std::uint64_t count = (y1 - y0) * (x1 - x0);
       std::uint8_t* out = destination + (static_cast<std::size_t>(y) * width + x) * 4;
-      for (int channel = 0; channel < 4; ++channel) {
-        out[channel] =
-            static_cast<std::uint8_t>((sum[channel] + count / 2) / count);
+      if (count == 1) {
+        for (int channel = 0; channel < 4; ++channel) {
+          out[channel] = static_cast<std::uint8_t>(sum[channel]);
+        }
+      } else {
+        const std::uint64_t half = count / 2;
+        for (int channel = 0; channel < 4; ++channel) {
+          out[channel] =
+              static_cast<std::uint8_t>((sum[channel] + half) / count);
+        }
       }
     }
   }
