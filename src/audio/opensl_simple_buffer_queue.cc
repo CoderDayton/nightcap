@@ -12,9 +12,7 @@
 #include <mutex>
 #include <new>
 #include <string>
-#include <unordered_map>
 #include <utility>
-#include <vector>
 
 namespace mocktail::audio {
 namespace {
@@ -55,10 +53,8 @@ struct OpenSlSimpleBufferQueueAdapter::State
   };
 
   struct ReleaseTicket {
-    std::shared_ptr<State> state;
-    std::uint64_t id = 0;
-    std::uint64_t generation = 0;
-    bool in_use = false;
+    const std::shared_ptr<State> state;
+    const std::uint64_t generation;
   };
 
   struct CallbackJob {
@@ -71,13 +67,7 @@ struct OpenSlSimpleBufferQueueAdapter::State
       : sink(std::move(owned_sink)),
         max_buffers(options.max_buffers),
         event_callback(options.event_callback),
-        event_context(options.event_context),
-        ticket_pool(options.max_buffers) {
-    free_tickets.reserve(options.max_buffers);
-    for (std::size_t i = options.max_buffers; i > 0; --i) {
-      free_tickets.push_back(i - 1);
-    }
-  }
+        event_context(options.event_context) {}
 
   static const AndroidSimpleBufferQueueTable kQueueTable;
 
@@ -103,7 +93,6 @@ struct OpenSlSimpleBufferQueueAdapter::State
     const std::shared_ptr<State> state = raw_state->shared_from_this();
 
     std::lock_guard<std::mutex> operation_lock(state->sink_operation_mutex);
-    std::uint64_t id = 0;
     ReleaseTicket* ticket = nullptr;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
@@ -111,24 +100,24 @@ struct OpenSlSimpleBufferQueueAdapter::State
         return opensl_abi::kResultPreconditionsViolated;
       }
       if (state->pending_count.load(std::memory_order_relaxed) >=
-              state->max_buffers ||
-          state->free_tickets.empty()) {
+          state->max_buffers) {
         return opensl_abi::kResultBufferInsufficient;
       }
-      const std::size_t slot_index = state->free_tickets.back();
-      state->free_tickets.pop_back();
-      ticket = &state->ticket_pool[slot_index];
-      id = state->next_id++;
-      ticket->state = state;
-      ticket->id = id;
-      ticket->generation = state->generation;
-      ticket->in_use = true;
+      ticket = new (std::nothrow)
+          ReleaseTicket{state, state->generation};
+      if (ticket == nullptr) {
+        state->last_status = Status::Error(
+            StatusCode::kUnavailable, "unable to allocate OpenSL release ticket");
+        return ToOpenSlResult(state->last_status);
+      }
       state->pending_count.fetch_add(1, std::memory_order_relaxed);
       ++state->submitted_buffers;
     }
 
     const PcmBuffer pcm{buffer, static_cast<std::size_t>(size),
                         &State::ReleaseBuffer, ticket};
+    // A successful enqueue may release synchronously. Only a failed enqueue
+    // leaves ownership here; its contract forbids a release callback.
     const Status status = state->sink->Enqueue(pcm);
     if (status.ok()) {
       state->NotifyEvent(OpenSlBufferQueueEvent::kSubmitted,
@@ -136,22 +125,12 @@ struct OpenSlSimpleBufferQueueAdapter::State
       return opensl_abi::kResultSuccess;
     }
 
+    const std::unique_ptr<ReleaseTicket> failed_ticket(ticket);
     {
       std::lock_guard<std::mutex> lock(state->mutex);
       state->last_status = status;
-      if (ticket->in_use && ticket->id == id) {
-        ticket->in_use = false;
-        ticket->state.reset();
-        const std::size_t slot_index =
-            static_cast<std::size_t>(ticket - state->ticket_pool.data());
-        state->free_tickets.push_back(slot_index);
-        if (state->pending_count.load(std::memory_order_relaxed) > 0) {
-          state->pending_count.fetch_sub(1, std::memory_order_relaxed);
-        }
-        if (state->submitted_buffers > 0) {
-          --state->submitted_buffers;
-        }
-      }
+      state->pending_count.fetch_sub(1, std::memory_order_relaxed);
+      --state->submitted_buffers;
     }
     return ToOpenSlResult(status);
   }
@@ -164,25 +143,14 @@ struct OpenSlSimpleBufferQueueAdapter::State
     }
     const std::shared_ptr<State> state = raw_state->shared_from_this();
     std::lock_guard<std::mutex> operation_lock(state->sink_operation_mutex);
-    std::size_t discarded_count = 0;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
       if (state->stopping) {
         return opensl_abi::kResultPreconditionsViolated;
       }
       ++state->generation;
-      state->free_tickets.clear();
-      for (auto& ticket : state->ticket_pool) {
-        if (ticket.in_use) {
-          ticket.in_use = false;
-          ticket.state.reset();
-          ++discarded_count;
-        }
-      }
-      for (std::size_t i = state->max_buffers; i > 0; --i) {
-        state->free_tickets.push_back(i - 1);
-      }
-      state->discarded_buffers += discarded_count;
+      state->discarded_buffers +=
+          state->pending_count.load(std::memory_order_relaxed);
       state->pending_count.store(0, std::memory_order_relaxed);
     }
     const Status status = state->sink->Clear();
@@ -226,7 +194,8 @@ struct OpenSlSimpleBufferQueueAdapter::State
 
   static void ReleaseBuffer(void* context, const void* /*data*/,
                             std::size_t size_bytes) {
-    auto* ticket = static_cast<ReleaseTicket*>(context);
+    const std::unique_ptr<ReleaseTicket> ticket(
+        static_cast<ReleaseTicket*>(context));
     if (ticket == nullptr) {
       return;
     }
@@ -239,29 +208,27 @@ struct OpenSlSimpleBufferQueueAdapter::State
     bool discarded = false;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
-      if (ticket->in_use) {
-        ticket->in_use = false;
-        ticket->state.reset();
-        const std::size_t slot_index =
-            static_cast<std::size_t>(ticket - state->ticket_pool.data());
-        state->free_tickets.push_back(slot_index);
-        if (state->pending_count.load(std::memory_order_relaxed) > 0) {
-          state->pending_count.fetch_sub(1, std::memory_order_relaxed);
+      // Clear already counted older generations as discarded. Their tickets
+      // remain alive until release without affecting newly enqueued buffers.
+      if (ticket->generation != state->generation) {
+        return;
+      }
+      if (state->pending_count.load(std::memory_order_relaxed) > 0) {
+        state->pending_count.fetch_sub(1, std::memory_order_relaxed);
+      }
+      if (!state->stopping) {
+        state->processed_buffers.fetch_add(1, std::memory_order_relaxed);
+        ++state->consumed_buffers;
+        state->consumed_bytes += size_bytes;
+        consumed = true;
+        if (state->callback != nullptr) {
+          state->callback_jobs.push_back(
+              CallbackJob{state->callback, state->callback_context});
+          notify_worker = true;
         }
-        if (!state->stopping && ticket->generation == state->generation) {
-          state->processed_buffers.fetch_add(1, std::memory_order_relaxed);
-          ++state->consumed_buffers;
-          state->consumed_bytes += size_bytes;
-          consumed = true;
-          if (state->callback != nullptr) {
-            state->callback_jobs.push_back(
-                CallbackJob{state->callback, state->callback_context});
-            notify_worker = true;
-          }
-        } else {
-          ++state->discarded_buffers;
-          discarded = true;
-        }
+      } else {
+        ++state->discarded_buffers;
+        discarded = true;
       }
     }
     if (consumed) {
@@ -374,14 +341,11 @@ struct OpenSlSimpleBufferQueueAdapter::State
   void* const event_context;
   Handle handle;
   pthread_t callback_thread{};
-  std::vector<ReleaseTicket> ticket_pool;
-  std::vector<std::size_t> free_tickets;
   std::atomic<std::size_t> pending_count{0};
   std::deque<CallbackJob> callback_jobs;
   AndroidSimpleBufferQueueCallback callback = nullptr;
   void* callback_context = nullptr;
   Status last_status;
-  std::uint64_t next_id = 1;
   std::uint64_t generation = 1;
   std::atomic<std::uint64_t> processed_buffers{0};
   std::uint64_t submitted_buffers = 0;
@@ -547,7 +511,6 @@ void OpenSlSimpleBufferQueueAdapter::Shutdown() {
     }
     state->shutdown_started = true;
     state->stopping = true;
-    ++state->generation;
     state->callback = nullptr;
     state->callback_context = nullptr;
     state->callback_jobs.clear();
@@ -566,10 +529,6 @@ void OpenSlSimpleBufferQueueAdapter::Shutdown() {
       state->last_status = Status::Error(
           StatusCode::kPlatformError,
           "audio sink did not release all borrowed OpenSL buffers");
-      for (auto& ticket : state->ticket_pool) {
-        ticket.in_use = false;
-        ticket.state.reset();
-      }
       state->pending_count.store(0, std::memory_order_relaxed);
     }
     state->shutdown_complete = true;

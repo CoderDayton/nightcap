@@ -1088,6 +1088,279 @@ TEST_F(JniVmTest, FloatArrayElementsAreMutable) {
   env->ReleaseFloatArrayElements(array, elements, 0);
 }
 
+TEST_F(JniVmTest, ObjectArrayInitializerSurvivesLocalDeletionAndSlotReuse) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jstring initial = env->NewStringUTF("original initializer");
+  ASSERT_NE(initial, nullptr);
+  jobjectArray array = env->NewObjectArray(1, string_class, initial);
+  ASSERT_NE(array, nullptr);
+  env->DeleteLocalRef(initial);
+
+  jstring replacement = env->NewStringUTF("new allocation");
+  ASSERT_NE(replacement, nullptr);
+  auto element = static_cast<jstring>(env->GetObjectArrayElement(array, 0));
+  ASSERT_NE(element, nullptr);
+  EXPECT_NE(element, replacement);
+  EXPECT_EQ(ReadJavaString(env, element), "original initializer");
+  env->DeleteLocalRef(element);
+  env->DeleteLocalRef(array);
+  env->DeleteLocalRef(replacement);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayDeletionReleasesSetElementSlot) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jobjectArray array = env->NewObjectArray(1, string_class, nullptr);
+  ASSERT_NE(array, nullptr);
+  jstring element = env->NewStringUTF("held by array");
+  ASSERT_NE(element, nullptr);
+  env->SetObjectArrayElement(array, 0, element);
+  env->DeleteLocalRef(element);
+  env->DeleteLocalRef(array);
+
+  // Only compare the saved handle value; never call JNI with a deleted ref.
+  jstring replacement = env->NewStringUTF("reuses released slot");
+  ASSERT_NE(replacement, nullptr);
+  EXPECT_EQ(replacement, element);
+  EXPECT_EQ(ReadJavaString(env, replacement), "reuses released slot");
+  env->DeleteLocalRef(replacement);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayInitializerSurvivesLocalFramePop) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  ASSERT_EQ(env->PushLocalFrame(4), JNI_OK);
+  jstring initial = env->NewStringUTF("frame initializer");
+  ASSERT_NE(initial, nullptr);
+  jobjectArray array = env->NewObjectArray(1, string_class, initial);
+  ASSERT_NE(array, nullptr);
+  array = static_cast<jobjectArray>(env->PopLocalFrame(array));
+  ASSERT_NE(array, nullptr);
+
+  jstring replacement = env->NewStringUTF("after frame pop");
+  ASSERT_NE(replacement, nullptr);
+  auto element = static_cast<jstring>(env->GetObjectArrayElement(array, 0));
+  ASSERT_NE(element, nullptr);
+  EXPECT_NE(element, replacement);
+  EXPECT_EQ(ReadJavaString(env, element), "frame initializer");
+  env->DeleteLocalRef(element);
+  env->DeleteLocalRef(array);
+  jstring recycled = env->NewStringUTF("released frame initializer");
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled, initial);
+  env->DeleteLocalRef(recycled);
+  env->DeleteLocalRef(replacement);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayRepeatedInitializerOwnsEveryPosition) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jstring initial = env->NewStringUTF("three retained positions");
+  ASSERT_NE(initial, nullptr);
+  jobjectArray array = env->NewObjectArray(3, string_class, initial);
+  ASSERT_NE(array, nullptr);
+  env->DeleteLocalRef(initial);
+  env->SetObjectArrayElement(array, 0, nullptr);
+  env->SetObjectArrayElement(array, 1, nullptr);
+
+  jstring replacement = env->NewStringUTF("last position still owns original");
+  ASSERT_NE(replacement, nullptr);
+  auto remaining = static_cast<jstring>(env->GetObjectArrayElement(array, 2));
+  ASSERT_NE(remaining, nullptr);
+  EXPECT_NE(remaining, replacement);
+  EXPECT_EQ(ReadJavaString(env, remaining), "three retained positions");
+  env->DeleteLocalRef(remaining);
+  env->SetObjectArrayElement(array, 2, nullptr);
+  jstring recycled = env->NewStringUTF("last position released");
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled, initial);
+  env->DeleteLocalRef(array);
+  EXPECT_EQ(ReadJavaString(env, recycled), "last position released");
+  env->DeleteLocalRef(recycled);
+  env->DeleteLocalRef(replacement);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayReplacementReleasesSameDifferentAndNullElements) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jobjectArray array = env->NewObjectArray(1, string_class, nullptr);
+  ASSERT_NE(array, nullptr);
+  jstring first = env->NewStringUTF("first");
+  jstring second = env->NewStringUTF("second");
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  env->SetObjectArrayElement(array, 0, first);
+  env->SetObjectArrayElement(array, 0, first);
+  env->DeleteLocalRef(first);
+  auto element = static_cast<jstring>(env->GetObjectArrayElement(array, 0));
+  ASSERT_NE(element, nullptr);
+  EXPECT_EQ(ReadJavaString(env, element), "first");
+  env->DeleteLocalRef(element);
+
+  env->SetObjectArrayElement(array, 0, second);
+  jstring first_reuse = env->NewStringUTF("first slot reused");
+  ASSERT_NE(first_reuse, nullptr);
+  EXPECT_EQ(first_reuse, first);
+  env->DeleteLocalRef(second);
+  element = static_cast<jstring>(env->GetObjectArrayElement(array, 0));
+  ASSERT_NE(element, nullptr);
+  EXPECT_EQ(ReadJavaString(env, element), "second");
+  env->DeleteLocalRef(element);
+  env->SetObjectArrayElement(array, 0, nullptr);
+  EXPECT_EQ(env->GetObjectArrayElement(array, 0), nullptr);
+  jstring second_reuse = env->NewStringUTF("second slot reused");
+  ASSERT_NE(second_reuse, nullptr);
+  EXPECT_EQ(second_reuse, second);
+  env->DeleteLocalRef(array);
+  env->DeleteLocalRef(first_reuse);
+  env->DeleteLocalRef(second_reuse);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayDeletionRecursivelyReleasesNestedElements) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jclass object_class = env->FindClass("java/lang/Object");
+  jstring initial = env->NewStringUTF("nested string");
+  ASSERT_NE(initial, nullptr);
+  jobjectArray inner = env->NewObjectArray(1, string_class, initial);
+  ASSERT_NE(inner, nullptr);
+  jobjectArray outer = env->NewObjectArray(1, object_class, inner);
+  ASSERT_NE(outer, nullptr);
+  env->DeleteLocalRef(initial);
+  env->DeleteLocalRef(inner);
+
+  auto retained_inner =
+      static_cast<jobjectArray>(env->GetObjectArrayElement(outer, 0));
+  ASSERT_NE(retained_inner, nullptr);
+  auto element =
+      static_cast<jstring>(env->GetObjectArrayElement(retained_inner, 0));
+  ASSERT_NE(element, nullptr);
+  EXPECT_EQ(ReadJavaString(env, element), "nested string");
+  env->DeleteLocalRef(element);
+  env->DeleteLocalRef(retained_inner);
+  env->DeleteLocalRef(outer);
+  jstring recycled = env->NewStringUTF("recursive release completed");
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled, initial);
+  env->DeleteLocalRef(recycled);
+  env->DeleteLocalRef(string_class);
+  env->DeleteLocalRef(object_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayNullAndEmptyArraysDoNotRetainInitializer) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jstring initial = env->NewStringUTF("not stored in an empty array");
+  ASSERT_NE(initial, nullptr);
+  jobjectArray empty = env->NewObjectArray(0, string_class, initial);
+  jobjectArray nulls = env->NewObjectArray(3, string_class, nullptr);
+  ASSERT_NE(empty, nullptr);
+  ASSERT_NE(nulls, nullptr);
+  EXPECT_EQ(env->GetArrayLength(empty), 0);
+  EXPECT_EQ(env->GetArrayLength(nulls), 3);
+  for (jsize index = 0; index < 3; ++index) {
+    EXPECT_EQ(env->GetObjectArrayElement(nulls, index), nullptr);
+    env->SetObjectArrayElement(nulls, index, nullptr);
+  }
+  env->DeleteLocalRef(initial);
+  jstring recycled = env->NewStringUTF("empty initializer was released");
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled, initial);
+  env->DeleteLocalRef(empty);
+  env->DeleteLocalRef(nulls);
+  EXPECT_EQ(ReadJavaString(env, recycled), "empty initializer was released");
+  env->DeleteLocalRef(recycled);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArraySelfReferenceCanBeBrokenWithValidExternalReference) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass object_class = env->FindClass("java/lang/Object");
+  jobjectArray array = env->NewObjectArray(2, object_class, nullptr);
+  ASSERT_NE(array, nullptr);
+  jstring initial = env->NewStringUTF("owned beside self reference");
+  ASSERT_NE(initial, nullptr);
+  env->SetObjectArrayElement(array, 0, array);
+  env->SetObjectArrayElement(array, 1, initial);
+  auto external = static_cast<jobjectArray>(env->NewGlobalRef(array));
+  ASSERT_NE(external, nullptr);
+  env->DeleteLocalRef(array);
+  env->DeleteLocalRef(initial);
+
+  jobject self = env->GetObjectArrayElement(external, 0);
+  ASSERT_NE(self, nullptr);
+  EXPECT_EQ(env->IsSameObject(self, external), JNI_TRUE);
+  env->DeleteLocalRef(self);
+  env->SetObjectArrayElement(external, 0, nullptr);
+  auto element = static_cast<jstring>(env->GetObjectArrayElement(external, 1));
+  ASSERT_NE(element, nullptr);
+  EXPECT_EQ(ReadJavaString(env, element), "owned beside self reference");
+  env->DeleteLocalRef(element);
+  env->DeleteGlobalRef(external);
+  jstring recycled = env->NewStringUTF("broken cycle released its element");
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled, initial);
+  env->DeleteLocalRef(recycled);
+  env->DeleteLocalRef(object_class);
+}
+
+TEST_F(JniVmTest, ObjectArraySurvivesTemporaryVmTeardownAndEnvironmentReattachment) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass string_class = env->FindClass("java/lang/String");
+  jstring initial = env->NewStringUTF("surviving VM array");
+  ASSERT_NE(initial, nullptr);
+  jobjectArray array = env->NewObjectArray(1, string_class, initial);
+  ASSERT_NE(array, nullptr);
+  env->DeleteLocalRef(initial);
+  {
+    VM temporary;
+    ASSERT_NE(temporary.GetJNIEnv(), nullptr);
+  }
+  // Temporary VM teardown invalidates the thread's environment; reacquire it
+  // before invoking JNI on references owned by the surviving VM.
+  env = vm_->GetJNIEnv();
+  ASSERT_NE(env, nullptr);
+  auto element = static_cast<jstring>(env->GetObjectArrayElement(array, 0));
+  ASSERT_NE(element, nullptr);
+  EXPECT_EQ(ReadJavaString(env, element), "surviving VM array");
+  env->DeleteLocalRef(element);
+  env->DeleteLocalRef(array);
+  jstring recycled = env->NewStringUTF("surviving array released");
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled, initial);
+  env->DeleteLocalRef(recycled);
+  env->DeleteLocalRef(string_class);
+}
+
+TEST_F(JniVmTest, ObjectArrayLiveAtProcessExitDoesNotReenterDestroyedTables) {
+  ASSERT_EXIT(
+      {
+        VM temporary;
+        JNIEnv *env = temporary.GetJNIEnv();
+        if (env == nullptr) std::_Exit(10);
+        jclass string_class = env->FindClass("java/lang/String");
+        jclass object_class = env->FindClass("java/lang/Object");
+        jstring initial = env->NewStringUTF("live at shutdown");
+        if (initial == nullptr) std::_Exit(11);
+        jobjectArray inner = env->NewObjectArray(3, string_class, initial);
+        if (inner == nullptr) std::_Exit(12);
+        jobjectArray outer = env->NewObjectArray(1, object_class, inner);
+        if (outer == nullptr) std::_Exit(13);
+        env->DeleteLocalRef(initial);
+        env->DeleteLocalRef(inner);
+        // Run global destructors with outer/inner/string still alive. Release
+        // of elements belongs to explicit reference release, not ~PseudoArray.
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
 constexpr int kMoreThanHandleCapacity = 150000;
 
 TEST_F(JniVmTest, RepeatedFindClassDoesNotExhaustHandles) {

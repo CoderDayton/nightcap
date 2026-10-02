@@ -30,19 +30,60 @@ namespace {
 
 using namespace std::chrono_literals;
 
+class ReleaseGate {
+ public:
+  void WaitBeforeRelease() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    waiting_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [this] { return open_; });
+  }
+
+  bool WaitUntilBlocked() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, 2s, [this] { return waiting_; });
+  }
+
+  void Open() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      open_ = true;
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool waiting_ = false;
+  bool open_ = false;
+};
+
 class ControlledAudioSink final : public AudioSink {
  public:
+  explicit ControlledAudioSink(bool release_on_enqueue = false)
+      : release_on_enqueue_(release_on_enqueue) {}
+
   const PcmSpec& source_spec() const override { return spec_; }
 
   Status Enqueue(const PcmBuffer& buffer) override {
     if (buffer.data == nullptr || buffer.size_bytes == 0) {
       return Status::Error(StatusCode::kInvalidArgument, "empty buffer");
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (stopped_) {
-      return Status::Error(StatusCode::kFailedPrecondition, "stopped");
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopped_) {
+        return Status::Error(StatusCode::kFailedPrecondition, "stopped");
+      }
+      if (reject_next_enqueue_) {
+        reject_next_enqueue_ = false;
+        return Status::Error(StatusCode::kUnavailable, "enqueue rejected");
+      }
+      buffers_.push_back(buffer);
     }
-    buffers_.push_back(buffer);
+    if (release_on_enqueue_) {
+      ReleaseOne();
+    }
     return Status::Ok();
   }
 
@@ -93,10 +134,13 @@ class ControlledAudioSink final : public AudioSink {
       std::lock_guard<std::mutex> lock(mutex_);
       stopped_ = true;
     }
+    release_cv_.notify_all();
     ReleaseAll();
+    std::unique_lock<std::mutex> lock(mutex_);
+    release_cv_.wait(lock, [this] { return active_releases_ == 0; });
   }
 
-  void ReleaseOne() {
+  void ReleaseOne(ReleaseGate* gate = nullptr) {
     PcmBuffer buffer;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -105,11 +149,30 @@ class ControlledAudioSink final : public AudioSink {
       }
       buffer = buffers_.front();
       buffers_.erase(buffers_.begin());
+      ++active_releases_;
+    }
+    if (gate != nullptr) {
+      gate->WaitBeforeRelease();
     }
     if (buffer.release_callback != nullptr) {
       buffer.release_callback(buffer.release_context, buffer.data,
                               buffer.size_bytes);
     }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      --active_releases_;
+    }
+    release_cv_.notify_all();
+  }
+
+  bool WaitUntilShutdownStarts() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return release_cv_.wait_for(lock, 2s, [this] { return stopped_; });
+  }
+
+  void RejectNextEnqueue() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    reject_next_enqueue_ = true;
   }
 
   std::size_t buffer_count() const {
@@ -141,11 +204,36 @@ class ControlledAudioSink final : public AudioSink {
   }
 
   const PcmSpec spec_;
+  const bool release_on_enqueue_;
   mutable std::mutex mutex_;
+  std::condition_variable release_cv_;
   std::vector<PcmBuffer> buffers_;
+  std::size_t active_releases_ = 0;
   bool playing_ = false;
   float gain_ = 1.0F;
   bool stopped_ = false;
+  bool reject_next_enqueue_ = false;
+};
+
+class DelayedBufferRelease {
+ public:
+  explicit DelayedBufferRelease(ControlledAudioSink* sink)
+      : thread_([this, sink] { sink->ReleaseOne(&gate_); }) {}
+
+  ~DelayedBufferRelease() {
+    if (thread_.joinable()) {
+      gate_.Open();
+      thread_.join();
+    }
+  }
+
+  bool WaitUntilBlocked() { return gate_.WaitUntilBlocked(); }
+  void AllowRelease() { gate_.Open(); }
+  void Join() { thread_.join(); }
+
+ private:
+  ReleaseGate gate_;
+  std::thread thread_;
 };
 
 struct CallbackProbe {
@@ -389,6 +477,7 @@ TEST(SdlAudioSinkTest, ReleasesBorrowedBufferWhenStreamIsCleared) {
 TEST(OpenSlQueueTest, DeliversPcmToSinkAndDispatchesCompletion) {
   auto controlled = std::make_unique<ControlledAudioSink>();
   ControlledAudioSink* controlled_view = controlled.get();
+  CallbackProbe probe;
   std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
   Status status = OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled),
                                                          {}, &adapter);
@@ -396,7 +485,6 @@ TEST(OpenSlQueueTest, DeliversPcmToSinkAndDispatchesCompletion) {
 
   auto queue = adapter->interface();
   ASSERT_NE(queue, nullptr);
-  CallbackProbe probe;
   ASSERT_EQ((*queue)->RegisterCallback(queue, OpenSlQueueCallback, &probe),
             opensl_abi::kResultSuccess);
 
@@ -520,6 +608,204 @@ TEST(OpenSlQueueTest, ClearSuppressesCallbacksForDiscardedBuffers) {
   EXPECT_EQ(probe.calls, 0);
 }
 
+TEST(OpenSlQueueTest, DelayedReleaseAfterClearPreservesReenqueuedBuffer) {
+  auto controlled = std::make_unique<ControlledAudioSink>();
+  ControlledAudioSink* controlled_view = controlled.get();
+  OpenSlSimpleBufferQueueOptions options;
+  options.max_buffers = 1;
+  CallbackProbe probe;
+  std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
+  ASSERT_TRUE(OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled),
+                                                     options, &adapter)
+                  .ok());
+  auto queue = adapter->interface();
+  ASSERT_EQ((*queue)->RegisterCallback(queue, OpenSlQueueCallback, &probe),
+            opensl_abi::kResultSuccess);
+  const std::vector<std::int16_t> samples(32 * 2, 789);
+  const auto bytes =
+      static_cast<opensl_abi::Uint32>(samples.size() * sizeof(samples.front()));
+  ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultSuccess);
+
+  DelayedBufferRelease release(controlled_view);
+  ASSERT_TRUE(release.WaitUntilBlocked());
+  ASSERT_EQ(controlled_view->buffer_count(), 0u);
+  ASSERT_EQ((*queue)->Clear(queue), opensl_abi::kResultSuccess);
+  ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultSuccess);
+  release.AllowRelease();
+  release.Join();
+
+  opensl_abi::AndroidSimpleBufferQueueState queue_state{};
+  ASSERT_EQ((*queue)->GetState(queue, &queue_state),
+            opensl_abi::kResultSuccess);
+  EXPECT_EQ(queue_state.count, 1u);
+  EXPECT_EQ(queue_state.index, 0u);
+  const auto before_release = adapter->GetStats();
+  EXPECT_EQ(before_release.submitted_buffers, 2u);
+  EXPECT_EQ(before_release.pending_buffers, 1u);
+  EXPECT_EQ(before_release.consumed_buffers, 0u);
+  EXPECT_EQ(before_release.discarded_buffers, 1u);
+  EXPECT_EQ(before_release.consumed_bytes, 0u);
+
+  controlled_view->ReleaseOne();
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    EXPECT_TRUE(probe.cv.wait_for(lock, 2s, [&probe] { return probe.calls >= 1; }));
+  }
+  adapter->Shutdown();
+  {
+    std::lock_guard<std::mutex> lock(probe.mutex);
+    EXPECT_EQ(probe.calls, 1);
+  }
+  ASSERT_EQ((*queue)->GetState(queue, &queue_state),
+            opensl_abi::kResultSuccess);
+  EXPECT_EQ(queue_state.count, 0u);
+  EXPECT_EQ(queue_state.index, 1u);
+  const auto after_release = adapter->GetStats();
+  EXPECT_EQ(after_release.pending_buffers, 0u);
+  EXPECT_EQ(after_release.consumed_buffers, 1u);
+  EXPECT_EQ(after_release.discarded_buffers, 1u);
+  EXPECT_EQ(after_release.consumed_bytes, bytes);
+  EXPECT_TRUE(adapter->last_error().ok());
+}
+
+TEST(OpenSlQueueTest, ClearCanRaceBorrowedBufferRelease) {
+  auto controlled = std::make_unique<ControlledAudioSink>();
+  ControlledAudioSink* controlled_view = controlled.get();
+  OpenSlSimpleBufferQueueOptions options;
+  options.max_buffers = 1;
+  std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
+  ASSERT_TRUE(OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled),
+                                                     options, &adapter)
+                  .ok());
+  auto queue = adapter->interface();
+  const std::vector<std::int16_t> samples(32 * 2, 789);
+  const auto bytes =
+      static_cast<opensl_abi::Uint32>(samples.size() * sizeof(samples.front()));
+  constexpr std::uint64_t kIterations = 64;
+  for (std::uint64_t iteration = 0; iteration < kIterations; ++iteration) {
+    ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+              opensl_abi::kResultSuccess);
+    DelayedBufferRelease release(controlled_view);
+    ASSERT_TRUE(release.WaitUntilBlocked());
+    // Clear and ReleaseBuffer both run after this gate. Joining only after
+    // Clear avoids ordering the ticket reset before the callback's first read.
+    release.AllowRelease();
+    ASSERT_EQ((*queue)->Clear(queue), opensl_abi::kResultSuccess);
+    release.Join();
+    EXPECT_EQ(adapter->GetStats().pending_buffers, 0u);
+  }
+  adapter->Shutdown();
+  const auto stats = adapter->GetStats();
+  EXPECT_EQ(stats.submitted_buffers, kIterations);
+  EXPECT_EQ(stats.consumed_buffers + stats.discarded_buffers, kIterations);
+  EXPECT_EQ(stats.pending_buffers, 0u);
+  EXPECT_TRUE(adapter->last_error().ok());
+}
+
+TEST(OpenSlQueueTest, ShutdownWaitsForDelayedReleaseAfterClear) {
+  auto controlled = std::make_unique<ControlledAudioSink>();
+  ControlledAudioSink* controlled_view = controlled.get();
+  OpenSlSimpleBufferQueueOptions options;
+  options.max_buffers = 1;
+  std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
+  ASSERT_TRUE(OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled),
+                                                     options, &adapter)
+                  .ok());
+  auto queue = adapter->interface();
+  const std::vector<std::int16_t> samples(32 * 2, 789);
+  const auto bytes =
+      static_cast<opensl_abi::Uint32>(samples.size() * sizeof(samples.front()));
+  ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultSuccess);
+  DelayedBufferRelease release(controlled_view);
+  ASSERT_TRUE(release.WaitUntilBlocked());
+  ASSERT_EQ((*queue)->Clear(queue), opensl_abi::kResultSuccess);
+  ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultSuccess);
+
+  std::atomic<bool> shutdown_done{false};
+  std::thread shutdown_thread([&] {
+    adapter->Shutdown();
+    shutdown_done.store(true);
+  });
+  EXPECT_TRUE(controlled_view->WaitUntilShutdownStarts());
+  EXPECT_FALSE(shutdown_done.load());
+  release.AllowRelease();
+  release.Join();
+  shutdown_thread.join();
+  EXPECT_TRUE(shutdown_done.load());
+  EXPECT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultPreconditionsViolated);
+  const auto stats = adapter->GetStats();
+  EXPECT_EQ(stats.pending_buffers, 0u);
+  EXPECT_EQ(stats.consumed_buffers, 0u);
+  EXPECT_EQ(stats.discarded_buffers, 2u);
+  EXPECT_TRUE(adapter->last_error().ok());
+}
+
+TEST(OpenSlQueueTest, FailedEnqueuePreservesCapacityAndCounters) {
+  auto controlled = std::make_unique<ControlledAudioSink>();
+  ControlledAudioSink* controlled_view = controlled.get();
+  OpenSlSimpleBufferQueueOptions options;
+  options.max_buffers = 1;
+  std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
+  ASSERT_TRUE(OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled),
+                                                     options, &adapter)
+                  .ok());
+  auto queue = adapter->interface();
+  const std::vector<std::int16_t> samples(32 * 2, 789);
+  const auto bytes =
+      static_cast<opensl_abi::Uint32>(samples.size() * sizeof(samples.front()));
+  controlled_view->RejectNextEnqueue();
+  EXPECT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultResourceError);
+  EXPECT_EQ(adapter->GetStats().submitted_buffers, 0u);
+  EXPECT_EQ(adapter->GetStats().pending_buffers, 0u);
+  ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+            opensl_abi::kResultSuccess);
+  controlled_view->ReleaseOne();
+  const auto stats = adapter->GetStats();
+  EXPECT_EQ(stats.submitted_buffers, 1u);
+  EXPECT_EQ(stats.consumed_buffers, 1u);
+  EXPECT_EQ(stats.discarded_buffers, 0u);
+  EXPECT_EQ(stats.pending_buffers, 0u);
+}
+
+TEST(OpenSlQueueTest, EnqueueCanReleaseBorrowedBufferSynchronously) {
+  auto controlled = std::make_unique<ControlledAudioSink>(true);
+  OpenSlSimpleBufferQueueOptions options;
+  options.max_buffers = 1;
+  CallbackProbe probe;
+  std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
+  ASSERT_TRUE(OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled),
+                                                     options, &adapter)
+                  .ok());
+  auto queue = adapter->interface();
+  ASSERT_EQ((*queue)->RegisterCallback(queue, OpenSlQueueCallback, &probe),
+            opensl_abi::kResultSuccess);
+  const std::vector<std::int16_t> samples(32 * 2, 789);
+  const auto bytes =
+      static_cast<opensl_abi::Uint32>(samples.size() * sizeof(samples.front()));
+  for (int enqueue = 0; enqueue < 2; ++enqueue) {
+    ASSERT_EQ((*queue)->Enqueue(queue, samples.data(), bytes),
+              opensl_abi::kResultSuccess);
+    EXPECT_EQ(adapter->GetStats().pending_buffers, 0u);
+  }
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    EXPECT_TRUE(probe.cv.wait_for(lock, 2s, [&probe] { return probe.calls == 2; }));
+  }
+  adapter->Shutdown();
+  const auto stats = adapter->GetStats();
+  EXPECT_EQ(stats.submitted_buffers, 2u);
+  EXPECT_EQ(stats.consumed_buffers, 2u);
+  EXPECT_EQ(stats.discarded_buffers, 0u);
+  EXPECT_EQ(stats.consumed_bytes, 2u * bytes);
+  EXPECT_TRUE(adapter->last_error().ok());
+}
+
 TEST(OpenSlQueueTest, RejectsOverflowAndShutsDownFailClosed) {
   auto controlled = std::make_unique<ControlledAudioSink>();
   OpenSlSimpleBufferQueueOptions options;
@@ -590,12 +876,12 @@ TEST(OpenSlQueueTest, ShutdownWaitsForInFlightCallback) {
 TEST(OpenSlQueueTest, GetStatePollsWhilePlaybackReleasesBuffers) {
   auto controlled = std::make_unique<ControlledAudioSink>();
   ControlledAudioSink* controlled_view = controlled.get();
+  CallbackProbe probe;
   std::unique_ptr<OpenSlSimpleBufferQueueAdapter> adapter;
   ASSERT_TRUE(OpenSlSimpleBufferQueueAdapter::Create(std::move(controlled), {},
                                                      &adapter)
                   .ok());
   auto queue = adapter->interface();
-  CallbackProbe probe;
   ASSERT_EQ((*queue)->RegisterCallback(queue, OpenSlQueueCallback, &probe),
             opensl_abi::kResultSuccess);
 
