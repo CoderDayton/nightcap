@@ -17,6 +17,16 @@ GitHub are taken from the matching section here.
 - `make update-roblox` no longer deletes your previous Roblox install when an
   import fails partway through. If a step fails, the old files are put back,
   or kept in a folder whose path is printed. Thanks to @kimlherme.
+- A failed Roblox update now restores your previous version's records instead
+  of leaving them half switched. A damaged version file is rejected instead of
+  being half read, and a temporary failure to start the startup check no longer
+  marks a working Roblox build as broken for good. Thanks to @kimlherme.
+- Fixed a possible crash when Roblox clears its audio queue while sound is
+  still playing, and a memory leak in lists of objects passed to Roblox's Java
+  code. Thanks to @kimlherme.
+- Fixed a possible crash when the text overlay shuts down, a freeze when Roblox
+  releases the mouse lock while another release is already in progress, and
+  network lookups that misread Roblox's options. Thanks to @kimlherme.
 
 ## [0.3.2] - 2026-09-29
 
