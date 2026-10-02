@@ -6,6 +6,12 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- Roblox textures now decode about 3 times faster, which shortens the stalls
+  when a place loads and when new parts of the map stream in. Thanks to
+  @glook9001.
+
 ### Fixed
 
 - `make update-roblox` no longer deletes your previous Roblox install when an
