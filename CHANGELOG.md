@@ -6,6 +6,12 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Joining a friend from a Roblox "follow user" link now works. Nightcap looks
+  up which game they are in and joins it.
+- Nix users get a desktop entry for the app.
+
 ### Changed
 
 - Roblox textures now decode about 3 times faster, which shortens the stalls
@@ -27,6 +33,10 @@ GitHub are taken from the matching section here.
 - Fixed a possible crash when the text overlay shuts down, a freeze when Roblox
   releases the mouse lock while another release is already in progress, and
   network lookups that misread Roblox's options. Thanks to @kimlherme.
+- Fixed the sky sometimes rendering with the wrong textures in the Vulkan
+  renderer.
+- Clicking while a Roblox text box has focus no longer closes it. Only Roblox
+  decides when a click ends typing.
 
 ## [0.3.2] - 2026-09-29
 
