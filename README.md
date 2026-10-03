@@ -95,6 +95,12 @@ The APK is checked before any native code is loaded. It is downloaded on first
 launch and is not bundled with Nightcap. The last working copy is kept in case
 an update fails.
 
+A leftover `.previous_good-recovery.json` in the payload store marks pending
+recovery after a publication or restoration failure and blocks further payload
+publication and garbage collection. Check `current.json` and `previous_good.json`
+against the saved recovery state and fix the underlying problem before manually
+removing the marker.
+
 <details>
 <summary>Screenshots</summary>
 
