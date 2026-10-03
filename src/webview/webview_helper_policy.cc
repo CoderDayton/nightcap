@@ -133,6 +133,11 @@ bool ShouldDisableWebViewHardwareAcceleration(
   return wayland_display;
 }
 
+bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
+                                    const char* renderer_override) {
+  return software_compositing && renderer_override == nullptr;
+}
+
 const char* AndroidBridgeSource() { return kBridgeSource; }
 
 std::string BuildRobloxAndroidUserAgent() {

@@ -38,6 +38,13 @@ bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
 // Match WebKit's WEBKIT_DISABLE_COMPOSITING_MODE override semantics.
 bool ShouldDisableWebViewHardwareAcceleration(
     bool wayland_display, const char* compositing_override);
+// GTK's GL renderer aborts in libepoxy when it snapshots a page switch on
+// hosts where its GL context cannot become current. With software compositing
+// the helper does not need GL for its UI, so use the Cairo renderer unless the
+// user chose one through GSK_RENDERER.
+bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
+                                    const char* renderer_override);
+
 const char* AndroidBridgeSource();
 std::string BuildRobloxAndroidUserAgent();
 bool IsBrowserLoginUrl(std::string_view url);

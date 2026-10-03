@@ -37,6 +37,9 @@ GitHub are taken from the matching section here.
   renderer.
 - Clicking while a Roblox text box has focus no longer closes it. Only Roblox
   decides when a click ends typing.
+- Going to another page in the web view, such as Friends from a profile, no
+  longer closes the web view. It crashed on every page change on Wayland
+  systems whose GL setup GTK could not use.
 
 ## [0.3.2] - 2026-09-29
 

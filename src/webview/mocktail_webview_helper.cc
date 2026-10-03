@@ -1424,6 +1424,11 @@ void Activate(GtkApplication* application, gpointer user_data) {
   state->disable_hardware_acceleration =
       mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
           wayland_display, std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
+  // GTK picks its renderer when a window is realized, which is after this.
+  if (mocktail::webview::ShouldForceSoftwareGtkRenderer(
+          state->disable_hardware_acceleration, std::getenv("GSK_RENDERER"))) {
+    setenv("GSK_RENDERER", "cairo", 0);
+  }
   std::cerr << "[webview] display=" << (wayland_display ? "wayland" : "other")
             << " compositing="
             << (state->disable_hardware_acceleration ? "software" : "default")

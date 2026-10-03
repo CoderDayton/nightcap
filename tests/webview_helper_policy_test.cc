@@ -134,6 +134,19 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitCompositingEnvironment) {
   }
 }
 
+TEST(WebViewHelperPolicyTest, ForcesCairoRendererWithSoftwareCompositing) {
+  EXPECT_TRUE(ShouldForceSoftwareGtkRenderer(true, nullptr));
+  EXPECT_FALSE(ShouldForceSoftwareGtkRenderer(false, nullptr));
+}
+
+TEST(WebViewHelperPolicyTest, HonorsExplicitGtkRendererEnvironment) {
+  for (bool software_compositing : {false, true}) {
+    for (const char* value : {"gl", "vulkan", "cairo", ""}) {
+      EXPECT_FALSE(ShouldForceSoftwareGtkRenderer(software_compositing, value));
+    }
+  }
+}
+
 TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
   const UriPolicyResult roblox =
       EvaluateNavigationUri("https://www.roblox.com/login");
