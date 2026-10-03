@@ -75,6 +75,8 @@ TEST(AngleProbeTest, RequiresExplicitPinnedLibraryPaths) {
   auto capability = graphics::ProbeAngleVulkan({});
   EXPECT_EQ(capability.state, CapabilityState::kUnavailable);
   EXPECT_NE(capability.detail.find("required"), std::string::npos);
+  EXPECT_EQ(graphics::InspectAngleLibraries({}).state,
+            CapabilityState::kUnavailable);
 }
 
 TEST(AngleProbeTest, ValidatesConfiguredAngleVulkanDistribution) {
@@ -87,6 +89,8 @@ TEST(AngleProbeTest, ValidatesConfiguredAngleVulkanDistribution) {
   graphics::AngleProbeOptions options;
   options.egl_library_path = egl;
   options.gles_library_path = gles;
+  const auto inspected = graphics::InspectAngleLibraries(options);
+  ASSERT_EQ(inspected.state, CapabilityState::kLoadable) << inspected.detail;
   auto capability = graphics::ProbeAngleVulkan(options);
   EXPECT_EQ(capability.state, CapabilityState::kReady) << capability.detail;
   EXPECT_EQ(capability.acceleration, HardwareAcceleration::kHardware);
