@@ -167,6 +167,26 @@ TEST(SdlEventConverterTest, PreservesHostWheelDirectionAndPrecision) {
   }
 }
 
+TEST(SdlEventConverterTest, PreservesRelativeModeForAllMouseEvents) {
+  auto* window = reinterpret_cast<SDL_Window*>(0x1);
+  platform::PlatformEvent event;
+  for (const bool relative_mode : {false, true}) {
+    SDL_Event source{};
+    source.type = SDL_EVENT_MOUSE_MOTION;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseMotionEvent>(event.payload).relative_mode,
+              relative_mode);
+    source.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseButtonEvent>(event.payload).relative_mode,
+              relative_mode);
+    source.type = SDL_EVENT_MOUSE_WHEEL;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseWheelEvent>(event.payload).relative_mode,
+              relative_mode);
+  }
+}
+
 TEST(SdlEventConverterTest, RejectsInvalidArgumentsAndUnsupportedEvents) {
   SDL_Event source{};
   source.type = SDL_EVENT_USER;
