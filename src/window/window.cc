@@ -471,8 +471,7 @@ VideoDriverChoice ResolveConfiguredVideoDriverChoice() {
   input.has_wayland_session = HasWaylandSession();
   input.has_x11_display = GetEnvNonEmpty("DISPLAY") != nullptr;
   input.uses_direct_vulkan = ShouldUseNativeVulkanBackend();
-  input.has_nvidia_kernel_driver =
-      access("/proc/driver/nvidia/version", R_OK) == 0;
+  input.has_nvidia_kernel_driver = HasNvidiaKernelDriver();
   return ResolveVideoDriverChoice(input);
 }
 
