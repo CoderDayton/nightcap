@@ -6,6 +6,8 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-04
+
 ### Added
 
 - Joining a friend from a Roblox "follow user" link now works. Nightcap looks
@@ -278,7 +280,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The AppImage build no longer fails on stale checksums for the slimmed
   Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.3
 [0.3.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.2
 [0.3.1]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.1
 [0.3.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.0

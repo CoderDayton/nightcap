@@ -57,6 +57,20 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.3.3" date="2026-10-04">
+      <description>
+        <ul>
+          <li>Joining a friend from a follow user link now works.</li>
+          <li>Roblox textures decode about 3 times faster, so loading stalls are shorter.</li>
+          <li>A failed Roblox update now restores your previous install instead of leaving it half changed.</li>
+          <li>Fixed crashes and freezes with audio, the text overlay, the mouse lock and saved themes.</li>
+          <li>Going to another page in the web view no longer closes it.</li>
+          <li>Clicking while typing no longer closes the text box.</li>
+          <li>Fixed the sky showing the wrong textures.</li>
+          <li>The Flatpak build on NVIDIA now uses X11 to avoid Wayland hangs.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-09-29">
       <description>
         <ul>
