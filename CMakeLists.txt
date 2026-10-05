@@ -480,7 +480,7 @@ target_link_libraries(mocktail_window PUBLIC
   Mocktail::SdlVulkanWsi
   SDL3::SDL3
   ${CMAKE_DL_LIBS}
-  PRIVATE Mocktail::Runtime Mocktail::GlesTextOverlay
+  PRIVATE Mocktail::Runtime Mocktail::GlesTextOverlay Mocktail::GraphicsFoundation
 )
 
 add_library(mocktail_roblox_output_device_runtime STATIC
