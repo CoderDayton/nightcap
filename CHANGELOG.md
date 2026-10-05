@@ -40,6 +40,11 @@ GitHub are taken from the matching section here.
 - Going to another page in the web view, such as Friends from a profile, no
   longer closes the web view. It crashed on every page change on Wayland
   systems whose GL setup GTK could not use.
+- Fixed a crash when Roblox's saved dark or light theme setting was missing or
+  damaged.
+- The Flatpak build now detects an NVIDIA driver from inside its sandbox, so it
+  uses X11 instead of native Wayland where both are available. This avoids
+  Wayland hangs and display disconnects.
 
 ## [0.3.2] - 2026-09-29
 
