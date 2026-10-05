@@ -6,6 +6,11 @@ GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- The Flatpak build asks for the X11 socket only when there is no Wayland
+  session, as before 0.3.3.
+
 ## [0.3.3] - 2026-10-04
 
 ### Added
@@ -44,9 +49,6 @@ GitHub are taken from the matching section here.
   systems whose GL setup GTK could not use.
 - Fixed a crash when Roblox's saved dark or light theme setting was missing or
   damaged.
-- The Flatpak build now detects an NVIDIA driver from inside its sandbox, so it
-  uses X11 instead of native Wayland where both are available. This avoids
-  Wayland hangs and display disconnects.
 
 ## [0.3.2] - 2026-09-29
 
