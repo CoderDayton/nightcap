@@ -126,7 +126,9 @@ struct WindowState {
   int height = 720;
   bool initialised = false;
   bool quit_requested = false;
-  bool visible = false;
+  // Written on the main thread. The render thread reads it to decide whether
+  // to ask for the window to be shown.
+  std::atomic<bool> visible{false};
   bool software_window = false;
   bool direct_vulkan = false;
   bool input_test_sequence_queued = false;
@@ -145,6 +147,9 @@ struct WindowState {
 
 static WindowState g_state;
 static std::atomic<int> g_real_swap_count{0};
+// Set by the render thread at its first frame; the main thread shows the
+// window, because SDL window calls belong to the main thread.
+static std::atomic<bool> g_show_window_requested{false};
 static std::atomic<uint64_t> g_first_present_ticks_ns{0};
 static InputPumpPacer g_input_pump_pacer;
 static PresentLifecycleGate g_present_lifecycle;
@@ -1643,6 +1648,21 @@ void ShowIfHidden() {
       IsDisabledEnv("MOCKTAIL_SHOW_WINDOW_ON_FIRST_SWAP")) {
     return;
   }
+  g_show_window_requested.store(true, std::memory_order_release);
+}
+
+// Main thread only. Shows the window once a frame has asked for it.
+void ApplyShowWindowRequest() {
+  if (!g_show_window_requested.load(std::memory_order_acquire) ||
+      g_state.sdl_window == nullptr) {
+    return;  // Without a window the request stays for the next pump.
+  }
+  g_show_window_requested.store(false, std::memory_order_relaxed);
+  if (g_state.visible) {
+    return;
+  }
+  HostSurfaceCommitGate::MainThreadScope commit_scope(
+      ProcessHostSurfaceCommitGate());
   SDL_ShowWindow(g_state.sdl_window);
   SDL_RaiseWindow(g_state.sdl_window);
   g_state.visible = true;
@@ -2197,6 +2217,7 @@ void MaybeReportVulkanPresentStall() {
 }
 
 bool PumpEvents() {
+  ApplyShowWindowRequest();
   MaybeSynchronizeRestoredFullscreenState();
   MaybeApplyRobloxFullscreenMenuRequest();
   MaybeApplyAndroidFullscreenRequest();
