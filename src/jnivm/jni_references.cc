@@ -222,14 +222,17 @@ void ReleaseJniReference(jobject obj) {
   if (g_shutting_down_jnivm) {
     return;
   }
+  // Every live object and array holds a count, so a handle without one was
+  // already released. Releasing it again would queue its slot twice.
   auto ref_it = g_jni_ref_counts.find(obj);
-  if (ref_it != g_jni_ref_counts.end()) {
-    if (ref_it->second > 1) {
-      --ref_it->second;
-      return;
-    }
-    g_jni_ref_counts.erase(ref_it);
+  if (ref_it == g_jni_ref_counts.end()) {
+    return;
   }
+  if (ref_it->second > 1) {
+    --ref_it->second;
+    return;
+  }
+  g_jni_ref_counts.erase(ref_it);
 
   auto arr_it = g_array_storage.find(reinterpret_cast<jarray>(obj));
   if (arr_it != g_array_storage.end()) {

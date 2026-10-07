@@ -5575,7 +5575,81 @@ std::shared_ptr<Class> VM::FindClass(const std::string& class_name) const {
   return it->second;
 }
 
+namespace {
+
+using AnyFunction = void (*)();
+using ZeroWord = std::uintptr_t;
+// Float and double results come back in a vector register, not rax.
+using ZeroReal = double;
+
+void ReportUnimplementedJniFunction(const char* name,
+                                    std::atomic<bool>& reported) {
+  if (!reported.exchange(true)) {
+    std::fprintf(stderr, "  [JNI] %s is not implemented; returning zero\n",
+                 name);
+  }
+}
+
+// Fills a slot with a function that ignores its arguments and returns zero.
+// The caller owns its argument registers and stack, so ignoring them is safe.
+// A void result ignores the value left in rax.
+#define MOCKTAIL_JNI_STUB(name, result)                                      \
+  table.name = reinterpret_cast<decltype(table.name)>(                       \
+      reinterpret_cast<AnyFunction>(+[]() -> result {                        \
+        static std::atomic<bool> reported{false};                            \
+        ReportUnimplementedJniFunction(#name, reported);                     \
+        return result{};                                                     \
+      }))
+
+#define MOCKTAIL_JNI_STUB_NONVIRTUAL(type, result)                           \
+  MOCKTAIL_JNI_STUB(CallNonvirtual##type##Method, result);                   \
+  MOCKTAIL_JNI_STUB(CallNonvirtual##type##MethodV, result);                  \
+  MOCKTAIL_JNI_STUB(CallNonvirtual##type##MethodA, result)
+
+#define MOCKTAIL_JNI_STUB_ARRAY(type)                                        \
+  MOCKTAIL_JNI_STUB(New##type##Array, ZeroWord);                             \
+  MOCKTAIL_JNI_STUB(Get##type##ArrayElements, ZeroWord);                     \
+  MOCKTAIL_JNI_STUB(Release##type##ArrayElements, ZeroWord);                 \
+  MOCKTAIL_JNI_STUB(Get##type##ArrayRegion, ZeroWord);                       \
+  MOCKTAIL_JNI_STUB(Set##type##ArrayRegion, ZeroWord)
+
+// Installed before the real functions, which replace their stubs. A slot left
+// null would send the guest to address 0 when it calls the function.
+void InstallUnimplementedJniFunctions(JNINativeInterface_& table) {
+  MOCKTAIL_JNI_STUB(DefineClass, ZeroWord);
+  MOCKTAIL_JNI_STUB(GetModule, ZeroWord);
+  MOCKTAIL_JNI_STUB(GetStringCritical, ZeroWord);
+  MOCKTAIL_JNI_STUB(ReleaseStringCritical, ZeroWord);
+
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Object, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Boolean, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Byte, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Char, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Short, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Int, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Long, ZeroWord);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Float, ZeroReal);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Double, ZeroReal);
+  MOCKTAIL_JNI_STUB_NONVIRTUAL(Void, ZeroWord);
+
+  MOCKTAIL_JNI_STUB_ARRAY(Boolean);
+  MOCKTAIL_JNI_STUB_ARRAY(Char);
+  MOCKTAIL_JNI_STUB_ARRAY(Short);
+  MOCKTAIL_JNI_STUB_ARRAY(Int);
+  MOCKTAIL_JNI_STUB_ARRAY(Long);
+  MOCKTAIL_JNI_STUB_ARRAY(Double);
+  MOCKTAIL_JNI_STUB(GetFloatArrayRegion, ZeroWord);
+}
+
+#undef MOCKTAIL_JNI_STUB_ARRAY
+#undef MOCKTAIL_JNI_STUB_NONVIRTUAL
+#undef MOCKTAIL_JNI_STUB
+
+}  // namespace
+
 void VM::InitJNIFunctionTables() {
+  InstallUnimplementedJniFunctions(native_interface_);
+
   invoke_interface_.AttachCurrentThread =
       [](JavaVM* vm, void** env, void* args) -> jint {
     if (JniVmTraceEnabled()) {

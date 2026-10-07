@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -382,6 +383,31 @@ TEST_F(JniVmTest, JniEnvPointerIsNotNull) {
   EXPECT_NE(vm_->GetJNIEnv(), nullptr);
 }
 
+TEST_F(JniVmTest, EveryJniFunctionSlotHoldsAFunction) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  ASSERT_NE(env, nullptr);
+  // The first four slots are reserved and null by definition.
+  constexpr std::size_t kReservedSlots = 4;
+  std::array<void*, sizeof(JNINativeInterface_) / sizeof(void*)> slots;
+  std::memcpy(slots.data(), env->functions, sizeof(JNINativeInterface_));
+  std::string null_slots;
+  for (std::size_t slot = kReservedSlots; slot < slots.size(); ++slot) {
+    if (slots[slot] == nullptr) {
+      null_slots += " " + std::to_string(slot);
+    }
+  }
+  EXPECT_TRUE(null_slots.empty()) << "null JNI slots:" << null_slots;
+}
+
+TEST_F(JniVmTest, UnimplementedJniFunctionsReturnZeroInsteadOfCrashing) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  ASSERT_NE(env, nullptr);
+  EXPECT_EQ(env->NewIntArray(4), nullptr);
+  EXPECT_EQ(env->CallNonvirtualIntMethod(nullptr, nullptr, nullptr), 0);
+  EXPECT_EQ(env->CallNonvirtualDoubleMethod(nullptr, nullptr, nullptr), 0.0);
+  env->SetIntArrayRegion(nullptr, 0, 0, nullptr);
+}
+
 #if defined(__x86_64__)
 constexpr unsigned int kAudioFpMode = (1U << 15) | (1U << 6);
 
@@ -679,6 +705,21 @@ TEST_F(JniVmTest, TraceAllNeverPrintsJStringContentOrPrefix) {
   EXPECT_EQ(trace_output.find(kCookieShapedSecret), std::string::npos);
   EXPECT_EQ(trace_output.find(".ROBLOSECURITY"), std::string::npos);
   EXPECT_EQ(trace_output.find("SECRET_CANARY_PREFIX"), std::string::npos);
+}
+
+// Creates strings, which fixes the process-wide trace setting, so it stays
+// below the test that sets MOCKTAIL_TRACE_ALL.
+TEST_F(JniVmTest, ReleasingAReferenceTwiceDoesNotGiveOneHandleToTwoObjects) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  ASSERT_NE(env, nullptr);
+  jstring stale = env->NewStringUTF("stale");
+  env->DeleteLocalRef(stale);
+  env->DeleteLocalRef(stale);
+  jstring first = env->NewStringUTF("first");
+  jstring second = env->NewStringUTF("second");
+  EXPECT_NE(first, second);
+  EXPECT_EQ(ReadJavaString(env, first), "first");
+  EXPECT_EQ(ReadJavaString(env, second), "second");
 }
 
 TEST_F(JniVmTest, InitialClassCountIsZero) {
