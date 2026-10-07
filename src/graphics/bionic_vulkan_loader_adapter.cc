@@ -2000,7 +2000,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
     }
   }
   const VkResult result =
-      host_create(device, &host_info, allocator, swapchain);
+      mocktail::graphics::CreateSwapchainWithPresentModeFallback(
+          host_info, create_info->presentMode,
+          [&](const VkSwapchainCreateInfoKHR& attempt) {
+            return host_create(device, &attempt, allocator, swapchain);
+          });
   if (result != VK_SUCCESS) {
     return result;
   }
