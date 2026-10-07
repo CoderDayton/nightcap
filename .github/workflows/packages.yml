@@ -44,6 +44,8 @@ jobs:
     if: needs.probe.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|continuous|Nightcap-nightly-x86_64.AppImage.zsync
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +62,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
             --env GH_TOKEN \
+            --env UPINFO \
             ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
               pacman -Syu --noconfirm --needed \
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
@@ -123,11 +126,12 @@ jobs:
               export RUNTIME=/tmp/uruntime
               export DWARFS_CMD=/tmp/mkdwarfs
               make appimage BUILD_DIR=build-appimage JOBS=4 \
-                APPIMAGE=dist/Mocktail-x86_64.AppImage \
+                APPIMAGE=dist/Nightcap-nightly-x86_64.AppImage \
                 PORTABLE_MODE=standalone APPIMAGE_FORMAT=anylinux \
                 ANYLINUX_PACKAGER=/tmp/quick-sharun \
                 ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
-              test -x dist/Mocktail-x86_64.AppImage
+              test -x dist/Nightcap-nightly-x86_64.AppImage
+              test -s dist/Nightcap-nightly-x86_64.AppImage.zsync
             '
 
       - name: Smoke-test AppImage without FUSE
@@ -140,14 +144,17 @@ jobs:
           export XDG_CACHE_HOME="$smoke_dir/cache"
           export XDG_STATE_HOME="$smoke_dir/state"
           mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run --help
-          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run mocktail_updater status
+          test "$(dist/Nightcap-nightly-x86_64.AppImage --appimage-updateinformation)" = "$UPINFO"
+          timeout 60s dist/Nightcap-nightly-x86_64.AppImage --appimage-extract-and-run --help
+          timeout 60s dist/Nightcap-nightly-x86_64.AppImage --appimage-extract-and-run mocktail_updater status
 
       - name: Upload AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Nightcap-AppImage
-          path: dist/Mocktail-x86_64.AppImage
+          path: |
+            dist/Nightcap-nightly-x86_64.AppImage
+            dist/Nightcap-nightly-x86_64.AppImage.zsync
           if-no-files-found: error
           retention-days: 14
 
@@ -173,13 +180,14 @@ jobs:
           name: Nightcap-AppImage
           path: release
 
-      - name: Name and checksum the nightly build
+      - name: Checksum the nightly build
         shell: bash
         run: |
           set -Eeuo pipefail
-          # The Makefile builds under upstream's artifact name; the published
-          # asset carries this fork's.
-          mv -- release/Mocktail-x86_64.AppImage release/Nightcap-nightly-x86_64.AppImage
+          # The .zsync file names the AppImage it updates, so the build already
+          # carries the published name.
+          test -s release/Nightcap-nightly-x86_64.AppImage
+          test -s release/Nightcap-nightly-x86_64.AppImage.zsync
           (cd release && sha256sum Nightcap-nightly-x86_64.AppImage \
             > Nightcap-nightly-x86_64.AppImage.sha256)
           find release -maxdepth 1 -type f -print
@@ -206,7 +214,7 @@ jobs:
           # Drop assets left by earlier runs under other names.
           while IFS= read -r asset; do
             case "$asset" in
-              Nightcap-nightly-x86_64.AppImage|Nightcap-nightly-x86_64.AppImage.sha256)
+              Nightcap-nightly-x86_64.AppImage|Nightcap-nightly-x86_64.AppImage.zsync|Nightcap-nightly-x86_64.AppImage.sha256)
                 ;;
               *)
                 gh release delete-asset continuous "$asset" --yes

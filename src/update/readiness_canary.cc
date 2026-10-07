@@ -320,6 +320,7 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            "LOGNAME",
            "VK_DRIVER_FILES",
            "VK_ICD_FILENAMES",
+           "vk_require_etc2",
            "MESA_LOADER_DRIVER_OVERRIDE",
            "DRI_PRIME",
            "__NV_PRIME_RENDER_OFFLOAD",

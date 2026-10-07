@@ -121,8 +121,12 @@ for expected in \
     '--env GH_TOKEN' \
     'MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1' \
     '--appimage-extract-and-run mocktail_updater status' \
-    'Mocktail-x86_64.AppImage' \
-    'Nightcap-nightly-x86_64.AppImage' \
+    'APPIMAGE=dist/Nightcap-nightly-x86_64.AppImage' \
+    '|continuous|Nightcap-nightly-x86_64.AppImage.zsync' \
+    '--env UPINFO' \
+    'test -s dist/Nightcap-nightly-x86_64.AppImage.zsync' \
+    '--appimage-updateinformation' \
+    'Nightcap-nightly-x86_64.AppImage.zsync|' \
     'github-actions[bot]' \
     'gh release upload continuous'; do
   grep -Fq -- "${expected}" "${WORKFLOW}" ||

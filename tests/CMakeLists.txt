@@ -569,6 +569,17 @@ target_link_libraries(texture_override_test PRIVATE GTest::gtest_main
   PkgConfig::LIBPNG)
 mocktail_apply_compile_options(texture_override_test)
 
+add_executable(texture_resample_test
+  texture_resample_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(texture_resample_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(texture_resample_test PRIVATE GTest::gtest_main
+  PkgConfig::LIBPNG)
+mocktail_apply_compile_options(texture_resample_test)
+
 add_executable(chrome_trace_writer_test
   chrome_trace_writer_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
@@ -1072,6 +1083,7 @@ gtest_discover_tests(host_surface_commit_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(texture_resample_test)
 gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(video_driver_policy_test)

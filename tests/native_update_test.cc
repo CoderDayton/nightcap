@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <minizip/zip.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -240,6 +241,35 @@ TEST(HttpDownloadPolicyTest, RejectsCredentialsAndHostSuffixTricks) {
   EXPECT_FALSE(IsTrustedHttpsUrl("http://download.pureapk.com/a", hosts));
   EXPECT_FALSE(IsTrustedHttpsUrl("https://pureapk.com.attacker.test/a", hosts));
   EXPECT_FALSE(IsTrustedHttpsUrl("https://user@pureapk.com/a", hosts));
+}
+
+TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\nprintf 'etc2=%s\\n' \"$vk_require_etc2\"\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+  for (const char* value : {"true", "false"}) {
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+      if (setenv("vk_require_etc2", value, 1) != 0) std::_Exit(1);
+      const auto result = RunReadinessCanary(options);
+      std::_Exit(result.exit_code == 0 &&
+                          ReadFile(result.log_path) ==
+                              std::string("etc2=") + value + "\n"
+                      ? 0 : 2);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+  }
 }
 
 TEST(ReadinessCanaryTest, AcceptsRealPresentWithoutShaderPackSummary) {
