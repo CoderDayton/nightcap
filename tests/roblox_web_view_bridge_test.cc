@@ -60,6 +60,7 @@ struct WebViewBridgeProbe {
   std::string hybrid_callback_payload;
   std::string cookie_header;
   std::vector<std::string> data_model_focus_states;
+  std::vector<std::string> app_events;
   std::vector<std::string> initialization_order;
   int native_initializations = 0;
   int close_publications = 0;
@@ -215,6 +216,22 @@ void BroadcastDataModelFocus(JNIEnv *env, jclass, jstring event_namespace,
       ReadJavaString(env, state));
 }
 
+void SendAppEventOnGameLoaded(JNIEnv* env, jclass, jstring event_namespace,
+                              jstring detail, jstring detail_type) {
+  g_web_view_probe->app_events.push_back(
+      "loaded|" + ReadJavaString(env, event_namespace) + "|" +
+      ReadJavaString(env, detail) + "|" + ReadJavaString(env, detail_type));
+}
+
+void SendAppEventOnAppReady(JNIEnv* env, jclass, jstring event_namespace,
+                            jstring detail, jstring detail_type,
+                            jstring app_name) {
+  g_web_view_probe->app_events.push_back(
+      "ready|" + ReadJavaString(env, event_namespace) + "|" +
+      ReadJavaString(env, detail) + "|" + ReadJavaString(env, detail_type) +
+      "|" + ReadJavaString(env, app_name));
+}
+
 jobject SubscribeRaw(JNIEnv *env, jobject, jstring subscription_id,
                      jobject callback, jboolean) {
   const int subscribe_index =
@@ -343,15 +360,21 @@ Status DispatchCookie(void* context, std::string_view header) {
 }
 
 RobloxWebViewBridge MakeBridge(jnivm::VM* vm, jobject bus,
-                               WebViewBridgeProbe* probe) {
+                               WebViewBridgeProbe* probe,
+                               bool app_event_symbols = true) {
+  RobloxWebViewMessageBusSymbols symbols{
+      &GetOpenWindowId, &GetHandleWindowCloseId, &GetProtocolName,
+      &GetIsAvailableId, &GetMessageId, &InitializeAndroidWebViewProtocol,
+      &SubscribeRaw, &DeleteConnection, &SetRequestHandler,
+      &ClearRequestHandler, &PublishRaw, &BroadcastDataModelFocus,
+      &GetMutateWindowId, &GetCloseWindowId, &SignalJavascriptCallback,
+      &UpdateCookieSetHandler};
+  if (app_event_symbols) {
+    symbols.send_app_event_on_game_loaded = &SendAppEventOnGameLoaded;
+    symbols.send_app_event_on_app_ready = &SendAppEventOnAppReady;
+  }
   return RobloxWebViewBridge(
-      {vm->GetJavaVM(), nullptr, nullptr},
-      {&GetOpenWindowId, &GetHandleWindowCloseId, &GetProtocolName,
-       &GetIsAvailableId, &GetMessageId, &InitializeAndroidWebViewProtocol,
-       &SubscribeRaw, &DeleteConnection, &SetRequestHandler,
-       &ClearRequestHandler, &PublishRaw, &BroadcastDataModelFocus,
-       &GetMutateWindowId, &GetCloseWindowId, &SignalJavascriptCallback,
-       &UpdateCookieSetHandler},
+      {vm->GetJavaVM(), nullptr, nullptr}, symbols,
       {bus, vm, &CreateRawCallback, &ClearRawCallback, &CreateRequestHandler,
        &ClearRequestHandlerObject, &SetPlatformWebCallbacks,
        &ClearPlatformWebCallbacks},
@@ -1090,6 +1113,95 @@ TEST(RobloxWebViewBridgeTest,
 
   ASSERT_TRUE(bridge.Shutdown().ok());
   EXPECT_EQ(probe.deleted_handles, (std::vector<jlong>{91, 92, 93}));
+  g_web_view_probe = nullptr;
+}
+
+TEST(RobloxWebViewBridgeTest,
+     LaunchConversationOpensChatAndStartsTheConversationWithThatUser) {
+  jnivm::VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass bus_class =
+      env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+  jobject bus = env->AllocObject(bus_class);
+  WebViewBridgeProbe probe;
+  g_web_view_probe = &probe;
+  RobloxWebViewBridge bridge = MakeBridge(&vm, bus, &probe);
+  ASSERT_TRUE(bridge.Initialize().ok());
+
+  EXPECT_TRUE(vm.DispatchRobloxDataModelNotification(
+      env, env->NewStringUTF(kRobloxLaunchConversationNotification),
+      env->NewStringUTF("8406613906")));
+  // The engine is still inside its notification callback here.
+  EXPECT_TRUE(probe.app_events.empty());
+  EXPECT_EQ(probe.dispatches, 0);
+
+  ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+  EXPECT_EQ(probe.app_events,
+            (std::vector<std::string>{
+                R"(loaded|Navigations|{"appName":"Chat"}|Destination)",
+                "ready|AppShellNotifications|8406613906|"
+                "StartConversationWithUserId|Chat"}));
+  EXPECT_TRUE(probe.data_model_focus_states.empty());
+
+  ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+  EXPECT_EQ(probe.app_events.size(), 2U);
+
+  ASSERT_TRUE(bridge.Shutdown().ok());
+  g_web_view_probe = nullptr;
+}
+
+TEST(RobloxWebViewBridgeTest,
+     LaunchConversationRejectsPayloadsThatAreNotUserIds) {
+  jnivm::VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass bus_class =
+      env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+  jobject bus = env->AllocObject(bus_class);
+  WebViewBridgeProbe probe;
+  g_web_view_probe = &probe;
+  RobloxWebViewBridge bridge = MakeBridge(&vm, bus, &probe);
+  ASSERT_TRUE(bridge.Initialize().ok());
+
+  for (const char* data :
+       {"", "0", "-5", "abc", "12 34", "84066139060000000000",
+        R"({"userId":1})"}) {
+    SCOPED_TRACE(data);
+    EXPECT_FALSE(
+        bridge
+            .HandleDataModelNotification(
+                env, env->NewStringUTF(kRobloxLaunchConversationNotification),
+                env->NewStringUTF(data))
+            .ok());
+  }
+  ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+  EXPECT_TRUE(probe.app_events.empty());
+
+  ASSERT_TRUE(bridge.Shutdown().ok());
+  g_web_view_probe = nullptr;
+}
+
+TEST(RobloxWebViewBridgeTest,
+     LaunchConversationIsUnavailableWithoutTheAppEventEntrypoints) {
+  jnivm::VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass bus_class =
+      env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+  jobject bus = env->AllocObject(bus_class);
+  WebViewBridgeProbe probe;
+  g_web_view_probe = &probe;
+  RobloxWebViewBridge bridge = MakeBridge(&vm, bus, &probe, false);
+  ASSERT_TRUE(bridge.Initialize().ok());
+
+  EXPECT_FALSE(
+      bridge
+          .HandleDataModelNotification(
+              env, env->NewStringUTF(kRobloxLaunchConversationNotification),
+              env->NewStringUTF("8406613906"))
+          .ok());
+  ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+  EXPECT_TRUE(probe.app_events.empty());
+
+  ASSERT_TRUE(bridge.Shutdown().ok());
   g_web_view_probe = nullptr;
 }
 

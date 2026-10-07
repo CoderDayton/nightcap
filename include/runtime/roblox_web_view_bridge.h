@@ -32,6 +32,9 @@ inline constexpr char kRobloxOpenCaptchaViewNotification[] =
     "OPEN_CAPTCHA_VIEW";
 inline constexpr char kRobloxViewProfileNotification[] = "VIEW_PROFILE";
 inline constexpr char kRobloxPurchaseRobuxNotification[] = "PURCHASE_ROBUX";
+// Sent with a decimal user id when the app asks for a chat with that user.
+inline constexpr char kRobloxLaunchConversationNotification[] =
+    "LAUNCH_CONVERSATION";
 
 // Owned subset of WebViewProtocol's openWindow payload. The URL is copied
 // before the MessageBus RawCallback returns, so no JNI local reference escapes.
@@ -115,6 +118,14 @@ using PublishWebViewRawFn = void (*)(JNIEnv *, jobject, jstring, jstring);
 using BroadcastWebViewDataModelFocusFn = void (*)(JNIEnv *, jclass, jstring,
                                                   jstring, jstring);
 using SignalWebViewJavascriptCallbackFn = void (*)(JNIEnv*, jclass, jstring);
+// NativeGLInterface.nativeAppBridgeV2SendAppEventOnGameLoaded(namespace,
+// detail, detailType).
+using SendRobloxAppEventOnGameLoadedFn = void (*)(JNIEnv*, jclass, jstring,
+                                                  jstring, jstring);
+// NativeGLInterface.nativeAppBridgeV2SendAppEventOnAppReady(namespace, detail,
+// detailType, appName). The engine holds the event until appName is ready.
+using SendRobloxAppEventOnAppReadyFn = void (*)(JNIEnv*, jclass, jstring,
+                                                jstring, jstring, jstring);
 using UpdateRobloxCookieSetHandlerFn =
     void (*)(JNIEnv*, jobject, jobject);
 // Roblox's counted handle to its Subsystem<IWebViewProtocol>. The protocol,
@@ -167,6 +178,9 @@ struct RobloxWebViewMessageBusSymbols {
   UpdateRobloxCookieSetHandlerFn update_cookie_set_handler = nullptr;
   // Optional: found by code contract, not by symbol name.
   AcquireWebViewProtocolFn acquire_web_view_protocol = nullptr;
+  // Optional: without them LAUNCH_CONVERSATION is reported as unavailable.
+  SendRobloxAppEventOnGameLoadedFn send_app_event_on_game_loaded = nullptr;
+  SendRobloxAppEventOnAppReadyFn send_app_event_on_app_ready = nullptr;
 
   bool complete() const {
     return get_open_window_id != nullptr &&
@@ -270,11 +284,14 @@ private:
    kDataModelUnfocused,
    kDataModelFocused,
    kMessageBusWindowClose,
+   kStartConversationWithUser,
  };
 
  struct PendingHostWindowEvent {
    HostWindowEventType type = HostWindowEventType::kDataModelUnfocused;
    uint64_t generation = 0;
+   // Decimal user id of a kStartConversationWithUser event.
+   std::string user_id;
  };
 
   Status CheckJniException(JNIEnv *env, const char *operation) const;
@@ -283,6 +300,8 @@ private:
   Status DispatchOpenRequest(RobloxWebViewOpenRequest request,
                              OpenSource source);
   void QueueHostWindowEvent(HostWindowEventType type, uint64_t generation);
+  void QueueStartConversation(std::string user_id);
+  Status SendStartConversationEvents(JNIEnv* env, const std::string& user_id);
   Status BeginDispatch();
   void EndDispatch();
   static void RawMessageCallback(void *context, JNIEnv *env, jstring message);

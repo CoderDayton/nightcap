@@ -125,6 +125,16 @@ RobloxPlatformWebSymbols ResolveRobloxPlatformWebSymbols(
           roblox_library,
           "Java_com_roblox_universalapp_cookie_JNICookieProtocol_"
           "updateOnSetCookieHandler");
+  symbols.web_view.send_app_event_on_game_loaded =
+      Resolve<SendRobloxAppEventOnGameLoadedFn>(
+          roblox_library,
+          "Java_com_roblox_engine_jni_NativeGLInterface_"
+          "nativeAppBridgeV2SendAppEventOnGameLoaded");
+  symbols.web_view.send_app_event_on_app_ready =
+      Resolve<SendRobloxAppEventOnAppReadyFn>(
+          roblox_library,
+          "Java_com_roblox_engine_jni_NativeGLInterface_"
+          "nativeAppBridgeV2SendAppEventOnAppReady");
 
   symbols.browser_service.bind = Resolve<BindRobloxMemStorageFn>(
       roblox_library, "Java_com_roblox_engine_jni_memstorage_MemStorage_bind");

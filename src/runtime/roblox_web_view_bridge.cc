@@ -36,6 +36,8 @@ constexpr char kNativeGlInterfaceClass[] =
     "com/roblox/engine/jni/NativeGLInterface";
 constexpr char kConnectionPointerField[] = "a";
 constexpr std::size_t kMaximumPendingHostWindowEvents = 256;
+// Digits of the largest signed 64-bit user id.
+constexpr std::size_t kMaximumRobloxUserIdDigits = 19;
 constexpr std::string_view kBrowserLoginUrl = "https://www.roblox.com/login";
 
 bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
@@ -94,6 +96,21 @@ bool IsLoginChallengeUrl(std::string_view url) {
     }
   }
   return false;
+}
+
+// A positive decimal that fits a signed 64-bit integer, without sign, spaces
+// or leading zero.
+bool IsRobloxUserId(std::string_view value) {
+  constexpr std::string_view kLargest = "9223372036854775807";
+  if (value.empty() || value.size() > kLargest.size() || value[0] == '0') {
+    return false;
+  }
+  for (const char digit : value) {
+    if (digit < '0' || digit > '9') {
+      return false;
+    }
+  }
+  return value.size() < kLargest.size() || value <= kLargest;
 }
 
 Status Invalid(std::string message) {
@@ -1355,7 +1372,20 @@ void RobloxWebViewBridge::QueueHostWindowEvent(HostWindowEventType type,
                  "  [webview] pending host event queue overflow; preserving "
                  "newest lifecycle state\n");
   }
-  pending_host_window_events_.push_back({type, generation});
+  pending_host_window_events_.push_back({type, generation, {}});
+}
+
+void RobloxWebViewBridge::QueueStartConversation(std::string user_id) {
+  std::lock_guard<std::mutex> lock(host_window_event_mutex_);
+  if (pending_host_window_events_.size() == kMaximumPendingHostWindowEvents) {
+    pending_host_window_events_.pop_front();
+    std::fprintf(stderr,
+                 "  [webview] pending host event queue overflow; preserving "
+                 "newest lifecycle state\n");
+  }
+  pending_host_window_events_.push_back(
+      {HostWindowEventType::kStartConversationWithUser, 0,
+       std::move(user_id)});
 }
 
 Status RobloxWebViewBridge::DrainHostWindowEvents() {
@@ -1418,8 +1448,24 @@ Status RobloxWebViewBridge::DrainHostWindowEvents() {
         }
         break;
       }
+      case HostWindowEventType::kStartConversationWithUser: {
+        // A failed send is dropped, not retried: the click that asked for
+        // the conversation is stale by the next drain.
+        const Status sent = SendStartConversationEvents(env, event.user_id);
+        if (sent.ok()) {
+          std::fprintf(stderr,
+                       "  [app-shell] Chat opened with a conversation "
+                       "request\n");
+        } else {
+          std::fprintf(stderr,
+                       "  [app-shell] conversation request failed: %s\n",
+                       sent.message().c_str());
+        }
+        break;
+      }
     }
-    if (status.ok() && event.type != HostWindowEventType::kDataModelUnfocused) {
+    if (status.ok() && event.type != HostWindowEventType::kDataModelUnfocused &&
+        event.type != HostWindowEventType::kStartConversationWithUser) {
       const std::shared_ptr<HostWindowCloseTarget> target =
           host_window_close_target_;
       if (target != nullptr) {
@@ -1470,6 +1516,28 @@ Status RobloxWebViewBridge::HandleDataModelNotification(JNIEnv* env,
                  "  [webview] OPEN_CUSTOM_WEBVIEW notification received\n");
     return HandleOwnedMessageFromSource(std::move(owned_data),
                                         OpenSource::kDataModelNotification);
+  }
+
+  if (owned_type == kRobloxLaunchConversationNotification) {
+    std::string user_id;
+    status = CopyJniString(env, data, kMaximumRobloxUserIdDigits,
+                           "conversation user id", &user_id);
+    if (!status.ok()) {
+      return status;
+    }
+    if (!IsRobloxUserId(user_id)) {
+      return Invalid("LAUNCH_CONVERSATION payload is not a user id");
+    }
+    if (symbols_.send_app_event_on_game_loaded == nullptr ||
+        symbols_.send_app_event_on_app_ready == nullptr) {
+      return Unavailable("Roblox app event entrypoints are unavailable");
+    }
+    std::fprintf(stderr,
+                 "  [app-shell] LAUNCH_CONVERSATION notification received\n");
+    // The engine is inside its notification callback. The reply is sent from
+    // the next host event drain, as Android posts it to its main thread.
+    QueueStartConversation(std::move(user_id));
+    return Status::Ok();
   }
 
   RobloxWebViewOpenRequest request;
@@ -1650,6 +1718,53 @@ Status RobloxWebViewBridge::BroadcastDataModelFocus(JNIEnv *env,
   env->DeleteLocalRef(event_namespace);
   env->DeleteLocalRef(native_gl_class);
   return CheckJniException(env, "broadcast AppInput DataModel focus event");
+}
+
+// Mirrors the Android app shell's reply to LAUNCH_CONVERSATION: switch the
+// Lua app to its Chat destination, then ask Chat to start the conversation
+// once that app reports ready.
+Status RobloxWebViewBridge::SendStartConversationEvents(
+    JNIEnv* env, const std::string& user_id) {
+  if (env == nullptr || symbols_.send_app_event_on_game_loaded == nullptr ||
+      symbols_.send_app_event_on_app_ready == nullptr) {
+    return Unavailable("Roblox app event entrypoints are unavailable");
+  }
+  jclass native_gl_class = env->FindClass(kNativeGlInterfaceClass);
+  const std::array<jstring, 7> strings = {
+      env->NewStringUTF("Navigations"),
+      env->NewStringUTF(R"({"appName":"Chat"})"),
+      env->NewStringUTF("Destination"),
+      env->NewStringUTF("AppShellNotifications"),
+      env->NewStringUTF(user_id.c_str()),
+      env->NewStringUTF("StartConversationWithUserId"),
+      env->NewStringUTF("Chat"),
+  };
+  bool allocated = native_gl_class != nullptr;
+  for (jstring value : strings) {
+    allocated = allocated && value != nullptr;
+  }
+  Status status = allocated
+                      ? Status::Ok()
+                      : Unavailable("could not allocate conversation events");
+  if (status.ok()) {
+    symbols_.send_app_event_on_game_loaded(env, native_gl_class, strings[0],
+                                           strings[1], strings[2]);
+    status = CheckJniException(env, "send Chat destination app event");
+  }
+  if (status.ok()) {
+    symbols_.send_app_event_on_app_ready(env, native_gl_class, strings[3],
+                                         strings[4], strings[5], strings[6]);
+    status = CheckJniException(env, "send start conversation app event");
+  }
+  for (jstring value : strings) {
+    if (value != nullptr) {
+      env->DeleteLocalRef(value);
+    }
+  }
+  if (native_gl_class != nullptr) {
+    env->DeleteLocalRef(native_gl_class);
+  }
+  return status;
 }
 
 Status RobloxWebViewBridge::BeginDispatch() {

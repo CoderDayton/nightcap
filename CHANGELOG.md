@@ -16,6 +16,9 @@ GitHub are taken from the matching section here.
 - Fixed a random crash on Wayland with NVIDIA drivers, where the game window
   closed after you let go of the camera or left mouse lock. The log showed
   `wp_linux_drm_syncobj_surface_v1` error 3.
+- Fixed some menu actions being ignored. The Chat button on a profile now
+  opens the Party tab with that player, and clicking a search suggestion now
+  runs the search instead of closing the search menu.
 
 ## [0.3.3] - 2026-10-04
 
