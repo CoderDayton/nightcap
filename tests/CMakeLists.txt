@@ -510,6 +510,16 @@ target_link_libraries(vulkan_surface_recovery_gate_test PRIVATE
 )
 mocktail_apply_compile_options(vulkan_surface_recovery_gate_test)
 
+add_executable(host_surface_commit_gate_test
+  host_surface_commit_gate_test.cc
+)
+target_link_libraries(host_surface_commit_gate_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(host_surface_commit_gate_test)
+
 add_executable(vulkan_present_progress_gate_test
   vulkan_present_progress_gate_test.cc
 )
@@ -1058,6 +1068,7 @@ gtest_discover_tests(vulkan_present_observer_test)
 gtest_discover_tests(input_pump_pacer_test)
 gtest_discover_tests(input_pump_pacing_runtime_test)
 gtest_discover_tests(vulkan_surface_recovery_gate_test)
+gtest_discover_tests(host_surface_commit_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(etc2_decoder_test)

@@ -5,6 +5,8 @@
 
 #include <cstdio>
 
+#include "window/host_surface_commit_gate.h"
+
 namespace mocktail {
 namespace window {
 
@@ -203,6 +205,10 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, bool cursor_visible) {
     return false;
   }
 
+  // Leaving relative mode makes SDL warp the pointer, which commits the
+  // window surface on Wayland compositors without wp_pointer_warp_v1.
+  HostSurfaceCommitGate::MainThreadScope commit_scope(
+      ProcessHostSurfaceCommitGate());
   if (relative_mode && !relative_mode_) {
     SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
     capture_anchor_valid_ = true;

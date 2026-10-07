@@ -11,6 +11,12 @@ GitHub are taken from the matching section here.
 - The Flatpak build asks for the X11 socket only when there is no Wayland
   session, as before 0.3.3.
 
+### Fixed
+
+- Fixed a random crash on Wayland with NVIDIA drivers, where the game window
+  closed after you let go of the camera or left mouse lock. The log showed
+  `wp_linux_drm_syncobj_surface_v1` error 3.
+
 ## [0.3.3] - 2026-10-04
 
 ### Added

@@ -24,6 +24,7 @@
 #include "mocktail/platform/sdl_application_metadata.h"
 #include "mocktail/platform/sdl_event_converter.h"
 #include "mocktail/platform/sdl_window_icon.h"
+#include "window/host_surface_commit_gate.h"
 #include "window/input_pump_pacer.h"
 #include "window/main_thread_command_gate.h"
 #include "window/roblox_fullscreen_menu_request_gate.h"
@@ -1846,6 +1847,7 @@ extern "C" bool mocktail_window_uses_direct_vulkan() {
 extern "C" void mocktail_window_note_vulkan_present() { NoteVulkanPresent(); }
 
 extern "C" void mocktail_window_note_vulkan_host_present_begin() {
+  ProcessHostSurfaceCommitGate().BeginHostPresent();
   g_vulkan_host_present_sequence =
       g_vulkan_present_progress_gate.NotifyHostPresentBegin(
           SDL_GetTicksNS(), SDL_GetCurrentThreadID());
@@ -1856,6 +1858,7 @@ extern "C" void mocktail_window_note_vulkan_host_present_end(
   g_vulkan_present_progress_gate.NotifyHostPresentEnd(
       g_vulkan_host_present_sequence);
   g_vulkan_host_present_sequence = 0;
+  ProcessHostSurfaceCommitGate().EndHostPresent();
 }
 
 extern "C" std::uint64_t mocktail_window_note_vulkan_call_begin(
@@ -1995,6 +1998,8 @@ bool RequestFullscreenState(bool fullscreen, const char* reason) {
   if (current_fullscreen != fullscreen) {
     // Save the restore rectangle before SDL replaces it with monitor bounds.
     CaptureWindowState();
+    HostSurfaceCommitGate::MainThreadScope commit_scope(
+        ProcessHostSurfaceCommitGate());
     if (!SDL_SetWindowFullscreen(g_state.sdl_window, fullscreen)) {
       fprintf(stderr, "  [fullscreen] SDL request failed: %s\n",
               SDL_GetError());
