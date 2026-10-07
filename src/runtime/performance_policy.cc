@@ -246,13 +246,11 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     const std::string quality_str =
         (custom_quality != nullptr && custom_quality[0] != '\0')
             ? custom_quality
-            : "3";
-    const bool manual_quality =
-        quality_str == "auto" || quality_str == "0" || quality_str == "manual";
+            : "auto";
 
     // ForceCacheSize settings are byte counts. Let Roblox size its mesh and
     // SLIM content caches; values like 256/128 would cap them to a few bytes.
-    const std::array<ClientSetting, 68> rendering_settings = {{
+    const std::array<ClientSetting, 62> rendering_settings = {{
         {"FIntSmoothClusterTaskQueueMaxParallelTasks", workers},
         {"FIntOcclusionWorkerThreadCount", occlusion_workers},
         {"FFlagMovePrerenderV2", "True"},
@@ -261,8 +259,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FFlagSimRuntimeContentTranscodeBlockingCall", "False"},
         {"FFlagRenderEnableLowEndLOD", "True"},
         {"FIntTerrainArraySliceSize", "4"},
-        {"FFlagFastGPULightGrid", "True"},
-        {"FFlagRenderOptimizeLightGrid", "True"},
         {"FFlagRenderFixParticlesCulling", "True"},
         {"FFlagLuauIncrementalGC", "True"},
         {"FIntLuauGcStepMultiplier", "100"},
@@ -271,7 +267,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FFlagUITextureCompressionDesktop", "True"},
         {"FFlagTCTextureCompressionDesktop", "True"},
         {"FFlagUITextureUncompressed", "False"},
-        {"FFlagGpuVoxelCompression", "True"},
         {"FFlagMeshCompression", "True"},
         {"FFlagPhysicsMeshCompression", "True"},
         {"FFlagSupportMeshLOD", "True"},
@@ -306,9 +301,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FFlagEnableSLIMAvatars", "True"},
         {"FFlagEnableSlimAvatarsDefaultEnabled", "True"},
         {"FFlagLayeredClothingCacheOptimizations", "True"},
-        {"FFlagRenderAllocateShadowMapResourcesOnDemand", "True"},
-        {"FIntRenderShadowMapDepthCacheMemLimit", "16"},
-        {"FIntTM2ShadowMapMaxMips", "1"},
         {"FIntDebugForceMSAASamples", "1"},
         {"FFlagLuauStartupGcSuppression", "False"},
         {"FIntLuauGcStepMul", "300"},
@@ -324,13 +316,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     }};
     if (!apply_settings(rendering_settings)) {
       return false;
-    }
-    if (!manual_quality) {
-      if (!SetCompatibleValue(
-              &overrides, {"FIntDebugFRMQualityLevelOverride", quality_str},
-              error)) {
-        return false;
-      }
     }
   }
   *merged_json = overrides.dump();
