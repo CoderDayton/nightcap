@@ -12,6 +12,7 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -707,6 +708,28 @@ std::string SessionLog::Header(const Environment& environment,
   return output.str();
 }
 
+namespace {
+
+constexpr std::chrono::seconds kLoggerExitTimeout(2);
+
+// The writer exits once every copy of the pipe write ends is closed, and a
+// child process can hold one open. Past the timeout it is killed so that
+// shutdown cannot hang.
+void ReapLogger(pid_t child) {
+  const auto deadline = std::chrono::steady_clock::now() + kLoggerExitTimeout;
+  for (;;) {
+    const pid_t reaped = waitpid(child, nullptr, WNOHANG);
+    if (reaped == child || (reaped < 0 && errno != EINTR)) return;
+    if (std::chrono::steady_clock::now() >= deadline) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  (void)kill(child, SIGKILL);
+  while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {
+  }
+}
+
+}  // namespace
+
 void SessionLog::Stop() {
   if (!active_) return;
   std::cout.flush();
@@ -718,9 +741,7 @@ void SessionLog::Stop() {
   close(original_stderr_);
   original_stdout_ = -1;
   original_stderr_ = -1;
-  const pid_t child = static_cast<pid_t>(logger_process_);
-  while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {
-  }
+  ReapLogger(static_cast<pid_t>(logger_process_));
   logger_process_ = -1;
   active_ = false;
 }

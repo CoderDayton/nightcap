@@ -156,6 +156,33 @@ TEST(SessionLogTest, SkipsIsolatedCanary) {
   EXPECT_FALSE(std::filesystem::exists(paths.logs_root()));
 }
 
+TEST(SessionLogTest, StopDoesNotWaitForAProcessThatKeepsTheLogOpen) {
+  TemporaryDirectory temporary;
+  const MapEnvironment environment({
+      {"HOME", (temporary.root() / "home").string()},
+      {"MOCKTAIL_STATE_ROOT", (temporary.root() / "state").string()},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  pid_t holder = -1;
+  std::chrono::steady_clock::time_point begin;
+  {
+    SessionLog log = SessionLog::Start(environment, paths);
+    ASSERT_TRUE(log) << log.error();
+    // The child inherits the log pipes and outlives the log.
+    holder = fork();
+    ASSERT_GE(holder, 0);
+    if (holder == 0) {
+      alarm(30);
+      for (;;) pause();
+    }
+    begin = std::chrono::steady_clock::now();
+  }  // The destructor stops the log.
+  const auto stop_time = std::chrono::steady_clock::now() - begin;
+  kill(holder, SIGKILL);
+  waitpid(holder, nullptr, 0);
+  EXPECT_LT(stop_time, std::chrono::seconds(10));
+}
+
 TEST(SessionLogTest, CpuLimitCrashReachesConsoleAndLogAndRemainsFatal) {
   TemporaryDirectory temporary;
   const MapEnvironment environment({
