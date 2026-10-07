@@ -19,6 +19,14 @@ GitHub are taken from the matching section here.
 - Fixed some menu actions being ignored. The Chat button on a profile now
   opens the Party tab with that player, and clicking a search suggestion now
   runs the search instead of closing the search menu.
+- Fixed possible crashes when the game calls an Android function Nightcap did
+  not provide, or releases the same reference twice.
+- Fixed a possible hang on close when a web view process stayed open. Nightcap
+  now stops waiting for the log writer after 2 seconds.
+- Fixed a possible missing picture on graphics drivers that reject the
+  low-latency present mode. Nightcap now retries with the game's own mode.
+- Fixed a possible Wayland crash when the window first appears on the OpenGL
+  graphics path.
 
 ## [0.3.3] - 2026-10-04
 
