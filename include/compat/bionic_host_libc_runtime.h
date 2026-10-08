@@ -90,6 +90,7 @@ int mocktail_bionic_cxa_thread_atexit_impl(
     mocktail::compat::BionicThreadDestructor destructor, void* argument,
     void* dso_handle);
 void mocktail_bionic_arc4random_buf(void* buffer, size_t size);
+int mocktail_bionic_atoi(const char* text);
 mocktail::compat::BionicMallinfoSnapshot mocktail_bionic_mallinfo();
 int mocktail_bionic_sysinfo(struct sysinfo* info);
 int mocktail_bionic_uname(struct utsname* name);

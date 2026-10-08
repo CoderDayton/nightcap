@@ -206,6 +206,21 @@ TEST(BionicHostLibcRuntimeTest, HidesPrivilegedHostIdentityFromAndroidGuest) {
             mocktail::compat::NormalizeBionicApplicationUid(::geteuid()));
 }
 
+TEST(BionicHostLibcRuntimeTest, ParsesAtoiWithBionicOverflowBehavior) {
+  EXPECT_EQ(mocktail_bionic_atoi(""), 0);
+  EXPECT_EQ(mocktail_bionic_atoi("invalid"), 0);
+  EXPECT_EQ(mocktail_bionic_atoi("  -42suffix"), -42);
+  EXPECT_EQ(mocktail_bionic_atoi("2147483647"), INT_MAX);
+  EXPECT_EQ(mocktail_bionic_atoi("-2147483648"), INT_MIN);
+  EXPECT_EQ(mocktail_bionic_atoi("2147483648"), INT_MIN);
+  EXPECT_EQ(mocktail_bionic_atoi("4294967295"), -1);
+  EXPECT_EQ(mocktail_bionic_atoi("9999999999"), 1410065407);
+
+  errno = 0;
+  EXPECT_EQ(mocktail_bionic_atoi("9223372036854775808"), -1);
+  EXPECT_EQ(errno, ERANGE);
+}
+
 TEST(BionicHostLibcRuntimeTest, UsesBionicPosixStrErrorContract) {
   std::array<char, 128> buffer{};
 

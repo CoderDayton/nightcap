@@ -378,6 +378,10 @@ extern "C" void mocktail_bionic_arc4random_buf(void* buffer, size_t size) {
   mocktail::compat::BionicArc4RandomBuffer(buffer, size);
 }
 
+extern "C" int mocktail_bionic_atoi(const char* text) {
+  return static_cast<int>(std::strtol(text, nullptr, 10));
+}
+
 extern "C" mocktail::compat::BionicMallinfoSnapshot mocktail_bionic_mallinfo() {
   return mocktail::compat::BionicMallinfo();
 }

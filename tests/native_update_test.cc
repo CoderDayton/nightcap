@@ -4,6 +4,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -264,6 +265,24 @@ TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
   }
+}
+
+TEST(ReadinessCanaryTest, ReportsTerminatingSignal) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary, "#!/bin/sh\nkill -TERM $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.exit_code, 128 + SIGTERM);
+  EXPECT_EQ(result.error, "graphics canary exited with status " +
+                             std::to_string(128 + SIGTERM));
 }
 
 TEST(ReadinessCanaryTest, AcceptsRealPresentWithoutShaderPackSummary) {
