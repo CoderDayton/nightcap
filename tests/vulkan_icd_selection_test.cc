@@ -108,6 +108,112 @@ TEST(VulkanIcdSelectionTest, IgnoresAMissingDirectory) {
   EXPECT_TRUE(SelectVulkanIcdManifest({temporary.root()}, "").empty());
 }
 
+constexpr unsigned int kAmd = 0x1002;
+constexpr unsigned int kNvidia = 0x10de;
+constexpr unsigned int kIntel = 0x8086;
+
+TEST(HostVulkanIcdTest, NvidiaKernelDriverSelectsTheNvidiaManifest) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "nvidia_icd.json");
+  WriteManifest(temporary.root() / "nouveau_icd.json");
+
+  const VulkanIcdSelection selection =
+      SelectHostVulkanIcd({{kNvidia, "nvidia"}}, {temporary.root()}, true);
+  EXPECT_EQ(selection.manifest,
+            (temporary.root() / "nvidia_icd.json").string());
+  EXPECT_TRUE(selection.skipped.empty());
+}
+
+TEST(HostVulkanIcdTest, NouveauKernelDriverIgnoresAnInstalledNvidiaManifest) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "nvidia_icd.json");
+  WriteManifest(temporary.root() / "nouveau_icd.json");
+
+  const VulkanIcdSelection selection =
+      SelectHostVulkanIcd({{kNvidia, "nouveau"}}, {temporary.root()}, true);
+  EXPECT_EQ(selection.manifest,
+            (temporary.root() / "nouveau_icd.json").string());
+}
+
+TEST(HostVulkanIcdTest, UnknownKernelDriverTriesNvidiaThenNouveau) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "nouveau_icd.json");
+
+  EXPECT_EQ(
+      SelectHostVulkanIcd({{kNvidia, ""}}, {temporary.root()}, true).manifest,
+      (temporary.root() / "nouveau_icd.json").string());
+
+  WriteManifest(temporary.root() / "nvidia_icd.json");
+  EXPECT_EQ(
+      SelectHostVulkanIcd({{kNvidia, ""}}, {temporary.root()}, true).manifest,
+      (temporary.root() / "nvidia_icd.json").string());
+}
+
+TEST(HostVulkanIcdTest, CardWithoutItsVulkanDriverFallsBackToTheIntelChip) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "nvidia_icd.json");
+  WriteManifest(temporary.root() / "intel_icd.json");
+
+  const VulkanIcdSelection selection = SelectHostVulkanIcd(
+      {{kIntel, "i915"}, {kNvidia, "nouveau"}}, {temporary.root()}, true);
+  EXPECT_EQ(selection.manifest,
+            (temporary.root() / "intel_icd.json").string());
+  ASSERT_EQ(selection.skipped.size(), 1u);
+  EXPECT_NE(selection.skipped[0].find("nouveau"), std::string::npos);
+}
+
+TEST(HostVulkanIcdTest, RadeonKernelDriverFallsBackToTheIntelChip) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "radeon_icd.json");
+  WriteManifest(temporary.root() / "intel_icd.json");
+
+  const VulkanIcdSelection selection = SelectHostVulkanIcd(
+      {{kIntel, "i915"}, {kAmd, "radeon"}}, {temporary.root()}, true);
+  EXPECT_EQ(selection.manifest,
+            (temporary.root() / "intel_icd.json").string());
+}
+
+TEST(HostVulkanIcdTest, RadeonKernelDriverAloneSelectsNothingAndSaysWhy) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "radeon_icd.json");
+
+  const VulkanIcdSelection selection =
+      SelectHostVulkanIcd({{kAmd, "radeon"}}, {temporary.root()}, true);
+  EXPECT_TRUE(selection.manifest.empty());
+  ASSERT_EQ(selection.skipped.size(), 1u);
+  EXPECT_NE(selection.skipped[0].find("radeon"), std::string::npos);
+}
+
+TEST(HostVulkanIcdTest, AmdgpuKernelDriverSelectsTheRadeonManifest) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "radeon_icd.json");
+
+  EXPECT_EQ(SelectHostVulkanIcd({{kAmd, "amdgpu"}}, {temporary.root()}, true)
+                .manifest,
+            (temporary.root() / "radeon_icd.json").string());
+}
+
+TEST(HostVulkanIcdTest, PrefersTheIntelChipWhenTheDiscreteCardIsNotWanted) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "nvidia_icd.json");
+  WriteManifest(temporary.root() / "intel_icd.json");
+
+  EXPECT_EQ(SelectHostVulkanIcd({{kIntel, "i915"}, {kNvidia, "nvidia"}},
+                                {temporary.root()}, false)
+                .manifest,
+            (temporary.root() / "intel_icd.json").string());
+}
+
+TEST(HostVulkanIcdTest, NoKnownCardSelectsNothingAndSkipsNothing) {
+  TemporaryDirectory temporary;
+  WriteManifest(temporary.root() / "nvidia_icd.json");
+
+  const VulkanIcdSelection selection =
+      SelectHostVulkanIcd({}, {temporary.root()}, true);
+  EXPECT_TRUE(selection.manifest.empty());
+  EXPECT_TRUE(selection.skipped.empty());
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

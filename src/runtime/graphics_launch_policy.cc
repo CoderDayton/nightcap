@@ -12,6 +12,7 @@
 #include <string_view>
 #include <system_error>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace mocktail {
@@ -45,11 +46,9 @@ constexpr const char* kForeignArchitectures[] = {
 };
 #endif
 
-struct HostGpus {
-  bool intel = false;
-  bool nvidia = false;
-  bool amd = false;
-};
+constexpr unsigned int kPciVendorAmd = 0x1002;
+constexpr unsigned int kPciVendorNvidia = 0x10de;
+constexpr unsigned int kPciVendorIntel = 0x8086;
 
 bool ForeignArchitecture(const std::string& name) {
   for (const char* architecture : kForeignArchitectures) {
@@ -110,75 +109,86 @@ bool ParsePciVendor(const std::string& raw, unsigned int* vendor) {
   return true;
 }
 
-HostGpus DetectHostGpus() {
-  HostGpus gpus;
+std::vector<HostGpu> DetectHostGpus() {
+  std::vector<HostGpu> gpus;
   for (int index = 0; index < 16; ++index) {
-    const std::string path = "/sys/class/drm/card" + std::to_string(index) +
-                             "/device/vendor";
-    std::ifstream input(path);
+    const std::string device =
+        "/sys/class/drm/card" + std::to_string(index) + "/device";
+    std::ifstream input(device + "/vendor");
     std::string raw;
-    unsigned int vendor = 0;
-    if (!(input >> raw) || !ParsePciVendor(raw, &vendor)) {
+    HostGpu gpu;
+    if (!(input >> raw) || !ParsePciVendor(raw, &gpu.vendor)) {
       continue;
     }
-    if (vendor == 0x8086) {
-      gpus.intel = true;
-    } else if (vendor == 0x10de) {
-      gpus.nvidia = true;
-    } else if (vendor == 0x1002) {
-      gpus.amd = true;
+    std::error_code error;
+    const std::filesystem::path driver =
+        std::filesystem::read_symlink(device + "/driver", error);
+    if (!error) {
+      gpu.kernel_driver = driver.filename().string();
     }
+    gpus.push_back(std::move(gpu));
   }
   return gpus;
 }
 
-std::string FindIcdFile(const char* filename_needle) {
-  if (filename_needle == nullptr || filename_needle[0] == '\0') {
-    return {};
-  }
-  std::vector<std::filesystem::path> directories;
-  for (const char* directory : kIcdDirectories) {
-    directories.emplace_back(directory);
-  }
-  return SelectVulkanIcdManifest(directories, filename_needle);
+bool HasVendor(const std::vector<HostGpu>& gpus, unsigned int vendor) {
+  return std::any_of(gpus.begin(), gpus.end(), [vendor](const HostGpu& gpu) {
+    return gpu.vendor == vendor;
+  });
 }
 
-std::string SelectHardwareIcd(const HostGpus& gpus) {
-  const bool prefer_discrete = !EnvIsOff("DRI_PRIME") &&
-                               !EnvIsOff("__NV_PRIME_RENDER_OFFLOAD");
-  if (prefer_discrete && gpus.nvidia) {
-    std::string nvidia = FindIcdFile("nvidia_icd");
-    if (nvidia.empty()) {
-      nvidia = FindIcdFile("nouveau_icd");
-    }
-    if (!nvidia.empty()) {
-      return nvidia;
-    }
+const char* VendorName(unsigned int vendor) {
+  switch (vendor) {
+    case kPciVendorAmd:
+      return "AMD";
+    case kPciVendorNvidia:
+      return "NVIDIA";
+    case kPciVendorIntel:
+      return "Intel";
+    default:
+      return "unknown";
   }
-  if (prefer_discrete && gpus.amd) {
-    const std::string amd = FindIcdFile("radeon_icd");
-    if (!amd.empty()) {
-      return amd;
-    }
+}
+
+// ICD manifest names that can drive `gpu`, best first. Empty when the bound
+// kernel driver has no Vulkan driver at all.
+std::vector<const char*> VulkanIcdsFor(const HostGpu& gpu) {
+  switch (gpu.vendor) {
+    case kPciVendorNvidia:
+      if (gpu.kernel_driver == "nvidia") {
+        return {"nvidia_icd"};
+      }
+      if (gpu.kernel_driver == "nouveau") {
+        return {"nouveau_icd"};
+      }
+      return {"nvidia_icd", "nouveau_icd"};
+    case kPciVendorAmd:
+      // RADV needs the amdgpu kernel driver.
+      if (gpu.kernel_driver == "radeon") {
+        return {};
+      }
+      return {"radeon_icd"};
+    case kPciVendorIntel:
+      return {"intel_icd", "intel_hasvk_icd"};
+    default:
+      return {};
   }
-  if (gpus.intel) {
-    std::string intel = FindIcdFile("intel_icd");
-    if (intel.empty()) {
-      intel = FindIcdFile("intel_hasvk_icd");
-    }
-    return intel;
+}
+
+std::string SkipReason(const HostGpu& gpu,
+                       const std::vector<const char*>& icds) {
+  std::string reason = std::string(VendorName(gpu.vendor)) + " card";
+  if (!gpu.kernel_driver.empty()) {
+    reason += " on the \"" + gpu.kernel_driver + "\" kernel driver";
   }
-  if (gpus.nvidia) {
-    std::string nvidia = FindIcdFile("nvidia_icd");
-    if (nvidia.empty()) {
-      nvidia = FindIcdFile("nouveau_icd");
-    }
-    return nvidia;
+  if (icds.empty()) {
+    return reason + " has no Vulkan support";
   }
-  if (gpus.amd) {
-    return FindIcdFile("radeon_icd");
+  reason += " has no installed Vulkan driver (looked for";
+  for (const char* icd : icds) {
+    reason += std::string(" ") + icd;
   }
-  return {};
+  return reason + ")";
 }
 
 // Match Mesa ANV: 75% of RAM when the machine has more than 4GiB, else 50%.
@@ -197,7 +207,8 @@ const char* AnvSysMemLimitPercent() {
   return "50";
 }
 
-bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
+bool ApplyVulkanIcdPolicy(const std::vector<HostGpu>& gpus,
+                          std::string* error) {
   // Drop software/emulation ICDs even when the user already pinned a driver
   // list. Old loaders ignore this variable.
   if (!SetDefault("VK_LOADER_DRIVERS_DISABLE",
@@ -210,16 +221,60 @@ bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
       (existing_icds != nullptr && existing_icds[0] != '\0')) {
     return true;
   }
-  const std::string icd = SelectHardwareIcd(gpus);
-  if (icd.empty()) {
+  std::vector<std::filesystem::path> directories;
+  for (const char* directory : kIcdDirectories) {
+    directories.emplace_back(directory);
+  }
+  const bool prefer_discrete = !EnvIsOff("DRI_PRIME") &&
+                               !EnvIsOff("__NV_PRIME_RENDER_OFFLOAD");
+  const VulkanIcdSelection selection =
+      SelectHostVulkanIcd(gpus, directories, prefer_discrete);
+  for (const std::string& reason : selection.skipped) {
+    std::fprintf(stderr, "  [runtime] vulkan: %s\n", reason.c_str());
+  }
+  if (selection.manifest.empty()) {
+    if (!selection.skipped.empty()) {
+      std::fprintf(stderr,
+                   "  [runtime] vulkan: no GPU here can run Vulkan; set "
+                   "graphics.backend: opengl in the config\n");
+    }
     return true;
   }
-  std::fprintf(stderr, "  [runtime] vulkan ICD=%s\n", icd.c_str());
-  return SetDefault("VK_DRIVER_FILES", icd, error) &&
-         SetDefault("VK_ICD_FILENAMES", icd, error);
+  std::fprintf(stderr, "  [runtime] vulkan ICD=%s\n",
+               selection.manifest.c_str());
+  return SetDefault("VK_DRIVER_FILES", selection.manifest, error) &&
+         SetDefault("VK_ICD_FILENAMES", selection.manifest, error);
 }
 
 }  // namespace
+
+VulkanIcdSelection SelectHostVulkanIcd(
+    const std::vector<HostGpu>& gpus,
+    const std::vector<std::filesystem::path>& directories,
+    bool prefer_discrete) {
+  constexpr unsigned int kDiscreteFirst[] = {kPciVendorNvidia, kPciVendorAmd,
+                                             kPciVendorIntel};
+  constexpr unsigned int kIntegratedFirst[] = {
+      kPciVendorIntel, kPciVendorNvidia, kPciVendorAmd};
+  VulkanIcdSelection selection;
+  for (const unsigned int vendor :
+       prefer_discrete ? kDiscreteFirst : kIntegratedFirst) {
+    for (const HostGpu& gpu : gpus) {
+      if (gpu.vendor != vendor) {
+        continue;
+      }
+      const std::vector<const char*> icds = VulkanIcdsFor(gpu);
+      for (const char* icd : icds) {
+        selection.manifest = SelectVulkanIcdManifest(directories, icd);
+        if (!selection.manifest.empty()) {
+          return selection;
+        }
+      }
+      selection.skipped.push_back(SkipReason(gpu, icds));
+    }
+  }
+  return selection;
+}
 
 std::string SelectVulkanIcdManifest(
     const std::vector<std::filesystem::path>& directories,
@@ -291,7 +346,7 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
   if (direct_vulkan) {
     const char* wsi_mode =
         UnthrottledPresentation(config) ? "immediate" : "mailbox";
-    const HostGpus gpus = DetectHostGpus();
+    const std::vector<HostGpu> gpus = DetectHostGpus();
     if (!SetDefault("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
                     kVulkanClientSettingsOverrides, error) ||
         !SetDefault("ANV_SYS_MEM_LIMIT", AnvSysMemLimitPercent(), error) ||
@@ -304,7 +359,9 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
     }
     // Low FRM only on Intel-only machines. Hybrid NVIDIA/AMD laptops should
     // keep the desktop quality default on the discrete GPU.
-    if (gpus.intel && !gpus.nvidia && !gpus.amd &&
+    if (HasVendor(gpus, kPciVendorIntel) &&
+        !HasVendor(gpus, kPciVendorNvidia) &&
+        !HasVendor(gpus, kPciVendorAmd) &&
         !SetDefault("MOCKTAIL_GRAPHICS_QUALITY", "1", error)) {
       return false;
     }

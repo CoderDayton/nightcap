@@ -27,6 +27,11 @@ GitHub are taken from the matching section here.
   low-latency present mode. Nightcap now retries with the game's own mode.
 - Fixed a possible Wayland crash when the window first appears on the OpenGL
   graphics path.
+- Fixed a missing picture on machines where the graphics card runs a different
+  driver than the one Nightcap picked, such as an NVIDIA card on nouveau or a
+  laptop with an Intel chip and an older second card. Nightcap now picks the
+  Vulkan driver that matches the running kernel driver, and says so when no
+  card can run Vulkan.
 
 ## [0.3.3] - 2026-10-04
 
