@@ -323,8 +323,13 @@ int BionicStrError(int error_number, char* buffer,
       ::strerror_r(error_number, host_buffer.data(), host_buffer.size());
   const char* message = HostStrErrorResult(host_result, host_buffer.data());
 
-  std::array<char, 64> unknown_buffer{};
-  if (message == nullptr) {
+  std::array<char, 256> unknown_buffer{};
+  const char* unknown_message = HostStrErrorResult(
+      ::strerror_r(-1, unknown_buffer.data(), unknown_buffer.size()),
+      unknown_buffer.data());
+  if (message == nullptr ||
+      (error_number != 0 && unknown_message != nullptr &&
+       std::strcmp(message, unknown_message) == 0)) {
     std::snprintf(unknown_buffer.data(), unknown_buffer.size(),
                   "Unknown error %d", error_number);
     message = unknown_buffer.data();
