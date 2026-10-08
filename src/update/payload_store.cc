@@ -297,7 +297,10 @@ bool CloneOrCopyFile(const std::filesystem::path& source,
   }
   bool copied = false;
 #if defined(__linux__) && defined(FICLONE)
-  copied = ioctl(output, FICLONE, input) == 0;
+  struct stat cloned_metadata = {};
+  copied = ioctl(output, FICLONE, input) == 0 &&
+           fstat(output, &cloned_metadata) == 0 &&
+           cloned_metadata.st_size == metadata.st_size;
 #endif
 #if defined(__linux__)
   if (!copied) {
