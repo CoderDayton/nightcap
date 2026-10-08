@@ -31,7 +31,6 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
-#include <execinfo.h>
 #include <ucontext.h>
 #include <elf.h>
 #include <fcntl.h>

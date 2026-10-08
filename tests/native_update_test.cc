@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -270,6 +271,24 @@ TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
   }
+}
+
+TEST(ReadinessCanaryTest, ReportsTerminatingSignal) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary, "#!/bin/sh\nkill -TERM $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.exit_code, 128 + SIGTERM);
+  EXPECT_EQ(result.error, "graphics canary exited with status " +
+                             std::to_string(128 + SIGTERM));
 }
 
 TEST(ReadinessCanaryTest, AcceptsRealPresentWithoutShaderPackSummary) {
@@ -1751,6 +1770,7 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
       temporary.root() / "compatibility.json";
   Write(compatibility,
         "{\"schema_version\":1,\"profiles\":[{"
+        "\"abi\":\"" + std::string(compat::kGuestAbi) + "\","
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
