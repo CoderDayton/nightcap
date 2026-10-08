@@ -798,6 +798,7 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
       temporary.root() / "compatibility.json";
   Write(compatibility,
         "{\"schema_version\":1,\"profiles\":[{"
+        "\"abi\":\"" + std::string(compat::kGuestAbi) + "\","
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
