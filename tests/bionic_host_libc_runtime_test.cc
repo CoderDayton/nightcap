@@ -234,7 +234,7 @@ TEST(BionicHostLibcRuntimeTest, UsesBionicPosixStrErrorContract) {
   EXPECT_STREQ(buffer.data(), std::strerror(0));
   EXPECT_EQ(errno, EDOM);
 
-  for (const int error_number : {-1, 4567, INT_MIN, INT_MAX}) {
+  for (const int error_number : {-1, 41, 58, 134, 4567, INT_MIN, INT_MAX}) {
     errno = EDOM;
     ASSERT_EQ(mocktail_bionic_strerror_r(error_number, buffer.data(),
                                        buffer.size()), 0);

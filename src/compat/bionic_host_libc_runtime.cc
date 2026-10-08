@@ -150,6 +150,15 @@ Result ParseInHostCLocale(Parser parser) noexcept {
   return result;
 }
 
+// Highest errno in Bionic's message table (EHWPOISON). Numbers 41 and 58 are
+// unassigned in the generic Linux errno list, so Bionic has no text for them.
+constexpr int kBionicMaxErrno = 133;
+
+constexpr bool HasBionicErrnoMessage(int error_number) noexcept {
+  return error_number >= 0 && error_number <= kBionicMaxErrno &&
+         error_number != 41 && error_number != 58;
+}
+
 template <typename Result>
 const char* HostStrErrorResult(Result result, char* buffer) noexcept {
   if constexpr (std::is_integral_v<Result>) {
@@ -318,18 +327,19 @@ int BionicStrError(int error_number, char* buffer,
     return -1;
   }
 
+  // Bionic's table ends at EHWPOISON. Unknown numbers get the same text on
+  // every host instead of whatever the host libc prints (musl has no
+  // "Unknown error N" form).
   std::array<char, 256> host_buffer{};
-  auto host_result =
-      ::strerror_r(error_number, host_buffer.data(), host_buffer.size());
-  const char* message = HostStrErrorResult(host_result, host_buffer.data());
+  const char* message = nullptr;
+  if (HasBionicErrnoMessage(error_number)) {
+    auto host_result =
+        ::strerror_r(error_number, host_buffer.data(), host_buffer.size());
+    message = HostStrErrorResult(host_result, host_buffer.data());
+  }
 
-  std::array<char, 256> unknown_buffer{};
-  const char* unknown_message = HostStrErrorResult(
-      ::strerror_r(-1, unknown_buffer.data(), unknown_buffer.size()),
-      unknown_buffer.data());
-  if (message == nullptr ||
-      (error_number != 0 && unknown_message != nullptr &&
-       std::strcmp(message, unknown_message) == 0)) {
+  std::array<char, 64> unknown_buffer{};
+  if (message == nullptr) {
     std::snprintf(unknown_buffer.data(), unknown_buffer.size(),
                   "Unknown error %d", error_number);
     message = unknown_buffer.data();

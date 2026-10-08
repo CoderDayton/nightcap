@@ -11,6 +11,14 @@
 
 namespace mocktail::compat {
 
+// glibc's atoi is (int)strtol(), exactly like Bionic's, so the host symbol is
+// used as-is there. Other libcs (musl) differ on overflow and need the shim.
+#ifdef __GLIBC__
+inline constexpr bool kHostAtoiMatchesBionic = true;
+#else
+inline constexpr bool kHostAtoiMatchesBionic = false;
+#endif
+
 // Android uses size_t fields here; glibc uses int and musl has no equivalent.
 // An all-zero fallback means unknown, not zero usage.
 struct BionicMallinfoSnapshot {
