@@ -30,17 +30,15 @@ struct RuntimeConfigEdit {
 // `text` must be valid UTF-8 YAML whose top level is a mapping or empty. Every
 // result is parsed again and compared with `text`; an edit that would change
 // any other setting is refused with an error and no text.
-RuntimeConfigEdit SetRuntimeConfigBool(std::string_view text,
-                                       std::string_view key, bool value);
-RuntimeConfigEdit SetRuntimeConfigInteger(std::string_view text,
-                                          std::string_view key,
-                                          long long value);
+//
+// `value` is written as plain text when YAML allows it, so "true" and "144"
+// are read back as a boolean and a number, and is quoted otherwise.
 RuntimeConfigEdit SetRuntimeConfigString(std::string_view text,
                                          std::string_view key,
                                          std::string_view value);
 
 // Returns `text` without `key`. The key's lines stay as comments, in the form
-// the Set functions uncomment, and so does a section it leaves with no keys.
+// SetRuntimeConfigString uncomments, and so does a section it leaves with no keys.
 // A key the file does not have leaves `text` unchanged.
 RuntimeConfigEdit UnsetRuntimeConfigValue(std::string_view text,
                                           std::string_view key);

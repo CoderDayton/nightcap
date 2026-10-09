@@ -54,6 +54,8 @@ bool WriteAll(int file, std::string_view contents) {
 // exist reads as empty text and sets it.
 RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing) {
   RuntimeConfigText result;
+  // Errors name the file, since more than one file is read this way.
+  const std::string name = path.filename().string() + ": ";
   if (missing != nullptr) {
     *missing = false;
   }
@@ -63,14 +65,14 @@ RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing) {
       *missing = true;
       return result;
     }
-    result.error = errno == ELOOP
-                       ? "refusing symlink runtime configuration"
-                       : ErrorMessage("cannot open configuration", errno);
+    result.error =
+        name + (errno == ELOOP ? "refusing to read through a symlink"
+                               : ErrorMessage("cannot open the file", errno));
     return result;
   }
   struct stat metadata = {};
   if (fstat(file, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
-    result.error = "runtime configuration must be a regular file";
+    result.error = name + "the file must be a regular file";
     (void)close(file);
     return result;
   }
@@ -81,7 +83,7 @@ RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing) {
       continue;
     }
     if (count < 0) {
-      result.error = ErrorMessage("cannot read configuration", errno);
+      result.error = name + ErrorMessage("cannot read the file", errno);
       result.text.clear();
       break;
     }
@@ -101,9 +103,10 @@ RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
                              bool may_be_missing, const TextFileCheck& check) {
   RuntimeConfigSaveResult result;
   if (config_file.empty() || config_file.filename().empty()) {
-    result.error = "configuration path must name a file";
+    result.error = "the path must name a file";
     return result;
   }
+  const std::string name = config_file.filename().string() + ": ";
   bool missing = false;
   const RuntimeConfigText current =
       ReadText(config_file, may_be_missing ? &missing : nullptr);
@@ -112,7 +115,7 @@ RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
     return result;
   }
   if (current.text != original) {
-    result.error = "the configuration file changed on disk since it was read";
+    result.error = name + "the file changed on disk since it was read";
     return result;
   }
 
@@ -128,7 +131,8 @@ RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
   temporary_path.push_back('\0');
   const int temporary_file = mkstemp(temporary_path.data());
   if (temporary_file < 0) {
-    result.error = ErrorMessage("cannot create temporary configuration", errno);
+    result.error =
+        name + ErrorMessage("cannot create a temporary file", errno);
     return result;
   }
   const auto discard_temporary = [&temporary_path]() {
@@ -141,8 +145,8 @@ RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
                        fsync(temporary_file) == 0;
   const int write_error = errno;
   if (close(temporary_file) != 0 || !written) {
-    result.error = ErrorMessage("cannot write temporary configuration",
-                                written ? errno : write_error);
+    result.error = name + ErrorMessage("cannot write the temporary file",
+                                       written ? errno : write_error);
     discard_temporary();
     return result;
   }
@@ -155,7 +159,7 @@ RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
   }
 
   if (rename(temporary_path.data(), config_file.c_str()) != 0) {
-    result.error = ErrorMessage("cannot replace configuration", errno);
+    result.error = name + ErrorMessage("cannot replace the file", errno);
     discard_temporary();
     return result;
   }

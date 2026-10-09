@@ -27,6 +27,19 @@ class EmptyEnvironment final : public Environment {
   }
 };
 
+// Booleans and whole numbers are set as their plain text, the way the
+// settings window sets them.
+RuntimeConfigEdit SetRuntimeConfigBool(std::string_view text,
+                                       std::string_view key, bool value) {
+  return SetRuntimeConfigString(text, key, value ? "true" : "false");
+}
+
+RuntimeConfigEdit SetRuntimeConfigInteger(std::string_view text,
+                                          std::string_view key,
+                                          long long value) {
+  return SetRuntimeConfigString(text, key, std::to_string(value));
+}
+
 RuntimeConfigLoadResult Load(std::string_view contents) {
   char pattern[] = "/tmp/mocktail_config_editor_XXXXXX";
   const char* created = mkdtemp(pattern);

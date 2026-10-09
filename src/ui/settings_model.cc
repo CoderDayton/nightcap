@@ -2,10 +2,10 @@
 
 #define JSON_NOEXCEPTION 1
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <nlohmann/json.hpp>
 
+#include "runtime/frame_rate_policy.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_editor.h"
 #include "runtime/runtime_config_store.h"
@@ -315,20 +315,24 @@ bool ToggleState(const Setting& setting, std::string_view value) {
 }
 
 FrameRate ParseFrameRate(std::string_view value) {
+  // The loader's own reading of the key, so the window and Nightcap cannot
+  // disagree about what a value means.
+  const runtime::FrameRatePolicy policy = runtime::ParseFrameRatePolicy(value);
   FrameRate rate;
-  if (value == "display") {
-    rate.mode = FrameRateMode::kDisplay;
-  } else if (value == "unlimited") {
-    rate.mode = FrameRateMode::kUnlimited;
-  } else {
-    int custom = 0;
-    const auto parsed =
-        std::from_chars(value.data(), value.data() + value.size(), custom);
-    if (parsed.ec == std::errc() &&
-        parsed.ptr == value.data() + value.size() && custom > 0) {
+  switch (policy.mode) {
+    case runtime::FrameRateLimitMode::kDisplay:
+      rate.mode = FrameRateMode::kDisplay;
+      break;
+    case runtime::FrameRateLimitMode::kUnlimited:
+      rate.mode = FrameRateMode::kUnlimited;
+      break;
+    case runtime::FrameRateLimitMode::kFixed:
       rate.mode = FrameRateMode::kCustom;
-      rate.custom = custom;
-    }
+      rate.custom = policy.fixed_fps;
+      break;
+    case runtime::FrameRateLimitMode::kUnmanaged:
+    case runtime::FrameRateLimitMode::kInvalid:
+      break;
   }
   return rate;
 }

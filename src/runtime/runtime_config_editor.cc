@@ -1215,19 +1215,6 @@ RuntimeConfigEdit Change(std::string_view text, std::string_view key,
 
 }  // namespace
 
-RuntimeConfigEdit SetRuntimeConfigBool(std::string_view text,
-                                       std::string_view key, bool value) {
-  const std::string scalar = value ? "true" : "false";
-  return Change(text, key, &scalar, scalar);
-}
-
-RuntimeConfigEdit SetRuntimeConfigInteger(std::string_view text,
-                                          std::string_view key,
-                                          long long value) {
-  const std::string scalar = std::to_string(value);
-  return Change(text, key, &scalar, scalar);
-}
-
 RuntimeConfigEdit SetRuntimeConfigString(std::string_view text,
                                          std::string_view key,
                                          std::string_view value) {

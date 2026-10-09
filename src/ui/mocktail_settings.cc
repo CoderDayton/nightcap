@@ -39,6 +39,11 @@ struct Row {
   // A value the file holds that the row does not list. It is shown as one
   // more choice so opening the window never changes it.
   std::string unlisted;
+  // Whether the choices have been put in the drop-down yet.
+  bool choices_set = false;
+  // The text a kText row was last filled with. A field that holds anything
+  // else has an edit that is not saved yet.
+  std::string shown;
 };
 
 struct SettingsWindow {
@@ -75,7 +80,9 @@ void SetChoices(Row* row) {
   g_object_unref(labels);
 }
 
-void RefreshRow(Row* row) {
+// Shows the file's value in `row`. With `keep_edit`, text typed into the row
+// and not saved yet is left alone.
+void RefreshRow(Row* row, bool keep_edit) {
   const Setting& setting = *row->setting;
   const std::string value = row->window->document.Value(setting.key);
   switch (setting.kind) {
@@ -85,8 +92,13 @@ void RefreshRow(Row* row) {
       break;
     case SettingKind::kChoice: {
       const std::size_t index = ChoiceIndex(setting, value);
-      row->unlisted = index == kNoChoice ? value : std::string();
-      SetChoices(row);
+      std::string unlisted = index == kNoChoice ? value : std::string();
+      // The list changes only when the unlisted value does.
+      if (!row->choices_set || unlisted != row->unlisted) {
+        row->unlisted = std::move(unlisted);
+        row->choices_set = true;
+        SetChoices(row);
+      }
       adw_combo_row_set_selected(
           ADW_COMBO_ROW(row->widget),
           static_cast<guint>(index == kNoChoice ? setting.choices.size()
@@ -113,9 +125,14 @@ void RefreshRow(Row* row) {
     case SettingKind::kText: {
       const bool is_set = row->window->document.IsSet(setting.key);
       const std::string text = is_set ? value : Text(setting.default_value);
-      // Setting the same text again would mark the field as edited.
-      if (text != gtk_editable_get_text(GTK_EDITABLE(row->widget))) {
-        gtk_editable_set_text(GTK_EDITABLE(row->widget), text.c_str());
+      const std::string current =
+          gtk_editable_get_text(GTK_EDITABLE(row->widget));
+      if (!keep_edit || current == row->shown) {
+        // Setting the same text again would mark the field as edited.
+        if (text != current) {
+          gtk_editable_set_text(GTK_EDITABLE(row->widget), text.c_str());
+        }
+        row->shown = text;
       }
       gtk_widget_set_sensitive(row->reset, is_set);
       break;
@@ -125,10 +142,12 @@ void RefreshRow(Row* row) {
   }
 }
 
-void RefreshRows(SettingsWindow* window) {
+// Shows every row as the file has it. Text typed into a row and not saved
+// yet stays, except in `saved_row`, whose text was just saved.
+void RefreshRows(SettingsWindow* window, const Row* saved_row = nullptr) {
   window->refreshing = true;
   for (Row& row : window->rows) {
-    RefreshRow(&row);
+    RefreshRow(&row, &row != saved_row);
   }
   window->refreshing = false;
 }
@@ -140,15 +159,17 @@ void ShowError(SettingsWindow* window, const std::string& error) {
   adw_toast_overlay_add_toast(window->toasts, toast);
 }
 
-// Shows how a save went, then shows every row as the file now has it.
-void ShowSaved(SettingsWindow* window, bool saved, const std::string& error) {
+// Shows how saving `row` went, then shows every row as the file now has it.
+void ShowSaved(Row* row, bool saved, const std::string& error) {
+  SettingsWindow* window = row->window;
   if (saved) {
     gtk_revealer_set_reveal_child(window->notice, TRUE);
   } else {
     ShowError(window, error);
   }
-  // On failure the rows go back to what the file holds.
-  RefreshRows(window);
+  // On failure the rows go back to what the file holds. A text that was
+  // refused stays in its field, so it can be corrected.
+  RefreshRows(window, saved ? row : nullptr);
 }
 
 void Apply(Row* row, const std::string& value) {
@@ -158,7 +179,7 @@ void Apply(Row* row, const std::string& value) {
   }
   std::string error;
   const bool saved = window->document.Set(row->setting->key, value, &error);
-  ShowSaved(window, saved, error);
+  ShowSaved(row, saved, error);
 }
 
 void OnNumberChanged(GObject* object, GParamSpec*, gpointer user_data) {
@@ -173,7 +194,7 @@ void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
   std::string error;
   const bool saved = window->document.SetText(
       row->setting->key, gtk_editable_get_text(GTK_EDITABLE(entry)), &error);
-  ShowSaved(window, saved, error);
+  ShowSaved(row, saved, error);
 }
 
 void OnTextReset(GtkButton*, gpointer user_data) {
