@@ -102,21 +102,69 @@ curl() {
 }
 
 pacman() {
-  [[ "$#" == 5 && "$1" == -U && "$2" == --noconfirm && "$3" == --needed ]]
-  if [[ "${SCENARIO}" == replaced ]]; then
-    cmp "${TEMP_DIR}/updated-ffmpeg" "$4"
-  else
-    cmp "${TEMP_DIR}/ffmpeg" "$4"
-  fi
-  cmp "${TEMP_DIR}/opus" "$5"
-  local downloads="${4%/*}"
+  local name
+  case "$1" in
+    -Qp)
+      # The stale scenario offers an ffmpeg older than the installed one.
+      name="${3##*/}"
+      name="${name%%-mini-*}"
+      if [[ "${SCENARIO}" == stale && "${name}" == ffmpeg ]]; then
+        printf '%s 1-1\n' "${name}"
+      else
+        printf '%s 2-1\n' "${name}"
+      fi
+      return 0 ;;
+    -Q)
+      printf '%s 2-1\n' "$3"
+      return 0 ;;
+    -S)
+      [[ "$2" == --noconfirm ]]
+      printf '%s\n' "${@:3}" >"${TEMP_DIR}/restored"
+      return 0 ;;
+  esac
+  [[ "$#" -ge 4 && "$1" == -U && "$2" == --noconfirm && "$3" == --needed ]]
+  local archive downloads="${4%/*}"
   (cd "${downloads}" && sha256sum --check --strict SHA256SUMS)
-  cp "$4" "$5" "${downloads}/SHA256SUMS" "${downloads}/dependencies.tsv" \
+  for archive in "${@:4}"; do
+    case "${archive##*/}" in
+      "${FFMPEG}")
+        if [[ "${SCENARIO}" == replaced ]]; then
+          cmp "${TEMP_DIR}/updated-ffmpeg" "${archive}"
+        else
+          cmp "${TEMP_DIR}/ffmpeg" "${archive}"
+        fi ;;
+      "${OPUS}") cmp "${TEMP_DIR}/opus" "${archive}" ;;
+      *) Fail "unexpected archive: ${archive}" ;;
+    esac
+    cp "${archive}" "${TEMP_DIR}/${SCENARIO}/"
+  done
+  cp "${downloads}/SHA256SUMS" "${downloads}/dependencies.tsv" \
     "${TEMP_DIR}/${SCENARIO}/"
   touch "${TEMP_DIR}/installed"
 }
 
-export -f curl pacman Fail
+vercmp() {
+  if [[ "$1" == "$2" ]]; then printf '0\n'; else printf -- '-1\n'; fi
+}
+
+# opus never resolves once its reduced package is installed. libadwaita-1
+# stops resolving while the stale ffmpeg is installed.
+pkg-config() {
+  case "$1" in
+    --list-package-names) printf 'ffmpeg\nlibadwaita-1\nopus\n' ;;
+    --exists)
+      if [[ "$2" == opus ]]; then
+        [[ ! -e "${TEMP_DIR}/${SCENARIO}/${OPUS}" ]]
+        return
+      fi
+      [[ "${SCENARIO}" != stale || "$2" != libadwaita-1 ||
+         ! -e "${TEMP_DIR}/${SCENARIO}/${FFMPEG}" ||
+         -e "${TEMP_DIR}/restored" ]] ;;
+    *) Fail "unexpected pkg-config option: $1" ;;
+  esac
+}
+
+export -f curl pacman vercmp pkg-config Fail
 export TEMP_DIR API FFMPEG OPUS SCENARIO TEST_RELEASE
 
 ExpectRejectedSnapshot() {
@@ -190,7 +238,7 @@ for invalid_manifest in '../ffmpeg-mini-x86_64.pkg.tar.zst' \
   fi
 done
 
-for SCENARIO in success replaced corrupted download-failure metadata-failure invalid-metadata; do
+for SCENARIO in success replaced stale corrupted download-failure metadata-failure invalid-metadata; do
   TEST_RELEASE="${TEMP_DIR}/release.json"
   if [[ "${SCENARIO}" == invalid-metadata ]]; then
     # A valid first row must not allow downloads when a later row is invalid.
@@ -206,13 +254,15 @@ for SCENARIO in success replaced corrupted download-failure metadata-failure inv
       AnyLinuxDependenciesMain
     ' _ "${TEMP_DIR}" \
       >"${TEMP_DIR}/${SCENARIO}.log" 2>&1; then
-    [[ "${SCENARIO}" == success || "${SCENARIO}" == replaced ]] ||
+    [[ "${SCENARIO}" == success || "${SCENARIO}" == replaced ||
+       "${SCENARIO}" == stale ]] ||
       Fail "installed packages after ${SCENARIO}"
     [[ -f "${TEMP_DIR}/installed" ]]
     (cd "${TEMP_DIR}/${SCENARIO}" && sha256sum --check --strict SHA256SUMS)
     rm -- "${TEMP_DIR}/installed"
   else
-    if [[ "${SCENARIO}" == success || "${SCENARIO}" == replaced ]]; then
+    if [[ "${SCENARIO}" == success || "${SCENARIO}" == replaced ||
+          "${SCENARIO}" == stale ]]; then
       cat -- "${TEMP_DIR}/${SCENARIO}.log" >&2
       Fail "valid download failed: ${SCENARIO}"
     fi
@@ -220,6 +270,8 @@ for SCENARIO in success replaced corrupted download-failure metadata-failure inv
   fi
   case "${SCENARIO}" in
     success)
+      [[ ! -e "${TEMP_DIR}/restored" ]] ||
+        Fail 'restored a package that broke nothing'
       [[ "$(wc -l <"${TEMP_DIR}/calls")" == 3 ]]
       grep -Fq "${API}/assets/10" "${TEMP_DIR}/calls" ;;
     replaced)
@@ -227,6 +279,10 @@ for SCENARIO in success replaced corrupted download-failure metadata-failure inv
       grep -Fq "${API}/assets/11" "${TEMP_DIR}/calls"
       grep -Fq "${API}/assets/11" "${TEMP_DIR}/replaced/dependencies.tsv"
       grep -Fq "${API}/assets/21" "${TEMP_DIR}/replaced/dependencies.tsv" ;;
+    stale)
+      [[ "$(cat -- "${TEMP_DIR}/restored" 2>/dev/null)" == ffmpeg ]] ||
+        Fail 'kept a stale package that broke another package'
+      rm -- "${TEMP_DIR}/restored" ;;
     corrupted)
       grep -Fq 'dependency checksum verification failed' "${TEMP_DIR}/${SCENARIO}.log" ;;
     download-failure)

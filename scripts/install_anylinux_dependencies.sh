@@ -107,6 +107,28 @@ AnyLinuxDownloadDependencies() {
   AnyLinuxDependencyDie 'dependency downloads failed after 3 snapshots'
 }
 
+# Prints the package name and path of each archive that is older than the
+# installed package.
+AnyLinuxDependencyDowngrades() {
+  local package name version installed
+  for package in "$@"; do
+    read -r name version < <(pacman -Qp -- "${package}")
+    installed="$(pacman -Q -- "${name}" 2>/dev/null | cut -d ' ' -f 2)" || continue
+    [[ -n "${installed}" ]] || continue
+    if (( $(vercmp "${version}" "${installed}") < 0 )); then
+      printf '%s\t%s\n' "${name}" "${package}"
+    fi
+  done
+}
+
+# Prints each pkg-config module whose requirements are not met.
+AnyLinuxDependencyBrokenModules() {
+  local module
+  while read -r module; do
+    pkg-config --exists "${module}" 2>/dev/null || printf '%s\n' "${module}"
+  done < <(pkg-config --list-package-names 2>/dev/null)
+}
+
 AnyLinuxDependenciesMain() (
   AnyLinuxDependencyRequireContainer
   (( $# == 0 )) || AnyLinuxDependencyDie 'no arguments are supported'
@@ -126,7 +148,35 @@ AnyLinuxDependenciesMain() (
   while IFS=$'\t' read -r digest filename url; do
     packages+=("${DOWNLOADS}/${filename}")
   done <"${DOWNLOADS}/dependencies.tsv"
-  pacman -U --noconfirm --needed "${packages[@]}"
+  local broken name package
+  local -a current=() older=() older_names=()
+  local -A is_older=()
+  while IFS=$'\t' read -r name package; do
+    older_names+=("${name}")
+    is_older["${package}"]=1
+  done < <(AnyLinuxDependencyDowngrades "${packages[@]}")
+  for package in "${packages[@]}"; do
+    if [[ -n "${is_older[${package}]:-}" ]]; then
+      older+=("${package}")
+    else
+      current+=("${package}")
+    fi
+  done
+  (( ${#current[@]} == 0 )) || pacman -U --noconfirm --needed "${current[@]}"
+  (( ${#older[@]} > 0 )) || return 0
+  # A reduced package can lag the distribution. If the older version leaves
+  # another package's pkg-config requirements unmet, build with the
+  # distribution's package for that library. Modules that the reduced
+  # packages of the current version already leave unmet do not count.
+  broken="$(AnyLinuxDependencyBrokenModules)"
+  pacman -U --noconfirm --needed "${older[@]}"
+  if [[ "$(AnyLinuxDependencyBrokenModules)" != "${broken}" ]]; then
+    printf '[anylinux-dependencies] reduced packages are too old; restoring %s\n' \
+      "${older_names[*]}" >&2
+    pacman -S --noconfirm "${older_names[@]}"
+    [[ "$(AnyLinuxDependencyBrokenModules)" == "${broken}" ]] ||
+      AnyLinuxDependencyDie 'reduced packages break pkg-config requirements'
+  fi
 )
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
