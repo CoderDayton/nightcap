@@ -7,6 +7,9 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- Added a settings window. Open it from the app menu (right-click Nightcap, then Settings) or with
+  `mocktail --settings`. It changes `config.yaml` and `fflags.json` for you, keeps your comments, and does
+  not save a value Nightcap could not start with. Changes apply the next time Nightcap starts.
 - An asset overlay folder, `~/.local/share/mocktail/asset_overlay`. A file there replaces the file Roblox
   ships at the same path, such as a cursor, a font or a sky texture, and it stays in place when Roblox
   updates. The layout matches Sober's `asset_overlay` folder. `MOCKTAIL_ASSET_OVERLAY_DIR` moves it. Thanks to

@@ -128,6 +128,8 @@ removing the marker.
 
 Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
 `~/.config/mocktail/fflags.json`). Nightcap applies it on the next launch.
+The Advanced page of the [settings window](#settings) edits this file and
+does not save text that Nightcap could not load.
 
 PC profiles use the legacy Charts page by default to avoid the blank screen
 caused by `Color3` errors in the newer SDUI page. An explicit
@@ -149,7 +151,21 @@ it yourself turns the switching off and your value applies everywhere. See
 ```
 ## Settings
 
-Edit `~/.config/mocktail/config.yaml`. Useful options:
+Open the settings window from the app menu: right-click Nightcap and pick
+Settings. Or run:
+
+```sh
+mocktail --settings
+```
+
+With the Flatpak, run
+`flatpak run io.github.CoderDayton.nightcap --settings`.
+
+The window edits `~/.config/mocktail/config.yaml`. It keeps your comments
+and layout, saves each change at once, and does not save a value Nightcap
+could not start with. Changes apply the next time Nightcap starts.
+
+You can also edit the file by hand. Useful options:
 
 - `graphics.frame_rate_limit: display` to unlock FPS to your monitor's rate.
 - `graphics.vsync: off` for the lowest lag, at the cost of tearing.
