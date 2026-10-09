@@ -1240,5 +1240,33 @@ RuntimeConfigEdit UnsetRuntimeConfigValue(std::string_view text,
   return Change(text, key, nullptr, {});
 }
 
+RuntimeConfigValue GetRuntimeConfigValue(std::string_view text,
+                                         std::string_view key) {
+  RuntimeConfigValue result;
+  std::vector<std::string_view> path;
+  if (!SplitKey(key, &path)) {
+    result.error = "cannot read " + std::string(key) +
+                   ": the key is not a dotted list of names";
+    return result;
+  }
+  Source source(text);
+  if (!source.Parse(&result.error)) {
+    result.error = "cannot read " + std::string(key) + ": " + result.error;
+    return result;
+  }
+  yaml_node_t* node = Settings(source);
+  for (const std::string_view name : path) {
+    node = source.FindPair(node, name).value;
+    if (node == nullptr) {
+      return result;
+    }
+  }
+  if (node->type == YAML_SCALAR_NODE && !IsNull(node)) {
+    result.found = true;
+    result.value = std::string(ScalarValue(node));
+  }
+  return result;
+}
+
 }  // namespace runtime
 }  // namespace mocktail

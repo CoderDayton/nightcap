@@ -577,6 +577,48 @@ TEST(RuntimeConfigEditorTest, FirstRunFileLoadsAfterEverySetAndUnset) {
   }
 }
 
+TEST(RuntimeConfigEditorTest, GetsTheValueOfAKey) {
+  const std::string text =
+      "graphics:\n"
+      "  backend: opengl  # note\n"
+      "  # vsync: off\n"
+      "  empty:\n"
+      "window: {title: \"My \\\"game\\\"\", width: 1280}\n";
+
+  RuntimeConfigValue value = GetRuntimeConfigValue(text, "graphics.backend");
+  ASSERT_TRUE(value) << value.error;
+  EXPECT_TRUE(value.found);
+  EXPECT_EQ(value.value, "opengl");
+
+  value = GetRuntimeConfigValue(text, "window.title");
+  EXPECT_TRUE(value.found);
+  EXPECT_EQ(value.value, "My \"game\"");
+
+  // Commented out, absent, a section, and a key with nothing after it are
+  // all not set.
+  EXPECT_FALSE(GetRuntimeConfigValue(text, "graphics.vsync").found);
+  EXPECT_FALSE(GetRuntimeConfigValue(text, "audio.output_device").found);
+  EXPECT_FALSE(GetRuntimeConfigValue(text, "graphics").found);
+  EXPECT_FALSE(GetRuntimeConfigValue(text, "graphics.empty").found);
+  EXPECT_TRUE(GetRuntimeConfigValue(text, "graphics.vsync"));
+  EXPECT_FALSE(GetRuntimeConfigValue("", "graphics.vsync").found);
+}
+
+TEST(RuntimeConfigEditorTest, GetReportsAFileItCannotRead) {
+  const RuntimeConfigValue value =
+      GetRuntimeConfigValue("a: [1, 2\n", "a");
+  EXPECT_FALSE(value);
+  EXPECT_FALSE(value.found);
+}
+
+TEST(RuntimeConfigEditorTest, GetReadsBackWhatSetWrote) {
+  const std::string odd = "a: \"b\" #c \xc2\xb5\nnext";
+  const RuntimeConfigEdit edit =
+      SetRuntimeConfigString("window:\n  width: 1\n", "window.title", odd);
+  ASSERT_TRUE(edit) << edit.error;
+  EXPECT_EQ(GetRuntimeConfigValue(edit.text, "window.title").value, odd);
+}
+
 TEST(RuntimeConfigEditorTest, EscapesLineBreaksAndControlCharactersInAValue) {
   const RuntimeConfigEdit edit = SetRuntimeConfigString(
       "k: v\n", "k", "one\ntwo\tx\xc2\x85y\xe2\x80\xa8z");

@@ -45,6 +45,21 @@ RuntimeConfigEdit SetRuntimeConfigString(std::string_view text,
 RuntimeConfigEdit UnsetRuntimeConfigValue(std::string_view text,
                                           std::string_view key);
 
+struct RuntimeConfigValue {
+  // Whether the file sets `key` to a single value.
+  bool found = false;
+  std::string value;
+  std::string error;
+
+  explicit operator bool() const { return error.empty(); }
+};
+
+// Returns the value `text` gives `key`. A key that is commented out, absent,
+// empty, or a section is not found. `error` is set only when `text` cannot be
+// read.
+RuntimeConfigValue GetRuntimeConfigValue(std::string_view text,
+                                         std::string_view key);
+
 }  // namespace runtime
 }  // namespace mocktail
 
