@@ -1,6 +1,6 @@
 # Modified by vii from komaruworld/mocktail. See README "About this fork".
 .DEFAULT_GOAL := all
-.PHONY: all build release debug test apk install register-url-handler release-runtime portable portable-test standalone appimage flatpak run-flatpak run run-smoke run-unlimited run-game run-input run-resize run-network auto-run run-gles run-angle update-roblox update-auto update-auto-launch payload-status payload-rollback support-bundle clean submodules help
+.PHONY: all build release debug test apk install register-url-handler release-runtime portable portable-test standalone appimage flatpak flatpak-build run-flatpak run run-smoke run-unlimited run-game run-input run-resize run-network auto-run run-gles run-angle update-roblox update-auto update-auto-launch payload-status payload-rollback support-bundle clean submodules help
 
 BUILD_DIR  := build
 BINARY     := $(BUILD_DIR)/mocktail
@@ -87,6 +87,13 @@ appimage: release-runtime ## Build AppImage (APPIMAGE_FORMAT=classic|anylinux)
 
 flatpak: ## Build and install the local x86-64 Flatpak
 	@./scripts/build_flatpak.sh \
+		--build-dir "$(FLATPAK_BUILD_DIR)" \
+		--manifest "$(FLATPAK_MANIFEST)" \
+		--jobs "$(FLATPAK_JOBS)"
+
+flatpak-build: ## Build the local Flatpak without installing it
+	@./scripts/build_flatpak.sh \
+		--no-install \
 		--build-dir "$(FLATPAK_BUILD_DIR)" \
 		--manifest "$(FLATPAK_MANIFEST)" \
 		--jobs "$(FLATPAK_JOBS)"

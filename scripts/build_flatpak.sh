@@ -11,17 +11,20 @@ readonly PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 BUILD_DIR="${PROJECT_ROOT}/build-flatpak"
 MANIFEST="${PROJECT_ROOT}/packaging/flatpak/io.github.CoderDayton.nightcap.json"
 JOBS="${MOCKTAIL_FLATPAK_JOBS:-2}"
+INSTALL=1
 
 Usage() {
   cat <<'EOF'
 Usage: scripts/build_flatpak.sh [OPTIONS]
 
-Build and install Mocktail as a per-user Flatpak for the host architecture.
+Build Mocktail as a Flatpak for the host architecture and install it for the
+current user.
 
 Options:
   --build-dir DIR  Builder output directory (default: build-flatpak).
   --manifest FILE  Flatpak manifest path.
   --jobs N         Maximum parallel build jobs (default: 2).
+  --no-install     Build only. The result stays in the build directory.
   -h, --help       Show this help.
 EOF
 }
@@ -80,6 +83,10 @@ while (( $# > 0 )); do
       JOBS="$2"
       shift 2
       ;;
+    --no-install)
+      INSTALL=0
+      shift
+      ;;
     -h|--help)
       Usage
       exit 0
@@ -124,6 +131,12 @@ fi
 
 CleanupStaleBuilderMounts
 
+# Build dependencies are still installed for the user under --no-install.
+install_args=()
+if (( INSTALL )); then
+  install_args=(--install)
+fi
+
 cd -- "${PROJECT_ROOT}"
 exec "${builder[@]}" \
   --arch="${HOST_ARCH}" \
@@ -131,6 +144,6 @@ exec "${builder[@]}" \
   --force-clean \
   --install-deps-from=flathub \
   --user \
-  --install \
+  "${install_args[@]}" \
   "${BUILD_DIR}" \
   "${MANIFEST}"

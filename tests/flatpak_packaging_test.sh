@@ -193,9 +193,9 @@ cat >"${TEMP_DIR}/bin/flatpak" <<'EOF'
 exit 1
 EOF
 chmod 0755 "${TEMP_DIR}/bin/uname" "${TEMP_DIR}/bin/flatpak"
-# The helper sees only these tools, so a flatpak-builder on the host stays
-# out of its PATH.
-for tool in bash dirname realpath; do
+# The helper runs with only these tools on PATH, so a flatpak-builder
+# installed on the host is never found.
+for tool in bash cat dirname realpath; do
   ln -s -- "$(command -v "${tool}")" "${TEMP_DIR}/bin/${tool}"
 done
 
@@ -208,6 +208,35 @@ set -e
 [[ "${helper_status}" -ne 0 ]] || Fail 'helper accepted a missing builder'
 grep -Fq 'flatpak-builder is unavailable' "${TEMP_DIR}/stderr" ||
   Fail 'helper did not explain how to install flatpak-builder'
+
+cat >"${TEMP_DIR}/bin/flatpak-builder" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@"
+EOF
+chmod 0755 "${TEMP_DIR}/bin/flatpak-builder"
+
+builder_args="$(
+  PATH="${TEMP_DIR}/bin" \
+    "${BUILD_HELPER}" --build-dir "${ROOT}/build-flatpak-test"
+)"
+grep -Fxq -- '--install' <<<"${builder_args}" ||
+  Fail 'helper does not install the Flatpak by default'
+
+builder_args="$(
+  PATH="${TEMP_DIR}/bin" \
+    "${BUILD_HELPER}" --no-install --build-dir "${ROOT}/build-flatpak-test"
+)"
+if grep -Fxq -- '--install' <<<"${builder_args}"; then
+  Fail 'helper installed the Flatpak despite --no-install'
+fi
+grep -Fxq -- '--install-deps-from=flathub' <<<"${builder_args}" ||
+  Fail 'helper lost the build dependencies under --no-install'
+
+dry_run="$(
+  make -C "${ROOT}" --no-print-directory --dry-run flatpak-build | tr -d '"'
+)"
+grep -Fq -- '--no-install' <<<"${dry_run}" ||
+  Fail 'make flatpak-build installs the Flatpak'
 
 mkdir -p -- "${TEMP_DIR}/repo/objects"
 printf 'bundle\n' >"${TEMP_DIR}/Nightcap-x86_64.flatpak"
