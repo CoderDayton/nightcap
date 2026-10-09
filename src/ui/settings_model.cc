@@ -1,14 +1,48 @@
 #include "ui/settings_model.h"
 
+#define JSON_NOEXCEPTION 1
+#include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <nlohmann/json.hpp>
 
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_editor.h"
 #include "runtime/runtime_config_store.h"
+#include "services/client_settings_service.h"
 
 namespace mocktail {
 namespace ui {
+namespace {
+
+// Accepts every value and records where the parser gave up.
+class JsonSyntaxProbe final : public nlohmann::json_sax<nlohmann::json> {
+ public:
+  bool null() override { return true; }
+  bool boolean(bool) override { return true; }
+  bool number_integer(number_integer_t) override { return true; }
+  bool number_unsigned(number_unsigned_t) override { return true; }
+  bool number_float(number_float_t, const string_t&) override { return true; }
+  bool string(string_t&) override { return true; }
+  bool binary(binary_t&) override { return true; }
+  bool start_object(std::size_t) override { return true; }
+  bool key(string_t&) override { return true; }
+  bool end_object() override { return true; }
+  bool start_array(std::size_t) override { return true; }
+  bool end_array() override { return true; }
+  bool parse_error(std::size_t position, const std::string&,
+                   const nlohmann::detail::exception&) override {
+    failed = true;
+    fault = position;
+    return false;
+  }
+
+  bool failed = false;
+  // How many bytes the parser had read when it gave up.
+  std::size_t fault = 0;
+};
+
+}  // namespace
 
 const std::vector<SettingsPage>& SettingsPages() {
   static const std::vector<SettingsPage> pages = {
@@ -243,7 +277,8 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"fflags",
                  "FFlag overrides",
-                 "Edit fflags.json. Invalid JSON is refused.",
+                 "Edit fflags.json. Text that is not valid JSON is not "
+                 "saved.",
                  SettingKind::kEditor,
                  {},
                  "",
@@ -252,10 +287,6 @@ const std::vector<SettingsPage>& SettingsPages() {
        }},
   };
   return pages;
-}
-
-bool IsAvailable(const Setting& setting) {
-  return setting.kind != SettingKind::kEditor;
 }
 
 std::string NumberValue(double number) {
@@ -389,6 +420,77 @@ bool SettingsDocument::Save(std::string edited, std::string edit_error,
     return false;
   }
   text_ = std::move(edited);
+  return true;
+}
+
+std::string JsonSyntaxError(std::string_view text) {
+  JsonSyntaxProbe probe;
+  nlohmann::json::sax_parse(text, &probe, nlohmann::json::input_format_t::json,
+                            true, true);
+  if (!probe.failed) {
+    return {};
+  }
+  // The fault is the last byte read.
+  const std::size_t end =
+      probe.fault == 0 ? 0 : std::min(probe.fault - 1, text.size());
+  std::size_t line = 1;
+  std::size_t column = 1;
+  for (const char character : text.substr(0, end)) {
+    if (character == '\n') {
+      ++line;
+      column = 1;
+    } else {
+      ++column;
+    }
+  }
+  return "Not valid JSON at line " + std::to_string(line) + ", column " +
+         std::to_string(column);
+}
+
+FFlagsDocument::FFlagsDocument(std::filesystem::path file)
+    : file_(std::move(file)) {}
+
+bool FFlagsDocument::Load(std::string* error) {
+  runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(file_);
+  if (!read) {
+    *error = read.error;
+    return false;
+  }
+  disk_ = std::move(read.text);
+  return true;
+}
+
+std::string FFlagsDocument::Text() const {
+  if (disk_.find_first_not_of(" \t\r\n") == std::string::npos) {
+    return "{\n}\n";
+  }
+  return disk_;
+}
+
+bool FFlagsDocument::Save(std::string_view text, std::string* error) {
+  std::string syntax = JsonSyntaxError(text);
+  if (!syntax.empty()) {
+    *error = std::move(syntax);
+    return false;
+  }
+  // Nightcap refuses to start on a file its loader rejects, so the loader
+  // itself checks the text.
+  const runtime::RuntimeConfigSaveResult saved = runtime::SaveCheckedTextFile(
+      file_, disk_, text, [](const std::filesystem::path& candidate) {
+        return services::LoadAndMergeFflagsFile(candidate, "{}").error;
+      });
+  if (!saved) {
+    *error = saved.error;
+    runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(file_);
+    if (read && read.text != disk_) {
+      disk_ = std::move(read.text);
+      *error =
+          "fflags.json changed on disk since it was opened. Save again to "
+          "replace it.";
+    }
+    return false;
+  }
+  disk_ = std::string(text);
   return true;
 }
 

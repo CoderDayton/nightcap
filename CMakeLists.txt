@@ -375,11 +375,17 @@ add_library(mocktail_settings_model STATIC
 )
 add_library(Mocktail::SettingsModel ALIAS mocktail_settings_model)
 target_include_directories(mocktail_settings_model PUBLIC include)
-target_link_libraries(mocktail_settings_model PUBLIC Mocktail::Runtime)
+target_link_libraries(mocktail_settings_model PUBLIC
+  Mocktail::Runtime
+  mocktail_services
+)
 mocktail_apply_compile_options(mocktail_settings_model)
 
 add_executable(mocktail_settings
   src/ui/mocktail_settings.cc
+)
+target_include_directories(mocktail_settings PRIVATE
+  ${MOCKTAIL_PLATFORM_GENERATED_INCLUDE_DIR}
 )
 target_link_libraries(mocktail_settings PRIVATE
   Mocktail::SettingsModel

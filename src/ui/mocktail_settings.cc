@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "mocktail/platform/sdl_window_icon_data.h"
 #include "runtime/environment.h"
 #include "runtime/runtime_paths.h"
 #include "ui/settings_model.h"
@@ -12,6 +13,7 @@
 namespace {
 
 using mocktail::ui::ChoiceIndex;
+using mocktail::ui::FFlagsDocument;
 using mocktail::ui::FrameRate;
 using mocktail::ui::FrameRateMode;
 using mocktail::ui::kNoChoice;
@@ -40,10 +42,13 @@ struct Row {
 };
 
 struct SettingsWindow {
-  explicit SettingsWindow(std::filesystem::path config_file)
-      : document(std::move(config_file)) {}
+  SettingsWindow(std::filesystem::path config_file,
+                 std::filesystem::path fflags_file)
+      : document(std::move(config_file)), fflags(std::move(fflags_file)) {}
 
   SettingsDocument document;
+  FFlagsDocument fflags;
+  GtkWidget* widget = nullptr;
   std::deque<Row> rows;
   AdwNavigationSplitView* split = nullptr;
   AdwNavigationPage* content_page = nullptr;
@@ -128,15 +133,19 @@ void RefreshRows(SettingsWindow* window) {
   window->refreshing = false;
 }
 
+void ShowError(SettingsWindow* window, const std::string& error) {
+  AdwToast* toast = adw_toast_new(error.c_str());
+  adw_toast_set_use_markup(toast, FALSE);
+  adw_toast_set_timeout(toast, 0);
+  adw_toast_overlay_add_toast(window->toasts, toast);
+}
+
 // Shows how a save went, then shows every row as the file now has it.
 void ShowSaved(SettingsWindow* window, bool saved, const std::string& error) {
   if (saved) {
     gtk_revealer_set_reveal_child(window->notice, TRUE);
   } else {
-    AdwToast* toast = adw_toast_new(error.c_str());
-    adw_toast_set_use_markup(toast, FALSE);
-    adw_toast_set_timeout(toast, 0);
-    adw_toast_overlay_add_toast(window->toasts, toast);
+    ShowError(window, error);
   }
   // On failure the rows go back to what the file holds.
   RefreshRows(window);
@@ -198,6 +207,90 @@ void OnFrameRateChanged(GObject*, GParamSpec*, gpointer user_data) {
   rate.custom =
       static_cast<int>(adw_spin_row_get_value(ADW_SPIN_ROW(row->custom)));
   Apply(row, mocktail::ui::FrameRateValue(rate));
+}
+
+// The dialog that edits fflags.json as text.
+struct FFlagsEditor {
+  SettingsWindow* window = nullptr;
+  AdwDialog* dialog = nullptr;
+  GtkTextBuffer* buffer = nullptr;
+  AdwBanner* problem = nullptr;
+};
+
+void OnFFlagsCancel(GtkButton*, gpointer user_data) {
+  adw_dialog_close(static_cast<FFlagsEditor*>(user_data)->dialog);
+}
+
+void OnFFlagsSave(GtkButton*, gpointer user_data) {
+  auto* editor = static_cast<FFlagsEditor*>(user_data);
+  GtkTextIter start;
+  GtkTextIter end;
+  gtk_text_buffer_get_bounds(editor->buffer, &start, &end);
+  char* text = gtk_text_buffer_get_text(editor->buffer, &start, &end, FALSE);
+  std::string error;
+  const bool saved = editor->window->fflags.Save(text, &error);
+  g_free(text);
+  if (!saved) {
+    // The dialog stays open with the text, so nothing typed is lost.
+    adw_banner_set_title(editor->problem, error.c_str());
+    adw_banner_set_revealed(editor->problem, TRUE);
+    return;
+  }
+  gtk_revealer_set_reveal_child(editor->window->notice, TRUE);
+  adw_dialog_close(editor->dialog);
+}
+
+void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  std::string error;
+  if (!window->fflags.Load(&error)) {
+    ShowError(window, error);
+    return;
+  }
+
+  auto* editor = new FFlagsEditor;
+  editor->window = window;
+  editor->dialog = adw_dialog_new();
+  adw_dialog_set_title(editor->dialog, "FFlag overrides");
+  adw_dialog_set_content_width(editor->dialog, 640);
+  adw_dialog_set_content_height(editor->dialog, 520);
+  g_object_set_data_full(
+      G_OBJECT(editor->dialog), "editor", editor,
+      [](gpointer data) { delete static_cast<FFlagsEditor*>(data); });
+
+  GtkWidget* cancel = gtk_button_new_with_label("Cancel");
+  GtkWidget* save = gtk_button_new_with_label("Save");
+  gtk_widget_add_css_class(save, "suggested-action");
+  g_signal_connect(cancel, "clicked", G_CALLBACK(OnFFlagsCancel), editor);
+  g_signal_connect(save, "clicked", G_CALLBACK(OnFFlagsSave), editor);
+  GtkWidget* header = adw_header_bar_new();
+  adw_header_bar_set_show_start_title_buttons(ADW_HEADER_BAR(header), FALSE);
+  adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(header), FALSE);
+  adw_header_bar_pack_start(ADW_HEADER_BAR(header), cancel);
+  adw_header_bar_pack_end(ADW_HEADER_BAR(header), save);
+
+  GtkWidget* problem = adw_banner_new("");
+  editor->problem = ADW_BANNER(problem);
+  adw_banner_set_use_markup(editor->problem, FALSE);
+
+  GtkWidget* view = gtk_text_view_new();
+  gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+  gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view), 12);
+  gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(view), 12);
+  gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 12);
+  gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 12);
+  editor->buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+  gtk_text_buffer_set_text(editor->buffer, window->fflags.Text().c_str(), -1);
+  GtkWidget* scrolled = gtk_scrolled_window_new();
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), view);
+
+  GtkWidget* toolbar = adw_toolbar_view_new();
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), problem);
+  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), scrolled);
+  adw_dialog_set_child(editor->dialog, toolbar);
+  adw_dialog_present(editor->dialog, window->widget);
+  gtk_widget_grab_focus(view);
 }
 
 void SetRowText(GtkWidget* widget, std::string_view title,
@@ -262,11 +355,11 @@ void AddRow(SettingsWindow* window, AdwPreferencesGroup* group,
       adw_action_row_add_suffix(
           ADW_ACTION_ROW(row.widget),
           gtk_image_new_from_icon_name("go-next-symbolic"));
+      gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row.widget), TRUE);
+      g_signal_connect(row.widget, "activated",
+                       G_CALLBACK(OnFFlagsActivated), window);
       break;
   }
-  // A setting with no working control yet shows the file's value, grayed
-  // out.
-  gtk_widget_set_sensitive(row.widget, mocktail::ui::IsAvailable(setting));
   SetRowText(row.widget, setting.title, setting.subtitle);
   adw_preferences_group_add(group, row.widget);
   if (row.custom != nullptr) {
@@ -316,6 +409,27 @@ void OnPageActivated(GtkListBox*, GtkListBoxRow*, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->split, TRUE);
 }
 
+// The Nightcap artwork beside the name. The artwork is built in, so it shows
+// whether or not the icon theme has Nightcap's icon installed.
+GtkWidget* BuildSidebarTitle() {
+  // The artwork has clear space around it, so the gap to the name is small.
+  GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+  GBytes* bytes = g_bytes_new_static(
+      mocktail::platform::internal::kMocktailWindowIconPng,
+      mocktail::platform::internal::kMocktailWindowIconPngSize);
+  if (GdkTexture* texture = gdk_texture_new_from_bytes(bytes, nullptr)) {
+    GtkWidget* image = gtk_image_new_from_paintable(GDK_PAINTABLE(texture));
+    gtk_image_set_pixel_size(GTK_IMAGE(image), 24);
+    gtk_box_append(GTK_BOX(box), image);
+    g_object_unref(texture);
+  }
+  g_bytes_unref(bytes);
+  GtkWidget* label = gtk_label_new("Nightcap");
+  gtk_widget_add_css_class(label, "title");
+  gtk_box_append(GTK_BOX(box), label);
+  return box;
+}
+
 GtkWidget* BuildSidebar(SettingsWindow* window) {
   GtkWidget* list = gtk_list_box_new();
   gtk_widget_add_css_class(list, "navigation-sidebar");
@@ -340,9 +454,14 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), list);
 
+  // The artwork and name sit at the left, in line with the rows below.
+  GtkWidget* header = adw_header_bar_new();
+  adw_header_bar_set_show_title(ADW_HEADER_BAR(header), FALSE);
+  GtkWidget* title = BuildSidebarTitle();
+  gtk_widget_set_margin_start(title, 4);
+  adw_header_bar_pack_start(ADW_HEADER_BAR(header), title);
   GtkWidget* toolbar = adw_toolbar_view_new();
-  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar),
-                               adw_header_bar_new());
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
   adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), scrolled);
   gtk_list_box_select_row(
       GTK_LIST_BOX(list),
@@ -459,6 +578,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   }
 
   GtkWidget* window_widget = adw_application_window_new(application);
+  window->widget = window_widget;
   gtk_window_set_title(GTK_WINDOW(window_widget), "Nightcap Settings");
   gtk_window_set_default_size(GTK_WINDOW(window_widget), 860, 620);
   gtk_widget_set_size_request(window_widget, 360, 420);
@@ -489,7 +609,8 @@ int main(int argc, char* argv[]) {
   const mocktail::runtime::RuntimePaths paths =
       mocktail::runtime::RuntimePaths::FromEnvironment(
           mocktail::runtime::ProcessEnvironment());
-  SettingsWindow window(paths.config_file());
+  SettingsWindow window(paths.config_file(),
+                        paths.config_root() / "fflags.json");
 
   // The application ID matches the desktop entry so the window gets
   // Nightcap's icon. Nightcap itself does not own the name on the session

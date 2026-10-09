@@ -20,8 +20,7 @@ enum class SettingKind {
   kFrameRate,
   kNumber,
   kText,
-  // The window lists this so the setting has its place, and shows it grayed
-  // out: it has no control that edits it yet.
+  // A row that opens the editor for fflags.json.
   kEditor,
 };
 
@@ -59,10 +58,6 @@ struct SettingsPage {
 };
 
 const std::vector<SettingsPage>& SettingsPages();
-
-// Whether the window can change `setting`. One it cannot change is shown
-// grayed out with the file's value.
-bool IsAvailable(const Setting& setting);
 
 inline constexpr std::size_t kNoChoice = static_cast<std::size_t>(-1);
 
@@ -128,6 +123,36 @@ class SettingsDocument {
 
   std::filesystem::path config_file_;
   std::string text_;
+};
+
+// Why `text` is not JSON, with the line and column of the fault. Empty when
+// it is JSON. Comments are allowed, as they are in fflags.json.
+std::string JsonSyntaxError(std::string_view text);
+
+// fflags.json as the window edits it: the whole file as one text.
+class FFlagsDocument {
+ public:
+  explicit FFlagsDocument(std::filesystem::path file);
+
+  // Reads the file. Having no file is not an error.
+  bool Load(std::string* error);
+
+  // What the editor starts with: the file's text, or an empty JSON object
+  // when there is no file or it is empty.
+  std::string Text() const;
+
+  // Saves `text` as the file. Text that is not JSON, or that Nightcap would
+  // refuse to start with, is not saved. When the file changed on disk since
+  // it was read, nothing is saved, the error says so, and saving again
+  // replaces the file.
+  bool Save(std::string_view text, std::string* error);
+
+  const std::filesystem::path& file() const { return file_; }
+
+ private:
+  std::filesystem::path file_;
+  // The file's text as last read or saved. Empty when there is no file.
+  std::string disk_;
 };
 
 }  // namespace ui

@@ -13,6 +13,7 @@
 
 #include "runtime/environment.h"
 #include "runtime/runtime_config_file.h"
+#include "services/client_settings_service.h"
 
 namespace mocktail {
 namespace ui {
@@ -70,6 +71,18 @@ class SettingsModelTest : public testing::Test {
     return runtime::LoadRuntimeConfig(EmptyEnvironment(), file_);
   }
 
+  // fflags.json beside config.yaml, in a folder that exists.
+  std::filesystem::path FFlagsFile() {
+    std::filesystem::create_directories(file_.parent_path());
+    return file_.parent_path() / "fflags.json";
+  }
+
+  std::string ReadFFlags() {
+    std::ostringstream contents;
+    contents << std::ifstream(FFlagsFile(), std::ios::binary).rdbuf();
+    return contents.str();
+  }
+
   std::filesystem::path directory_;
   std::filesystem::path file_;
 };
@@ -104,16 +117,6 @@ TEST_F(SettingsModelTest, PagesOfOneSectionAreNextToEachOther) {
   }
 }
 
-TEST_F(SettingsModelTest, OnlySettingsWithAControlAreAvailable) {
-  EXPECT_TRUE(IsAvailable(Find("graphics.backend")));
-  EXPECT_TRUE(IsAvailable(Find("graphics.frame_rate_limit")));
-  EXPECT_TRUE(IsAvailable(Find("integrations.discord_rpc.enabled")));
-  EXPECT_TRUE(IsAvailable(Find("performance.memory_limit_mb")));
-  EXPECT_TRUE(IsAvailable(Find("audio.output_device")));
-  EXPECT_TRUE(IsAvailable(Find("integrations.discord_rpc.text.title")));
-  EXPECT_FALSE(IsAvailable(Find("fflags")));
-}
-
 TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
   SettingsDocument document(file_);
   std::string error;
@@ -122,7 +125,7 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
   for (const SettingsPage& page : SettingsPages()) {
     for (const SettingsGroup& group : page.groups) {
       for (const Setting& setting : group.settings) {
-        if (!IsAvailable(setting)) {
+        if (setting.kind == SettingKind::kEditor) {
           continue;
         }
         if (setting.kind == SettingKind::kText) {
@@ -284,6 +287,79 @@ TEST_F(SettingsModelTest, AHandEditMadeMeanwhileIsKeptAndShown) {
   // The document now holds the hand edit, so the next change goes through.
   ASSERT_TRUE(document.Set("graphics.vsync", "on", &error)) << error;
   EXPECT_EQ(Read(), "graphics:\n  backend: angle-vulkan\n  vsync: on\n");
+}
+
+TEST_F(SettingsModelTest, FFlagsStartAsAnEmptyObjectWhenThereIsNoFile) {
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Text(), "{\n}\n");
+  EXPECT_FALSE(std::filesystem::exists(FFlagsFile()));
+}
+
+TEST_F(SettingsModelTest, SavedFFlagsAreWhatNightcapLoads) {
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  const std::string text =
+      "{\n  // keep the frame rate open\n  \"DFIntTaskSchedulerTargetFps\": 240,\n"
+      "  \"FFlagDebugSkyGray\": true\n}\n";
+  ASSERT_TRUE(document.Save(text, &error)) << error;
+  EXPECT_EQ(ReadFFlags(), text);
+  EXPECT_EQ(document.Text(), text);
+
+  const services::FflagsMergeResult loaded =
+      services::LoadAndMergeFflagsFile(FFlagsFile(), "{}");
+  ASSERT_TRUE(loaded.error.empty()) << loaded.error;
+  EXPECT_EQ(loaded.count, 2u);
+
+  // A second save starts from what the first one wrote.
+  ASSERT_TRUE(document.Save("{}\n", &error)) << error;
+  EXPECT_EQ(ReadFFlags(), "{}\n");
+}
+
+TEST_F(SettingsModelTest, BrokenFFlagsAreRefusedWithTheLineAndColumn) {
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Save("{}\n", &error)) << error;
+
+  EXPECT_FALSE(document.Save("{\n  \"a\": 1,\n  \"b\" 2\n}\n", &error));
+  EXPECT_NE(error.find("line 3"), std::string::npos) << error;
+  EXPECT_NE(error.find("column 7"), std::string::npos) << error;
+  EXPECT_EQ(ReadFFlags(), "{}\n");
+
+  EXPECT_FALSE(document.Save("", &error));
+  EXPECT_EQ(ReadFFlags(), "{}\n");
+}
+
+TEST_F(SettingsModelTest, FFlagsNightcapWouldRejectAreRefused) {
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  for (const std::string_view text :
+       {"[1, 2]\n", "{\"a\": {\"nested\": 1}}\n", "{\"a\": 1.5}\n",
+        "{\"\": 1}\n", "{\"a\": null}\n"}) {
+    error.clear();
+    EXPECT_FALSE(document.Save(text, &error)) << text;
+    EXPECT_FALSE(error.empty()) << text;
+    EXPECT_FALSE(std::filesystem::exists(FFlagsFile())) << text;
+  }
+}
+
+TEST_F(SettingsModelTest, FFlagsEditedByHandMeanwhileNeedASecondSave) {
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Save("{}\n", &error)) << error;
+
+  std::ofstream(FFlagsFile(), std::ios::binary) << "{\"by_hand\": 1}\n";
+  EXPECT_FALSE(document.Save("{\"mine\": 2}\n", &error));
+  EXPECT_NE(error.find("Save again"), std::string::npos) << error;
+  EXPECT_EQ(ReadFFlags(), "{\"by_hand\": 1}\n");
+
+  ASSERT_TRUE(document.Save("{\"mine\": 2}\n", &error)) << error;
+  EXPECT_EQ(ReadFFlags(), "{\"mine\": 2}\n");
 }
 
 TEST_F(SettingsModelTest, ChoiceIndexMapsDefaultsAndOtherSpellings) {

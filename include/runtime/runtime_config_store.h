@@ -2,6 +2,7 @@
 #define MOCKTAIL_RUNTIME_RUNTIME_CONFIG_STORE_H_
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -37,6 +38,23 @@ RuntimeConfigText ReadRuntimeConfigText(
 RuntimeConfigSaveResult SaveRuntimeConfigText(
     const std::filesystem::path& config_file, std::string_view original,
     std::string_view text);
+
+// Reads a text file that may not exist. A missing file reads as empty text.
+// A symlink or anything that is not a regular file is refused.
+RuntimeConfigText ReadOptionalTextFile(const std::filesystem::path& file);
+
+// Given the path of a file holding the text about to be saved, returns why it
+// must not be saved, or an empty string.
+using TextFileCheck =
+    std::function<std::string(const std::filesystem::path&)>;
+
+// SaveRuntimeConfigText for another text file, with `check` in place of the
+// configuration loader. A missing file counts as holding empty text, and the
+// save creates it. Its directory must exist.
+RuntimeConfigSaveResult SaveCheckedTextFile(const std::filesystem::path& file,
+                                            std::string_view original,
+                                            std::string_view text,
+                                            const TextFileCheck& check);
 
 }  // namespace runtime
 }  // namespace mocktail

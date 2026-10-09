@@ -50,14 +50,19 @@ bool WriteAll(int file, std::string_view contents) {
   return true;
 }
 
-}  // namespace
-
-RuntimeConfigText ReadRuntimeConfigText(
-    const std::filesystem::path& config_file) {
+// Reads `path` as text. When `missing` is not null, a file that does not
+// exist reads as empty text and sets it.
+RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing) {
   RuntimeConfigText result;
-  const int file =
-      open(config_file.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (missing != nullptr) {
+    *missing = false;
+  }
+  const int file = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (file < 0) {
+    if (errno == ENOENT && missing != nullptr) {
+      *missing = true;
+      return result;
+    }
     result.error = errno == ELOOP
                        ? "refusing symlink runtime configuration"
                        : ErrorMessage("cannot open configuration", errno);
@@ -89,15 +94,19 @@ RuntimeConfigText ReadRuntimeConfigText(
   return result;
 }
 
-RuntimeConfigSaveResult SaveRuntimeConfigText(
-    const std::filesystem::path& config_file, std::string_view original,
-    std::string_view text) {
+// Publishes `text` as `config_file` once `check` accepts it. `may_be_missing`
+// lets the save create the file.
+RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
+                             std::string_view original, std::string_view text,
+                             bool may_be_missing, const TextFileCheck& check) {
   RuntimeConfigSaveResult result;
   if (config_file.empty() || config_file.filename().empty()) {
     result.error = "configuration path must name a file";
     return result;
   }
-  const RuntimeConfigText current = ReadRuntimeConfigText(config_file);
+  bool missing = false;
+  const RuntimeConfigText current =
+      ReadText(config_file, may_be_missing ? &missing : nullptr);
   if (!current) {
     result.error = current.error;
     return result;
@@ -139,10 +148,8 @@ RuntimeConfigSaveResult SaveRuntimeConfigText(
   }
 
   // The bytes that would be published are the bytes that get checked.
-  const RuntimeConfigLoadResult loaded =
-      LoadRuntimeConfig(NoEnvironment(), temporary_path.data());
-  if (!loaded) {
-    result.error = loaded.error;
+  result.error = check(temporary_path.data());
+  if (!result.error.empty()) {
     discard_temporary();
     return result;
   }
@@ -161,6 +168,34 @@ RuntimeConfigSaveResult SaveRuntimeConfigText(
     (void)close(directory);
   }
   return result;
+}
+
+}  // namespace
+
+RuntimeConfigText ReadRuntimeConfigText(
+    const std::filesystem::path& config_file) {
+  return ReadText(config_file, nullptr);
+}
+
+RuntimeConfigSaveResult SaveRuntimeConfigText(
+    const std::filesystem::path& config_file, std::string_view original,
+    std::string_view text) {
+  return Save(config_file, original, text, false,
+              [](const std::filesystem::path& candidate) {
+                return LoadRuntimeConfig(NoEnvironment(), candidate).error;
+              });
+}
+
+RuntimeConfigText ReadOptionalTextFile(const std::filesystem::path& file) {
+  bool missing = false;
+  return ReadText(file, &missing);
+}
+
+RuntimeConfigSaveResult SaveCheckedTextFile(const std::filesystem::path& file,
+                                            std::string_view original,
+                                            std::string_view text,
+                                            const TextFileCheck& check) {
+  return Save(file, original, text, true, check);
 }
 
 }  // namespace runtime

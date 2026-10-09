@@ -180,6 +180,65 @@ TEST_F(RuntimeConfigStoreTest, AnEditedFirstRunFileSavesAndReadsBack) {
   EXPECT_EQ(Mode(file_), 0600u);
 }
 
+std::string AcceptAnything(const std::filesystem::path&) { return {}; }
+
+TEST_F(RuntimeConfigStoreTest, AnOptionalFileThatIsMissingReadsAsEmpty) {
+  const std::filesystem::path extra = directory_ / "extra.json";
+  const RuntimeConfigText read = ReadOptionalTextFile(extra);
+  ASSERT_TRUE(read) << read.error;
+  EXPECT_EQ(read.text, "");
+
+  Write(extra, "{}\n");
+  EXPECT_EQ(ReadOptionalTextFile(extra).text, "{}\n");
+}
+
+TEST_F(RuntimeConfigStoreTest, ACheckedSaveCreatesAMissingFile) {
+  const std::filesystem::path extra = directory_ / "extra.json";
+  std::string checked;
+  const RuntimeConfigSaveResult saved = SaveCheckedTextFile(
+      extra, "", "{\"a\": 1}\n", [&](const std::filesystem::path& candidate) {
+        checked = Read(candidate);
+        return std::string();
+      });
+  ASSERT_TRUE(saved) << saved.error;
+  // The check saw the bytes that were then published.
+  EXPECT_EQ(checked, "{\"a\": 1}\n");
+  EXPECT_EQ(Read(extra), "{\"a\": 1}\n");
+  EXPECT_EQ(Mode(extra), 0600u);
+  EXPECT_EQ(EntryCount(), 1u);
+}
+
+TEST_F(RuntimeConfigStoreTest, ACheckedSaveThatFailsItsCheckChangesNothing) {
+  const std::filesystem::path extra = directory_ / "extra.json";
+  Write(extra, "{}\n");
+  const RuntimeConfigSaveResult saved = SaveCheckedTextFile(
+      extra, "{}\n", "nonsense",
+      [](const std::filesystem::path&) { return std::string("no good"); });
+  EXPECT_FALSE(saved);
+  EXPECT_EQ(saved.error, "no good");
+  EXPECT_EQ(Read(extra), "{}\n");
+  EXPECT_EQ(EntryCount(), 1u);
+}
+
+TEST_F(RuntimeConfigStoreTest, ACheckedSaveRefusesAFileThatAppearedOrChanged) {
+  const std::filesystem::path extra = directory_ / "extra.json";
+  Write(extra, "{\"by_hand\": 1}\n");
+  EXPECT_FALSE(SaveCheckedTextFile(extra, "", "{}\n", AcceptAnything));
+  EXPECT_FALSE(SaveCheckedTextFile(extra, "{}\n", "{}\n", AcceptAnything));
+  EXPECT_EQ(Read(extra), "{\"by_hand\": 1}\n");
+}
+
+TEST_F(RuntimeConfigStoreTest, ACheckedSaveRefusesASymlink) {
+  const std::filesystem::path target = directory_ / "target.json";
+  const std::filesystem::path extra = directory_ / "extra.json";
+  Write(target, "{}\n");
+  std::filesystem::create_symlink(target, extra);
+  EXPECT_FALSE(SaveCheckedTextFile(extra, "{}\n", "{\"a\": 1}\n",
+                                   AcceptAnything));
+  EXPECT_FALSE(ReadOptionalTextFile(extra));
+  EXPECT_EQ(Read(target), "{}\n");
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail
