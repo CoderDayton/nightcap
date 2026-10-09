@@ -51,6 +51,12 @@ if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
   set_tests_properties(FleasionIntegrationTest.ProxyAndTrust PROPERTIES TIMEOUT 45)
 endif()
 
+add_executable(runtime_config_store_test runtime_config_store_test.cc)
+target_link_libraries(runtime_config_store_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(runtime_config_editor_test runtime_config_editor_test.cc)
 target_link_libraries(runtime_config_editor_test PRIVATE
   Mocktail::Runtime
@@ -1050,6 +1056,7 @@ gtest_discover_tests(jnivm_fields_test)
 gtest_discover_tests(jnivm_fmod_write_allocation_test)
 gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_editor_test)
+gtest_discover_tests(runtime_config_store_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
