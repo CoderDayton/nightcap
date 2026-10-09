@@ -108,8 +108,9 @@ TEST_F(SettingsModelTest, OnlySettingsWithAControlAreAvailable) {
   EXPECT_TRUE(IsAvailable(Find("graphics.backend")));
   EXPECT_TRUE(IsAvailable(Find("graphics.frame_rate_limit")));
   EXPECT_TRUE(IsAvailable(Find("integrations.discord_rpc.enabled")));
-  EXPECT_FALSE(IsAvailable(Find("performance.memory_limit_mb")));
-  EXPECT_FALSE(IsAvailable(Find("audio.output_device")));
+  EXPECT_TRUE(IsAvailable(Find("performance.memory_limit_mb")));
+  EXPECT_TRUE(IsAvailable(Find("audio.output_device")));
+  EXPECT_TRUE(IsAvailable(Find("integrations.discord_rpc.text.title")));
   EXPECT_FALSE(IsAvailable(Find("fflags")));
 }
 
@@ -124,8 +125,23 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
         if (!IsAvailable(setting)) {
           continue;
         }
+        if (setting.kind == SettingKind::kText) {
+          for (const std::string value :
+               {std::string("Custom: {place_name} #1"),
+                std::string(setting.default_value)}) {
+            ASSERT_TRUE(document.SetText(setting.key, value, &error))
+                << setting.key << " = " << value << ": " << error;
+            EXPECT_EQ(document.Value(setting.key), value) << setting.key;
+            const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+            ASSERT_TRUE(loaded) << setting.key << " = " << value << ": "
+                                << loaded.error;
+          }
+          continue;
+        }
         std::vector<std::string> values;
-        if (setting.kind == SettingKind::kToggle) {
+        if (setting.kind == SettingKind::kNumber) {
+          values = {NumberValue(4096), NumberValue(0)};
+        } else if (setting.kind == SettingKind::kToggle) {
           values = {"true", "false"};
         } else if (setting.kind == SettingKind::kFrameRate) {
           for (const FrameRateMode mode :
@@ -159,9 +175,16 @@ TEST_F(SettingsModelTest, SavedValuesReachTheLoadedConfig) {
   ASSERT_TRUE(document.Set("graphics.vsync", "on", &error)) << error;
   ASSERT_TRUE(document.Set("window.high_dpi", "true", &error)) << error;
   ASSERT_TRUE(document.Set("input.raw_mouse", "true", &error)) << error;
+  ASSERT_TRUE(document.SetText("audio.output_device", "USB Headset", &error))
+      << error;
+  ASSERT_TRUE(document.SetText("integrations.discord_rpc.join.button_label",
+                               "Hop in", &error))
+      << error;
 
   const runtime::RuntimeConfigLoadResult loaded = LoadFile();
   ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.audio_output_device(), "USB Headset");
+  EXPECT_EQ(loaded.config.discord_rpc().join_button_label, "Hop in");
   EXPECT_EQ(loaded.config.graphics_backend_name(), "opengl");
   EXPECT_EQ(loaded.config.vsync_mode(), "on");
   EXPECT_TRUE(loaded.config.window().high_dpi);
@@ -205,6 +228,46 @@ TEST_F(SettingsModelTest, AValueTheLoaderRejectsIsNotSaved) {
   EXPECT_FALSE(error.empty());
   EXPECT_EQ(document.Value("graphics.backend"), "opengl");
   EXPECT_EQ(Read(), "graphics:\n  backend: opengl\n");
+}
+
+TEST_F(SettingsModelTest, ATextCanBeClearedAndPutBackToItsDefault) {
+  const std::string_view key = "integrations.discord_rpc.text.state";
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(document.IsSet(key));
+
+  ASSERT_TRUE(document.SetText(key, "", &error)) << error;
+  EXPECT_TRUE(document.IsSet(key));
+  EXPECT_EQ(document.Value(key), "");
+  runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.discord_rpc().text.state, "");
+
+  ASSERT_TRUE(document.Set(key, "", &error)) << error;
+  EXPECT_FALSE(document.IsSet(key));
+  loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.discord_rpc().text.state, "by {creator_name}");
+}
+
+TEST_F(SettingsModelTest, ATextThatMustNotBeEmptyIsNotSavedEmpty) {
+  const std::string_view key = "integrations.discord_rpc.text.playing";
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  const std::string before = Read();
+  EXPECT_FALSE(document.SetText(key, "", &error));
+  EXPECT_FALSE(error.empty());
+  EXPECT_EQ(Read(), before);
+  EXPECT_FALSE(document.IsSet(key));
+}
+
+TEST_F(SettingsModelTest, NumberValueIsAWholeNumberThatIsNotNegative) {
+  EXPECT_EQ(NumberValue(0), "0");
+  EXPECT_EQ(NumberValue(4096), "4096");
+  EXPECT_EQ(NumberValue(4095.6), "4096");
+  EXPECT_EQ(NumberValue(-3), "0");
 }
 
 TEST_F(SettingsModelTest, AHandEditMadeMeanwhileIsKeptAndShown) {

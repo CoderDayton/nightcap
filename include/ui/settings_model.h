@@ -18,10 +18,10 @@ enum class SettingKind {
   kChoice,
   kToggle,
   kFrameRate,
-  // The window lists these so every setting has its place, and shows them
-  // grayed out: it has no control that edits them yet.
   kNumber,
   kText,
+  // The window lists this so the setting has its place, and shows it grayed
+  // out: it has no control that edits it yet.
   kEditor,
 };
 
@@ -89,6 +89,9 @@ struct FrameRate {
 inline constexpr int kDefaultCustomFrameRate = 120;
 inline constexpr int kMaximumCustomFrameRate = 9999;
 
+// The file's value for what a number row holds.
+std::string NumberValue(double number);
+
 // Reads graphics.frame_rate_limit. Empty, "-1", and anything that is not a
 // limit mean Roblox's own setting decides.
 FrameRate ParseFrameRate(std::string_view value);
@@ -106,14 +109,23 @@ class SettingsDocument {
   // The file's value for `key`, or empty when it is not set.
   std::string Value(std::string_view key) const;
 
+  // Whether the file sets `key`. A key can be set to an empty text.
+  bool IsSet(std::string_view key) const;
+
   // Sets `key` and saves. An empty `value` unsets the key. On failure nothing
   // is saved, and the document holds whatever is on disk now, so the window
   // must show its rows again.
   bool Set(std::string_view key, std::string_view value, std::string* error);
 
+  // Like Set, but an empty `value` is saved as an empty text.
+  bool SetText(std::string_view key, std::string_view value,
+               std::string* error);
+
   const std::filesystem::path& config_file() const { return config_file_; }
 
  private:
+  bool Save(std::string edited, std::string edit_error, std::string* error);
+
   std::filesystem::path config_file_;
   std::string text_;
 };

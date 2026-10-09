@@ -31,6 +31,9 @@ struct Row {
   GtkWidget* widget = nullptr;
   // The custom frames-per-second row. Only a kFrameRate row has one.
   GtkWidget* custom = nullptr;
+  // The button that puts a text back to its default. Only a kText row has
+  // one.
+  GtkWidget* reset = nullptr;
   // A value the file holds that the row does not list. It is shown as one
   // more choice so opening the window never changes it.
   std::string unlisted;
@@ -102,11 +105,16 @@ void RefreshRow(Row* row) {
               Text(value.empty() ? setting.default_value : value).c_str(),
               nullptr));
       break;
-    case SettingKind::kText:
-      gtk_editable_set_text(
-          GTK_EDITABLE(row->widget),
-          Text(value.empty() ? setting.default_value : value).c_str());
+    case SettingKind::kText: {
+      const bool is_set = row->window->document.IsSet(setting.key);
+      const std::string text = is_set ? value : Text(setting.default_value);
+      // Setting the same text again would mark the field as edited.
+      if (text != gtk_editable_get_text(GTK_EDITABLE(row->widget))) {
+        gtk_editable_set_text(GTK_EDITABLE(row->widget), text.c_str());
+      }
+      gtk_widget_set_sensitive(row->reset, is_set);
       break;
+    }
     case SettingKind::kEditor:
       break;
   }
@@ -120,13 +128,9 @@ void RefreshRows(SettingsWindow* window) {
   window->refreshing = false;
 }
 
-void Apply(Row* row, const std::string& value) {
-  SettingsWindow* window = row->window;
-  if (window->refreshing) {
-    return;
-  }
-  std::string error;
-  if (window->document.Set(row->setting->key, value, &error)) {
+// Shows how a save went, then shows every row as the file now has it.
+void ShowSaved(SettingsWindow* window, bool saved, const std::string& error) {
+  if (saved) {
     gtk_revealer_set_reveal_child(window->notice, TRUE);
   } else {
     AdwToast* toast = adw_toast_new(error.c_str());
@@ -136,6 +140,36 @@ void Apply(Row* row, const std::string& value) {
   }
   // On failure the rows go back to what the file holds.
   RefreshRows(window);
+}
+
+void Apply(Row* row, const std::string& value) {
+  SettingsWindow* window = row->window;
+  if (window->refreshing) {
+    return;
+  }
+  std::string error;
+  const bool saved = window->document.Set(row->setting->key, value, &error);
+  ShowSaved(window, saved, error);
+}
+
+void OnNumberChanged(GObject* object, GParamSpec*, gpointer user_data) {
+  Apply(static_cast<Row*>(user_data),
+        mocktail::ui::NumberValue(
+            adw_spin_row_get_value(ADW_SPIN_ROW(object))));
+}
+
+void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  std::string error;
+  const bool saved = window->document.SetText(
+      row->setting->key, gtk_editable_get_text(GTK_EDITABLE(entry)), &error);
+  ShowSaved(window, saved, error);
+}
+
+void OnTextReset(GtkButton*, gpointer user_data) {
+  // An empty value unsets the key, which brings the default back.
+  Apply(static_cast<Row*>(user_data), std::string());
 }
 
 void OnToggleChanged(GObject* object, GParamSpec*, gpointer user_data) {
@@ -209,9 +243,19 @@ void AddRow(SettingsWindow* window, AdwPreferencesGroup* group,
       break;
     case SettingKind::kNumber:
       row.widget = adw_spin_row_new_with_range(0, 1048576, 256);
+      g_signal_connect(row.widget, "notify::value",
+                       G_CALLBACK(OnNumberChanged), &row);
       break;
     case SettingKind::kText:
       row.widget = adw_entry_row_new();
+      adw_entry_row_set_show_apply_button(ADW_ENTRY_ROW(row.widget), TRUE);
+      row.reset = gtk_button_new_from_icon_name("edit-undo-symbolic");
+      gtk_widget_set_tooltip_text(row.reset, "Reset to default");
+      gtk_widget_set_valign(row.reset, GTK_ALIGN_CENTER);
+      gtk_widget_add_css_class(row.reset, "flat");
+      adw_entry_row_add_suffix(ADW_ENTRY_ROW(row.widget), row.reset);
+      g_signal_connect(row.widget, "apply", G_CALLBACK(OnTextApplied), &row);
+      g_signal_connect(row.reset, "clicked", G_CALLBACK(OnTextReset), &row);
       break;
     case SettingKind::kEditor:
       row.widget = adw_action_row_new();

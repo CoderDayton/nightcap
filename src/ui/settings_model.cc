@@ -1,6 +1,7 @@
 #include "ui/settings_model.h"
 
 #include <charconv>
+#include <cmath>
 
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_editor.h"
@@ -254,9 +255,11 @@ const std::vector<SettingsPage>& SettingsPages() {
 }
 
 bool IsAvailable(const Setting& setting) {
-  return setting.kind == SettingKind::kChoice ||
-         setting.kind == SettingKind::kToggle ||
-         setting.kind == SettingKind::kFrameRate;
+  return setting.kind != SettingKind::kEditor;
+}
+
+std::string NumberValue(double number) {
+  return std::to_string(number > 0 ? std::llround(number) : 0LL);
 }
 
 std::size_t ChoiceIndex(const Setting& setting, std::string_view value) {
@@ -345,20 +348,36 @@ std::string SettingsDocument::Value(std::string_view key) const {
   return runtime::GetRuntimeConfigValue(text_, key).value;
 }
 
+bool SettingsDocument::IsSet(std::string_view key) const {
+  return runtime::GetRuntimeConfigValue(text_, key).found;
+}
+
 bool SettingsDocument::Set(std::string_view key, std::string_view value,
                            std::string* error) {
-  const runtime::RuntimeConfigEdit edit =
+  runtime::RuntimeConfigEdit edit =
       value.empty() ? runtime::UnsetRuntimeConfigValue(text_, key)
                     : runtime::SetRuntimeConfigString(text_, key, value);
-  if (!edit) {
-    *error = edit.error;
+  return Save(std::move(edit.text), std::move(edit.error), error);
+}
+
+bool SettingsDocument::SetText(std::string_view key, std::string_view value,
+                               std::string* error) {
+  runtime::RuntimeConfigEdit edit =
+      runtime::SetRuntimeConfigString(text_, key, value);
+  return Save(std::move(edit.text), std::move(edit.error), error);
+}
+
+bool SettingsDocument::Save(std::string edited, std::string edit_error,
+                            std::string* error) {
+  if (!edit_error.empty()) {
+    *error = std::move(edit_error);
     return false;
   }
-  if (edit.text == text_) {
+  if (edited == text_) {
     return true;
   }
   const runtime::RuntimeConfigSaveResult saved =
-      runtime::SaveRuntimeConfigText(config_file_, text_, edit.text);
+      runtime::SaveRuntimeConfigText(config_file_, text_, edited);
   if (!saved) {
     *error = saved.error;
     // The file may have changed under the window. Show what it holds now.
@@ -369,7 +388,7 @@ bool SettingsDocument::Set(std::string_view key, std::string_view value,
     }
     return false;
   }
-  text_ = edit.text;
+  text_ = std::move(edited);
   return true;
 }
 
