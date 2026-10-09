@@ -13,7 +13,7 @@ Goal: a small GTK4 settings window, reachable from the app menu and from a
 `--settings` flag, that reads and writes the same `config.yaml`.
 
 - Graphics tab: backend, frame rate limit, vsync, small texture upscale.
-- Input tab: the `input.raw_mouse` toggle and controller options.
+- Input tab: the `input.raw_mouse` toggle.
 - Advanced tab: FFlag overrides with a plain text editor for `fflags.json`.
 - Discord tab: every field in the `discord_rpc` block, so a friend can see
 what you are playing and you can switch it all off in one click.
