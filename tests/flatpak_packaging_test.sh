@@ -193,9 +193,14 @@ cat >"${TEMP_DIR}/bin/flatpak" <<'EOF'
 exit 1
 EOF
 chmod 0755 "${TEMP_DIR}/bin/uname" "${TEMP_DIR}/bin/flatpak"
+# The helper sees only these tools, so a flatpak-builder on the host stays
+# out of its PATH.
+for tool in bash dirname realpath; do
+  ln -s -- "$(command -v "${tool}")" "${TEMP_DIR}/bin/${tool}"
+done
 
 set +e
-PATH="${TEMP_DIR}/bin:/usr/bin:/bin" \
+PATH="${TEMP_DIR}/bin" \
   "${BUILD_HELPER}" --build-dir "${ROOT}/build-flatpak-test" \
   >"${TEMP_DIR}/stdout" 2>"${TEMP_DIR}/stderr"
 helper_status=$?
