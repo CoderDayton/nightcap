@@ -148,6 +148,13 @@ target_link_libraries(failure_dialog_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(settings_launcher_test settings_launcher_test.cc)
+target_link_libraries(settings_launcher_test PRIVATE
+  Mocktail::FailureDialog
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(frame_rate_policy_test frame_rate_policy_test.cc)
 target_link_libraries(frame_rate_policy_test PRIVATE
   Mocktail::Runtime
@@ -1073,6 +1080,7 @@ gtest_discover_tests(support_bundle_runtime_test)
 gtest_discover_tests(vulkan_icd_selection_test)
 gtest_discover_tests(session_log_test)
 gtest_discover_tests(failure_dialog_test)
+gtest_discover_tests(settings_launcher_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)

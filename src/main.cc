@@ -47,6 +47,7 @@
 #include "runtime/runtime_config_file.h"
 #include "runtime/runtime_paths.h"
 #include "runtime/session_log.h"
+#include "runtime/settings_launcher.h"
 #include "runtime/single_instance_lock.h"
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
@@ -259,6 +260,18 @@ int main(int argc, char* argv[]) {
     std::cout << mocktail::runtime::CommandLineUsage(
         command_line.options.program_name);
     return EXIT_SUCCESS;
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kSettings) {
+    // The window reports a broken config itself, so it starts before the
+    // config is loaded.
+    const mocktail::runtime::ProcessEnvironment settings_environment;
+    std::string settings_error;
+    mocktail::runtime::ExecSettingsWindow(settings_environment,
+                                          &settings_error);
+    std::cerr << settings_error << '\n';
+    // Started from the app menu there is no terminal to read that on.
+    mocktail::runtime::ShowFailureDialog(settings_environment, settings_error);
+    return EXIT_FAILURE;
   }
   // Normalize inherited process state before bootstrap or helpers can create
   // threads. Keep research/canary resource limits under their caller's control.

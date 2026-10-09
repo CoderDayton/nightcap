@@ -35,6 +35,7 @@ readonly -a PROJECT_ARTIFACTS=(
   mocktail
   mocktail_updater
   mocktail_failure_dialog
+  mocktail_settings
   mocktail_webview_helper
   libmocktail_audio_sdl.so
   libc.so
@@ -759,6 +760,7 @@ PatchRuntimePaths() {
   patchelf --set-rpath '$ORIGIN:$ORIGIN/../lib' \
     "${STAGING}/mocktail/bin/mocktail" \
     "${STAGING}/mocktail/bin/mocktail_failure_dialog" \
+    "${STAGING}/mocktail/bin/mocktail_settings" \
     "${STAGING}/mocktail/bin/mocktail_webview_helper"
 }
 

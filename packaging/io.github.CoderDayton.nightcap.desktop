@@ -11,3 +11,8 @@ Categories=Game;
 Terminal=false
 MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;
 X-Mocktail-Managed=true
+Actions=settings;
+
+[Desktop Action settings]
+Name=Settings
+Exec=mocktail --settings

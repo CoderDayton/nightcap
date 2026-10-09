@@ -121,6 +121,7 @@ for path in \
     mocktail/bin/mocktail \
     mocktail/bin/mocktail_updater \
     mocktail/bin/mocktail_failure_dialog \
+    mocktail/bin/mocktail_settings \
     mocktail/bin/mocktail_webview_helper \
     mocktail/bin/mocktail_freebsd_socket_helper \
     mocktail/bin/libEGL.so \
@@ -271,6 +272,8 @@ int main(void) {
 EOF
   cp -- "${musl_runtime}/bin/mocktail" \
     "${musl_runtime}/bin/mocktail_failure_dialog"
+  cp -- "${musl_runtime}/bin/mocktail" \
+    "${musl_runtime}/bin/mocktail_settings"
   cp -- "${musl_runtime}/bin/mocktail" \
     "${musl_runtime}/bin/mocktail_updater"
   cp -- "${musl_runtime}/bin/mocktail" \

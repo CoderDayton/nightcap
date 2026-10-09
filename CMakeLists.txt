@@ -356,6 +356,7 @@ target_link_libraries(mocktail_runtime PRIVATE
 # Keep GTK out of the process that loads Android libraries.
 add_library(mocktail_failure_dialog_runtime STATIC
   src/runtime/failure_dialog.cc
+  src/runtime/settings_launcher.cc
 )
 add_library(Mocktail::FailureDialog ALIAS mocktail_failure_dialog_runtime)
 target_include_directories(mocktail_failure_dialog_runtime PUBLIC include)
@@ -694,6 +695,7 @@ install(TARGETS
     mocktail
     mocktail_updater
     mocktail_failure_dialog
+    mocktail_settings
     mocktail_webview_helper
     mocktail_audio_sdl
     mocktail_opensles
@@ -731,6 +733,9 @@ install(CODE "
        MOCKTAIL_DESKTOP_ENTRY)
   string(REPLACE \"Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u\"
          \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail %u\"
+         MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
+  string(REPLACE \"Exec=mocktail --settings\"
+         \"Exec=\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail --settings\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
   file(WRITE \"${CMAKE_BINARY_DIR}/io.github.CoderDayton.nightcap.desktop\"
        \"\${MOCKTAIL_DESKTOP_ENTRY}\")
@@ -835,7 +840,7 @@ set(CPACK_RPM_PACKAGE_CONFLICTS "${MOCKTAIL_PACKAGE_CONFLICTS}")
 include(CPack)
 
 add_dependencies(mocktail all_stubs)
-add_dependencies(mocktail mocktail_failure_dialog)
+add_dependencies(mocktail mocktail_failure_dialog mocktail_settings)
 add_dependencies(mocktail mocktail_webview_helper)
 
 if(BUILD_TESTING)

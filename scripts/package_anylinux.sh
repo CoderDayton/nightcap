@@ -76,6 +76,7 @@ AnyLinuxVerifyInstalled() {
   for entry in /usr/bin/mocktail \
       /usr/lib/mocktail/mocktail_updater \
       /usr/lib/mocktail/mocktail_failure_dialog \
+      /usr/lib/mocktail/mocktail_settings \
       /usr/lib/mocktail/mocktail_webview_helper; do
     [[ -x "${entry}" ]] || AnyLinuxDie "missing installed executable: ${entry}"
   done
@@ -101,7 +102,7 @@ AnyLinuxVerifyAppDir() {
   [[ ! -e "${app_dir}/share/mocktail-bundle" ]] ||
     AnyLinuxDie "a portable bundle was embedded in AppDir"
   for entry in mocktail mocktail_updater mocktail_failure_dialog \
-      mocktail_webview_helper; do
+      mocktail_settings mocktail_webview_helper; do
     [[ -x "${app_dir}/bin/${entry}" ]] ||
       AnyLinuxDie "quick-sharun did not deploy ${entry}"
   done
@@ -194,6 +195,7 @@ EOF
     /usr/bin/mocktail \
     /usr/lib/mocktail/mocktail_webview_helper \
     /usr/lib/mocktail/mocktail_failure_dialog \
+    /usr/lib/mocktail/mocktail_settings \
     /usr/lib/mocktail/mocktail_updater \
     /usr/lib/mocktail /usr/share/mocktail /usr/bin/bash
   AnyLinuxVerifyAppDir "${app_dir}"

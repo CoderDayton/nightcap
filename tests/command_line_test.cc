@@ -302,13 +302,34 @@ TEST(CommandLineTest, HelpIsATypedAuxiliaryMode) {
   EXPECT_EQ(help_result.options.mode, CommandMode::kHelp);
 }
 
+TEST(CommandLineTest, SettingsIsATypedAuxiliaryMode) {
+  const std::array<const char*, 2> settings = {"mocktail", "--settings"};
+  const CommandLineParseResult result =
+      ParseCommandLine(settings.size(), settings.data());
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.options.mode, CommandMode::kSettings);
+}
+
+TEST(CommandLineTest, SettingsMustBeUsedOnItsOwn) {
+  for (const std::array<const char*, 3>& arguments :
+       {std::array<const char*, 3>{"mocktail", "--settings", "--headless"},
+        std::array<const char*, 3>{"mocktail", "--headless", "--settings"},
+        std::array<const char*, 3>{"mocktail", "--settings",
+                                   "--force-run-latest"}}) {
+    const CommandLineParseResult result =
+        ParseCommandLine(arguments.size(), arguments.data());
+    EXPECT_FALSE(result) << arguments[1] << ' ' << arguments[2];
+    EXPECT_EQ(result.error, "--settings must be used on its own");
+  }
+}
+
 TEST(CommandLineTest, UsageContainsEverySupportedOption) {
   const std::string usage = CommandLineUsage("mocktail-test");
   EXPECT_NE(usage.find("mocktail-test"), std::string::npos);
   for (const char* option :
        {"--roblox-lib", "--headless", "--windowed", "--graphics",
         "--allow-unverified-build", "--force-run-latest", "--launch-uri",
-        "--profile", "--help"}) {
+        "--profile", "--settings", "--help"}) {
     EXPECT_NE(usage.find(option), std::string::npos) << option;
   }
   EXPECT_EQ(usage.find("--login"), std::string::npos);
