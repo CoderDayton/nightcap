@@ -22,20 +22,6 @@ what you are playing and you can switch it all off in one click.
 Done when every option in `config/mocktail.example.yaml` that a player would
 touch can be set without a text editor.
 
-## 2. Controller button glyphs
-
-Upstream added Xbox and PlayStation gamepad support through SDL. Controllers
-already hot-plug and release their held inputs when unplugged. One rough edge
-is left.
-
-- Correct button glyphs for the connected pad. `SDL_GetGamepadType` is only
-read for Xbox and PlayStation pads, so a Switch Pro, a GameCube pad, or any
-generic pad SDL reports as `SDL_GAMEPAD_TYPE_STANDARD` reaches Roblox as
-type 0 and draws generic glyphs. `SDL_GetRealGamepadType`, and the vendor
-and product IDs, are available and unused.
-
-Done when a plugged-in pad shows its own buttons.
-
 ## Shipped
 
 - Lower input latency: frames are presented as soon as they are ready.

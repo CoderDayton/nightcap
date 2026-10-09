@@ -13,6 +13,11 @@ pre-commit:
     desktop-entry:
       glob: "*.desktop"
       run: desktop-file-validate {staged_files}
+    changelog-width:
+      glob: "CHANGELOG.md"
+      run: >-
+        git diff --cached -U0 -- CHANGELOG.md |
+        awk '/^\+[^+]/ && length($0) > 111 { print "CHANGELOG.md: added line over 110 characters: " substr($0, 2); bad = 1 } END { exit bad }'
 
 pre-push:
   commands:
