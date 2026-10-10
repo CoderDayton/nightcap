@@ -121,6 +121,9 @@ PC profiles use the legacy Charts page by default to avoid the blank screen
 caused by `Color3` errors in the newer SDUI page. An explicit
 `FFlagLuaAppChartsAppPage` override takes precedence over this default.
 
+PC profiles also set `FIntFlyoutTestVariantRollout12` to `2`, which shows the
+desktop side panel menu. An explicit override takes precedence.
+
 ```json
 {
   "FFlagExample": "True",

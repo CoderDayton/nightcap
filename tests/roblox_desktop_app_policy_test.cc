@@ -218,6 +218,24 @@ TEST(RobloxDesktopAppPolicyTest,
                                                            &merged, &error));
 }
 
+TEST(RobloxDesktopAppPolicyTest, DefaultsDesktopFlyoutSidePanelUnlessOverridden) {
+  const std::string policy =
+      nlohmann::json({{"PlatformGroup", "Desktop"}}).dump();
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(policy, "{}", &merged,
+                                                          &error))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)["FIntFlyoutTestVariantRollout12"],
+            "2");
+
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(
+      policy, R"({"FIntFlyoutTestVariantRollout12":"0"})", &merged, &error))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)["FIntFlyoutTestVariantRollout12"],
+            "0");
+}
+
 TEST(RobloxDesktopAppPolicyTest, RejectsMalformedOrSymlinkedStorage) {
   TemporaryDirectory temporary;
   const std::filesystem::path default_path = temporary.path() / "default.json";

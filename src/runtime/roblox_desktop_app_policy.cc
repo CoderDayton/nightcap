@@ -361,6 +361,10 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
   // leave the whole LuaApp blank. Default to the working legacy page while
   // preserving explicit user overrides for testing newer UI patches.
   overrides.emplace("FFlagLuaAppChartsAppPage", "False");
+  // Roblox enrolls desktop clients in the flyout side panel through a
+  // server-side experiment that does not reach this client. Variant 2 is the
+  // desktop side panel; an explicit user override is preserved.
+  overrides.emplace("FIntFlyoutTestVariantRollout12", "2");
   *merged_json = overrides.dump();
   return true;
 }
