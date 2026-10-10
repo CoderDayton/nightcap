@@ -5,17 +5,29 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- The AppImage build now makes a `.zsync` file, so tools like `appimageupdatetool` can update the AppImage.
+- The desktop side panel menu now shows by default on PC profiles. Set `FIntFlyoutTestVariantRollout12` in
+  `fflags.json` to change it.
+
 ### Changed
 
 - The Flatpak build asks for the X11 socket only when there is no Wayland session, as before 0.3.3.
+- Nightcap now uses Wayland on a Wayland session with NVIDIA drivers too, however it is started. It used to
+  fall back to X11 there when started from a terminal.
+- Building Nightcap no longer needs libexecinfo.
 
 ### Fixed
 
 - Fixed Roblox 2.742 being rejected as an update, which left the game on the older version. Nightcap now
   accepts Roblox versions that change the order of their start-up steps.
 - Fixed the old Roblox home screen showing instead of the new one with the Me tab and the "For you" and
-  "Charts" tabs. Nightcap now runs the Roblox start-up step that loads the new interface for your account,
-  and shows the desktop side panel menu.
+  "Charts" tabs. Nightcap now runs the Roblox start-up step that loads the new interface for your account.
+- Fixed frame hitches while textures load on graphics cards that need ETC2 textures decoded on the CPU.
+- Fixed problems on Chimera Linux and other musl systems, including error messages that differed from the
+  ones Roblox expects.
+- Fixed the nightly AppImage build failing when a bundled GTK 4 was older than the one libadwaita needs.
 - Fixed a random crash on Wayland with NVIDIA drivers, where the game window closed after you let go of the
   camera or left mouse lock. The log showed `wp_linux_drm_syncobj_surface_v1` error 3.
 - Fixed some menu actions being ignored. The Chat button on a profile now opens the Party tab with that
