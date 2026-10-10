@@ -481,8 +481,6 @@ VideoDriverChoice ResolveConfiguredVideoDriverChoice() {
       !StringEquals(GetEnvNonEmpty("MOCKTAIL_FORCE_WAYLAND"), "0");
   input.has_wayland_session = HasWaylandSession();
   input.has_x11_display = GetEnvNonEmpty("DISPLAY") != nullptr;
-  input.uses_direct_vulkan = ShouldUseNativeVulkanBackend();
-  input.has_nvidia_kernel_driver = HasNvidiaKernelDriver();
   return ResolveVideoDriverChoice(input);
 }
 
@@ -670,11 +668,6 @@ bool ConfigureGraphicsBackendBeforeSDL() {
     // Preserve any non-empty user override.
     setenv("SDL_VIDEODRIVER", video_driver, 1);
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, video_driver);
-  }
-  if (video_driver_choice == VideoDriverChoice::kNvidiaDirectVulkanX11) {
-    fprintf(stderr,
-            "  [window] NVIDIA direct Vulkan on Wayland session: using "
-            "X11/XWayland WSI; set SDL_VIDEODRIVER=wayland to override\n");
   }
 
   const GraphicsLibraries libraries = ResolveGraphicsLibraries();
