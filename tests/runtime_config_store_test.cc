@@ -192,6 +192,17 @@ TEST_F(RuntimeConfigStoreTest, AnOptionalFileThatIsMissingReadsAsEmpty) {
   EXPECT_EQ(ReadOptionalTextFile(extra).text, "{}\n");
 }
 
+TEST_F(RuntimeConfigStoreTest, AnOptionalFileIsReadOnlyJustPastItsLimit) {
+  const std::filesystem::path extra = directory_ / "extra.json";
+  Write(extra, std::string(10000, 'x'));
+  EXPECT_EQ(ReadOptionalTextFile(extra, 10000).text.size(), 10000u);
+  EXPECT_EQ(ReadOptionalTextFile(extra, 9999).text.size(), 10000u);
+  // One byte past the limit is enough to tell the file is larger.
+  const RuntimeConfigText read = ReadOptionalTextFile(extra, 4);
+  ASSERT_TRUE(read) << read.error;
+  EXPECT_EQ(read.text, "xxxxx");
+}
+
 TEST_F(RuntimeConfigStoreTest, ACheckedSaveCreatesAMissingFile) {
   const std::filesystem::path extra = directory_ / "extra.json";
   std::string checked;

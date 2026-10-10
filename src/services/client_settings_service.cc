@@ -21,7 +21,6 @@ namespace services {
 namespace {
 
 constexpr const char kEmptyDefaults[] = "{\"applicationSettings\":{}}";
-constexpr std::uintmax_t kMaximumFflagsFileBytes = 64U * 1024U;
 
 class ScopedFileDescriptor final {
  public:

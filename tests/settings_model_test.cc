@@ -194,6 +194,77 @@ TEST_F(SettingsModelTest, SavedValuesReachTheLoadedConfig) {
   EXPECT_TRUE(loaded.config.input_capabilities().raw_mouse);
 }
 
+TEST_F(SettingsModelTest, TouchInputIsASwitchThatReachesTheLoadedConfig) {
+  const Setting& touch = Find("device.touch");
+  EXPECT_EQ(touch.kind, SettingKind::kToggle);
+
+  struct Case {
+    // Empty stands for the first-run file.
+    std::string_view file;
+    std::string_view device;
+    bool starts_on;
+  };
+  for (const Case& test : {
+           Case{"", "pc-windows-11", false},
+           Case{"device:\n  type: mobile\n  model: Tablet\n  mouse: true\n",
+                "mobile-pixel-7", true},
+           Case{"device:\n  type: mobile\n  model: Tablet\n  mouse: true\n"
+                "  touch: false\n",
+                "mobile-pixel-7", false},
+           Case{"device:\n  type: pc\n  model: Tablet\n", "pc-windows-11",
+                false},
+           // A file from before the device key.
+           Case{"input:\n  raw_mouse: true\n", "pc-windows-11", false},
+           Case{"input:\n  touch_enabled: true\n", "pc-windows-11", true},
+       }) {
+    SCOPED_TRACE(std::string(test.file));
+    std::filesystem::remove(file_);
+    if (!test.file.empty()) {
+      Write(test.file);
+    }
+    SettingsDocument document(file_);
+    std::string error;
+    ASSERT_TRUE(document.Load(&error)) << error;
+
+    // The switch shows what Nightcap uses.
+    runtime::RuntimeConfigLoadResult loaded = LoadFile();
+    ASSERT_TRUE(loaded) << loaded.error;
+    EXPECT_EQ(loaded.config.input_capabilities().touch_enabled,
+              test.starts_on);
+    EXPECT_EQ(ToggleState(touch, document.Value(touch.key)), test.starts_on);
+
+    for (const bool on : {!test.starts_on, test.starts_on}) {
+      ASSERT_TRUE(document.Set(touch.key, on ? "true" : "false", &error))
+          << error << "\n" << Read();
+      EXPECT_EQ(ToggleState(touch, document.Value(touch.key)), on) << Read();
+      loaded = LoadFile();
+      ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
+      EXPECT_EQ(loaded.config.input_capabilities().touch_enabled, on)
+          << Read();
+      // Nothing else about the device changes.
+      EXPECT_EQ(loaded.config.device_profile().name, test.device) << Read();
+      EXPECT_TRUE(loaded.config.input_capabilities().mouse_enabled ||
+                  test.device != "pc-windows-11")
+          << Read();
+    }
+    if (test.file.find("Tablet") != std::string_view::npos) {
+      EXPECT_EQ(loaded.config.device_profile().model, "Tablet") << Read();
+    }
+  }
+}
+
+TEST_F(SettingsModelTest, TouchInputStaysOnForADeviceWithNoOtherInput) {
+  Write("device: mobile\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Value("device.touch"), "true");
+  EXPECT_FALSE(document.Set("device.touch", "false", &error));
+  EXPECT_FALSE(error.empty());
+  EXPECT_EQ(Read(), "device: mobile\n");
+  EXPECT_EQ(document.Value("device.touch"), "true");
+}
+
 TEST_F(SettingsModelTest, LoadCreatesTheFirstRunFile) {
   SettingsDocument document(file_);
   std::string error;
@@ -331,6 +402,94 @@ TEST_F(SettingsModelTest, BrokenFFlagsAreRefusedWithTheLineAndColumn) {
 
   EXPECT_FALSE(document.Save("", &error));
   EXPECT_EQ(ReadFFlags(), "{}\n");
+}
+
+TEST_F(SettingsModelTest, AJsonFaultIsCountedInCharacters) {
+  EXPECT_FALSE(JsonSyntaxFault("{\"a\": 1}").has_value());
+  EXPECT_FALSE(JsonSyntaxFault("// note\n{}\n").has_value());
+
+  // The two-byte letter is one column.
+  const std::optional<TextPosition> fault =
+      JsonSyntaxFault("{\n  \"\xc3\xa9\": }\n");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->line, 2u);
+  EXPECT_EQ(fault->column, 8u);
+  EXPECT_EQ(JsonSyntaxError("{\n  \"\xc3\xa9\": }\n"),
+            "Not valid JSON at line 2, column 8");
+
+  // A line ends the way the editor ends it: at a lone carriage return too.
+  for (const std::string_view text :
+       {"{\r  \"a\": }\r", "{\r\n  \"a\": }\r\n"}) {
+    const std::optional<TextPosition> returned = JsonSyntaxFault(text);
+    ASSERT_TRUE(returned.has_value());
+    EXPECT_EQ(returned->line, 2u);
+    EXPECT_EQ(returned->column, 8u);
+  }
+
+  const std::optional<TextPosition> empty = JsonSyntaxFault("");
+  ASSERT_TRUE(empty.has_value());
+  EXPECT_EQ(empty->line, 1u);
+  EXPECT_EQ(empty->column, 1u);
+}
+
+TEST_F(SettingsModelTest, AnFFlagsRefusalSaysWhatIsWrong) {
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  const std::pair<std::string_view, std::string_view> cases[] = {
+      {"[1, 2]\n", "one JSON object"},
+      {"\"text\"\n", "one JSON object"},
+      {"{\"DFIntA\": 1.5}\n", "\"DFIntA\""},
+      {"{\"ok\": 1, \"FFlagB\": null}\n", "\"FFlagB\""},
+      {"{\"FFlagC\": [1]}\n", "\"FFlagC\""},
+      {"{\"\": 1}\n", "empty name"},
+      {"{\"FFlagD\": 1, \"FFlagD\": 2}\n", "\"FFlagD\" is listed twice"},
+  };
+  for (const auto& [text, expected] : cases) {
+    error.clear();
+    EXPECT_FALSE(document.Save(text, &error)) << text;
+    EXPECT_NE(error.find(expected), std::string::npos)
+        << text << " gave: " << error;
+    EXPECT_FALSE(std::filesystem::exists(FFlagsFile())) << text;
+  }
+
+  // A name used again inside a value is not a repeat.
+  ASSERT_TRUE(document.Save("{\"a\": \"a\", \"b\": \"a\"}\n", &error))
+      << error;
+}
+
+TEST_F(SettingsModelTest, AnFFlagsFileThatIsNotTextIsNotOpened) {
+  for (const std::string& bytes :
+       {std::string("{\"a\": \"\xff\xfe\"}\n"),
+        std::string("{}\n\0{\"a\": 1}\n", 13)}) {
+    std::ofstream(FFlagsFile(), std::ios::binary) << bytes;
+    FFlagsDocument document(FFlagsFile());
+    std::string error;
+    EXPECT_FALSE(document.Load(&error));
+    EXPECT_NE(error.find("UTF-8"), std::string::npos) << error;
+    EXPECT_EQ(ReadFFlags(), bytes);
+  }
+}
+
+TEST_F(SettingsModelTest, AnFFlagsFileOverTheReadLimitIsNotOpened) {
+  const std::string bytes = "{}" + std::string(64 * 1024, ' ');
+  std::ofstream(FFlagsFile(), std::ios::binary) << bytes;
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  EXPECT_FALSE(document.Load(&error));
+  EXPECT_NE(error.find("64 KiB"), std::string::npos) << error;
+  EXPECT_EQ(ReadFFlags(), bytes);
+}
+
+TEST_F(SettingsModelTest, AnFFlagsSymlinkIsRefusedAsASymlinkWhateverItsSize) {
+  const std::filesystem::path target = directory_ / "large.json";
+  std::ofstream(target, std::ios::binary)
+      << "{}" + std::string(64 * 1024, ' ');
+  std::filesystem::create_symlink(target, FFlagsFile());
+  FFlagsDocument document(FFlagsFile());
+  std::string error;
+  EXPECT_FALSE(document.Load(&error));
+  EXPECT_NE(error.find("symlink"), std::string::npos) << error;
 }
 
 TEST_F(SettingsModelTest, FFlagsNightcapWouldRejectAreRefused) {

@@ -51,15 +51,19 @@ bool WriteAll(int file, std::string_view contents) {
 }
 
 // Reads `path` as text. When `missing` is not null, a file that does not
-// exist reads as empty text and sets it.
-RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing) {
+// exist reads as empty text and sets it. At most one byte more than `limit`
+// is read.
+RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing,
+                           std::size_t limit = kNoReadLimit) {
   RuntimeConfigText result;
   // Errors name the file, since more than one file is read this way.
   const std::string name = path.filename().string() + ": ";
   if (missing != nullptr) {
     *missing = false;
   }
-  const int file = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  // O_NONBLOCK keeps a named pipe at this path from blocking the open.
+  const int file =
+      open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (file < 0) {
     if (errno == ENOENT && missing != nullptr) {
       *missing = true;
@@ -78,7 +82,13 @@ RuntimeConfigText ReadText(const std::filesystem::path& path, bool* missing) {
   }
   char buffer[4096];
   while (true) {
-    const ssize_t count = read(file, buffer, sizeof(buffer));
+    if (result.text.size() > limit) {
+      break;
+    }
+    // One byte past the limit shows that the file is larger.
+    const std::size_t room = limit - result.text.size();
+    const ssize_t count = read(
+        file, buffer, room < sizeof(buffer) ? room + 1 : sizeof(buffer));
     if (count < 0 && errno == EINTR) {
       continue;
     }
@@ -108,8 +118,9 @@ RuntimeConfigSaveResult Save(const std::filesystem::path& config_file,
   }
   const std::string name = config_file.filename().string() + ": ";
   bool missing = false;
-  const RuntimeConfigText current =
-      ReadText(config_file, may_be_missing ? &missing : nullptr);
+  // A file longer than `original` has changed, so no more of it is read.
+  const RuntimeConfigText current = ReadText(
+      config_file, may_be_missing ? &missing : nullptr, original.size());
   if (!current) {
     result.error = current.error;
     return result;
@@ -190,9 +201,10 @@ RuntimeConfigSaveResult SaveRuntimeConfigText(
               });
 }
 
-RuntimeConfigText ReadOptionalTextFile(const std::filesystem::path& file) {
+RuntimeConfigText ReadOptionalTextFile(const std::filesystem::path& file,
+                                       std::size_t limit) {
   bool missing = false;
-  return ReadText(file, &missing);
+  return ReadText(file, &missing, limit);
 }
 
 RuntimeConfigSaveResult SaveCheckedTextFile(const std::filesystem::path& file,

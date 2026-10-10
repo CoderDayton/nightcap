@@ -234,31 +234,96 @@ void OnFrameRateChanged(GObject*, GParamSpec*, gpointer user_data) {
 struct FFlagsEditor {
   SettingsWindow* window = nullptr;
   AdwDialog* dialog = nullptr;
+  GtkTextView* view = nullptr;
   GtkTextBuffer* buffer = nullptr;
   AdwBanner* problem = nullptr;
+  GtkWidget* save = nullptr;
 };
 
+// Closing asks first while there is unsaved text. See OnFFlagsCloseAttempt.
 void OnFFlagsCancel(GtkButton*, gpointer user_data) {
   adw_dialog_close(static_cast<FFlagsEditor*>(user_data)->dialog);
 }
 
-void OnFFlagsSave(GtkButton*, gpointer user_data) {
-  auto* editor = static_cast<FFlagsEditor*>(user_data);
+void SaveFFlags(FFlagsEditor* editor) {
+  if (!gtk_text_buffer_get_modified(editor->buffer)) {
+    return;
+  }
   GtkTextIter start;
   GtkTextIter end;
   gtk_text_buffer_get_bounds(editor->buffer, &start, &end);
-  char* text = gtk_text_buffer_get_text(editor->buffer, &start, &end, FALSE);
+  char* characters =
+      gtk_text_buffer_get_text(editor->buffer, &start, &end, FALSE);
+  const std::string text = characters;
+  g_free(characters);
   std::string error;
-  const bool saved = editor->window->fflags.Save(text, &error);
-  g_free(text);
-  if (!saved) {
-    // The dialog stays open with the text, so nothing typed is lost.
-    adw_banner_set_title(editor->problem, error.c_str());
-    adw_banner_set_revealed(editor->problem, TRUE);
+  if (editor->window->fflags.Save(text, &error)) {
+    gtk_revealer_set_reveal_child(editor->window->notice, TRUE);
+    adw_dialog_force_close(editor->dialog);
     return;
   }
-  gtk_revealer_set_reveal_child(editor->window->notice, TRUE);
-  adw_dialog_close(editor->dialog);
+  // The dialog stays open with the text, so nothing typed is lost.
+  adw_banner_set_title(editor->problem, error.c_str());
+  adw_banner_set_revealed(editor->problem, TRUE);
+  if (const auto fault = mocktail::ui::JsonSyntaxFault(text)) {
+    GtkTextIter where;
+    gtk_text_buffer_get_iter_at_line_offset(
+        editor->buffer, &where, static_cast<int>(fault->line - 1),
+        static_cast<int>(fault->column - 1));
+    gtk_text_buffer_place_cursor(editor->buffer, &where);
+    gtk_text_view_scroll_to_mark(editor->view,
+                                 gtk_text_buffer_get_insert(editor->buffer),
+                                 0.1, FALSE, 0, 0);
+  }
+  gtk_widget_grab_focus(GTK_WIDGET(editor->view));
+}
+
+void OnFFlagsSave(GtkButton*, gpointer user_data) {
+  SaveFFlags(static_cast<FFlagsEditor*>(user_data));
+}
+
+gboolean OnFFlagsSaveShortcut(GtkWidget*, GVariant*, gpointer user_data) {
+  SaveFFlags(static_cast<FFlagsEditor*>(user_data));
+  return TRUE;
+}
+
+// Save has work to do, and closing needs a question, only while the text
+// differs from what was opened.
+void OnFFlagsModifiedChanged(GtkTextBuffer* buffer, gpointer user_data) {
+  auto* editor = static_cast<FFlagsEditor*>(user_data);
+  const gboolean modified = gtk_text_buffer_get_modified(buffer);
+  gtk_widget_set_sensitive(editor->save, modified);
+  adw_dialog_set_can_close(editor->dialog, !modified);
+}
+
+// A problem shown for the text as it was says nothing about the text now.
+void OnFFlagsChanged(GtkTextBuffer*, gpointer user_data) {
+  adw_banner_set_revealed(static_cast<FFlagsEditor*>(user_data)->problem,
+                          FALSE);
+}
+
+void OnFFlagsDiscardResponse(AdwAlertDialog*, const char* response,
+                             gpointer user_data) {
+  if (g_strcmp0(response, "discard") == 0) {
+    adw_dialog_force_close(static_cast<FFlagsEditor*>(user_data)->dialog);
+  }
+}
+
+// Runs when the dialog is asked to close with unsaved text in it.
+void OnFFlagsCloseAttempt(AdwDialog* dialog, gpointer user_data) {
+  AdwDialog* question = adw_alert_dialog_new(
+      "Discard changes?", "Your changes to fflags.json are not saved.");
+  adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(question), "keep",
+                                 "Keep Editing", "discard", "Discard",
+                                 nullptr);
+  adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(question),
+                                           "discard",
+                                           ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(question), "keep");
+  adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(question), "keep");
+  g_signal_connect(question, "response", G_CALLBACK(OnFFlagsDiscardResponse),
+                   user_data);
+  adw_dialog_present(question, GTK_WIDGET(dialog));
 }
 
 void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
@@ -281,9 +346,21 @@ void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
 
   GtkWidget* cancel = gtk_button_new_with_label("Cancel");
   GtkWidget* save = gtk_button_new_with_label("Save");
+  editor->save = save;
   gtk_widget_add_css_class(save, "suggested-action");
+  gtk_widget_set_tooltip_text(save, "Save (Ctrl+S)");
+  gtk_widget_set_sensitive(save, FALSE);
   g_signal_connect(cancel, "clicked", G_CALLBACK(OnFFlagsCancel), editor);
   g_signal_connect(save, "clicked", G_CALLBACK(OnFFlagsSave), editor);
+  g_signal_connect(editor->dialog, "close-attempt",
+                   G_CALLBACK(OnFFlagsCloseAttempt), editor);
+  GtkEventController* shortcuts = gtk_shortcut_controller_new();
+  gtk_shortcut_controller_add_shortcut(
+      GTK_SHORTCUT_CONTROLLER(shortcuts),
+      gtk_shortcut_new(
+          gtk_keyval_trigger_new(GDK_KEY_s, GDK_CONTROL_MASK),
+          gtk_callback_action_new(OnFFlagsSaveShortcut, editor, nullptr)));
+  gtk_widget_add_controller(GTK_WIDGET(editor->dialog), shortcuts);
   GtkWidget* header = adw_header_bar_new();
   adw_header_bar_set_show_start_title_buttons(ADW_HEADER_BAR(header), FALSE);
   adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(header), FALSE);
@@ -300,8 +377,23 @@ void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
   gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(view), 12);
   gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 12);
   gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 12);
+  gtk_accessible_update_property(GTK_ACCESSIBLE(view),
+                                 GTK_ACCESSIBLE_PROPERTY_LABEL, "fflags.json",
+                                 -1);
+  editor->view = GTK_TEXT_VIEW(view);
   editor->buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+  // Undo must not go back past the file's own text.
+  gtk_text_buffer_begin_irreversible_action(editor->buffer);
   gtk_text_buffer_set_text(editor->buffer, window->fflags.Text().c_str(), -1);
+  gtk_text_buffer_end_irreversible_action(editor->buffer);
+  gtk_text_buffer_set_modified(editor->buffer, FALSE);
+  GtkTextIter top;
+  gtk_text_buffer_get_start_iter(editor->buffer, &top);
+  gtk_text_buffer_place_cursor(editor->buffer, &top);
+  g_signal_connect(editor->buffer, "modified-changed",
+                   G_CALLBACK(OnFFlagsModifiedChanged), editor);
+  g_signal_connect(editor->buffer, "changed", G_CALLBACK(OnFFlagsChanged),
+                   editor);
   GtkWidget* scrolled = gtk_scrolled_window_new();
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), view);
 

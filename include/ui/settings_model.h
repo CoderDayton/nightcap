@@ -3,10 +3,13 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include "runtime/runtime_config_store.h"
 
 namespace mocktail {
 namespace ui {
@@ -101,13 +104,17 @@ class SettingsDocument {
   // Reads the file, creating the first-run file when there is none.
   bool Load(std::string* error);
 
-  // The file's value for `key`, or empty when it is not set.
+  // The file's value for `key`, or empty when it is not set. The touch
+  // switch, "device.touch", is never empty: unset, it is what the file's
+  // device uses.
   std::string Value(std::string_view key) const;
 
   // Whether the file sets `key`. A key can be set to an empty text.
   bool IsSet(std::string_view key) const;
 
-  // Sets `key` and saves. An empty `value` unsets the key. On failure nothing
+  // Sets `key` and saves. An empty `value` unsets the key. The touch switch
+  // is written into the device block; a device given as one name becomes the
+  // block form of the same device. On failure nothing
   // is saved, and the document holds whatever is on disk now, so the window
   // must show its rows again.
   bool Set(std::string_view key, std::string_view value, std::string* error);
@@ -125,8 +132,19 @@ class SettingsDocument {
   std::string text_;
 };
 
+// A place in a text. Both numbers start at 1, and the column counts
+// characters, not bytes.
+struct TextPosition {
+  std::size_t line = 1;
+  std::size_t column = 1;
+};
+
+// Where `text` stops being JSON, or nothing when it is JSON. Comments are
+// allowed, as they are in fflags.json.
+std::optional<TextPosition> JsonSyntaxFault(std::string_view text);
+
 // Why `text` is not JSON, with the line and column of the fault. Empty when
-// it is JSON. Comments are allowed, as they are in fflags.json.
+// it is JSON.
 std::string JsonSyntaxError(std::string_view text);
 
 // fflags.json as the window edits it: the whole file as one text.
@@ -134,7 +152,9 @@ class FFlagsDocument {
  public:
   explicit FFlagsDocument(std::filesystem::path file);
 
-  // Reads the file. Having no file is not an error.
+  // Reads the file. Having no file is not an error. A file that is not
+  // UTF-8 text, or is larger than Nightcap reads, is an error: the editor
+  // could not show it whole.
   bool Load(std::string* error);
 
   // What the editor starts with: the file's text, or an empty JSON object
@@ -142,7 +162,9 @@ class FFlagsDocument {
   std::string Text() const;
 
   // Saves `text` as the file. Text that is not JSON, or that Nightcap would
-  // refuse to start with, is not saved. When the file changed on disk since
+  // refuse to start with, is not saved, and the error names the flag at
+  // fault when there is one. A flag listed twice is refused too, since only
+  // one of the two values would be used. When the file changed on disk since
   // it was read, nothing is saved, the error says so, and saving again
   // replaces the file.
   bool Save(std::string_view text, std::string* error);
@@ -150,6 +172,10 @@ class FFlagsDocument {
   const std::filesystem::path& file() const { return file_; }
 
  private:
+  // The file's text, or an error. A file larger than Nightcap reads is an
+  // error, and is not read whole.
+  runtime::RuntimeConfigText Read() const;
+
   std::filesystem::path file_;
   // The file's text as last read or saved. Empty when there is no file.
   std::string disk_;

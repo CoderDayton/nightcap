@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_RUNTIME_RUNTIME_CONFIG_STORE_H_
 #define MOCKTAIL_RUNTIME_RUNTIME_CONFIG_STORE_H_
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -39,9 +40,14 @@ RuntimeConfigSaveResult SaveRuntimeConfigText(
     const std::filesystem::path& config_file, std::string_view original,
     std::string_view text);
 
+inline constexpr std::size_t kNoReadLimit = static_cast<std::size_t>(-1);
+
 // Reads a text file that may not exist. A missing file reads as empty text.
-// A symlink or anything that is not a regular file is refused.
-RuntimeConfigText ReadOptionalTextFile(const std::filesystem::path& file);
+// A symlink or anything that is not a regular file is refused. At most one
+// byte more than `limit` is read, so a text longer than `limit` means the
+// file is larger than that.
+RuntimeConfigText ReadOptionalTextFile(const std::filesystem::path& file,
+                                       std::size_t limit = kNoReadLimit);
 
 // Given the path of a file holding the text about to be saved, returns why it
 // must not be saved, or an empty string.

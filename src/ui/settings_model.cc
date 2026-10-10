@@ -4,7 +4,11 @@
 #include <algorithm>
 #include <cmath>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <set>
+#include <system_error>
 
+#include "runtime/device_profile.h"
 #include "runtime/frame_rate_policy.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_editor.h"
@@ -15,7 +19,56 @@ namespace mocktail {
 namespace ui {
 namespace {
 
-// Accepts every value and records where the parser gave up.
+// The touch switch. The file holds it inside the device block, which the
+// loader does not let input.touch_enabled be combined with.
+constexpr std::string_view kTouchKey = "device.touch";
+// Where a file with no device key holds it.
+constexpr std::string_view kTouchKeyWithoutDevice = "input.touch_enabled";
+
+// Whether Nightcap turns touch input on for the config `text`.
+bool TouchInput(std::string_view text) {
+  for (const std::string_view key : {kTouchKey, kTouchKeyWithoutDevice}) {
+    const runtime::RuntimeConfigValue value =
+        runtime::GetRuntimeConfigValue(text, key);
+    if (value.found) {
+      return value.value == "true";
+    }
+  }
+  // Unset, the device decides.
+  runtime::RuntimeConfigValue device =
+      runtime::GetRuntimeConfigValue(text, "device");
+  if (!device.found) {
+    device = runtime::GetRuntimeConfigValue(text, "device.type");
+  }
+  const runtime::DeviceProfile* profile = runtime::FindDeviceProfile(
+      device.found ? std::string_view(device.value)
+                   : runtime::kDefaultDeviceProfileName);
+  return profile != nullptr && profile->touch_enabled;
+}
+
+// `text` with touch input set to `value`, which is "true" or "false".
+runtime::RuntimeConfigEdit SetTouchInput(std::string_view text,
+                                         std::string_view value) {
+  const runtime::RuntimeConfigValue preset =
+      runtime::GetRuntimeConfigValue(text, "device");
+  if (preset.found) {
+    // A device given as one name has no place for the switch. It becomes
+    // the block form of the same device.
+    runtime::RuntimeConfigEdit block =
+        runtime::SetRuntimeConfigString(text, "device.type", preset.value);
+    if (!block) {
+      return block;
+    }
+    return runtime::SetRuntimeConfigString(block.text, kTouchKey, value);
+  }
+  if (runtime::GetRuntimeConfigValue(text, "device.type").found) {
+    return runtime::SetRuntimeConfigString(text, kTouchKey, value);
+  }
+  return runtime::SetRuntimeConfigString(text, kTouchKeyWithoutDevice, value);
+}
+
+// Accepts every value, and records where the parser gave up and the first
+// name the outermost object lists twice.
 class JsonSyntaxProbe final : public nlohmann::json_sax<nlohmann::json> {
  public:
   bool null() override { return true; }
@@ -25,11 +78,16 @@ class JsonSyntaxProbe final : public nlohmann::json_sax<nlohmann::json> {
   bool number_float(number_float_t, const string_t&) override { return true; }
   bool string(string_t&) override { return true; }
   bool binary(binary_t&) override { return true; }
-  bool start_object(std::size_t) override { return true; }
-  bool key(string_t&) override { return true; }
-  bool end_object() override { return true; }
-  bool start_array(std::size_t) override { return true; }
-  bool end_array() override { return true; }
+  bool start_object(std::size_t) override { return Enter(); }
+  bool key(string_t& name) override {
+    if (depth_ == 1 && !names_.insert(name).second && !repeated.has_value()) {
+      repeated = name;
+    }
+    return true;
+  }
+  bool end_object() override { return Leave(); }
+  bool start_array(std::size_t) override { return Enter(); }
+  bool end_array() override { return Leave(); }
   bool parse_error(std::size_t position, const std::string&,
                    const nlohmann::detail::exception&) override {
     failed = true;
@@ -40,7 +98,142 @@ class JsonSyntaxProbe final : public nlohmann::json_sax<nlohmann::json> {
   bool failed = false;
   // How many bytes the parser had read when it gave up.
   std::size_t fault = 0;
+  std::optional<std::string> repeated;
+
+ private:
+  bool Enter() {
+    ++depth_;
+    return true;
+  }
+  bool Leave() {
+    --depth_;
+    return true;
+  }
+
+  // How many objects and arrays the parser is inside.
+  std::size_t depth_ = 0;
+  std::set<std::string> names_;
 };
+
+JsonSyntaxProbe ProbeJson(std::string_view text) {
+  JsonSyntaxProbe probe;
+  nlohmann::json::sax_parse(text, &probe, nlohmann::json::input_format_t::json,
+                            true, true);
+  return probe;
+}
+
+TextPosition FaultPosition(const JsonSyntaxProbe& probe,
+                           std::string_view text) {
+  // The fault is the last byte read.
+  const std::size_t end =
+      probe.fault == 0 ? 0 : std::min(probe.fault - 1, text.size());
+  TextPosition position;
+  for (std::size_t index = 0; index < end; ++index) {
+    const char character = text[index];
+    // A carriage return ends a line by itself, as it does in the editor,
+    // unless a line feed follows and ends it.
+    const bool lone_return =
+        character == '\r' &&
+        (index + 1 == text.size() || text[index + 1] != '\n');
+    if (character == '\n' || lone_return) {
+      ++position.line;
+      position.column = 1;
+    } else if ((static_cast<unsigned char>(character) & 0xC0) != 0x80) {
+      // Only the first byte of a character counts.
+      ++position.column;
+    }
+  }
+  return position;
+}
+
+std::string FaultMessage(const TextPosition& position) {
+  return "Not valid JSON at line " + std::to_string(position.line) +
+         ", column " + std::to_string(position.column);
+}
+
+std::string Quoted(std::string_view name) {
+  return "\"" + std::string(name) + "\"";
+}
+
+// Why Nightcap would not use `text` as fflags.json, or empty. The file's
+// loader has the last word on a save; this names the flag at fault.
+std::string FFlagsContentError(std::string_view text) {
+  const JsonSyntaxProbe probe = ProbeJson(text);
+  if (probe.failed) {
+    return FaultMessage(FaultPosition(probe, text));
+  }
+  const nlohmann::json values =
+      nlohmann::json::parse(text, nullptr, false, true);
+  if (!values.is_object()) {
+    return "fflags.json must be one JSON object, like "
+           "{ \"FFlagName\": \"True\" }";
+  }
+  if (probe.repeated.has_value()) {
+    return Quoted(*probe.repeated) + " is listed twice";
+  }
+  for (const auto& [name, value] : values.items()) {
+    if (name.empty()) {
+      return "A flag has an empty name";
+    }
+    if (!value.is_string() && !value.is_boolean() &&
+        !value.is_number_integer()) {
+      return Quoted(name) +
+             ": the value must be text, true or false, or a whole number";
+    }
+  }
+  return {};
+}
+
+// Whether `text` is UTF-8 with no NUL byte, which a text view needs.
+bool IsUtf8Text(std::string_view text) {
+  std::size_t index = 0;
+  while (index < text.size()) {
+    const unsigned char lead = static_cast<unsigned char>(text[index]);
+    if (lead == 0) {
+      return false;
+    }
+    if (lead < 0x80) {
+      ++index;
+      continue;
+    }
+    std::size_t length = 0;
+    char32_t point = 0;
+    // The smallest value this length may encode.
+    char32_t least = 0;
+    if ((lead & 0xE0) == 0xC0) {
+      length = 2;
+      point = lead & 0x1F;
+      least = 0x80;
+    } else if ((lead & 0xF0) == 0xE0) {
+      length = 3;
+      point = lead & 0x0F;
+      least = 0x800;
+    } else if ((lead & 0xF8) == 0xF0) {
+      length = 4;
+      point = lead & 0x07;
+      least = 0x10000;
+    } else {
+      return false;
+    }
+    if (text.size() - index < length) {
+      return false;
+    }
+    for (std::size_t offset = 1; offset < length; ++offset) {
+      const unsigned char next =
+          static_cast<unsigned char>(text[index + offset]);
+      if ((next & 0xC0) != 0x80) {
+        return false;
+      }
+      point = (point << 6) | (next & 0x3F);
+    }
+    if (point < least || point > 0x10FFFF ||
+        (point >= 0xD800 && point <= 0xDFFF)) {
+      return false;
+    }
+    index += length;
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -129,6 +322,16 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "Raw mouse input",
                  "Turn on if first-person aiming feels too slow or too fast "
                  "with fractional display scaling.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+            }},
+           {"Touch",
+            {
+                {kTouchKey,
+                 "Touch input",
+                 "Turn on for a touch screen or tablet.",
                  SettingKind::kToggle,
                  {},
                  "false",
@@ -380,6 +583,9 @@ bool SettingsDocument::Load(std::string* error) {
 }
 
 std::string SettingsDocument::Value(std::string_view key) const {
+  if (key == kTouchKey) {
+    return TouchInput(text_) ? "true" : "false";
+  }
   return runtime::GetRuntimeConfigValue(text_, key).value;
 }
 
@@ -390,8 +596,9 @@ bool SettingsDocument::IsSet(std::string_view key) const {
 bool SettingsDocument::Set(std::string_view key, std::string_view value,
                            std::string* error) {
   runtime::RuntimeConfigEdit edit =
-      value.empty() ? runtime::UnsetRuntimeConfigValue(text_, key)
-                    : runtime::SetRuntimeConfigString(text_, key, value);
+      key == kTouchKey ? SetTouchInput(text_, value)
+      : value.empty()  ? runtime::UnsetRuntimeConfigValue(text_, key)
+                       : runtime::SetRuntimeConfigString(text_, key, value);
   return Save(std::move(edit.text), std::move(edit.error), error);
 }
 
@@ -427,37 +634,42 @@ bool SettingsDocument::Save(std::string edited, std::string edit_error,
   return true;
 }
 
-std::string JsonSyntaxError(std::string_view text) {
-  JsonSyntaxProbe probe;
-  nlohmann::json::sax_parse(text, &probe, nlohmann::json::input_format_t::json,
-                            true, true);
+std::optional<TextPosition> JsonSyntaxFault(std::string_view text) {
+  const JsonSyntaxProbe probe = ProbeJson(text);
   if (!probe.failed) {
-    return {};
+    return std::nullopt;
   }
-  // The fault is the last byte read.
-  const std::size_t end =
-      probe.fault == 0 ? 0 : std::min(probe.fault - 1, text.size());
-  std::size_t line = 1;
-  std::size_t column = 1;
-  for (const char character : text.substr(0, end)) {
-    if (character == '\n') {
-      ++line;
-      column = 1;
-    } else {
-      ++column;
-    }
-  }
-  return "Not valid JSON at line " + std::to_string(line) + ", column " +
-         std::to_string(column);
+  return FaultPosition(probe, text);
+}
+
+std::string JsonSyntaxError(std::string_view text) {
+  const std::optional<TextPosition> fault = JsonSyntaxFault(text);
+  return fault.has_value() ? FaultMessage(*fault) : std::string();
 }
 
 FFlagsDocument::FFlagsDocument(std::filesystem::path file)
     : file_(std::move(file)) {}
 
+runtime::RuntimeConfigText FFlagsDocument::Read() const {
+  // No more of the file is read than Nightcap itself reads.
+  runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(
+      file_, static_cast<std::size_t>(services::kMaximumFflagsFileBytes));
+  if (read && read.text.size() > services::kMaximumFflagsFileBytes) {
+    read.error = "fflags.json is larger than 64 KiB, the most Nightcap "
+                 "reads. Shorten or remove " +
+                 file_.string();
+  }
+  return read;
+}
+
 bool FFlagsDocument::Load(std::string* error) {
-  runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(file_);
+  runtime::RuntimeConfigText read = Read();
   if (!read) {
     *error = read.error;
+    return false;
+  }
+  if (!IsUtf8Text(read.text)) {
+    *error = "fflags.json is not UTF-8 text. Fix or remove " + file_.string();
     return false;
   }
   disk_ = std::move(read.text);
@@ -472,9 +684,9 @@ std::string FFlagsDocument::Text() const {
 }
 
 bool FFlagsDocument::Save(std::string_view text, std::string* error) {
-  std::string syntax = JsonSyntaxError(text);
-  if (!syntax.empty()) {
-    *error = std::move(syntax);
+  std::string content_error = FFlagsContentError(text);
+  if (!content_error.empty()) {
+    *error = std::move(content_error);
     return false;
   }
   // Nightcap refuses to start on a file its loader rejects, so the loader
@@ -485,8 +697,10 @@ bool FFlagsDocument::Save(std::string_view text, std::string* error) {
       });
   if (!saved) {
     *error = saved.error;
-    runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(file_);
-    if (read && read.text != disk_) {
+    runtime::RuntimeConfigText read = Read();
+    if (!read) {
+      *error = read.error;
+    } else if (read.text != disk_) {
       disk_ = std::move(read.text);
       *error =
           "fflags.json changed on disk since it was opened. Save again to "
