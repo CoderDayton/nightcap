@@ -27,6 +27,8 @@ Release notes on GitHub are taken from the matching section here.
 - Fixed anti-aliasing being forced off at every graphics quality level. Roblox now picks it, and a
   `FIntDebugForceMSAASamples` value in `fflags.json` still applies.
 - Fixed the voice chat microphone only working on Roblox 2.738. It no longer depends on one Roblox version.
+- Fixed other players not hearing you in voice chat after a Roblox update. The updater now rebuilds the
+  audio device data when the previous version's profile has none.
 - Fixed frame hitches while textures load on graphics cards that need ETC2 textures decoded on the CPU.
 - Fixed problems on Chimera Linux and other musl systems, including error messages that differed from the
   ones Roblox expects.
