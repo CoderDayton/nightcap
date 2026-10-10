@@ -109,6 +109,15 @@ struct HostAbiProfile {
   size_t NativeMimallocConstructorRangeEndExclusive() const noexcept;
   bool ShouldInitializeNativeMimallocThreadAfterConstructor(
       size_t index) const noexcept;
+  // True when both replays have the one verified shape. The native replay is
+  // one range that runs to the end of .init_array. Its first four
+  // constructors are the process-load constructor at the thread-initializer
+  // checkpoint, the JNI singleton initializer, and two wiring entries. The
+  // host-bridge replay runs the same constructors without the two wiring
+  // entries. `jni_singleton_constructor` is the .init_array index of the JNI
+  // singleton initializer.
+  bool HasVerifiedConstructorPolicy(
+      size_t jni_singleton_constructor) const noexcept;
   bool HasValidNativePreJniBootstrap() const noexcept;
   HostAllocatorStrategy ResolveAllocatorStrategy(
       bool host_bridges_override_present,

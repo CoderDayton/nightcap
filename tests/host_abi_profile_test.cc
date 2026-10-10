@@ -154,6 +154,84 @@ TEST(HostAbiProfileTest, ResearchedBaselineKeepsHostBridgeDefault) {
             HostAllocatorStrategy::kNativeMimalloc);
 }
 
+// A profile of 100 constructors whose native replay starts at index 2.
+HostAbiProfile ConstructorPolicyProfile(
+    size_t checkpoint, std::initializer_list<ConstructorRange> host_ranges) {
+  HostAbiProfile profile;
+  profile.init_array_count = 100;
+  for (const ConstructorRange& range : host_ranges) {
+    profile.constructor_run_ranges[profile.constructor_run_range_count++] =
+        range;
+  }
+  profile.native_mimalloc_constructor_run_ranges[0] = {2, 100};
+  profile.native_mimalloc_constructor_run_range_count = 1;
+  profile.native_mimalloc_thread_initializer_after_constructor = checkpoint;
+  return profile;
+}
+
+TEST(HostAbiProfileTest, ConstructorPolicyAcceptsProcessLoadConstructorFirst) {
+  EXPECT_TRUE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
+                  .HasVerifiedConstructorPolicy(5));
+}
+
+TEST(HostAbiProfileTest, ConstructorPolicyAcceptsProcessLoadConstructorLast) {
+  // The 2.742 order: wiring, JNI singleton, wiring, process-load constructor.
+  EXPECT_TRUE(ConstructorPolicyProfile(5, {{3, 4}, {5, 100}})
+                  .HasVerifiedConstructorPolicy(3));
+}
+
+TEST(HostAbiProfileTest, ConstructorPolicyRequiresJniSingletonConstructor) {
+  // Host bridges run a wiring constructor and skip the JNI singleton.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 4}, {6, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  EXPECT_FALSE(ConstructorPolicyProfile(5, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(3));
+  // The JNI singleton constructor is the checkpoint constructor.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(2));
+  // The JNI singleton constructor is outside the four leading constructors.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(6));
+}
+
+TEST(HostAbiProfileTest, ConstructorPolicyRejectsOtherShapes) {
+  // The checkpoint is outside the four leading constructors.
+  EXPECT_FALSE(ConstructorPolicyProfile(6, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // The checkpoint constructor does not run under host bridges.
+  EXPECT_FALSE(ConstructorPolicyProfile(3, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // Only one wiring constructor is excluded.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 4}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // A constructor after the leading four is excluded.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 6}, {7, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // Host bridges run a constructor the native replay skips.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{1, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // The replay stops before the end of the init-array.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 99}})
+                   .HasVerifiedConstructorPolicy(5));
+
+  HostAbiProfile split_native = ConstructorPolicyProfile(2, {{2, 3}, {5, 100}});
+  split_native.native_mimalloc_constructor_run_ranges[0] = {2, 50};
+  split_native.native_mimalloc_constructor_run_ranges[1] = {50, 100};
+  split_native.native_mimalloc_constructor_run_range_count = 2;
+  EXPECT_FALSE(split_native.HasVerifiedConstructorPolicy(5));
+
+  // The init-array ends inside the four leading constructors.
+  HostAbiProfile too_short = ConstructorPolicyProfile(2, {{2, 3}});
+  too_short.init_array_count = 5;
+  too_short.native_mimalloc_constructor_run_ranges[0] = {2, 5};
+  EXPECT_FALSE(too_short.HasVerifiedConstructorPolicy(4));
+
+  HostAbiProfile shortest = ConstructorPolicyProfile(2, {{2, 3}, {5, 6}});
+  shortest.init_array_count = 6;
+  shortest.native_mimalloc_constructor_run_ranges[0] = {2, 6};
+  EXPECT_TRUE(shortest.HasVerifiedConstructorPolicy(5));
+}
+
 TEST(HostAbiProfileTest, UnknownBuildHasNoNativeOffsets) {
   EXPECT_EQ(FindHostAbiProfile("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             nullptr);
@@ -428,7 +506,7 @@ class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
           {"empty_string_initializer_rva",
            Hex(SymbolRva("MocktailFixtureThreadInitialize"))},
           {"jni_singleton_initializer_rva",
-           Hex(SymbolRva("MocktailFixtureRegistryInitialize"))},
+           Hex(SymbolRva("MocktailFixtureConstructorFive"))},
           {"constructor_rvas",
            {{"2", Hex(SymbolRva("MocktailFixtureConstructorTwo"))},
             {"3", Hex(SymbolRva("MocktailFixtureConstructorThree"))},

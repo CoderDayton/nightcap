@@ -270,6 +270,42 @@ bool HostAbiProfile::ShouldInitializeNativeMimallocThreadAfterConstructor(
          index == native_mimalloc_thread_initializer_after_constructor;
 }
 
+bool HostAbiProfile::HasVerifiedConstructorPolicy(
+    size_t jni_singleton_constructor) const noexcept {
+  constexpr size_t kLeadingConstructors = 4;
+  constexpr size_t kWiringConstructors = 2;
+  if (!HasValidConstructorRanges() ||
+      !HasValidNativeMimallocConstructorRanges() ||
+      native_mimalloc_constructor_run_range_count != 1) {
+    return false;
+  }
+  const size_t begin = native_mimalloc_constructor_run_ranges[0].begin;
+  const size_t checkpoint =
+      native_mimalloc_thread_initializer_after_constructor;
+  const ConstructorRange &tail =
+      constructor_run_ranges[constructor_run_range_count - 1];
+  if (init_array_count < begin + kLeadingConstructors ||
+      native_mimalloc_constructor_run_ranges[0].end_exclusive !=
+          init_array_count ||
+      checkpoint < begin || checkpoint >= begin + kLeadingConstructors ||
+      !AllowsConstructor(checkpoint) || jni_singleton_constructor < begin ||
+      jni_singleton_constructor >= begin + kLeadingConstructors ||
+      jni_singleton_constructor == checkpoint ||
+      !AllowsConstructor(jni_singleton_constructor) ||
+      ConstructorRangeBegin() < begin ||
+      tail.begin > begin + kLeadingConstructors ||
+      tail.end_exclusive != init_array_count) {
+    return false;
+  }
+  size_t excluded = 0;
+  for (size_t index = begin; index < begin + kLeadingConstructors; ++index) {
+    if (!AllowsConstructor(index)) {
+      ++excluded;
+    }
+  }
+  return excluded == kWiringConstructors;
+}
+
 bool HostAbiProfile::HasValidNativePreJniBootstrap() const noexcept {
   return native_pre_jni_bootstrap.IsValid();
 }

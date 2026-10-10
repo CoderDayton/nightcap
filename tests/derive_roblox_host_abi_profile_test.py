@@ -356,12 +356,177 @@ class SignatureSemanticsTest(unittest.TestCase):
 
         ANALYZER.validate_semantic_match(reference, candidate, spec)
 
+    REGISTRY_BODY = (
+        "bf38030000 e800000000 4889c3 4531f6 ba38030000 "
+        "4889c7 31f6 e800000000 b80000803f 894320 488d4b28"
+    )
+
+    def renamed_registry_body_spec(self, renamed: tuple[int, ...]):
+        return ANALYZER.SignatureSpec(
+            "registry-body", 0x1000, 11, True, 6, (0, 4), renamed
+        )
+
+    def test_registry_body_registers_may_be_renamed(self) -> None:
+        reference = decode_x86(bytes.fromhex(self.REGISTRY_BODY))
+        # r15d for r14d, r13d for eax, r12 for rcx, and a smaller object.
+        candidate = decode_x86(
+            bytes.fromhex(
+                "bff8020000 e800000000 4889c3 4531ff baf8020000 "
+                "4889c7 31f6 e800000000 41bd0000803f 44896b20 4c8d6328"
+            ),
+            0x2000,
+        )
+
+        ANALYZER.validate_semantic_match(
+            reference, candidate, self.renamed_registry_body_spec((3, 8, 9, 10))
+        )
+        with self.assertRaisesRegex(ANALYZER.AnalyzerError, "semantics changed"):
+            ANALYZER.validate_semantic_match(
+                reference, candidate, self.renamed_registry_body_spec(())
+            )
+
+    def test_renamed_registers_must_stay_consistent(self) -> None:
+        reference = decode_x86(bytes.fromhex(self.REGISTRY_BODY))
+        # The constant goes to r13d but r14d is stored.
+        two_for_one = decode_x86(
+            bytes.fromhex(
+                "bff8020000 e800000000 4889c3 4531ff baf8020000 "
+                "4889c7 31f6 e800000000 41bd0000803f 44897320 4c8d6328"
+            ),
+            0x2000,
+        )
+        # r13 stands for both r14 and rax.
+        one_for_two = decode_x86(
+            bytes.fromhex(
+                "bff8020000 e800000000 4889c3 4531ed baf8020000 "
+                "4889c7 31f6 e800000000 41bd0000803f 44896b20 4c8d6328"
+            ),
+            0x2000,
+        )
+        spec = self.renamed_registry_body_spec((3, 8, 9, 10))
+
+        for candidate in (two_for_one, one_for_two):
+            with self.assertRaisesRegex(
+                ANALYZER.AnalyzerError, "semantics changed"
+            ):
+                ANALYZER.validate_semantic_match(reference, candidate, spec)
+
     def test_short_anchor_is_opt_in(self) -> None:
         encoded = b"abc\0def"
         mask = b"\x01\x01\x01\0\x01\x01\x01"
         with self.assertRaisesRegex(ANALYZER.AnalyzerError, "no selective"):
             ANALYZER.longest_fixed_anchor(encoded, mask)
         self.assertEqual(ANALYZER.longest_fixed_anchor(encoded, mask, 3), (0, b"abc"))
+
+
+class ConstructorRangeRemapTest(unittest.TestCase):
+    HOST_BRIDGE = [
+        {"begin": 2, "end_exclusive": 3},
+        {"begin": 5, "end_exclusive": 100},
+    ]
+    NATIVE = [{"begin": 2, "end_exclusive": 100}]
+    # The 2.742 order: reference constructors 2, 3, 4, 5 are candidate
+    # constructors 5, 2, 4, 3.
+    REORDERED = (3, 0, 2, 1)
+
+    def test_same_order_only_moves_the_end(self) -> None:
+        self.assertEqual(
+            ANALYZER.remapped_constructor_ranges(
+                self.HOST_BRIDGE, (0, 1, 2, 3), 100, 120
+            ),
+            [
+                {"begin": 2, "end_exclusive": 3},
+                {"begin": 5, "end_exclusive": 120},
+            ],
+        )
+
+    def test_leading_constructors_follow_their_new_index(self) -> None:
+        self.assertEqual(
+            ANALYZER.remapped_constructor_ranges(
+                self.HOST_BRIDGE, self.REORDERED, 100, 120
+            ),
+            [
+                {"begin": 3, "end_exclusive": 4},
+                {"begin": 5, "end_exclusive": 120},
+            ],
+        )
+        self.assertEqual(
+            ANALYZER.remapped_constructor_ranges(
+                self.NATIVE, self.REORDERED, 100, 120
+            ),
+            [{"begin": 2, "end_exclusive": 120}],
+        )
+
+    def test_rejects_ranges_outside_the_verified_shape(self) -> None:
+        for ranges in (
+            # Runs a constructor before the leading four.
+            [{"begin": 1, "end_exclusive": 100}],
+            # Stops before the end of the init-array.
+            [{"begin": 2, "end_exclusive": 99}],
+            # Skips a constructor after the leading four.
+            [{"begin": 2, "end_exclusive": 6}, {"begin": 7, "end_exclusive": 100}],
+        ):
+            with self.assertRaisesRegex(ANALYZER.AnalyzerError, "cannot fit"):
+                ANALYZER.remapped_constructor_ranges(
+                    ranges, self.REORDERED, 100, 120
+                )
+
+
+@unittest.skipIf(ANALYZER.capstone is None, "Python capstone is unavailable")
+class JniSingletonPublicationTest(unittest.TestCase):
+    class Image:
+        def __init__(self, encoded: bytes):
+            self.data = encoded
+            self.file_size = len(encoded)
+
+        def require_code_rva(self, rva: int, size: int = 1) -> None:
+            if rva != 0x1000 or size > len(self.data):
+                raise ANALYZER.AnalyzerError("unexpected code RVA")
+
+        def rva_to_offset(self, rva: int, size: int = 1) -> int:
+            return rva - 0x1000
+
+        def bytes_at(self, offset: int, size: int, _description: str) -> bytes:
+            return self.data[offset : offset + size]
+
+    @staticmethod
+    def publication(rva: int, slot: int, stored: int) -> bytes:
+        def rip(opcode: str, instruction_rva: int, target: int) -> bytes:
+            return bytes.fromhex(opcode) + struct.pack(
+                "<i", target - (instruction_rva + 7)
+            )
+
+        return (
+            rip("488d05", rva, slot + 8)
+            + rip("488705", rva + 7, slot)
+            + rip("488905", rva + 14, stored)
+        )
+
+    def test_finds_the_publication_with_and_without_a_frame(self) -> None:
+        bare = self.Image(self.publication(0x1000, 0x2000, 0x2008) + b"\xc3")
+        framed = self.Image(
+            bytes.fromhex("554889e5")
+            + self.publication(0x1004, 0x2000, 0x2008)
+            + b"\x5d\xc3"
+        )
+
+        self.assertEqual(
+            ANALYZER.jni_singleton_publication(bare, 0x1000)[0].address, 0x1000
+        )
+        publication = ANALYZER.jni_singleton_publication(framed, 0x1000)
+        self.assertEqual(len(publication), 3)
+        self.assertEqual(publication[0].address, 0x1004)
+        self.assertEqual(ANALYZER.rip_targets(publication[1]), (0x2000,))
+
+    def test_rejects_code_that_publishes_nothing(self) -> None:
+        other_object = self.Image(
+            self.publication(0x1000, 0x2000, 0x2010) + b"\xc3"
+        )
+        unrelated = self.Image(bytes.fromhex("554889e5 4157 4156 4155 c3"))
+
+        for image in (other_object, unrelated):
+            with self.assertRaisesRegex(ANALYZER.AnalyzerError, "does not publish"):
+                ANALYZER.jni_singleton_publication(image, 0x1000)
 
 
 @unittest.skipIf(ANALYZER.capstone is None, "Python capstone is unavailable")

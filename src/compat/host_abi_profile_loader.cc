@@ -612,26 +612,26 @@ std::unique_ptr<OwnedHostAbiProfile> ParseProfile(const Json& root,
     *error = "external host ABI profile has inconsistent constructor policy";
     return nullptr;
   }
-  // The verified constructor layout is the same on both guest ABIs: a single
-  // process-load constructor at the thread-initializer checkpoint, two wiring
-  // entries excluded under host bridges, and one contiguous native-mimalloc
-  // replay from the checkpoint to the end of .init_array. Only the checkpoint
-  // index itself differs between payloads.
-  const std::size_t checkpoint =
-      owned->profile.native_mimalloc_thread_initializer_after_constructor;
-  if (owned->profile.init_array_count <= checkpoint + 3 ||
-      owned->profile.constructor_run_range_count != 2 ||
-      owned->profile.constructor_run_ranges[0].begin != checkpoint ||
-      owned->profile.constructor_run_ranges[0].end_exclusive != checkpoint + 1 ||
-      owned->profile.constructor_run_ranges[1].begin != checkpoint + 3 ||
-      owned->profile.constructor_run_ranges[1].end_exclusive !=
-          owned->profile.init_array_count ||
-      owned->profile.native_mimalloc_constructor_run_range_count != 1 ||
-      owned->profile.native_mimalloc_constructor_run_ranges[0].begin !=
-          checkpoint ||
-      owned->profile.native_mimalloc_constructor_run_ranges[0].end_exclusive !=
-          owned->profile.init_array_count ||
-      (kGuestElfMachine == EM_X86_64 && checkpoint != 2)) {
+  // The verified constructor layout is the same on both guest ABIs. Payloads
+  // differ in the order of the four leading constructors, and the guest ABIs
+  // differ in the index the native replay starts at.
+  // derivation_code_rvas holds three initializer anchors, then the anchors of
+  // the four leading constructors in .init_array order.
+  constexpr size_t kJniSingletonAnchor = 2;
+  constexpr size_t kFirstConstructorAnchor = 3;
+  constexpr size_t kConstructorAnchors = 4;
+  size_t jni_singleton_constructor = owned->profile.init_array_count;
+  for (size_t anchor = 0; anchor < kConstructorAnchors; ++anchor) {
+    if (owned->derivation_code_rvas[kFirstConstructorAnchor + anchor] ==
+        owned->derivation_code_rvas[kJniSingletonAnchor]) {
+      jni_singleton_constructor =
+          owned->profile.NativeMimallocConstructorRangeBegin() + anchor;
+      break;
+    }
+  }
+  if (!owned->profile.HasVerifiedConstructorPolicy(jni_singleton_constructor) ||
+      (kGuestElfMachine == EM_X86_64 &&
+       owned->profile.NativeMimallocConstructorRangeBegin() != 2)) {
     *error =
         "external host ABI profile changed the verified constructor policy";
     return nullptr;
