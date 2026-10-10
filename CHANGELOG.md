@@ -24,6 +24,9 @@ Release notes on GitHub are taken from the matching section here.
   accepts Roblox versions that change the order of their start-up steps.
 - Fixed the old Roblox home screen showing instead of the new one with the Me tab and the "For you" and
   "Charts" tabs. Nightcap now runs the Roblox start-up step that loads the new interface for your account.
+- Fixed anti-aliasing being forced off at every graphics quality level. Roblox now picks it, and a
+  `FIntDebugForceMSAASamples` value in `fflags.json` still applies.
+- Fixed the voice chat microphone only working on Roblox 2.738. It no longer depends on one Roblox version.
 - Fixed frame hitches while textures load on graphics cards that need ETC2 textures decoded on the CPU.
 - Fixed problems on Chimera Linux and other musl systems, including error messages that differed from the
   ones Roblox expects.
