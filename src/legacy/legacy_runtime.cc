@@ -650,10 +650,10 @@ void ApplyRuntimeDefaults() {
   SetEnvDefault("MOCKTAIL_INIT_CLIENT_SETTINGS", "0");
   SetEnvDefault("MOCKTAIL_POST_CLIENT_SETTINGS", "0");
   SetEnvDefault("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  // Current Roblox Android builds drive app startup through NativeGLInterface's
-  // V2 app bridge path. The legacy NativeAppBridgeInterface entry point stays
-  // available by opt-in, but running it in parallel can block V2 init.
-  SetEnvDefault("MOCKTAIL_APP_BRIDGE_APP_START", "0");
+  // nativeAppBridgeAppStart runs Roblox's StartupController, which builds the
+  // experimentation protocol that writes ClientSettings/IxpSettings.json. It
+  // runs inline before V2 init; on its own thread it can block V2 init.
+  SetEnvDefault("MOCKTAIL_APP_BRIDGE_APP_START", "1");
   SetEnvDefault("MOCKTAIL_APP_BRIDGE_APP_START_THREAD", "0");
   SetEnvDefault("MOCKTAIL_START_LUA_APP_DM", "1");
   SetEnvDefault("MOCKTAIL_START_LUA_APP_DM_INLINE", "0");
