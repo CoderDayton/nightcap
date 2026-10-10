@@ -53,6 +53,14 @@ bool ReadStorage(const std::filesystem::path& path, nlohmann::json* storage,
     *storage = nlohmann::json::object();
     return !filesystem_error;
   }
+  // The storage directory may have been writable by other users, so a file
+  // another user owns, a symlink, or a second hard link is not trusted.
+  struct stat metadata = {};
+  if (lstat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+      metadata.st_uid != geteuid() || metadata.st_nlink != 1) {
+    *error = "appStorage is not a private regular file";
+    return false;
+  }
   const auto size = std::filesystem::file_size(path, filesystem_error);
   if (filesystem_error || size > kMaximumStorageBytes) {
     *error = "appStorage is unavailable or exceeds the size limit";
@@ -191,6 +199,23 @@ bool WriteAll(int descriptor, const std::string& contents) {
 bool IsPrivateDirectory(const struct stat& metadata) {
   return S_ISDIR(metadata.st_mode) && metadata.st_uid == geteuid() &&
          (metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+// Removes group and world write access from a directory this user owns.
+// Roblox creates its storage directories with the process umask, which is 002
+// on many desktops. A directory owned by another user is left untouched.
+void TightenOwnedDirectory(const std::filesystem::path& directory) {
+  const int descriptor = open(directory.c_str(),
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) return;
+  struct stat metadata = {};
+  if (fstat(descriptor, &metadata) == 0 && S_ISDIR(metadata.st_mode) &&
+      metadata.st_uid == geteuid() &&
+      (metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+    (void)fchmod(descriptor,
+                 (metadata.st_mode & 07777) & ~(S_IWGRP | S_IWOTH));
+  }
+  close(descriptor);
 }
 
 bool FindExistingDirectoryAncestor(const std::filesystem::path& directory,
@@ -491,6 +516,7 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
     return result;
   }
   const bool lock_parent_existed = existing_lock_ancestor == lock_parent;
+  if (lock_parent_existed) TightenOwnedDirectory(lock_parent);
   const bool lock_parent_created =
       CreatePrivateDirectories(lock_parent, existing_lock_ancestor);
   struct stat lock_parent_status = {};
@@ -537,10 +563,14 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
 
   const auto existing = storage.find("BrowserTrackerId");
   std::string stored_id;
+  // Roblox stores "0" when it starts without a tracker identity.
+  const bool stored_unset =
+      existing != storage.end() && existing->is_string() &&
+      existing->get_ref<const std::string&>() == "0";
   if (existing != storage.end() && existing->is_string() &&
       IsValidId(existing->get_ref<const std::string&>())) {
     stored_id = existing->get<std::string>();
-  } else if (existing != storage.end()) {
+  } else if (existing != storage.end() && !stored_unset) {
     result.error = "appStorage BrowserTrackerId is invalid";
     close(lock);
     return result;

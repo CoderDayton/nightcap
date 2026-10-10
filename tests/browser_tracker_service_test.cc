@@ -231,9 +231,79 @@ TEST_F(BrowserTrackerServiceTest,
   EXPECT_EQ(storage_parent.st_mode & 0777, 0700U);
 }
 
+TEST_F(BrowserTrackerServiceTest, TightensOwnedGroupWritableStorageDirectory) {
+  std::filesystem::create_directories(Storage().parent_path());
+  ASSERT_EQ(chmod(Storage().parent_path().c_str(), 0775), 0);
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  FakeHttpClient http;
+  http.response = {true,
+                   200,
+                   R"({"browserTrackerId":987654321})",
+                   "",
+                   {"Set-Cookie: RBXEventTrackerV2="
+                    "CreateDate=1&rbxid=2&browserid=987654321; Path=/"}};
+
+  const BrowserTrackerResult result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.browser_tracker_id, "987654321");
+  struct stat storage_parent = {};
+  ASSERT_EQ(stat(Storage().parent_path().c_str(), &storage_parent), 0);
+  EXPECT_EQ(storage_parent.st_mode & 0777, 0755U);
+}
+
+TEST_F(BrowserTrackerServiceTest, RejectsStorageFileItCannotVouchFor) {
+  std::filesystem::create_directories(Storage().parent_path());
+  ASSERT_EQ(chmod(Storage().parent_path().c_str(), 0775), 0);
+  const std::filesystem::path planted = root_ / "planted.json";
+  std::ofstream(planted) << R"({"BrowserTrackerId":"123456"})";
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  FakeHttpClient http;
+
+  // A second hard link means another name can still change the contents.
+  std::filesystem::create_hard_link(planted, Storage());
+  BrowserTrackerResult result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.error, "appStorage is not a private regular file");
+
+  std::filesystem::remove(Storage());
+  std::filesystem::create_symlink(planted, Storage());
+  result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.error, "appStorage is not a private regular file");
+  EXPECT_EQ(http.post_count, 0);
+  EXPECT_EQ(ReadFile(planted), R"({"BrowserTrackerId":"123456"})");
+}
+
+TEST_F(BrowserTrackerServiceTest, ReplacesRobloxUnsetStoredIdentity) {
+  std::filesystem::create_directories(Storage().parent_path());
+  std::ofstream(Storage()) << R"({"BrowserTrackerId":"0","keep":true})";
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  FakeHttpClient http;
+  http.response = {true,
+                   200,
+                   R"({"browserTrackerId":987654321})",
+                   "",
+                   {"Set-Cookie: RBXEventTrackerV2="
+                    "CreateDate=1&rbxid=2&browserid=987654321; Path=/"}};
+
+  const BrowserTrackerResult result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.status, BrowserTrackerStatus::kCreated);
+  std::ifstream input(Storage());
+  const nlohmann::json saved = nlohmann::json::parse(input);
+  EXPECT_EQ(saved.at("BrowserTrackerId"), "987654321");
+  EXPECT_TRUE(saved.at("keep"));
+}
+
 TEST_F(BrowserTrackerServiceTest, RejectsCorruptStoredIdentityFailClosed) {
   std::filesystem::create_directories(Storage().parent_path());
-  std::ofstream(Storage()) << R"({"BrowserTrackerId":"0"})";
+  std::ofstream(Storage()) << R"({"BrowserTrackerId":"12x"})";
   std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
   FakeHttpClient http;
 
@@ -364,7 +434,7 @@ TEST_F(BrowserTrackerServiceTest,
       BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
 
   EXPECT_FALSE(result);
-  EXPECT_EQ(result.error, "cannot atomically replace appStorage");
+  EXPECT_EQ(result.error, "appStorage is not a private regular file");
   EXPECT_EQ(http.post_count, 0);
   EXPECT_EQ(ReadFile(protected_storage), storage_contents);
   EXPECT_EQ(ReadFile(Storage()), storage_contents);
