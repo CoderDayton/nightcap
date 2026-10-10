@@ -23,6 +23,7 @@ supported.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
@@ -1598,6 +1599,7 @@ def derive_runtime_compatibility(
     reference: ElfImage,
     candidate: ElfImage,
     manifests: Sequence[Path],
+    fallback: ElfImage | None = None,
 ) -> dict[str, Any]:
     source = load_reference_runtime_profile(manifests, reference.build_id)
     result: dict[str, Any] = {}
@@ -1620,7 +1622,36 @@ def derive_runtime_compatibility(
         result["fmod_output_device_bridge"] = derive_fmod_output_device_bridge(
             reference, candidate, fmod
         )
+    elif fallback is not None:
+        bridge = derive_fallback_fmod_output_device_bridge(
+            fallback, candidate, manifests
+        )
+        if bridge is not None:
+            result["fmod_output_device_bridge"] = bridge
     return result
+
+
+def derive_fallback_fmod_output_device_bridge(
+    fallback: ElfImage,
+    candidate: ElfImage,
+    manifests: Sequence[Path],
+) -> dict[str, Any] | None:
+    """Derive the optional FMOD bridge from another build in the manifests.
+
+    Any failure leaves the bridge out.
+    """
+    if fallback.build_id == candidate.build_id:
+        return None
+    try:
+        fallback.validate_toolchain()
+        fmod = load_reference_runtime_profile(manifests, fallback.build_id).get(
+            "fmod_output_device_bridge"
+        )
+        if fmod is None:
+            return None
+        return derive_fmod_output_device_bridge(fallback, candidate, fmod)
+    except AnalyzerError:
+        return None
 
 
 def find_registry_function_entry(
@@ -2549,13 +2580,22 @@ def analyze(arguments: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
     metadata_path = Path(arguments.payload_metadata)
     sidecar_path = Path(arguments.reference_profile)
     reference_sidecar = validated_sidecar(sidecar_path)
-    with ElfImage(reference_path) as reference, ElfImage(candidate_path) as candidate:
+    with contextlib.ExitStack() as stack:
+        reference = stack.enter_context(ElfImage(reference_path))
+        candidate = stack.enter_context(ElfImage(candidate_path))
+        fallback = None
+        if arguments.runtime_fallback_lib is not None:
+            with contextlib.suppress(AnalyzerError):
+                fallback = stack.enter_context(
+                    ElfImage(Path(arguments.runtime_fallback_lib))
+                )
         metadata = validated_payload_metadata(metadata_path, candidate_path, candidate)
         profile, anchors = derive_profile(reference, candidate, reference_sidecar)
         runtime_compatibility = derive_runtime_compatibility(
             reference,
             candidate,
             tuple(Path(path) for path in arguments.reference_compatibility),
+            fallback,
         )
         return output_documents(
             candidate,
@@ -2579,6 +2619,12 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         default=[],
         metavar="MANIFEST",
         help="compatibility manifest containing exact reference runtime anchors",
+    )
+    parser.add_argument(
+        "--runtime-fallback-lib",
+        metavar="LIB",
+        help="libroblox.so of another build in the compatibility manifests; "
+        "supplies the FMOD output-device anchors when the reference has none",
     )
     parser.add_argument("--candidate-lib", required=True, metavar="LIB")
     parser.add_argument("--payload-metadata", required=True, metavar="META")

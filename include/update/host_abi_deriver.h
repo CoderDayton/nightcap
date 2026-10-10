@@ -11,6 +11,10 @@ struct HostAbiDerivationOptions {
   std::filesystem::path reference_library;
   std::filesystem::path reference_profile;
   std::vector<std::filesystem::path> reference_compatibility_manifests;
+  // Optional libroblox.so of another build that the compatibility manifests
+  // describe. It supplies the FMOD output-device anchors when the manifests
+  // have none for the reference build.
+  std::filesystem::path runtime_fallback_library;
   std::filesystem::path candidate_payload_directory;
   std::filesystem::path output_directory;
 };

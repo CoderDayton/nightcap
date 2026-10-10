@@ -301,6 +301,9 @@ struct ReferenceProfile {
   std::filesystem::path library;
   std::filesystem::path profile;
   std::vector<std::filesystem::path> compatibility_manifests;
+  // libroblox.so of the shipped reference payload when the reference is a
+  // different, machine-derived payload. Empty when it is not staged.
+  std::filesystem::path runtime_fallback_library;
   std::string error;
 
   explicit operator bool() const {
@@ -366,6 +369,23 @@ ReferenceProfile ResolveReference(
            result.compatibility_manifests.front() !=
                paths.compatibility_manifest)) {
         result.compatibility_manifests.push_back(paths.compatibility_manifest);
+      }
+      // A machine-derived profile can lack the optional FMOD output-device
+      // anchors. The shipped reference payload stays staged and has them.
+      const std::optional<SupportedPayloadProfile> shipped =
+          ResolveReferenceProfile(paths.host_abi_reference_profile, profiles,
+                                  nullptr);
+      if (shipped.has_value()) {
+        const std::string shipped_id = std::to_string(shipped->version_code) +
+                                       "-" + shipped->elf_build_id;
+        const std::filesystem::path shipped_directory =
+            paths.data_root / "payloads" / shipped_id;
+        const PayloadIntegrityResult shipped_payload =
+            InspectPreparedPayload(shipped_directory);
+        if (shipped_id != installed.payload_id && shipped_payload &&
+            shipped_payload.payload_id == shipped_id) {
+          result.runtime_fallback_library = shipped_directory / "libroblox.so";
+        }
       }
       return result;
     }
@@ -475,6 +495,7 @@ UpdateResult RunUnsafeLatest(
     derivation.reference_profile = reference.profile;
     derivation.reference_compatibility_manifests =
         reference.compatibility_manifests;
+    derivation.runtime_fallback_library = reference.runtime_fallback_library;
     derivation.candidate_payload_directory = candidate.staged.payload_directory;
     derivation.output_directory = workspace / "derived";
     Progress(request.progress_fd, "Deriving latest Roblox compatibility...");
@@ -853,6 +874,8 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
         derivation.reference_profile = reference.profile;
         derivation.reference_compatibility_manifests =
             reference.compatibility_manifests;
+        derivation.runtime_fallback_library =
+            reference.runtime_fallback_library;
         derivation.candidate_payload_directory =
             candidate.staged.payload_directory;
         derivation.output_directory =

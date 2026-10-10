@@ -2112,5 +2112,71 @@ TEST(PayloadStoreTest, RequiresTwoRuntimeBoundCanariesForLatestCandidate) {
             metadata["sha256"]["libroblox"]);
 }
 
+// Needs real Roblox payloads. MOCKTAIL_TEST_UPDATE_DATA_ROOT is an updater data
+// root whose derived 3092 profile has no FMOD output-device bridge.
+TEST(HostAbiDeriverRealPayloadTest, FallbackLibrarySuppliesMissingFmodBridge) {
+  const char* data_root = std::getenv("MOCKTAIL_TEST_UPDATE_DATA_ROOT");
+  if (data_root == nullptr) {
+    GTEST_SKIP() << "real Roblox payloads were not explicitly provided";
+  }
+  const std::filesystem::path root = data_root;
+  const std::string reference_id =
+      "3092-5f0704edd9064f566ee3d6df2bd2fabbcc709f03";
+  // Derived profiles are named <payload id>-<runtime hash>.json.
+  std::string installed_profile;
+  std::error_code scan_error;
+  for (const auto& entry : std::filesystem::directory_iterator(
+           root / "host_abi_profiles", scan_error)) {
+    const std::string name = entry.path().filename().string();
+    if (name.rfind(reference_id + "-", 0) == 0 &&
+        std::filesystem::exists(root / "compatibility_profiles" / name)) {
+      installed_profile = name;
+      break;
+    }
+  }
+  ASSERT_FALSE(installed_profile.empty());
+  char pattern[] = "/tmp/mocktail_fmod_fallback_XXXXXX";
+  const char* created = mkdtemp(pattern);
+  ASSERT_NE(created, nullptr);
+  const std::filesystem::path output = created;
+
+  const auto derive = [&](const std::filesystem::path& directory,
+                          const std::filesystem::path& fallback) {
+    HostAbiDerivationOptions options;
+    options.reference_library =
+        root / "payloads" / reference_id / "libroblox.so";
+    options.reference_profile = root / "host_abi_profiles" / installed_profile;
+    options.reference_compatibility_manifests = {
+        root / "compatibility_profiles" / installed_profile,
+        std::filesystem::path(MOCKTAIL_TEST_SOURCE_DIR) /
+            "config/roblox_compatibility.json"};
+    options.runtime_fallback_library = fallback;
+    options.candidate_payload_directory =
+        root / "payloads/3222-a67a91ef96c700c0730acd36a250c2f93cfafbc1";
+    options.output_directory = directory;
+    const HostAbiDerivationResult derived = DeriveHostAbiProfile(options);
+    EXPECT_TRUE(derived) << derived.error;
+    std::ifstream input(derived.compatibility_manifest);
+    const nlohmann::json manifest =
+        nlohmann::json::parse(input, nullptr, false);
+    return manifest.is_object() ? manifest["profiles"][0] : nlohmann::json();
+  };
+
+  const nlohmann::json without = derive(output / "without", {});
+  EXPECT_FALSE(without.contains("fmod_output_device_bridge"));
+
+  const nlohmann::json with = derive(
+      output / "with",
+      root / "payloads/2998-ade08266c67aee88ec9c1d00902150e1684dad3a/"
+             "libroblox.so");
+  ASSERT_TRUE(with.contains("fmod_output_device_bridge"));
+  EXPECT_TRUE(
+      with["fmod_output_device_bridge"].contains("input_count_method_rva"));
+  EXPECT_EQ(with["fmod_output_device_bridge"]["vtable_layout_version"], 2);
+
+  std::error_code filesystem_error;
+  std::filesystem::remove_all(output, filesystem_error);
+}
+
 }  // namespace
 }  // namespace mocktail::update

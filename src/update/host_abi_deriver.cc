@@ -2563,6 +2563,35 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
   return std::pair<Json, Json>{std::move(derived), std::move(compatibility)};
 }
 
+// Derives the optional FMOD output-device bridge from `library`, another build
+// the manifests describe. Any failure leaves the manifest without the bridge.
+void AddFallbackFmodBridge(const std::filesystem::path& library,
+                           const std::vector<std::filesystem::path>& manifests,
+                           const ElfImage& candidate, Json* compatibility) {
+  std::string error;
+  ElfImage fallback;
+  if (!fallback.Open(library, &error) ||
+      fallback.build_id() == candidate.build_id() ||
+      !fallback.ValidateToolchain(&error)) {
+    return;
+  }
+  const auto anchors =
+      LoadRuntimeCompatibilityAnchors(manifests, fallback.build_id(), &error);
+  if (!anchors.has_value() || !anchors->fmod.has_value()) return;
+  Disassembler disassembler;
+  if (!disassembler.Open(&error)) return;
+  RuntimeCompatibilityAnchors source;
+  source.fmod = anchors->fmod;
+  const auto derived = DeriveRuntimeCompatibility(fallback, candidate,
+                                                  disassembler, source, &error);
+  if (!derived.has_value() ||
+      !derived->contains("fmod_output_device_bridge")) {
+    return;
+  }
+  (*compatibility)["profiles"][0]["fmod_output_device_bridge"] =
+      (*derived)["fmod_output_device_bridge"];
+}
+
 }  // namespace
 
 HostAbiSidecarIdentity ReadHostAbiSidecarIdentity(
@@ -2620,10 +2649,15 @@ HostAbiDerivationResult DeriveHostAbiProfile(
       options.reference_compatibility_manifests, reference.build_id(),
       &result.error);
   if (!runtime_source.has_value()) return result;
-  const auto documents = DeriveDocuments(reference, candidate, *sidecar,
-                                         *metadata, *runtime_source,
-                                         &result.error);
+  auto documents = DeriveDocuments(reference, candidate, *sidecar, *metadata,
+                                   *runtime_source, &result.error);
   if (!documents.has_value()) return result;
+  if (!runtime_source->fmod.has_value() &&
+      !options.runtime_fallback_library.empty()) {
+    AddFallbackFmodBridge(options.runtime_fallback_library,
+                          options.reference_compatibility_manifests, candidate,
+                          &documents->second);
+  }
   result.profile = options.output_directory / "host_abi_profile.json";
   result.compatibility_manifest =
       options.output_directory / "compatibility.json";

@@ -50,6 +50,10 @@ LATEST_CANDIDATE_METADATA = (
 LATEST_REFERENCE_PROFILE = REFERENCE_PROFILE_PATH
 DEVICE_LISTS_PAYLOAD_ID = "3092-5f0704edd9064f566ee3d6df2bd2fabbcc709f03"
 DEVICE_LISTS_LIBRARY = PAYLOAD_ROOT / DEVICE_LISTS_PAYLOAD_ID / "libroblox.so"
+FALLBACK_CANDIDATE_PAYLOAD_ID = "3222-a67a91ef96c700c0730acd36a250c2f93cfafbc1"
+FALLBACK_CANDIDATE_LIBRARY = (
+    PAYLOAD_ROOT / FALLBACK_CANDIDATE_PAYLOAD_ID / "libroblox.so"
+)
 
 
 def load_analyzer():
@@ -797,6 +801,39 @@ class DeviceListsRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
                 derived = ANALYZER.derive_runtime_compatibility(
                     reference, candidate, (manifest,))
             self.assertEqual(derived["fmod_output_device_bridge"], self.EXPECTED_BRIDGE)
+
+
+@unittest.skipUnless(
+    ANALYZER.capstone is not None
+    and CANDIDATE_LIBRARY.is_file()
+    and DEVICE_LISTS_LIBRARY.is_file()
+    and FALLBACK_CANDIDATE_LIBRARY.is_file(),
+    "local exact 2998, 3092 and 3222 payloads are unavailable",
+)
+class FallbackRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
+    MANIFESTS = (PROJECT_ROOT / "config" / "roblox_compatibility.json",)
+
+    def test_fallback_library_supplies_missing_fmod_bridge(self):
+        # The shipped manifest describes 2998 but not 3092.
+        with ANALYZER.ElfImage(DEVICE_LISTS_LIBRARY) as reference, ANALYZER.ElfImage(
+            FALLBACK_CANDIDATE_LIBRARY
+        ) as candidate, ANALYZER.ElfImage(CANDIDATE_LIBRARY) as fallback:
+            without = ANALYZER.derive_runtime_compatibility(
+                reference, candidate, self.MANIFESTS)
+            derived = ANALYZER.derive_runtime_compatibility(
+                reference, candidate, self.MANIFESTS, fallback)
+        self.assertNotIn("fmod_output_device_bridge", without)
+        bridge = derived["fmod_output_device_bridge"]
+        self.assertEqual(bridge["vtable_layout_version"], 2)
+        self.assertIn("input_count_method_rva", bridge)
+
+    def test_fallback_without_anchors_leaves_bridge_out(self):
+        with ANALYZER.ElfImage(DEVICE_LISTS_LIBRARY) as reference, ANALYZER.ElfImage(
+            FALLBACK_CANDIDATE_LIBRARY
+        ) as candidate:
+            derived = ANALYZER.derive_runtime_compatibility(
+                reference, candidate, self.MANIFESTS, reference)
+        self.assertNotIn("fmod_output_device_bridge", derived)
 
 
 if __name__ == "__main__":
