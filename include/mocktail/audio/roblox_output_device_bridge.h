@@ -61,8 +61,7 @@ class RobloxOutputDeviceBridge final {
   void SelectDevice(int index, bool input = false);
   void ConstructGuestString(void* destination, std::string_view value) const;
 
-  std::unique_ptr<NativeInputCapture> capture_;
-  bool capture_profile_supported_ = false;
+  std::shared_ptr<NativeInputCapture> capture_;
   std::array<std::uintptr_t, 6> original_capture_methods_{};
   mutable std::mutex mutex_;
   compat::FmodOutputDeviceBridgeProfile profile_;

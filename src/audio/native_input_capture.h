@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -31,18 +32,18 @@ struct NativeOptionalFormat {
 struct NativeSharedSink { void* object; void* owner; };
 static_assert(sizeof(NativeOptionalFormat) == 16);
 static_assert(sizeof(NativePcmFormat) == 8);
-inline std::atomic<NativeInputCapture*> g_native_capture{nullptr};
+inline std::shared_ptr<NativeInputCapture> g_native_capture;
 
 class NativeInputCapture {
  public:
   using DeliverPcm = std::size_t (*)(void*, const void*, std::size_t,
                                     std::uint64_t, const NativePcmFormat*);
-  using Destroy = void (*)(NativeSharedSink*);
   using OriginalLatency = void (*)(void*, std::uint32_t*, std::uint32_t*);
+  using ImageRange = bool (*)(std::uintptr_t, std::uintptr_t, std::size_t);
   struct SinkAbi {
-    std::uintptr_t vtable;
-    DeliverPcm deliver;
-    Destroy release;
+    std::uintptr_t image_base;
+    ImageRange is_image_relro;
+    ImageRange is_image_code;
     OriginalLatency latency;
   };
   NativeInputCapture(SinkAbi abi, bool enabled)
@@ -50,17 +51,22 @@ class NativeInputCapture {
   ~NativeInputCapture() { Shutdown(); }
 
   static NativeOptionalFormat Format(void*) {
-    auto* capture = g_native_capture.load(std::memory_order_acquire);
-    return {{}, capture && capture->enabled_ ? 1ULL : 0ULL};
+    auto capture =
+        std::atomic_load_explicit(&g_native_capture, std::memory_order_acquire);
+    if (!capture) return {};
+    std::lock_guard lock(capture->mutex_);
+    return {{}, capture->enabled_ && !capture->closed_ ? 1ULL : 0ULL};
   }
   static void Latency(void* self, std::uint32_t* playback,
                       std::uint32_t* recording) {
     // Preserve the native playback latency and report the host capture queue.
-    auto* capture = g_native_capture.load(std::memory_order_acquire);
+    auto capture =
+        std::atomic_load_explicit(&g_native_capture, std::memory_order_acquire);
     if (!capture) return;
+    std::lock_guard lock(capture->mutex_);
+    if (capture->closed_) return;
     capture->abi_.latency(self, playback, recording);
     if (recording) {
-      std::lock_guard lock(capture->mutex_);
       *recording = 10;
       auto it = capture->sessions_.find(self);
       if (it != capture->sessions_.end()) {
@@ -70,33 +76,48 @@ class NativeInputCapture {
     }
   }
   static bool Start(void* self, NativeSharedSink* sink) {
-    auto* capture = g_native_capture.load(std::memory_order_acquire);
+    auto capture =
+        std::atomic_load_explicit(&g_native_capture, std::memory_order_acquire);
     return capture && capture->StartSink(self, sink);
   }
   static void Stop(void* self, NativeSharedSink* sink) {
-    auto* capture = g_native_capture.load(std::memory_order_acquire);
+    auto capture =
+        std::atomic_load_explicit(&g_native_capture, std::memory_order_acquire);
     if (capture) capture->StopSink(self, sink);
   }
   static bool Recording(void* self) {
-    auto* capture = g_native_capture.load(std::memory_order_acquire);
+    auto capture =
+        std::atomic_load_explicit(&g_native_capture, std::memory_order_acquire);
     if (!capture) return false;
     std::lock_guard lock(capture->mutex_);
     return capture->sessions_.find(self) != capture->sessions_.end();
   }
   static void Poll(void* self) {
-    auto* capture = g_native_capture.load(std::memory_order_acquire);
+    auto capture =
+        std::atomic_load_explicit(&g_native_capture, std::memory_order_acquire);
     if (capture) capture->Deliver(self);
   }
   void Shutdown() {
     std::lock_guard lock(mutex_);
+    closed_ = true;
     for (auto& [self, session] : sessions_) Close(*session);
     sessions_.clear();
   }
 
  private:
+  struct Sink {
+    NativeSharedSink shared;
+    DeliverPcm deliver;
+  };
+  struct SharedCount {
+    const std::uintptr_t* vtable;
+    long shared_owners;
+    long weak_owners;
+  };
+  using ControlBlockHook = void (*)(void*);
   struct Session {
     std::unique_ptr<AudioCapture> input;
-    std::vector<NativeSharedSink> sinks;
+    std::vector<Sink> sinks;
     std::mutex queue_mutex;
     // At most 200 ms; a stalled consumer must not accumulate stale speech.
     std::array<std::array<std::int16_t, 480>, 20> frames{};
@@ -118,20 +139,33 @@ class NativeInputCapture {
                 session.input->buffer_data(), bytes);
     ++session.count;
   }
+  bool IsGuestVtable(const void* object, std::size_t size,
+                     std::initializer_list<std::size_t> methods) const {
+    const auto base = abi_.image_base;
+    const auto* table = *static_cast<const std::uintptr_t* const*>(object);
+    const auto address = reinterpret_cast<std::uintptr_t>(table);
+    if (address < base ||
+        !abi_.is_image_relro(base, address - base, size * sizeof(*table)))
+      return false;
+    for (const auto slot : methods)
+      if (table[slot] < base ||
+          !abi_.is_image_code(base, table[slot] - base, 1))
+        return false;
+    return true;
+  }
   bool StartSink(void* self, NativeSharedSink* sink) {
     std::lock_guard lock(mutex_);
-    if (!enabled_ || !self || !sink || !sink->object || !sink->owner)
+    if (closed_ || !enabled_ || !self || !sink || !sink->object || !sink->owner)
       return false;
-    auto* table = *reinterpret_cast<std::uintptr_t**>(sink->object);
-    if (reinterpret_cast<std::uintptr_t>(table) != abi_.vtable ||
-        table[2] != reinterpret_cast<std::uintptr_t>(abi_.deliver)) {
+    if (!IsGuestVtable(sink->object, 3, {2}) ||
+        !IsGuestVtable(sink->owner, 5, {2, 4})) {
       std::fprintf(stderr, "  [audio-input] unsupported native PCM sink ABI\n");
       return false;
     }
     auto it = sessions_.find(self);
     if (it != sessions_.end()) {
       for (const auto& existing : it->second->sinks)
-        if (existing.object == sink->object) return true;
+        if (existing.shared.object == sink->object) return true;
     } else {
       auto session = std::make_unique<Session>();
       SdlAudioCaptureOptions options;
@@ -151,13 +185,20 @@ class NativeInputCapture {
     }
     // The native parameter is a by-value shared_ptr. Retain its existing
     // ownership by moving it, leaving the caller's temporary empty.
-    it->second->sinks.push_back(*sink);
+    const auto* table = *static_cast<const std::uintptr_t* const*>(sink->object);
+    it->second->sinks.push_back({*sink, reinterpret_cast<DeliverPcm>(table[2])});
     *sink = {};
     return true;
   }
-  void Release(NativeSharedSink& sink) {
-    abi_.release(&sink);
+  static void Release(Sink& sink) {
+    auto* count = static_cast<SharedCount*>(sink.shared.owner);
     sink = {};
+    if (__atomic_fetch_sub(&count->shared_owners, 1, __ATOMIC_ACQ_REL) != 0)
+      return;
+    reinterpret_cast<ControlBlockHook>(count->vtable[2])(count);
+    if (__atomic_load_n(&count->weak_owners, __ATOMIC_ACQUIRE) == 0 ||
+        __atomic_fetch_sub(&count->weak_owners, 1, __ATOMIC_ACQ_REL) == 0)
+      reinterpret_cast<ControlBlockHook>(count->vtable[4])(count);
   }
   void Close(Session& session) {
     session.input->Shutdown();
@@ -174,7 +215,7 @@ class NativeInputCapture {
     if (it == sessions_.end() || !sink) return;
     auto& session = *it->second;
     auto existing = std::find_if(session.sinks.begin(), session.sinks.end(),
-        [&](const auto& entry) { return entry.object == sink->object; });
+        [&](const auto& entry) { return entry.shared.object == sink->object; });
     if (existing == session.sinks.end()) return;
     Release(*existing);
     session.sinks.erase(existing);
@@ -203,8 +244,7 @@ class NativeInputCapture {
       }
       const NativePcmFormat format;
       for (const auto& sink : session.sinks)
-        abi_.deliver(
-            sink.object, pcm.data(), pcm.size(), delay, &format);
+        sink.deliver(sink.shared.object, pcm.data(), pcm.size(), delay, &format);
       if (++session.delivered == 1)
         std::fprintf(stderr, "  [audio-input] PCM delivered to native voice sink\n");
       if (!session.audible && std::any_of(pcm.begin(), pcm.end(),
@@ -216,6 +256,7 @@ class NativeInputCapture {
   }
   SinkAbi abi_;
   bool enabled_;
+  bool closed_ = false;
   std::mutex mutex_;
   std::map<void*, std::unique_ptr<Session>> sessions_;
 };

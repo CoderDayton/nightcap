@@ -36,6 +36,11 @@ struct FmodOutputDeviceBridgeProfile {
                ? std::array<std::size_t, 4>{9, 10, 12, 18}
                : std::array<std::size_t, 4>{8, 9, 10, 16};
   }
+  std::array<std::size_t, 6> capture_vtable_indexes() const {
+    return vtable_layout_version == 2
+               ? std::array<std::size_t, 6>{4, 13, 14, 15, 16, 17}
+               : std::array<std::size_t, 6>{4, 11, 12, 13, 14, 15};
+  }
 
   bool valid_vtable_layout() const {
     return vtable_layout_version == 1 || vtable_layout_version == 2;

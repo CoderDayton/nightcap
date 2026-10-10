@@ -155,6 +155,34 @@ TEST(PerformancePolicyTest, WorkerModesRetainRobloxManagedAssetCacheSizes) {
   }
 }
 
+TEST(PerformancePolicyTest, WorkerModesPreserveRobloxAndExplicitMsaaSelection) {
+  for (const bool throughput : {false, true}) {
+    PerformancePolicy policy;
+    policy.multithreaded_rendering = !throughput;
+    policy.physical_core_count = 14;
+    policy.physics_worker_mode = throughput ? PhysicsWorkerMode::kThroughput
+                                            : PhysicsWorkerMode::kAuto;
+    for (const std::string samples : {"", "1", "4", "8"}) {
+      nlohmann::json requested = nlohmann::json::object();
+      if (!samples.empty()) {
+        requested["FIntDebugForceMSAASamples"] = samples;
+      }
+      std::string merged;
+      std::string error;
+      ASSERT_TRUE(MergeRuntimeClientSettingsOverrides(
+          ParseFrameRatePolicy("144"), policy, requested.dump(), &merged,
+          &error)) << error;
+      const auto parsed = nlohmann::json::parse(merged);
+      EXPECT_FALSE(parsed.contains(""));
+      if (samples.empty()) {
+        EXPECT_FALSE(parsed.contains("FIntDebugForceMSAASamples"));
+      } else {
+        EXPECT_EQ(parsed.at("FIntDebugForceMSAASamples"), samples);
+      }
+    }
+  }
+}
+
 TEST(PerformancePolicyTest, PreservesExplicitAssetCacheByteBudgets) {
   const nlohmann::json requested = {
       {"FIntMeshContentProviderForceCacheSize", "268435456"},
@@ -245,9 +273,10 @@ TEST(PerformancePolicyTest, KeepsUserOverridesThatConflictWithPreset) {
   EXPECT_EQ(parsed.at("FFlagMovePrerenderV2"), true);
   EXPECT_EQ(parsed.at("FIntDebugForceMSAASamples"), 4);
   EXPECT_EQ(parsed.at("FFlagFastGPULightGrid"), "True");
+  // The preset does not set MSAA, so that value passes through without
+  // counting as a kept conflict.
   EXPECT_EQ(kept, (std::vector<std::string>{"FIntOcclusionWorkerThreadCount",
-                                            "FFlagMovePrerenderV2",
-                                            "FIntDebugForceMSAASamples"}));
+                                            "FFlagMovePrerenderV2"}));
 
   PerformancePolicy latency =
       ParsePerformancePolicy("true", "0", "auto", "latency");
