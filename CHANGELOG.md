@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-11
+
 ### Added
 
 - The AppImage build now makes a `.zsync` file, so tools like `appimageupdatetool` can update the AppImage.
@@ -22,6 +24,8 @@ Release notes on GitHub are taken from the matching section here.
 
 - Fixed Roblox 2.742 being rejected as an update, which left the game on the older version. Nightcap now
   accepts Roblox versions that change the order of their start-up steps.
+- Fixed Nightcap reporting Mocktail's version number, 1.0.4, in session logs and support bundles. It now
+  reports its own version.
 - Fixed the old Roblox home screen showing instead of the new one with the Me tab and the "For you" and
   "Charts" tabs. Nightcap now runs the Roblox start-up step that loads the new interface for your account.
 - Fixed anti-aliasing being forced off at every graphics quality level. Roblox now picks it, and a
@@ -267,7 +271,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.4
 [0.3.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.3
 [0.3.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.2
 [0.3.1]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.1

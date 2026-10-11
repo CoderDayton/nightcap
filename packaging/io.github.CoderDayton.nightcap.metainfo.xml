@@ -57,6 +57,19 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.3.4" date="2026-10-11">
+      <description>
+        <ul>
+          <li>Fixed Roblox 2.742 being rejected as an update.</li>
+          <li>The new Roblox home screen and its side menu now show.</li>
+          <li>Fixed the voice chat microphone after Roblox updates.</li>
+          <li>Anti-aliasing is no longer forced off.</li>
+          <li>Nightcap now uses Wayland on NVIDIA Wayland sessions.</li>
+          <li>Fixed a missing picture on machines whose graphics card runs a different driver.</li>
+          <li>Fewer frame hitches while textures load.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.3" date="2026-10-04">
       <description>
         <ul>
