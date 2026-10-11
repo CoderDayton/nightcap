@@ -29,7 +29,7 @@ Release notes on GitHub are taken from the matching section here.
 - Fixed the old Roblox home screen showing instead of the new one with the Me tab and the "For you" and
   "Charts" tabs. Nightcap now runs the Roblox start-up step that loads the new interface for your account.
 - Fixed anti-aliasing being forced off at every graphics quality level. Roblox now picks it, and a
-  `FIntDebugForceMSAASamples` value in `fflags.json` still applies.
+  `FIntDebugForceMSAASamples` value in `fflags.json` still applies. Thanks to @qutad.
 - Fixed the voice chat microphone only working on Roblox 2.738. It no longer depends on one Roblox version.
 - Fixed other players not hearing you in voice chat after a Roblox update. The updater now rebuilds the
   audio device data when the previous version's profile has none.
