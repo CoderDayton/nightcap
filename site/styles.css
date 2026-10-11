@@ -1,94 +1,292 @@
 /* Modified by vii from komaruworld/mocktail. See README "About this fork". */
 :root {
-  font: 17px/1.55 system-ui, sans-serif;
+  --bg: #14122b;
+  --ink: #ece8ff;
+  --muted: #b3aad6;
+  --accent: #6c4fd1;
+  --link: #a78bfa;
+  --line: #3a3470;
+  --code-bg: #1d1a3d;
+  font: 17px/1.6 system-ui, sans-serif;
   color-scheme: dark;
 }
 
+* { box-sizing: border-box; }
+
 body {
   margin: 0;
-  background: #14122b;
-  color: #ece8ff;
+  background: var(--bg);
+  color: var(--ink);
 }
 
-main {
-  max-width: 680px;
-  margin: 12vh auto;
-  padding: 32px;
+a { color: var(--link); }
+a:focus-visible,
+button:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
+
+.wrap {
+  position: relative;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 0 24px;
 }
 
-img {
-  width: 88px;
-  height: 88px;
+.hero { padding-bottom: clamp(48px, 10vh, 110px); }
+
+.top {
+  margin: 0;
+  padding-top: 22px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
 }
 
-h1 {
-  margin: .2rem 0;
-  font-size: clamp(2.5rem, 8vw, 4.5rem);
+.top a {
+  display: block;
+  color: var(--muted);
+  line-height: 0;
 }
 
-h2 {
-  margin: 32px 0 0;
-  font-size: 1.15rem;
+.top a:hover { color: var(--ink); }
+
+.hero h1 {
+  margin: clamp(48px, 12vh, 130px) 0 0;
+  font-size: clamp(3.6rem, 15vw, 9.5rem);
+  font-weight: 800;
+  line-height: .95;
+  letter-spacing: -.045em;
+  display: flex;
+  align-items: center;
+  gap: .16em;
 }
 
-p,
-li {
-  color: #b3aad6;
+.hero h1 img {
+  height: .78em;
+  width: auto;
+  flex: none;
 }
 
-ul {
-  padding-left: 1.2rem;
+.lede {
+  max-width: 30ch;
+  margin: 22px 0 0;
+  color: var(--ink);
+  font-size: 1.25rem;
+  line-height: 1.45;
 }
+
+.actions { margin: 28px 0 0; }
 
 a.button {
   display: inline-block;
-  margin: 16px 8px 16px 0;
-  padding: 12px 18px;
-  border-radius: 9px;
-  background: #6c4fd1;
-  color: white;
+  margin: 0 10px 10px 0;
+  padding: 12px 20px;
+  border: 2px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
   font-weight: 700;
   text-decoration: none;
 }
 
-a.secondary {
-  background: #2f2a6b;
+a.button:hover { background: #7d62dd; border-color: #7d62dd; }
+
+a.button.secondary {
+  background: var(--bg);
+  border-color: var(--link);
+  color: var(--ink);
 }
 
-.commands {
-  margin-top: 10px;
+a.button.secondary:hover { background: var(--code-bg); }
+
+/* Every section is a label on the left and its content on the right. */
+.row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 8px 32px;
+  padding: 36px 0;
+  border-top: 1px solid var(--line);
 }
 
-.commands p,
-.download-label {
-  margin: 14px 0 5px;
-  color: #ece8ff;
-  font-size: .82rem;
+h2 {
+  margin: 0;
+  font-size: 1rem;
   font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
+}
+
+.row.stacked { grid-template-columns: 1fr; gap: 20px; }
+
+.body { margin: 0; min-width: 0; }
+.body p { margin: 0 0 12px; color: var(--muted); }
+
+dl.body {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 28px;
+}
+
+dt {
+  padding: 9px 0;
+  color: var(--muted);
+}
+
+dd {
+  position: relative;
+  margin: 0;
+  padding: 9px 0;
+  min-width: 0;
+}
+
+.facts dt,
+.facts dd { border-bottom: 1px solid var(--line); }
+.facts dt:last-of-type,
+.facts dd:last-of-type { border-bottom: 0; }
+.facts dt { color: var(--ink); font-weight: 700; }
+
+dl.body.install { display: block; }
+
+.install dt {
+  padding: 18px 0 6px;
+  font-size: .9rem;
+}
+
+.install dt:first-child { padding-top: 0; }
+.install dd { padding: 0; }
+
+pre {
+  margin: 0;
+  padding: 14px;
+  overflow-x: auto;
+  border-left: 3px solid var(--accent);
+  background: var(--code-bg);
 }
 
 code {
-  display: block;
-  padding: 14px;
-  overflow-wrap: anywhere;
-  border: 1px solid #3a3470;
-  border-radius: 6px;
-  background: #1d1a3d;
+  font: .9rem/1.7 ui-monospace, "DejaVu Sans Mono", "JetBrains Mono", monospace;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+
+dd button {
+  position: absolute;
+  top: -30px;
+  right: 0;
+  padding: 2px 0 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: .8rem ui-monospace, monospace;
+  cursor: pointer;
+}
+
+dd button:hover { color: var(--ink); text-decoration: underline; }
 
 .links {
-  margin: 10px 0 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
 }
+
+.links li { border-bottom: 1px solid var(--line); }
 
 .links a {
-  display: inline-block;
-  margin: 0 14px 6px 0;
-  color: #a78bfa;
+  display: grid;
+  grid-template-columns: 200px 1fr 24px;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin: 0 -8px;
+  padding: 12px 24px 12px 8px;
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
 }
 
-a.source {
-  color: #a78bfa;
+.links a:hover { background: var(--code-bg); }
+.links a:hover .name { text-decoration: underline; text-decoration-color: var(--link); text-underline-offset: 4px; }
+
+.links .file {
+  color: var(--muted);
+  font: 400 .88rem ui-monospace, "DejaVu Sans Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.links .go { color: var(--link); text-align: right; }
+
+.foot {
+  padding-bottom: 48px;
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+.foot::before {
+  content: "";
+  display: block;
+  margin-bottom: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.foot p { margin: 0 0 8px; }
+
+/* Terms and privacy pages: a header bar and one readable column. */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 22px;
+}
+
+.bar .top { padding-top: 0; }
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  text-decoration: none;
+}
+
+.brand img { width: 30px; height: 30px; }
+
+.prose {
+  padding-top: clamp(32px, 8vh, 80px);
+  padding-bottom: 48px;
+}
+
+.prose > * { max-width: 700px; }
+
+.prose h1 {
+  margin: 0 0 16px;
+  font-size: clamp(2rem, 6vw, 3rem);
+  line-height: 1.1;
+  letter-spacing: -.03em;
+}
+
+.prose h2 {
+  margin: 36px 0 6px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 1.05rem;
+}
+
+.prose p,
+.prose li { margin: 0 0 12px; }
+.prose ul { margin: 0 0 12px; padding-left: 1.2rem; }
+
+.prose code {
+  padding: 1px 6px;
+  background: var(--code-bg);
+  font-size: .85rem;
+  white-space: normal;
+}
+
+.legal-nav { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 28px; }
+
+@media (max-width: 720px) {
+  .row { grid-template-columns: 1fr; padding: 28px 0; }
+  dl.body:not(.install) { grid-template-columns: 1fr; }
+  .facts dt { padding-bottom: 0; border-bottom: 0; }
+  .links a { grid-template-columns: 1fr 24px; }
+  .links .file { grid-column: 1; grid-row: 2; }
+  .links .go { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
 }

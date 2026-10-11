@@ -6,51 +6,102 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Nightcap for Linux</title>
+  <meta name="description" content="Play Roblox on Linux like it was made for your PC. Nightcap is Mocktail, tuned to feel fast and look sharp.">
   <link rel="icon" href="nightcap.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body><main>
-  <img src="nightcap.svg" alt="Nightcap logo">
-  <h1>Nightcap</h1>
-  <p>Play Roblox on Linux like it was made for your PC. Nightcap is Mocktail, tuned to feel fast and look sharp.</p>
-  <a class="button" href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage">Download AppImage</a>
-  <a class="button secondary" href="nightcap.flatpakref">Install with Flatpak</a>
-  <div class="commands">
-    <p>AppImage</p>
-    <code>chmod +x Nightcap-x86_64.AppImage
-./Nightcap-x86_64.AppImage</code>
-    <p>Flatpak</p>
-    <code>flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
-flatpak run io.github.CoderDayton.nightcap</code>
-    <p>DEB, RPM and pacman</p>
-    <code>sudo apt install ./nightcap_&lt;version&gt;-1_amd64.deb
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <p class="top">
+        <a href="https://github.com/CoderDayton/nightcap" aria-label="Nightcap on GitHub" title="GitHub"><svg viewBox="0 0 16 16" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+        <a href="https://discord.gg/DbAUG9hBFU" aria-label="Nightcap on Discord" title="Discord"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/></svg></a>
+      </p>
+      <h1><img src="nightcap.svg" alt=""><span>Nightcap</span></h1>
+      <p class="lede">Play Roblox on Linux like it was made for your PC. Nightcap is Mocktail, tuned to feel fast and look sharp.</p>
+      <p class="actions">
+        <a class="button" href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage">Download AppImage</a>
+        <a class="button secondary" href="nightcap.flatpakref">Install with Flatpak</a>
+      </p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="row stacked">
+      <h2>Install</h2>
+      <dl class="body install">
+        <dt>AppImage</dt>
+        <dd><pre><code>chmod +x Nightcap-x86_64.AppImage
+./Nightcap-x86_64.AppImage</code></pre></dd>
+        <dt>Flatpak</dt>
+        <dd><pre><code>flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
+flatpak run io.github.CoderDayton.nightcap</code></pre></dd>
+        <dt>DEB, RPM, pacman</dt>
+        <dd><pre><code>sudo apt install ./nightcap_&lt;version&gt;-1_amd64.deb
 sudo dnf install ./nightcap-&lt;version&gt;-1.x86_64.rpm
-sudo pacman -U nightcap-&lt;version&gt;-1-x86_64.pkg.tar.zst</code>
-    <p>Build from source</p>
-    <code>git clone --recurse-submodules https://github.com/CoderDayton/nightcap.git
+sudo pacman -U nightcap-&lt;version&gt;-1-x86_64.pkg.tar.zst</code></pre></dd>
+        <dt>Source</dt>
+        <dd><pre><code>git clone --recurse-submodules https://github.com/CoderDayton/nightcap.git
 cd nightcap &amp;&amp; make build
-./build/mocktail</code>
-  </div>
-  <h2>What's different</h2>
-  <ul>
-    <li>Lower input lag. Frames are shown as soon as they are ready.</li>
-    <li>Sharper textures, with your own PNG overrides if you want them.</li>
-    <li>ETC2 textures render correctly on desktop GPUs.</li>
-    <li>No more error 319 kicks after joining a server.</li>
-    <li>Roblox sees your real RAM and screen size.</li>
-  </ul>
-  <h2>Direct downloads</h2>
-  <p>Prebuilt builds for Linux x86_64.</p>
-  <p class="links">
-    <a href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage">AppImage</a>
-    <a href="Nightcap-x86_64.flatpak">Flatpak bundle</a>
-    <a href="https://github.com/CoderDayton/nightcap/releases/latest">DEB, RPM, pacman</a>
-    <a href="nightcap-flatpak.gpg">Signing key</a>
-    <a href="terms.html">Terms</a>
-    <a href="privacy.html">Privacy</a>
-  </p>
-  <p><a class="source" href="https://github.com/CoderDayton/nightcap">Source code</a> ·
-     <a class="source" href="https://github.com/komaruworld/mocktail">Upstream Mocktail</a></p>
-  <p>Nightcap is an independent community project and is not affiliated with Roblox Corporation.</p>
-</main></body>
+./build/mocktail</code></pre></dd>
+      </dl>
+    </section>
+
+    <section class="row">
+      <h2>What's different</h2>
+      <dl class="body facts">
+        <dt>Input lag</dt>
+        <dd>Lower. Frames are shown as soon as they are ready.</dd>
+        <dt>Textures</dt>
+        <dd>Sharper, with your own PNG overrides if you want them.</dd>
+        <dt>ETC2</dt>
+        <dd>Textures render correctly on desktop GPUs.</dd>
+        <dt>Error 319</dt>
+        <dd>No more kicks after joining a server.</dd>
+        <dt>RAM and screen</dt>
+        <dd>Roblox sees your real RAM and screen size.</dd>
+      </dl>
+    </section>
+
+    <section class="row">
+      <h2>Direct downloads</h2>
+      <div class="body">
+        <p>Prebuilt builds for Linux x86_64.</p>
+        <ul class="links">
+          <li><a href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage"><span class="name">AppImage</span><span class="file">Nightcap-x86_64.AppImage</span><span class="go" aria-hidden="true">↓</span></a></li>
+          <li><a href="Nightcap-x86_64.flatpak"><span class="name">Flatpak bundle</span><span class="file">Nightcap-x86_64.flatpak</span><span class="go" aria-hidden="true">↓</span></a></li>
+          <li><a href="https://github.com/CoderDayton/nightcap/releases/latest"><span class="name">DEB, RPM, pacman</span><span class="file">GitHub releases page</span><span class="go" aria-hidden="true">↗</span></a></li>
+          <li><a href="nightcap-flatpak.gpg"><span class="name">Signing key</span><span class="file">nightcap-flatpak.gpg</span><span class="go" aria-hidden="true">↓</span></a></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <p>
+      <a href="https://github.com/CoderDayton/nightcap">Source code</a> ·
+      <a href="https://github.com/komaruworld/mocktail">Upstream Mocktail</a> ·
+      <a href="terms.html">Terms</a> ·
+      <a href="privacy.html">Privacy</a>
+    </p>
+    <p>Nightcap is an independent community project and is not affiliated with Roblox Corporation.</p>
+  </footer>
+
+  <script>
+    // Adds a copy button to each command block. The page works without it.
+    document.querySelectorAll('.install dd').forEach(function (block) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'copy';
+      button.addEventListener('click', function () {
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(block.querySelector('code').textContent).then(function () {
+          button.textContent = 'copied';
+          setTimeout(function () { button.textContent = 'copy'; }, 1600);
+        });
+      });
+      block.appendChild(button);
+    });
+  </script>
+</body>
 </html>
