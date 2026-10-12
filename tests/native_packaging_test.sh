@@ -15,6 +15,7 @@ readonly AUR_BIN_SRCINFO="${ROOT}/packaging/aur/nightcap-bin/.SRCINFO"
 readonly AUR_PKGBUILD="${ROOT}/packaging/aur/nightcap-git/PKGBUILD"
 readonly AUR_SRCINFO="${ROOT}/packaging/aur/nightcap-git/.SRCINFO"
 readonly AUR_WORKFLOW="${ROOT}/.github/workflows/aur.yml"
+readonly AUR_PUBLISH_WORKFLOW="${ROOT}/.github/workflows/aur-publish.yml"
 readonly WORKFLOW="${ROOT}/.github/workflows/packages.yml"
 readonly RELEASE_WORKFLOW="${ROOT}/.github/workflows/release.yml"
 readonly README="${ROOT}/README.md"
@@ -93,17 +94,45 @@ grep -Fq 'git describe' "${AUR_PKGBUILD}" ||
 grep -Fq 'git describe' "${AUR_WORKFLOW}" ||
   Fail 'AUR workflow does not version from the release tag'
 for pkgbuild in "${PKGBUILD}" "${AUR_STABLE_PKGBUILD}" "${AUR_BIN_PKGBUILD}"; do
-  grep -Fqx 'pkgver=0.3.1' "${pkgbuild}" ||
+  grep -Fqx 'pkgver=0.3.4' "${pkgbuild}" ||
     Fail "package version does not match the release being prepared: ${pkgbuild}"
 done
 
-# Nightcap keeps its AUR recipes in the tree. Nothing publishes them.
+# aur.yml only checks the nightcap-git recipe. Publishing is aur-publish.yml.
 for unexpected in \
     'aur.archlinux.org' \
     'AUR_SSH_PRIVATE_KEY' \
     'push origin'; do
   if grep -Fq -- "${unexpected}" "${AUR_WORKFLOW}"; then
     Fail "AUR workflow should not publish: ${unexpected}"
+  fi
+done
+
+for expected in \
+    'workflow_call:' \
+    'workflow_dispatch:' \
+    'for package in nightcap nightcap-bin' \
+    '${archive}.sha256' \
+    'makepkg --printsrcinfo' \
+    'secrets.AUR_SSH_PRIVATE_KEY' \
+    'ssh://aur@aur.archlinux.org/' \
+    'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+    'StrictHostKeyChecking=yes'; do
+  grep -Fq -- "${expected}" "${AUR_PUBLISH_WORKFLOW}" ||
+    Fail "AUR publish workflow is missing: ${expected}"
+done
+
+# The publish workflow holds the AUR key. It runs for a release tag or by hand,
+# never for a push or a pull request, and it leaves nightcap-git to its own
+# maintainer.
+for unexpected in \
+    'pull_request' \
+    'push:' \
+    'nightcap-git' \
+    'StrictHostKeyChecking=no' \
+    'set -x'; do
+  if grep -Fq -- "${unexpected}" "${AUR_PUBLISH_WORKFLOW}"; then
+    Fail "AUR publish workflow should not contain: ${unexpected}"
   fi
 done
 grep -Fq 'LINKER:--no-as-needed' "${STUB_CMAKE}" ||
@@ -155,13 +184,14 @@ for expected in \
     '-DMOCKTAIL_PACKAGE_NAME=nightcap' \
     '-DMOCKTAIL_PACKAGE_VERSION=' \
     'Nightcap-x86_64.AppImage' \
-    'gh release upload'; do
+    'gh release upload' \
+    'uses: ./.github/workflows/aur-publish.yml'; do
   grep -Fq -- "${expected}" "${RELEASE_WORKFLOW}" ||
     Fail "release workflow is missing: ${expected}"
 done
 
-# Nightcap publishes its packages on the release page only. Pushing them to
-# APT, RPM or AUR repositories is out of scope for this workflow.
+# This workflow publishes on the release page only. It hands the AUR push to
+# aur-publish.yml, and APT and RPM repositories are out of scope.
 for unexpected in \
     'createrepo' \
     'reprepro' \
