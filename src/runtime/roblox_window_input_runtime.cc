@@ -80,6 +80,14 @@ Status RobloxWindowInputRuntime::Initialize() {
                    gamepad_status.message().c_str());
     }
   }
+  // XR tracked controllers join the same authoritative route. Initialize is a
+  // no-op (false) in non-VR builds or without an armed OpenXR backend; that is
+  // the normal state, not an error.
+  xr_controllers_initialized_ = xr_controllers_.Initialize(
+      &RobloxWindowInputRuntime::XrControllerEventCallback, this);
+  if (xr_controllers_initialized_) {
+    std::fprintf(stderr, "  [vr-input] XR controller delivery armed\n");
+  }
   return Status::Ok();
 }
 
@@ -108,6 +116,7 @@ void RobloxWindowInputRuntime::PlatformEventCallback(
           std::get_if<platform::WindowFocusEvent>(&event.payload)) {
     if (focus->focused) {
       self->gamepads_.ResendState();
+      self->xr_controllers_.ResendState();
     }
   }
 }
@@ -124,6 +133,10 @@ Status RobloxWindowInputRuntime::Shutdown() {
     window::ClearMouseLockQueryCallback();
     mouse_lock_query_registered_ = false;
   }
+  // Disconnect the synthetic XR controller while the router still processes
+  // events, so its release path runs through the normal route.
+  xr_controllers_.Shutdown();
+  xr_controllers_initialized_ = false;
   gamepads_.Shutdown();
   const RobloxInputSnapshot snapshot = runtime_.Snapshot();
   Status status = runtime_.Deactivate();
@@ -201,6 +214,37 @@ void RobloxWindowInputRuntime::SetRawMouseEnabled(bool enabled) {
 
 RobloxInputSnapshot RobloxWindowInputRuntime::Snapshot() const {
   return runtime_.Snapshot();
+}
+
+void RobloxWindowInputRuntime::InjectPlatformEvent(
+    const platform::PlatformEvent& event) {
+  // Same router and same thread as SDL delivery: the XR controller path is a
+  // producer of platform events, not a parallel input stack.
+  (void)runtime_.HandleEvent(event);
+}
+
+void RobloxWindowInputRuntime::XrControllerEventCallback(
+    void* context, const platform::PlatformEvent& event) {
+  auto* self = static_cast<RobloxWindowInputRuntime*>(context);
+  if (self != nullptr) {
+    self->InjectPlatformEvent(event);
+  }
+}
+
+void RobloxWindowInputRuntime::DrainXrControllers() {
+  if (!xr_controllers_initialized_) {
+    return;
+  }
+  xr_controllers_.Drain();
+}
+
+void RobloxWindowInputRuntime::RequestXrControllerHaptics(
+    int hand, float amplitude, std::uint64_t duration_ns, float frequency_hz) {
+  xr_controllers_.RequestHaptics(hand, amplitude, duration_ns, frequency_hz);
+}
+
+void RobloxWindowInputRuntime::StopXrControllerHaptics(int hand) {
+  xr_controllers_.StopHaptics(hand);
 }
 
 bool RobloxWindowInputRuntime::MouseLockQueryCallback(void* context,

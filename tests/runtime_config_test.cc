@@ -38,6 +38,8 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   const RuntimeConfig config = RuntimeConfig::FromEnvironment(environment);
 
   EXPECT_FALSE(config.headless());
+  EXPECT_EQ(config.vr_enabled(), kDefaultVrEnabled);
+  EXPECT_TRUE(config.vr_valid());
   EXPECT_EQ(config.roblox_library_path(), "rbx_bin/libroblox.so");
   EXPECT_EQ(config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(config.graphics_backend_name(), "direct-vulkan");
@@ -97,9 +99,17 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_TRUE(config.unsafe_detached_thread_overrides().empty());
 }
 
+TEST(RuntimeConfigTest, RejectsMalformedVrEnvironmentInsteadOfEnablingIt) {
+  const auto config = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "maybe"}}));
+  EXPECT_FALSE(config.vr_valid());
+  EXPECT_EQ(config.vr_enabled(), kDefaultVrEnabled);
+}
+
 TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
   const MapEnvironment environment({
       {"MOCKTAIL_HEADLESS", "1"},
+      {"MOCKTAIL_VR_ENABLED", "true"},
       {"ROBLOX_LIB_PATH", "/tmp/libroblox.so"},
       {"MOCKTAIL_GRAPHICS_BACKEND", "vulkan"},
       {"MOCKTAIL_WIN_WIDTH", "1920"},
@@ -134,6 +144,8 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
   const RuntimeConfig config = RuntimeConfig::FromEnvironment(environment);
 
   EXPECT_TRUE(config.headless());
+  EXPECT_TRUE(config.vr_enabled());
+  EXPECT_TRUE(config.vr_valid());
   EXPECT_EQ(config.roblox_library_path(), "/tmp/libroblox.so");
   EXPECT_EQ(config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(config.window().width, 1920);

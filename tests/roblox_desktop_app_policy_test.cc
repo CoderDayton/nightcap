@@ -257,6 +257,140 @@ TEST(RobloxDesktopAppPolicyTest, RejectsMalformedOrSymlinkedStorage) {
   EXPECT_FALSE(ApplyDesktopAppPolicy(outside, default_path, 42, "invalid"));
 }
 
+TEST(RobloxDesktopAppPolicyTest,
+     VrDisablesIdleThrottleAfterDesktopCompositionWithoutPersistingIt) {
+  TemporaryDirectory temporary;
+  const auto storage_path = temporary.path() / "storage.json";
+  const auto default_path = temporary.path() / "default.json";
+  const nlohmann::json cached_policy = {
+      {"ThrottleFramerate", true}, {"EligibleForVideoCapture", false},
+      {"AccountOwnedMarker", "preserve"},
+  };
+  const nlohmann::json configurations = {
+      {"GUAC:42:app-policy", cached_policy.dump()},
+  };
+  ASSERT_TRUE(WriteJson(storage_path,
+                        {{"AppConfiguration", configurations.dump()}}));
+  const auto desktop =
+      ApplyDesktopAppPolicy(storage_path, default_path, 42, "dark");
+  ASSERT_TRUE(desktop) << desktop.error;
+  const auto stored_before_vr = ReadJson(storage_path);
+
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(
+      desktop.policy_json, R"({"DFIntTaskSchedulerTargetFps":"90"})", &client,
+      &error)) << error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, client, R"({"FFlagUnrelated":"True"})", &client, &fast, &error))
+      << error;
+  const auto client_json = nlohmann::json::parse(client);
+  const auto fast_json = nlohmann::json::parse(fast);
+  auto expected_policy = nlohmann::json::parse(desktop.policy_json);
+  expected_policy["ThrottleFramerate"] = false;
+  EXPECT_EQ(client_json["FStringAppConfigurationOverrideAppPolicy"],
+            expected_policy.dump());
+  EXPECT_EQ(fast_json["FStringAppConfigurationOverrideAppPolicy"],
+            expected_policy.dump());
+  EXPECT_EQ(client_json["DFIntTaskSchedulerTargetFps"], "90");
+  EXPECT_EQ(fast_json["FFlagUnrelated"], "True");
+  EXPECT_EQ(ReadJson(storage_path), stored_before_vr);
+
+  const auto next_launch =
+      ApplyDesktopAppPolicy(storage_path, default_path, 42, "dark");
+  ASSERT_TRUE(next_launch) << next_launch.error;
+  EXPECT_TRUE(nlohmann::json::parse(next_launch.policy_json)
+                  .at("ThrottleFramerate").get<bool>());
+  EXPECT_FALSE(next_launch.updated);
+
+  const std::string first_client = client;
+  const std::string first_fast = fast;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, client, fast, &client, &fast, &error)) << error;
+  EXPECT_EQ(client, first_client);
+  EXPECT_EQ(fast, first_fast);
+}
+
+TEST(RobloxDesktopAppPolicyTest, VrPolicyWorksWithoutDesktopProfile) {
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, "{}", "{}", &client, &fast, &error)) << error;
+  const nlohmann::json policy = {{"ThrottleFramerate", false}};
+  const nlohmann::json expected = {
+      {"FStringAppConfigurationOverrideAppPolicy", policy.dump()},
+  };
+  EXPECT_EQ(nlohmann::json::parse(client), expected);
+  EXPECT_EQ(nlohmann::json::parse(fast), expected);
+}
+
+TEST(RobloxDesktopAppPolicyTest, VrKeepsLateFastFlagsPolicyPrecedence) {
+  const nlohmann::json earlier = {{"EarlierPolicy", 1}};
+  nlohmann::json later = {
+      {"ThrottleFramerate", true}, {"LaterPolicy", 2}, {"ForceTheme", "light"},
+  };
+  const nlohmann::json client_input = {
+      {"FStringAppConfigurationOverrideAppPolicy", earlier.dump()},
+      {"FIntClientMarker", "42"},
+  };
+  const nlohmann::json fast_input = {
+      {"FStringAppConfigurationOverrideAppPolicy", later.dump()},
+      {"FIntFastMarker", "7"},
+  };
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, client_input.dump(), fast_input.dump(), &client, &fast, &error))
+      << error;
+  later["ThrottleFramerate"] = false;
+  EXPECT_EQ(nlohmann::json::parse(client)
+                .at("FStringAppConfigurationOverrideAppPolicy"), later.dump());
+  EXPECT_EQ(nlohmann::json::parse(fast)
+                .at("FStringAppConfigurationOverrideAppPolicy"), later.dump());
+  EXPECT_EQ(nlohmann::json::parse(client).at("FIntClientMarker"), "42");
+  EXPECT_EQ(nlohmann::json::parse(fast).at("FIntFastMarker"), "7");
+}
+
+TEST(RobloxDesktopAppPolicyTest, NonVrPreservesBothPolicyChannels) {
+  const std::string client_input =
+      R"({ "FStringAppConfigurationOverrideAppPolicy": "{\"ThrottleFramerate\":true}" })";
+  const std::string fast_input = R"({ "FIntUnrelated": "42" })";
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      false, client_input, fast_input, &client, &fast, &error)) << error;
+  EXPECT_EQ(client, client_input);
+  EXPECT_EQ(fast, fast_input);
+}
+
+TEST(RobloxDesktopAppPolicyTest, VrAcceptsEmptyAppPolicyString) {
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, "{}", R"({"FStringAppConfigurationOverrideAppPolicy":""})",
+      &client, &fast, &error)) << error;
+  EXPECT_EQ(nlohmann::json::parse(client)
+                .at("FStringAppConfigurationOverrideAppPolicy"),
+            R"({"ThrottleFramerate":false})");
+  EXPECT_EQ(client, fast);
+}
+
+TEST(RobloxDesktopAppPolicyTest, VrRejectsMalformedOverridesWithoutErasingThem) {
+  const std::string bad_inputs[] = {
+      "[]", "bad", "null",
+      R"({"FStringAppConfigurationOverrideAppPolicy":true})",
+      R"({"FStringAppConfigurationOverrideAppPolicy":"bad"})",
+      R"({"FStringAppConfigurationOverrideAppPolicy":"[]"})",
+      R"({"FStringAppConfigurationOverrideAppPolicy":"null"})",
+  };
+  for (const auto& input : bad_inputs) {
+    SCOPED_TRACE(input);
+    std::string client = "unchanged", fast = "unchanged", error;
+    EXPECT_FALSE(MergeVrAppPolicyClientSettingsOverrides(
+        true, input, "{}", &client, &fast, &error));
+    EXPECT_FALSE(error.empty());
+    EXPECT_FALSE(MergeVrAppPolicyClientSettingsOverrides(
+        true, "{}", input, &client, &fast, &error));
+    EXPECT_EQ(client, "unchanged");
+    EXPECT_EQ(fast, "unchanged");
+  }
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

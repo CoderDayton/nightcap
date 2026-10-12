@@ -126,6 +126,8 @@ set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL
   "Install vendored Vulkan-Headers" FORCE)
 add_subdirectory(third_party/Vulkan-Headers EXCLUDE_FROM_ALL)
 
+include(${CMAKE_SOURCE_DIR}/cmake/MocktailVR.cmake)
+
 include(CTest)
 if(BUILD_TESTING)
   # Package builds disable tests and do not fetch Google Test.
@@ -315,6 +317,9 @@ add_library(Mocktail::Runtime ALIAS mocktail_runtime)
 target_include_directories(mocktail_runtime PUBLIC include)
 target_include_directories(mocktail_runtime PUBLIC
   ${MOCKTAIL_JNI_INCLUDE_DIRS}
+)
+target_compile_definitions(mocktail_runtime PUBLIC
+  MOCKTAIL_VR_DEFAULT_ENABLED=$<BOOL:${MOCKTAIL_ENABLE_VR}>
 )
 target_compile_definitions(mocktail_runtime PRIVATE
   "MOCKTAIL_DISCORD_APPLICATION_ID=\"${MOCKTAIL_DISCORD_APPLICATION_ID}\""
@@ -597,6 +602,7 @@ target_compile_definitions(mocktail PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
 )
 target_link_libraries(mocktail PRIVATE
+  Mocktail::VR
   mocktail_legacy_runtime
   mocktail_auth_runtime_composition
   mocktail_failure_dialog_runtime

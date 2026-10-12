@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -15,7 +16,6 @@
 namespace mocktail::audio {
 
 class NativeInputCapture;
-
 // Replaces the profiled input/output-device query/select slots of the exact
 // Build-ID-scoped FmodAudioDevice vtable. Roblox keeps owning its FMOD engine,
 // while the existing settings UI sees and selects the SDL host routes that
@@ -50,6 +50,7 @@ class RobloxOutputDeviceBridge final {
 
   Status Activate(std::uintptr_t image_base);
   Status PatchVtableLocked();
+  Status PrepareCaptureLocked();
   bool RestoreVtableLocked();
   static int GetInputDeviceCount(void *self);
   static void *GetInputDeviceInfo(void *result, void *self, int index);

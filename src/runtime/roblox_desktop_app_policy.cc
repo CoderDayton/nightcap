@@ -369,5 +369,61 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
   return true;
 }
 
+bool MergeVrAppPolicyClientSettingsOverrides(
+    bool enabled, std::string_view client_settings_json,
+    std::string_view fast_flags_json, std::string* merged_client_settings,
+    std::string* merged_fast_flags, std::string* error) {
+  if (merged_client_settings == nullptr || merged_fast_flags == nullptr) {
+    if (error != nullptr) {
+      *error = "VR app-policy outputs are required";
+    }
+    return false;
+  }
+  if (!enabled) {
+    *merged_client_settings = client_settings_json;
+    *merged_fast_flags = fast_flags_json;
+    return true;
+  }
+
+  auto client_settings = nlohmann::json::parse(
+      client_settings_json.empty() ? "{}" : client_settings_json, nullptr,
+      false, true);
+  auto fast_flags = nlohmann::json::parse(
+      fast_flags_json.empty() ? "{}" : fast_flags_json, nullptr, false, true);
+  if (!client_settings.is_object() || !fast_flags.is_object()) {
+    if (error != nullptr) {
+      *error = "VR client-settings and fast-flags overrides must be JSON objects";
+    }
+    return false;
+  }
+
+  nlohmann::json policy = nlohmann::json::object();
+  const nlohmann::json* channels[] = {&client_settings, &fast_flags};
+  for (const auto* channel : channels) {
+    const auto existing = channel->find(kDesktopAppPolicyOverride);
+    if (existing == channel->end()) {
+      continue;
+    }
+    // An empty FString means no app-policy override. The later fast-flags
+    // channel can clear/replace an earlier client-settings override.
+    if (existing->is_string() &&
+        existing->get_ref<const std::string&>().empty()) {
+      policy = nlohmann::json::object();
+    } else if (!DecodePolicy(*existing, &policy)) {
+      if (error != nullptr) {
+        *error = "VR app-policy override must be an encoded JSON object";
+      }
+      return false;
+    }
+  }
+  policy["ThrottleFramerate"] = false;
+  const std::string encoded_policy = policy.dump();
+  client_settings[std::string(kDesktopAppPolicyOverride)] = encoded_policy;
+  fast_flags[std::string(kDesktopAppPolicyOverride)] = encoded_policy;
+  *merged_client_settings = client_settings.dump();
+  *merged_fast_flags = fast_flags.dump();
+  return true;
+}
+
 }  // namespace runtime
 }  // namespace mocktail

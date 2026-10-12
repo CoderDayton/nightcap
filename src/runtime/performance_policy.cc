@@ -375,6 +375,38 @@ bool MergeAudioDeviceMenuClientSettingsOverrides(std::string_view base_json,
   return true;
 }
 
+bool MergeVrClientSettingsOverrides(bool enabled, std::string_view base_json,
+                                    std::string* merged_json,
+                                    std::string* error) {
+  if (merged_json == nullptr) {
+    if (error != nullptr) {
+      *error = "VR client-settings output is required";
+    }
+    return false;
+  }
+  auto overrides = nlohmann::json::parse(base_json.empty() ? "{}" : base_json,
+                                         nullptr, false, true);
+  if (overrides.is_discarded() || !overrides.is_object()) {
+    if (error != nullptr) {
+      *error = "VR client-settings input must be a JSON object";
+    }
+    return false;
+  }
+  overrides["FFlagDebugEnableVREmulator"] = enabled ? "True" : "False";
+  if (enabled) {
+    // Roblox 2998's SurfaceController startup throttle renders at 1 Hz while
+    // waiting for AppStartRendering. Our XR frame loop is driven by guest
+    // presents, so that also stalls head/controller updates in the VR menu.
+    // Keep VR rendering continuous; leave the non-VR startup policy alone.
+    overrides["FFlagSlowDownRendering"] = "False";
+    // The eye textures already use the OpenXR extent; render their contents
+    // at full resolution as well, without Roblox's dynamic downscaling.
+    overrides["FFlagDebugDisableDRS"] = "True";
+  }
+  *merged_json = overrides.dump();
+  return true;
+}
+
 bool MergeAudioCaptureClientSettingsOverrides(bool microphone_enabled,
                                               std::string_view base_json,
                                               std::string* merged_json,

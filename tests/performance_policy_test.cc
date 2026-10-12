@@ -347,6 +347,32 @@ TEST(PerformancePolicyTest, PermissionProtocolDoesNotUseTheTestBypass) {
   EXPECT_EQ(parsed.at("DFFlagVoiceChatSkipPermissionCheckForTests"), "False");
 }
 
+TEST(PerformancePolicyTest,
+     VrModeOverridesConflictingFlagAndPreservesSettings) {
+  std::string merged, error;
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(
+      true, R"({"FFlagDebugEnableVREmulator":"False","FFlagSlowDownRendering":"True","FIntUnrelated":"42"})",
+      &merged, &error));
+  auto json = nlohmann::json::parse(merged);
+  EXPECT_EQ(json["FFlagDebugEnableVREmulator"], "True");
+  EXPECT_EQ(json["FFlagSlowDownRendering"], "False");
+  EXPECT_EQ(json["FIntUnrelated"], "42");
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(false, merged, &merged, &error));
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugEnableVREmulator"],
+            "False");
+  EXPECT_FALSE(MergeVrClientSettingsOverrides(true, "[]", &merged, &error));
+  EXPECT_FALSE(MergeVrClientSettingsOverrides(true, "bad", &merged, &error));
+}
+
+TEST(PerformancePolicyTest, NonVrPreservesStartupRenderingPolicy) {
+  std::string merged, error;
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(
+      false, R"({"FFlagSlowDownRendering":"True"})", &merged, &error));
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagSlowDownRendering"], "True");
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(false, "{}", &merged, &error));
+  EXPECT_FALSE(nlohmann::json::parse(merged).contains("FFlagSlowDownRendering"));
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

@@ -223,6 +223,36 @@ To run the same checks as CI before each commit and push, install
 lefthook install
 ```
 
+## Experimental VR
+
+Experimental OpenXR VR support on Linux `x86_64` using WiVRn or SteamVR/ALVR.
+
+### Build with VR
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMOCKTAIL_ENABLE_VR=ON
+cmake --build build -j4
+```
+
+### Run
+
+Start WiVRn or SteamVR/ALVR and connect your headset first:
+
+```bash
+./build/mocktail --vr
+```
+
+The OpenXR runtime is detected automatically. To pick one manually:
+
+```bash
+MOCKTAIL_VR_RUNTIME=wivrn ./build/mocktail --vr
+# or
+MOCKTAIL_VR_RUNTIME=alvr MOCKTAIL_GRAPHICS_BACKEND=direct-vulkan ./build/mocktail --vr
+```
+
+If you previously set `XR_RUNTIME_JSON`, unset it before switching runtimes.
+Use `--no-vr` for desktop mode.
+
 ## Known limitations
 
 Nightcap does not currently work with `hardened_malloc`. Using

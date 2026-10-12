@@ -61,6 +61,7 @@
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
+#include "mocktail/vr/roblox_vr_device_bridge.h"
 #include "runtime/engine_pump_rest.h"
 #include "runtime/device_memory_profile.h"
 #include "runtime/display_size.h"
@@ -2637,7 +2638,8 @@ jobject BuildAppBridgeInitParams(JNIEnv* env, jstring client_settings,
   SetStringField(env, params, "userAgent", user_agent.c_str());
   SetBooleanField(env, params, "isTablet", JNI_FALSE);
   SetBooleanField(env, params, "isPotato", JNI_FALSE);
-  SetBooleanField(env, params, "isVrDevice", JNI_FALSE);
+  SetBooleanField(env, params, "isVrDevice",
+                  IsEnabled("MOCKTAIL_VR_ENABLED") ? JNI_TRUE : JNI_FALSE);
   SetStringField(env, params, "buildVariant", "googleProdRelease");
   SetObjectField(env, params, "vrContext", "Landroid/app/Activity;",
                  activity);
@@ -4680,8 +4682,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     return EXIT_FAILURE;
   }
 
-  const mocktail::compat::BuildProfile& build_profile =
-      *profile_result.profile;
+  const mocktail::compat::BuildProfile& build_profile = *profile_result.profile;
+  if (IsEnabled("MOCKTAIL_VR_ENABLED") &&
+      mocktail::vr::FindRobloxVrDeviceProfile(build_profile.elf_build_id) ==
+          nullptr) {
+    std::cerr << "[FATAL] Experimental Roblox VR has no verified profile for "
+              << build_profile.elf_build_id << "\n";
+    return EXIT_FAILURE;
+  }
   const mocktail::compat::HostAbiProfile* host_abi_profile =
       mocktail::compat::FindHostAbiProfile(build_profile.elf_build_id);
   const bool experiment_allowed =
@@ -5830,6 +5838,20 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   }
   std::cout << "  [linker] Bionic unwind metadata validated for libroblox\n"
             << std::flush;
+
+  // The experimental VR bridge is armed only for --vr on an exact supported
+  // Build ID. It validates its machine contracts and interposes the
+  // DebugDeviceVR vtable slots after relocations and before guest startup
+  // can create the object. A no-op success while no bridge is armed.
+  if (const mocktail::Status vr_activation =
+          mocktail::vr::NotifyRobloxVrImageLoaded(
+              linker::FindLoadedAndroidLibraryBase("libroblox"));
+      !vr_activation.ok()) {
+    std::cerr << "\n[FATAL] Experimental Roblox VR bridge activation "
+                 "failed: "
+              << vr_activation.message() << '\n';
+    return EXIT_FAILURE;
+  }
 
   // The pre-constructor hook owns installation; repeating arena setup here is
   // not idempotent.
@@ -7111,6 +7133,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     while (true) {
       const uint64_t fps_tick_start_ns = fps_trace ? MonotonicNanos() : 0;
       const bool keep_window_open = mocktail::window::PumpEvents();
+      // Deliver XR tracked-controller input on the same thread and through the
+      // same router as SDL input, once per loop iteration after the SDL pump.
+      // Inert in non-VR builds or while no OpenXR controller layer is active.
+      if (window_input_runtime != nullptr) {
+        window_input_runtime->DrainXrControllers();
+      }
       game_surface_events_completed = drain_game_surface_events();
       const uint64_t fps_after_sdl_ns = fps_trace ? MonotonicNanos() : 0;
       if (!game_surface_events_completed || !keep_window_open) {

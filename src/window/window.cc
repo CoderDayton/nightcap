@@ -41,6 +41,9 @@
 
 namespace mocktail {
 namespace window {
+namespace {
+bool AttachVrEgl();
+}
 
 // Local EGL declarations avoid conflicts with the stub headers.
 
@@ -1119,8 +1122,7 @@ bool Init(int width, int height, const char* title) {
     return false;
   }
 
-  if (StringEquals(GetEnvNonEmpty("MOCKTAIL_GRAPHICS_BACKEND"),
-                   "direct-vulkan")) {
+  if (ShouldUseNativeVulkanBackend()) {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
       fprintf(stderr, "  [window] SDL_Init failed: %s\n", SDL_GetError());
       return false;
@@ -1415,6 +1417,16 @@ bool Init(int width, int height, const char* title) {
     }
     return CreateSoftwareWaitingWindow(width, height, title);
   }
+  if (!AttachVrEgl()) {
+    SDL_GL_DestroyContext(sdl_context);
+    SDL_DestroyWindow(g_state.sdl_window);
+    g_state.sdl_window = nullptr;
+    g_state.egl_context = nullptr;
+    g_state.egl_display = nullptr;
+    g_state.egl_config = nullptr;
+    g_state.egl_surface = nullptr;
+    return false;
+  }
   fprintf(stderr, "  [window] EGL context and surface initialized via SDL3\n");
   if (WindowTraceEnabled()) {
     fprintf(
@@ -1448,6 +1460,23 @@ bool Init(int width, int height, const char* title) {
   return true;
 }
 
+namespace {
+bool AttachVrEgl() {
+  using Attach =
+      bool (*)(void *, void *, void *, void *, void *(*)(const char *));
+  auto attach =
+      reinterpret_cast<Attach>(dlsym(RTLD_DEFAULT, "mocktail_vr_attach_egl"));
+  if (!attach)
+    return true;
+  return attach(
+      g_state.egl_display, g_state.egl_config, g_state.egl_context,
+      reinterpret_cast<void *>(SDL_EGL_GetProcAddress("eglGetProcAddress")),
+      +[](const char *name) -> void * {
+        return reinterpret_cast<void *>(SDL_GL_GetProcAddress(name));
+      });
+}
+} // namespace
+
 bool MakeCurrentOnThread() {
   if (!g_state.initialised || !g_state.egl_context) {
     if (WindowTraceEnabled()) {
@@ -1465,7 +1494,7 @@ bool MakeCurrentOnThread() {
     return false;
   }
   fprintf(stderr, "  [window] EGL context now current on engine thread\n");
-  return true;
+  return AttachVrEgl();
 }
 
 bool ReleaseCurrentOnThread() {
@@ -1480,6 +1509,11 @@ bool ReleaseCurrentOnThread() {
             SDL_GetError());
     return false;
   }
+  using Release = void (*)();
+  auto release =
+      reinterpret_cast<Release>(dlsym(RTLD_DEFAULT, "mocktail_vr_release_egl"));
+  if (release)
+    release();
   if (WindowTraceEnabled()) {
     fprintf(stderr, "  [window] EGL context released on current thread\n");
   }
@@ -1633,7 +1667,11 @@ void* GetGLProcAddress(const char* name) {
   if (!g_state.initialised || name == nullptr || name[0] == '\0') {
     return nullptr;
   }
-  return reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
+  void *raw = reinterpret_cast<void *>(SDL_GL_GetProcAddress(name));
+  using Wrap = void *(*)(const char *, void *);
+  static auto wrap =
+      reinterpret_cast<Wrap>(dlsym(RTLD_DEFAULT, "mocktail_vr_wrap_gles_proc"));
+  return wrap ? wrap(name, raw) : raw;
 }
 
 void ShowIfHidden() {
@@ -1712,6 +1750,16 @@ bool SwapBuffers() {
     }
     return false;
   }
+
+  using Notify = void (*)();
+  static auto vr_begin = reinterpret_cast<Notify>(
+      dlsym(RTLD_DEFAULT, "mocktail_vr_note_host_present_begin"));
+  static auto vr_present =
+      reinterpret_cast<Notify>(dlsym(RTLD_DEFAULT, "mocktail_vr_gles_present"));
+  if (vr_begin)
+    vr_begin();
+  if (vr_present)
+    vr_present();
 
   if (g_gles_text_overlay == nullptr) {
     graphics::GlesTextOverlaySource source;
@@ -2502,6 +2550,14 @@ void Shutdown() {
   // resources below.
   g_gles_text_overlay.reset();
   if (!g_state.direct_vulkan && g_state.egl_context != nullptr) {
+    // Drain the XR session while its EGL context still exists and is current.
+    SDL_GL_MakeCurrent(g_state.sdl_window,
+                       static_cast<SDL_GLContext>(g_state.egl_context));
+    using Detach = void (*)(void *);
+    auto detach =
+        reinterpret_cast<Detach>(dlsym(RTLD_DEFAULT, "mocktail_vr_detach_egl"));
+    if (detach)
+      detach(g_state.egl_context);
     SDL_GL_MakeCurrent(g_state.sdl_window, nullptr);
   }
   if (!g_state.direct_vulkan && g_state.egl_context) {
