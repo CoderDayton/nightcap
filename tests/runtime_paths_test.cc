@@ -439,6 +439,36 @@ TEST(RuntimePathsTest, SelectsExistingRealSoberAssetPath) {
   EXPECT_EQ(paths.DefaultAssetPath(), sober_assets);
 }
 
+TEST(RuntimePathsTest, SelectsExistingRealSoberAssetOverlayPath) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  const std::filesystem::path home = temporary.path() / "home";
+  const std::filesystem::path sober_overlay =
+      home / ".var/app/org.vinegarhq.Sober/data/sober/asset_overlay";
+  ASSERT_TRUE(RuntimePaths::EnsureDirectory(sober_overlay));
+
+  const MapEnvironment environment({
+      {"HOME", home.string()},
+      {"MOCKTAIL_USE_REAL_SOBER_PATHS", "1"},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(
+      environment, temporary.path() / "empty-workspace");
+
+  EXPECT_EQ(paths.asset_overlay_dir(), sober_overlay);
+}
+
+TEST(RuntimePathsTest, RespectsExplicitAssetOverlayOverride) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  const MapEnvironment environment({
+      {"HOME", temporary.path().string()},
+      {"MOCKTAIL_ASSET_OVERLAY_DIR", "/custom/asset_overlay"},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(
+      environment, temporary.path());
+  EXPECT_EQ(paths.asset_overlay_dir(), "/custom/asset_overlay");
+}
+
 TEST(RuntimePathsTest, PrefersWorkspaceAssets) {
   TemporaryDirectory temporary;
   ASSERT_FALSE(temporary.path().empty());
@@ -591,10 +621,13 @@ TEST(RuntimePathsTest, ExportsXdgBackedAndroidPathsAndCreatesParents) {
       "MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH");
   const ScopedProcessEnvironment texture_overrides(
       "MOCKTAIL_TEXTURE_OVERRIDE_DIR");
+  const ScopedProcessEnvironment overlay_dir(
+      "MOCKTAIL_ASSET_OVERLAY_DIR");
   ASSERT_EQ(unsetenv("MOCKTAIL_RUNTIME_ROOT"), 0);
   ASSERT_EQ(unsetenv("MOCKTAIL_ANDROID_CACHE_HOST_ROOT"), 0);
   ASSERT_EQ(unsetenv("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH"), 0);
   ASSERT_EQ(unsetenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR"), 0);
+  ASSERT_EQ(unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR"), 0);
 
   const MapEnvironment environment({
       {"HOME", temporary.path().string()},
@@ -614,10 +647,13 @@ TEST(RuntimePathsTest, ExportsXdgBackedAndroidPathsAndCreatesParents) {
                paths.vulkan_shader_cache_file().c_str());
   EXPECT_STREQ(std::getenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
                (paths.config_root() / "textures").c_str());
+  EXPECT_STREQ(std::getenv("MOCKTAIL_ASSET_OVERLAY_DIR"),
+               paths.asset_overlay_dir().c_str());
   EXPECT_TRUE(std::filesystem::is_directory(paths.android_runtime_root()));
   EXPECT_TRUE(std::filesystem::is_directory(paths.android_cache_root()));
   EXPECT_TRUE(std::filesystem::is_directory(
       paths.vulkan_shader_cache_file().parent_path()));
+  EXPECT_TRUE(std::filesystem::is_directory(paths.asset_overlay_dir()));
 }
 
 TEST(RuntimePathsTest, PreservesExplicitAndroidPathOverrides) {
@@ -628,12 +664,15 @@ TEST(RuntimePathsTest, PreservesExplicitAndroidPathOverrides) {
       "MOCKTAIL_ANDROID_CACHE_HOST_ROOT");
   const ScopedProcessEnvironment shader_cache(
       "MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH");
+  const ScopedProcessEnvironment overlay_dir(
+      "MOCKTAIL_ASSET_OVERLAY_DIR");
   ASSERT_EQ(setenv("MOCKTAIL_RUNTIME_ROOT", "/explicit/runtime", 1), 0);
   ASSERT_EQ(setenv("MOCKTAIL_ANDROID_CACHE_HOST_ROOT", "/explicit/cache", 1),
             0);
   ASSERT_EQ(setenv("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH",
                    "/explicit/shader-cache", 1),
             0);
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", "/explicit/overlay", 1), 0);
 
   const MapEnvironment environment({{"HOME", temporary.path().string()}});
   const RuntimePaths paths =
@@ -646,6 +685,7 @@ TEST(RuntimePathsTest, PreservesExplicitAndroidPathOverrides) {
                "/explicit/cache");
   EXPECT_STREQ(std::getenv("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH"),
                "/explicit/shader-cache");
+  EXPECT_STREQ(std::getenv("MOCKTAIL_ASSET_OVERLAY_DIR"), "/explicit/overlay");
 }
 
 }  // namespace
