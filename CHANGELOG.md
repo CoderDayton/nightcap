@@ -11,6 +11,10 @@ Release notes on GitHub are taken from the matching section here.
   ships at the same path, such as a cursor, a font or a sky texture, and it stays in place when Roblox
   updates. The layout matches Sober's `asset_overlay` folder. `MOCKTAIL_ASSET_OVERLAY_DIR` moves it. Thanks to
   @dim-ghub.
+- The asset overlay folder now also replaces files Roblox downloads and no longer ships, such as the shift
+  lock and text cursors. Put the file under `content/`, at the path Roblox uses. Thanks to @dim-ghub for the
+  idea.
+- `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 
 ## [0.3.4] - 2026-10-11
 

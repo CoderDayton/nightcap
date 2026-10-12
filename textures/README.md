@@ -57,9 +57,24 @@ Restart the game. The layout matches Sober's `asset_overlay` folder, so a file
 set made for Sober can be copied in as it is. The Flatpak build keeps the
 folder at `~/.var/app/io.github.CoderDayton.nightcap/data/mocktail/asset_overlay`.
 
+Roblox downloads some of these files, such as the shift lock and text cursors,
+and reads no local file for them. A file under `content/` in the overlay folder
+still replaces one: at start, Nightcap changes that file's name inside the
+loaded Roblox library, in memory only, so Roblox reads the local file. Nothing
+is changed when the overlay folder holds no file. Roblox does not allow
+modified clients, so use this at your own risk.
+
+```sh
+dir=~/.local/share/mocktail/asset_overlay/content/textures
+mkdir -p "$dir/Cursors/KeyboardMouse"
+cp my-shift-lock.png "$dir/MouseLockedCursor.png"
+cp my-text-cursor.png "$dir/Cursors/KeyboardMouse/IBeamCursor.png"
+```
+
 Set `MOCKTAIL_ASSET_TRACE=1` to print every file Roblox opens as
-`[asset] open <name> -> <path>`. A line that ends in `[overlay]` came from the
-overlay folder. `MOCKTAIL_ASSET_OVERLAY_DIR` points the lookup somewhere else.
+`[asset] open <name> -> <path>`, and every file it asks for and does not get as
+`[asset] miss <name>`. A line that ends in `[overlay]` came from the overlay
+folder. `MOCKTAIL_ASSET_OVERLAY_DIR` points the lookup somewhere else.
 
 An overlay file changes the texture's bytes, so a texture override keyed on the
 original file's hash stops matching it. Use one of the two for a given texture.
