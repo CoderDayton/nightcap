@@ -411,4 +411,40 @@ TEST_F(AssetManagerTest, CacheSeparatesOverlayDirectoryChanges) {
   AAsset_close(second);
 }
 
+TEST_F(AssetManagerTest, ResolvesShadersWhenAssetRootPointsToContentOrAssets) {
+  WriteAsset("shaders/shaders_vulkan_mobile.pack", "shader-pack-data");
+  WriteAsset("content/test.txt", "content-data");
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  // 1. Standard asset root pointing to parent assets directory:
+  AAsset* asset = AAssetManager_open(manager, "shaders/shaders_vulkan_mobile.pack", 0);
+  ASSERT_NE(asset, nullptr);
+  off_t start = -1;
+  off_t length = -1;
+  int fd = AAsset_openFileDescriptor(asset, &start, &length);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(length, 16);
+  close(fd);
+  AAsset_close(asset);
+
+  // 2. Relative traversal inside asset folder should normalize safely:
+  AAsset* relative_asset = AAssetManager_open(
+      manager, "content/../shaders/shaders_vulkan_mobile.pack", 0);
+  ASSERT_NE(relative_asset, nullptr);
+  AAsset_close(relative_asset);
+
+  // 3. Fallback when MOCKTAIL_ASSET_ROOT accidentally points to /content directory:
+  const std::string content_root = root_ + "/content";
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_ROOT", content_root.c_str(), 1), 0);
+  AAsset* fallback_asset = AAssetManager_open(
+      manager, "shaders/shaders_vulkan_mobile.pack", 0);
+  ASSERT_NE(fallback_asset, nullptr);
+  fd = AAsset_openFileDescriptor(fallback_asset, &start, &length);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(length, 16);
+  close(fd);
+  AAsset_close(fallback_asset);
+}
+
 }  // namespace

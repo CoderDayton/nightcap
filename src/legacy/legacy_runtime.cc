@@ -2198,8 +2198,12 @@ void MocktailSetAssetPath(JNIEnv* env, jstring asset_path) {
   if (path.empty()) {
     path = DefaultAssetPath();
   }
-  setenv("MOCKTAIL_ASSET_ROOT", path.c_str(), 1);
-  std::cout << "  [engine] asset root set to " << path << '\n' << std::flush;
+  std::filesystem::path root_path(path);
+  if (root_path.filename() == "content") {
+    root_path = root_path.parent_path();
+  }
+  setenv("MOCKTAIL_ASSET_ROOT", root_path.c_str(), 1);
+  std::cout << "  [engine] asset root set to " << root_path.string() << '\n' << std::flush;
 }
 
 void MocktailAppBridgeInit(JNIEnv* env, jstring app_params) {

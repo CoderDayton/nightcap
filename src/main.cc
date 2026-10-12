@@ -626,6 +626,10 @@ int main(int argc, char* argv[]) {
       std::cerr << "[FATAL] Cannot bind assets to explicit Roblox library\n";
       return EXIT_FAILURE;
     }
+    const std::filesystem::path adjacent_root =
+        adjacent_assets.filename() == "content" ? adjacent_assets.parent_path()
+                                                : adjacent_assets;
+    setenv("MOCKTAIL_ASSET_ROOT", adjacent_root.c_str(), 1);
     std::cout << "  [runtime] explicit Roblox library uses adjacent assets: "
               << adjacent_assets << '\n';
   }
@@ -717,8 +721,13 @@ int main(int argc, char* argv[]) {
       if ((needs_active_library &&
            setenv("ROBLOX_LIB_PATH", active.roblox_library.c_str(), 1) != 0) ||
           (needs_active_assets &&
-           setenv("MOCKTAIL_ASSET_PATH", active.assets_content.c_str(), 1) !=
-               0)) {
+           (setenv("MOCKTAIL_ASSET_PATH", active.assets_content.c_str(), 1) != 0 ||
+            setenv("MOCKTAIL_ASSET_ROOT",
+                   (active.assets_content.filename() == "content"
+                        ? active.assets_content.parent_path()
+                        : active.assets_content)
+                       .c_str(),
+                   1) != 0))) {
         std::cerr << "[FATAL] Cannot activate resolved Roblox payload\n";
         return EXIT_FAILURE;
       }
