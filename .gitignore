@@ -173,6 +173,9 @@ lsan.log*
 *.dump
 *.mem
 *.raw
+*.pkg.tar*
+/packaging/arch/pkg/
+/packaging/arch/src/
 
 # Test fixtures
 !/third_party/mcpelauncher-linker/core/libziparchive/**/*.zip

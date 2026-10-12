@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <string_view>
 #include <unordered_map>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
@@ -309,7 +310,101 @@ void Install() {
             << g_path_mappings.size() << " prefix mappings)\n";
 }
 
+bool FileExists(const std::string& path) {
+  struct stat st;
+  return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+bool TranslateOverlayAssetPath(std::string_view android_path,
+                               std::string* host_path) {
+  const char* overlay_dir = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY_DIR");
+  if (overlay_dir == nullptr || host_path == nullptr) {
+    return false;
+  }
+  static constexpr const char* kAssetPrefixes[] = {
+      "content/",
+      "rbx_bin/assets/content/",
+      "rbx_bin/assets/",
+      "assets/content/",
+      "assets/",
+  };
+  std::string_view subpath = android_path;
+  bool is_asset_path = false;
+  for (const char* prefix : kAssetPrefixes) {
+    const size_t len = std::strlen(prefix);
+    if (subpath.size() >= len && subpath.substr(0, len) == prefix) {
+      subpath.remove_prefix(len);
+      is_asset_path = true;
+      break;
+    }
+  }
+  if (!is_asset_path) {
+    if (subpath.rfind("textures/", 0) == 0 ||
+        subpath.rfind("Cursors/", 0) == 0) {
+      is_asset_path = true;
+    } else {
+      return false;
+    }
+  }
+
+  while (!subpath.empty() && subpath.front() == '/') {
+    subpath.remove_prefix(1);
+  }
+  if (subpath.empty()) {
+    return false;
+  }
+
+  const std::string base(overlay_dir);
+  std::vector<std::string> sub_candidates;
+  sub_candidates.push_back(std::string(subpath));
+
+  const bool is_cursor =
+      subpath.find("Cursor") != std::string_view::npos ||
+      subpath.find("cursor") != std::string_view::npos ||
+      subpath.rfind("textures/", 0) == 0 ||
+      subpath.rfind("Cursors/", 0) == 0;
+
+  if (is_cursor) {
+    std::string_view filename = subpath;
+    const size_t last_slash = filename.rfind('/');
+    if (last_slash != std::string_view::npos) {
+      filename = filename.substr(last_slash + 1);
+    }
+    std::string fn(filename);
+    std::string fn_png = fn;
+    if (fn_png.size() < 4 || fn_png.compare(fn_png.size() - 4, 4, ".png") != 0) {
+      fn_png += ".png";
+    }
+    for (const std::string& name : {fn_png, fn}) {
+      sub_candidates.push_back("textures/Cursors/KeyboardMouse/" + name);
+      sub_candidates.push_back("textures/Cursors/Gamepad/" + name);
+      sub_candidates.push_back("textures/Cursors/" + name);
+      sub_candidates.push_back("textures/" + name);
+      sub_candidates.push_back("Cursors/KeyboardMouse/" + name);
+      sub_candidates.push_back("Cursors/" + name);
+      sub_candidates.push_back(name);
+    }
+  }
+
+  for (const std::string& sub : sub_candidates) {
+    for (const std::string& candidate : {
+             base + "/" + sub,
+             base + "/content/" + sub,
+             base + "/ExtraContent/" + sub,
+         }) {
+      if (FileExists(candidate)) {
+        host_path->assign(candidate);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool TranslatePathInto(std::string_view android_path, std::string* host_path) {
+  if (TranslateOverlayAssetPath(android_path, host_path)) {
+    return true;
+  }
   for (const auto& [android_prefix, host_prefix] : g_ordered_mappings) {
     if (PrefixMatchesPath(android_path, android_prefix)) {
       const std::string_view rest = android_path.substr(android_prefix.size());
@@ -337,6 +432,7 @@ void ClearPathMappings() {
   g_path_mappings.clear();
   g_ordered_mappings.clear();
   g_ca_bundle_aliases.clear();
+  g_installed = false;
 }
 
 }  // namespace libc_shim
@@ -361,10 +457,13 @@ bool PathTraceEnabled() {
 
 void TracePathCall(const char* name, const char* path, const char* host_path,
                    int result) {
-  if (!PathTraceEnabled()) {
+  const bool is_cursor =
+      path != nullptr && (std::strstr(path, "Cursor") != nullptr ||
+                          std::strstr(path, "cursor") != nullptr);
+  if (!PathTraceEnabled() && !is_cursor) {
     return;
   }
-  std::fprintf(stderr, "  [path] %s %s", name, path ? path : "(null)");
+  std::fprintf(stderr, "  [libc_shim] %s %s", name, path ? path : "(null)");
   if (path != nullptr && host_path != nullptr &&
       std::strcmp(path, host_path) != 0) {
     std::fprintf(stderr, " -> %s", host_path);
@@ -374,10 +473,13 @@ void TracePathCall(const char* name, const char* path, const char* host_path,
 
 void TracePathCallPtr(const char* name, const char* path,
                       const char* host_path, const void* result) {
-  if (!PathTraceEnabled()) {
+  const bool is_cursor =
+      path != nullptr && (std::strstr(path, "Cursor") != nullptr ||
+                          std::strstr(path, "cursor") != nullptr);
+  if (!PathTraceEnabled() && !is_cursor) {
     return;
   }
-  std::fprintf(stderr, "  [path] %s %s", name, path ? path : "(null)");
+  std::fprintf(stderr, "  [libc_shim] %s %s", name, path ? path : "(null)");
   if (path != nullptr && host_path != nullptr &&
       std::strcmp(path, host_path) != 0) {
     std::fprintf(stderr, " -> %s", host_path);

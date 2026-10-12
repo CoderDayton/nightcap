@@ -703,8 +703,10 @@ int main(int argc, char* argv[]) {
       if ((needs_active_library &&
            setenv("ROBLOX_LIB_PATH", active.roblox_library.c_str(), 1) != 0) ||
           (needs_active_assets &&
-           setenv("MOCKTAIL_ASSET_PATH", active.assets_content.c_str(), 1) !=
-               0)) {
+           (setenv("MOCKTAIL_ASSET_PATH", active.assets_content.c_str(), 1) !=
+                0 ||
+            setenv("MOCKTAIL_ASSET_ROOT",
+                   active.assets_content.parent_path().c_str(), 1) != 0))) {
         std::cerr << "[FATAL] Cannot activate resolved Roblox payload\n";
         return EXIT_FAILURE;
       }

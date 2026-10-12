@@ -155,6 +155,58 @@ ResolvedAsset CacheResolvedAsset(const std::string& cache_key,
   return resolved;
 }
 
+std::vector<std::string> BuildCandidatePaths(const std::string& base,
+                                             const std::string& requested,
+                                             const std::string& stripped) {
+  std::vector<std::string> subpaths = {requested, stripped};
+  for (const std::string& s : {requested, stripped}) {
+    const bool is_cursor =
+        s.find("Cursor") != std::string::npos ||
+        s.find("cursor") != std::string::npos ||
+        s.rfind("textures/", 0) == 0 ||
+        s.rfind("Cursors/", 0) == 0;
+    if (!is_cursor) {
+      continue;
+    }
+    std::string_view filename = s;
+    const size_t last_slash = filename.rfind('/');
+    if (last_slash != std::string_view::npos) {
+      filename = filename.substr(last_slash + 1);
+    }
+    std::string fn(filename);
+    std::string fn_png = fn;
+    if (fn_png.size() < 4 || fn_png.compare(fn_png.size() - 4, 4, ".png") != 0) {
+      fn_png += ".png";
+    }
+    for (const std::string& name : {fn_png, fn}) {
+      subpaths.push_back("textures/Cursors/KeyboardMouse/" + name);
+      subpaths.push_back("textures/Cursors/Gamepad/" + name);
+      subpaths.push_back("textures/Cursors/" + name);
+      subpaths.push_back("textures/" + name);
+      subpaths.push_back("Cursors/KeyboardMouse/" + name);
+      subpaths.push_back("Cursors/Gamepad/" + name);
+      subpaths.push_back("Cursors/" + name);
+      subpaths.push_back(name);
+    }
+    if (s.rfind("Cursors/", 0) == 0) {
+      subpaths.push_back("textures/" + s);
+    }
+  }
+
+  std::vector<std::string> candidates;
+  candidates.reserve(subpaths.size() * 5);
+  for (const std::string& sub : subpaths) {
+    candidates.push_back(base + "/" + sub);
+    candidates.push_back(base + "/content/" + sub);
+    candidates.push_back(base + "/ExtraContent/" + sub);
+    if (sub.rfind("textures/", 0) != 0) {
+      candidates.push_back(base + "/content/textures/" + sub);
+      candidates.push_back(base + "/textures/" + sub);
+    }
+  }
+  return candidates;
+}
+
 ResolvedAsset ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
@@ -186,14 +238,8 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   const std::string stripped(StripAndroidAssetPrefix(requested_view));
 
   if (!overlay.empty()) {
-    const std::vector<std::string> overlay_candidates = {
-        overlay + "/" + requested,
-        overlay + "/" + stripped,
-        overlay + "/content/" + requested,
-        overlay + "/content/" + stripped,
-        overlay + "/ExtraContent/" + requested,
-        overlay + "/ExtraContent/" + stripped,
-    };
+    const std::vector<std::string> overlay_candidates =
+        BuildCandidatePaths(overlay, requested, stripped);
     for (const std::string& candidate : overlay_candidates) {
       if (FileExists(candidate)) {
         return CacheResolvedAsset(cache_key, {candidate, true});
@@ -201,14 +247,8 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
     }
   }
 
-  const std::vector<std::string> root_candidates = {
-      root + "/" + requested,
-      root + "/" + stripped,
-      root + "/content/" + requested,
-      root + "/content/" + stripped,
-      root + "/ExtraContent/" + requested,
-      root + "/ExtraContent/" + stripped,
-  };
+  const std::vector<std::string> root_candidates =
+      BuildCandidatePaths(root, requested, stripped);
   for (const std::string& candidate : root_candidates) {
     if (FileExists(candidate)) {
       return CacheResolvedAsset(cache_key, {candidate, false});
@@ -364,7 +404,15 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
     return nullptr;
   }
   ResolvedAsset resolved = ResolveAssetPath(filename);
+  const bool is_cursor =
+      filename != nullptr &&
+      (std::strstr(filename, "Cursor") != nullptr ||
+       std::strstr(filename, "cursor") != nullptr);
   if (resolved.path.empty()) {
+    if (is_cursor || AssetTraceEnabled()) {
+      std::fprintf(stderr, "  [asset] open '%s' -> NOT FOUND\n",
+                   filename ? filename : "(null)");
+    }
     return nullptr;
   }
   auto* asset = new AAsset;
@@ -372,6 +420,10 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   asset->apk_entry = ApkEntryName(filename);
   asset->is_overlay = resolved.is_overlay;
   if (!LoadFile(resolved.path, &asset->data)) {
+    if (is_cursor || AssetTraceEnabled()) {
+      std::fprintf(stderr, "  [asset] open '%s' -> FAILED TO LOAD FILE %s\n",
+                   filename ? filename : "(null)", resolved.path.c_str());
+    }
     delete asset;
     return nullptr;
   }
@@ -380,8 +432,8 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
         libc_shim::TranscodeEtc1SkyTextureForVulkan(resolved.path.c_str(),
                                                     &asset->data);
   }
-  if (AssetTraceEnabled()) {
-    std::fprintf(stderr, "[asset] open %s -> %s (%zu bytes%s)\n", filename,
+  if (is_cursor || AssetTraceEnabled()) {
+    std::fprintf(stderr, "  [asset] open %s -> %s (%zu bytes%s)\n", filename,
                  resolved.path.c_str(), asset->data.size(),
                  resolved.is_overlay ? " [overlay]" : "");
   }

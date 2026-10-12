@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,8 +28,12 @@ class LibcShimTest : public ::testing::Test {
     const char* asset_path = std::getenv("MOCKTAIL_ASSET_PATH");
     had_asset_path_override_ = asset_path != nullptr;
     original_asset_path_override_ = asset_path == nullptr ? "" : asset_path;
+    const char* overlay_dir = std::getenv("MOCKTAIL_ASSET_OVERLAY_DIR");
+    had_overlay_dir_override_ = overlay_dir != nullptr;
+    original_overlay_dir_override_ = overlay_dir == nullptr ? "" : overlay_dir;
     ASSERT_EQ(unsetenv("MOCKTAIL_CA_BUNDLE"), 0);
     ASSERT_EQ(unsetenv("MOCKTAIL_ASSET_PATH"), 0);
+    ASSERT_EQ(unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR"), 0);
     ClearPathMappings();
     ConfigureGuestAllocator(nullptr);
   }
@@ -49,12 +54,21 @@ class LibcShimTest : public ::testing::Test {
     } else {
       EXPECT_EQ(unsetenv("MOCKTAIL_ASSET_PATH"), 0);
     }
+    if (had_overlay_dir_override_) {
+      EXPECT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR",
+                       original_overlay_dir_override_.c_str(), 1),
+                0);
+    } else {
+      EXPECT_EQ(unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR"), 0);
+    }
   }
 
   bool had_ca_bundle_override_ = false;
   std::string original_ca_bundle_override_;
   bool had_asset_path_override_ = false;
   std::string original_asset_path_override_;
+  bool had_overlay_dir_override_ = false;
+  std::string original_overlay_dir_override_;
 };
 
 TEST_F(LibcShimTest, TranslatesRegisteredPrefix) {
@@ -285,6 +299,95 @@ TEST_F(LibcShimTest, ClearRemovesAllMappings) {
 
   const std::string input = "/data/user/0/com.roblox.client/files";
   EXPECT_EQ(TranslatePath(input), input);
+}
+
+TEST_F(LibcShimTest, OverlayDirectoryOverridesAndSupplementsStockAssets) {
+  char stock_template[] = "/tmp/mocktail_stock_XXXXXX";
+  char* stock_dir = mkdtemp(stock_template);
+  ASSERT_NE(stock_dir, nullptr);
+
+  char overlay_template[] = "/tmp/mocktail_overlay_XXXXXX";
+  char* overlay_dir = mkdtemp(overlay_template);
+  ASSERT_NE(overlay_dir, nullptr);
+
+  // Stock payload has content/sounds/oof.mp3 and stock arrow cursor
+  const std::string stock_content = std::string(stock_dir) + "/content";
+  ASSERT_EQ(mkdir(stock_content.c_str(), 0755), 0);
+  const std::string stock_sounds = stock_content + "/sounds";
+  ASSERT_EQ(mkdir(stock_sounds.c_str(), 0755), 0);
+  const std::string stock_sound_file = stock_sounds + "/oof.mp3";
+  FILE* f = std::fopen(stock_sound_file.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  std::fclose(f);
+
+  const std::string stock_textures = stock_content + "/textures";
+  ASSERT_EQ(mkdir(stock_textures.c_str(), 0755), 0);
+  const std::string stock_kbm = stock_textures + "/Cursors";
+  ASSERT_EQ(mkdir(stock_kbm.c_str(), 0755), 0);
+  const std::string stock_kbm2 = stock_kbm + "/KeyboardMouse";
+  ASSERT_EQ(mkdir(stock_kbm2.c_str(), 0755), 0);
+  const std::string stock_arrow = stock_kbm2 + "/ArrowCursor.png";
+  f = std::fopen(stock_arrow.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  std::fputs("stock-arrow", f);
+  std::fclose(f);
+
+  // Overlay has custom MouseLockedCursor and IBeamCursor and ArrowCursor override
+  const std::string overlay_content = std::string(overlay_dir) + "/content";
+  ASSERT_EQ(mkdir(overlay_content.c_str(), 0755), 0);
+  const std::string overlay_textures = overlay_content + "/textures";
+  ASSERT_EQ(mkdir(overlay_textures.c_str(), 0755), 0);
+  const std::string overlay_mouselocked = overlay_textures + "/MouseLockedCursor.png";
+  f = std::fopen(overlay_mouselocked.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  std::fputs("overlay-mouselocked", f);
+  std::fclose(f);
+
+  const std::string overlay_kbm = overlay_textures + "/Cursors";
+  ASSERT_EQ(mkdir(overlay_kbm.c_str(), 0755), 0);
+  const std::string overlay_kbm2 = overlay_kbm + "/KeyboardMouse";
+  ASSERT_EQ(mkdir(overlay_kbm2.c_str(), 0755), 0);
+  const std::string overlay_ibeam = overlay_kbm2 + "/IBeamCursor.png";
+  f = std::fopen(overlay_ibeam.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  std::fputs("overlay-ibeam", f);
+  std::fclose(f);
+
+  const std::string overlay_arrow = overlay_kbm2 + "/ArrowCursor.png";
+  f = std::fopen(overlay_arrow.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  std::fputs("overlay-arrow", f);
+  std::fclose(f);
+
+  setenv("MOCKTAIL_ASSET_PATH", stock_content.c_str(), 1);
+  setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_dir, 1);
+  Install();
+
+  // 1. MouseLockedCursor absent in stock payload translates to overlay
+  EXPECT_EQ(TranslatePath("content/textures/MouseLockedCursor.png"),
+            overlay_mouselocked);
+  // 2. MouseLockedCursor requested under Cursors/KeyboardMouse aliases to textures/MouseLockedCursor.png
+  EXPECT_EQ(TranslatePath("content/textures/Cursors/KeyboardMouse/MouseLockedCursor.png"),
+            overlay_mouselocked);
+  // 3. IBeamCursor requested under textures/ aliases to Cursors/KeyboardMouse/IBeamCursor.png
+  EXPECT_EQ(TranslatePath("content/textures/IBeamCursor.png"),
+            overlay_ibeam);
+  // 4. Overridden ArrowCursor translates to overlay rather than stock
+  EXPECT_EQ(TranslatePath("content/textures/Cursors/KeyboardMouse/ArrowCursor.png"),
+            overlay_arrow);
+  // 5. Non-overlaid stock sound falls back to stock payload
+  EXPECT_EQ(TranslatePath("content/sounds/oof.mp3"),
+            stock_sound_file);
+
+  // 6. mocktail_stat and mocktail_access succeed on overlaid file
+  struct stat st {};
+  EXPECT_EQ(mocktail_stat("content/textures/MouseLockedCursor.png", &st), 0);
+  EXPECT_GT(st.st_size, 0);
+  EXPECT_EQ(mocktail_access("content/textures/IBeamCursor.png", R_OK), 0);
+
+  // Cleanup
+  std::filesystem::remove_all(stock_dir);
+  std::filesystem::remove_all(overlay_dir);
 }
 
 }  // namespace

@@ -61,6 +61,7 @@
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
+#include "runtime/asset_overlay_bridge.h"
 #include "runtime/engine_pump_rest.h"
 #include "runtime/device_memory_profile.h"
 #include "runtime/display_size.h"
@@ -1973,6 +1974,8 @@ extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
   g_libroblox_base = base;
   g_mocktail_abort_libroblox_base = base;
   g_libroblox_base_static = base;
+
+  mocktail::runtime::NeutralizeOnlineAssetRedirectsForOverlay(base);
 
   const mocktail::compat::HostAbiProfile* host_abi =
       g_active_host_abi_profile.load(std::memory_order_acquire);

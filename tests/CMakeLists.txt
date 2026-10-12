@@ -983,6 +983,14 @@ target_link_libraries(libc_shim_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(asset_overlay_bridge_test
+  asset_overlay_bridge_test.cc
+)
+target_link_libraries(asset_overlay_bridge_test PRIVATE
+  mocktail_runtime
+  GTest::gtest_main
+)
+
 add_executable(asset_manager_test
   asset_manager_test.cc
 )
@@ -1126,6 +1134,7 @@ if(MOCKTAIL_ENABLE_UPSTREAM_JNIVM)
   gtest_discover_tests(upstream_jnivm_integration_test)
 endif()
 gtest_discover_tests(libc_shim_test)
+gtest_discover_tests(asset_overlay_bridge_test)
 gtest_discover_tests(discord_rpc_test)
 gtest_discover_tests(asset_manager_test)
 gtest_discover_tests(android_looper_test)

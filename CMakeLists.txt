@@ -265,6 +265,7 @@ target_include_directories(mocktail_legacy_jnivm PUBLIC
 )
 
 add_library(mocktail_runtime STATIC
+  src/runtime/asset_overlay_bridge.cc
   src/runtime/command_line.cc
   src/runtime/crash_report_policy.cc
   src/runtime/discord_rpc.cc

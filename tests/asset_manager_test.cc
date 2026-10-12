@@ -411,4 +411,72 @@ TEST_F(AssetManagerTest, CacheSeparatesOverlayDirectoryChanges) {
   AAsset_close(second);
 }
 
+TEST_F(AssetManagerTest, CursorPathAliasesBetweenTexturesAndKeyboardMouse) {
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  // 1. Overlay has file under Cursors/KeyboardMouse/
+  WriteAssetAt(overlay_root,
+               "content/textures/Cursors/KeyboardMouse/IBeamCursor.png",
+               "custom-ibeam");
+  // 2. Overlay has file directly under textures/
+  WriteAssetAt(overlay_root,
+               "content/textures/MouseLockedCursor.png",
+               "custom-mouselocked");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  // Requesting rbxasset://textures/IBeamCursor.png resolves Cursors/KeyboardMouse/
+  AAsset* ibeam = AAssetManager_open(manager, "rbxasset://textures/IBeamCursor.png", 0);
+  ASSERT_NE(ibeam, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(ibeam)),
+                        static_cast<std::size_t>(AAsset_getLength(ibeam))),
+            "custom-ibeam");
+  AAsset_close(ibeam);
+
+  // Requesting Cursors/KeyboardMouse/ resolves directly under textures/
+  AAsset* locked = AAssetManager_open(
+      manager, "rbxasset://textures/Cursors/KeyboardMouse/MouseLockedCursor.png", 0);
+  ASSERT_NE(locked, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(locked)),
+                        static_cast<std::size_t>(AAsset_getLength(locked))),
+            "custom-mouselocked");
+  AAsset_close(locked);
+
+  // 3. Requesting Gamepad cursor aliases to KeyboardMouse/
+  AAsset* gamepad = AAssetManager_open(
+      manager, "rbxasset://textures/Cursors/Gamepad/IBeamCursor.png", 0);
+  ASSERT_NE(gamepad, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(gamepad)),
+                        static_cast<std::size_t>(AAsset_getLength(gamepad))),
+            "custom-ibeam");
+  AAsset_close(gamepad);
+
+  // 4. Requesting without textures/ prefix
+  AAsset* bare_kbm = AAssetManager_open(
+      manager, "Cursors/KeyboardMouse/IBeamCursor.png", 0);
+  ASSERT_NE(bare_kbm, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(bare_kbm)),
+                        static_cast<std::size_t>(AAsset_getLength(bare_kbm))),
+            "custom-ibeam");
+  AAsset_close(bare_kbm);
+
+  // 5. Requesting without .png extension
+  AAsset* no_ext = AAssetManager_open(
+      manager, "textures/Cursors/KeyboardMouse/IBeamCursor", 0);
+  ASSERT_NE(no_ext, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(no_ext)),
+                        static_cast<std::size_t>(AAsset_getLength(no_ext))),
+            "custom-ibeam");
+  AAsset_close(no_ext);
+
+  // 6. Requesting bare filename
+  AAsset* bare_fn = AAssetManager_open(manager, "MouseLockedCursor.png", 0);
+  ASSERT_NE(bare_fn, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(bare_fn)),
+                        static_cast<std::size_t>(AAsset_getLength(bare_fn))),
+            "custom-mouselocked");
+  AAsset_close(bare_fn);
+}
+
 }  // namespace
