@@ -67,6 +67,8 @@ struct SettingsWindow {
   std::vector<std::string> input_devices;
   // The card under the settings that says when changes take effect.
   GtkRevealer* notice = nullptr;
+  // The button on that card that takes the last saved change back.
+  GtkWidget* undo = nullptr;
   // Set while rows are filled from the file, so that filling one is not
   // taken for a change by the user.
   bool refreshing = false;
@@ -219,6 +221,7 @@ void ShowSaved(Row* row, bool saved, const std::string& error) {
   } else {
     ShowError(window, error);
   }
+  gtk_widget_set_visible(window->undo, window->document.CanUndo());
   // On failure the rows go back to what the file holds. A text that was
   // refused stays in its field, so it can be corrected.
   RefreshRows(window, saved ? row : nullptr);
@@ -232,6 +235,16 @@ void Apply(Row* row, const std::string& value) {
   std::string error;
   const bool saved = window->document.Set(row->setting->key, value, &error);
   ShowSaved(row, saved, error);
+}
+
+void OnUndo(GtkButton*, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  std::string error;
+  if (!window->document.Undo(&error)) {
+    ShowError(window, error);
+  }
+  gtk_widget_set_visible(window->undo, FALSE);
+  RefreshRows(window);
 }
 
 void OnNumberChanged(GObject* object, GParamSpec*, gpointer user_data) {
@@ -657,8 +670,15 @@ GtkWidget* BuildNotice(SettingsWindow* window) {
       "Saved. Changes apply the next time Nightcap starts.");
   gtk_label_set_xalign(GTK_LABEL(label), 0);
   gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+  gtk_widget_set_hexpand(label, TRUE);
   gtk_widget_set_margin_start(icon, 14);
   gtk_widget_set_margin_end(label, 14);
+  window->undo = gtk_button_new_with_label("Undo");
+  gtk_widget_set_tooltip_text(window->undo, "Take the last change back");
+  gtk_widget_set_valign(window->undo, GTK_ALIGN_CENTER);
+  gtk_widget_set_margin_end(window->undo, 8);
+  gtk_widget_add_css_class(window->undo, "flat");
+  g_signal_connect(window->undo, "clicked", G_CALLBACK(OnUndo), window);
   gtk_widget_set_margin_top(label, 12);
   gtk_widget_set_margin_bottom(label, 12);
 
@@ -667,6 +687,7 @@ GtkWidget* BuildNotice(SettingsWindow* window) {
   gtk_widget_add_css_class(card, "card");
   gtk_box_append(GTK_BOX(card), icon);
   gtk_box_append(GTK_BOX(card), label);
+  gtk_box_append(GTK_BOX(card), window->undo);
   gtk_widget_set_margin_start(card, 12);
   gtk_widget_set_margin_end(card, 12);
   gtk_widget_set_margin_bottom(card, 12);

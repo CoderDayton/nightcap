@@ -138,6 +138,13 @@ class SettingsDocument {
   bool SetText(std::string_view key, std::string_view value,
                std::string* error);
 
+  // Whether a change saved from this document can be taken back.
+  bool CanUndo() const { return undo_.has_value(); }
+
+  // Puts the file back as it was before the last change that was saved. A
+  // file edited by hand since then is left alone, and that is an error.
+  bool Undo(std::string* error);
+
   const std::filesystem::path& config_file() const { return config_file_; }
 
  private:
@@ -145,6 +152,7 @@ class SettingsDocument {
 
   std::filesystem::path config_file_;
   std::string text_;
+  std::optional<std::string> undo_;
 };
 
 // A place in a text. Both numbers start at 1, and the column counts

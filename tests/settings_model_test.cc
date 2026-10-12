@@ -266,6 +266,53 @@ TEST_F(SettingsModelTest, APickedDeviceReachesTheLoadedConfig) {
   EXPECT_FALSE(loaded.config.microphone_enabled());
 }
 
+TEST_F(SettingsModelTest, UndoPutsTheFileBackAsItWasBeforeTheLastChange) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(document.CanUndo());
+
+  for (const std::string_view key : {"input.raw_mouse", "device.touch"}) {
+    const std::string before = Read();
+    ASSERT_TRUE(document.Set(key, "true", &error)) << key << ": " << error;
+    ASSERT_NE(Read(), before) << key;
+    ASSERT_TRUE(document.CanUndo()) << key;
+
+    ASSERT_TRUE(document.Undo(&error)) << key << ": " << error;
+    EXPECT_EQ(Read(), before) << key;
+    EXPECT_EQ(document.Value(key), "false") << key;
+    EXPECT_FALSE(document.CanUndo()) << key;
+  }
+}
+
+TEST_F(SettingsModelTest, AChangeThatIsNotSavedLeavesNothingToUndo) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(document.Set("graphics.backend", "directx", &error));
+  EXPECT_FALSE(document.CanUndo());
+  // Saving the value the file already holds changes nothing.
+  ASSERT_TRUE(document.Set("graphics.backend",
+                           document.Value("graphics.backend"), &error))
+      << error;
+  EXPECT_FALSE(document.CanUndo());
+}
+
+TEST_F(SettingsModelTest, UndoLeavesAHandEditMadeMeanwhileAlone) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Set("input.raw_mouse", "true", &error)) << error;
+  const std::string edited = Read() + "# a note\n";
+  Write(edited);
+
+  EXPECT_FALSE(document.Undo(&error));
+  EXPECT_FALSE(error.empty());
+  EXPECT_EQ(Read(), edited);
+  EXPECT_FALSE(document.CanUndo());
+  EXPECT_EQ(document.Value("input.raw_mouse"), "true");
+}
+
 TEST_F(SettingsModelTest, TouchInputIsASwitchThatReachesTheLoadedConfig) {
   const Setting& touch = Find("device.touch");
   EXPECT_EQ(touch.kind, SettingKind::kToggle);

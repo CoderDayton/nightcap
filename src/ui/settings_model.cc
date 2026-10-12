@@ -652,6 +652,17 @@ bool SettingsDocument::SetText(std::string_view key, std::string_view value,
   return Save(std::move(edit.text), std::move(edit.error), error);
 }
 
+bool SettingsDocument::Undo(std::string* error) {
+  if (!undo_.has_value()) {
+    return true;
+  }
+  std::string previous = std::move(*undo_);
+  const bool saved = Save(std::move(previous), std::string(), error);
+  // An undo is not itself a change to take back.
+  undo_.reset();
+  return saved;
+}
+
 bool SettingsDocument::Save(std::string edited, std::string edit_error,
                             std::string* error) {
   if (!edit_error.empty()) {
@@ -668,11 +679,13 @@ bool SettingsDocument::Save(std::string edited, std::string edit_error,
     // The file may have changed under the window. Show what it holds now.
     runtime::RuntimeConfigText read =
         runtime::ReadRuntimeConfigText(config_file_);
-    if (read) {
+    if (read && read.text != text_) {
       text_ = std::move(read.text);
+      undo_.reset();
     }
     return false;
   }
+  undo_ = std::move(text_);
   text_ = std::move(edited);
   return true;
 }
