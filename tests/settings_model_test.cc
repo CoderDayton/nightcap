@@ -240,6 +240,12 @@ TEST_F(SettingsModelTest, ADeviceTheFileNamesStaysListedWhenItIsNotFound) {
                                         value}));
     EXPECT_EQ(choices.back().label, value + " (not found)");
   }
+  // Two devices share the name the file holds, so neither can be picked.
+  const std::vector<DeviceChoice> shared =
+      DeviceChoices(input, {"Webcam", "Webcam"}, "Webcam");
+  ASSERT_EQ(Values(shared),
+            (std::vector<std::string>{"default", "disabled", "Webcam"}));
+  EXPECT_EQ(shared.back().label, "Webcam (name not unique)");
   // A device that is found is listed once.
   EXPECT_EQ(Values(DeviceChoices(input, {"USB Mic"}, "USB Mic")),
             (std::vector<std::string>{"default", "disabled", "USB Mic"}));

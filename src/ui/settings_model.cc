@@ -547,7 +547,11 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
     value = setting.default_value;
   }
   if (!listed(value)) {
-    choices.push_back({std::string(value), std::string(value) + " (not found)"});
+    const bool shared =
+        std::find(devices.begin(), devices.end(), value) != devices.end();
+    choices.push_back(
+        {std::string(value), std::string(value) +
+                                 (shared ? " (name not unique)" : " (not found)")});
   }
   return choices;
 }
