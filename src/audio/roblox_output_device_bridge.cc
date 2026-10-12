@@ -134,6 +134,50 @@ RobloxOutputDeviceBridge::RobloxOutputDeviceBridge() = default;
 
 namespace internal {
 
+const FmodInputCaptureProfile* FindFmodInputCaptureProfile(
+    const compat::BuildProfile& profile) {
+  static constexpr FmodInputCaptureProfile kProfiles[] = {
+      {"ade08266c67aee88ec9c1d00902150e1684dad3a",
+       0x6c58040,
+       1,
+       {4, 11, 12, 13, 14, 15},
+       {0x32d0e9a, 0x32d0a34, 0x32d16a8, 0x32d1f84, 0x32d056c, 0x32d26ac}},
+      {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
+       0x6cd3ce0,
+       2,
+       {4, 13, 14, 15, 16, 17},
+       {0x320c630, 0x320bcf6, 0x320d4b4, 0x320dd94, 0x320b844, 0x320e49a}},
+  };
+  if (!profile.allow_host_abi_bridges || !profile.fmod_output_device_bridge) {
+    return nullptr;
+  }
+  const auto& output = *profile.fmod_output_device_bridge;
+  for (const auto& capture : kProfiles) {
+    if (capture.build_id == profile.elf_build_id &&
+        capture.vtable_rva == output.vtable_rva &&
+        output.vtable_layout_version >= 0 &&
+        capture.vtable_layout_version ==
+            static_cast<std::uint32_t>(output.vtable_layout_version)) {
+      return &capture;
+    }
+  }
+  return nullptr;
+}
+
+bool HasExpectedFmodInputCaptureVtable(const std::uintptr_t* vtable,
+                                       std::uintptr_t image_base,
+                                       const FmodInputCaptureProfile& profile) {
+  if (vtable == nullptr || image_base == 0) return false;
+  for (std::size_t i = 0; i < profile.slots.size(); ++i) {
+    if (profile.method_rvas[i] >
+            std::numeric_limits<std::uintptr_t>::max() - image_base ||
+        vtable[profile.slots[i]] != image_base + profile.method_rvas[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool HasExpectedFmodStringConstructorContract(const std::uint8_t* code,
                                               std::size_t size) {
   constexpr std::array<std::uint8_t, kStringConstructorContractSize>
