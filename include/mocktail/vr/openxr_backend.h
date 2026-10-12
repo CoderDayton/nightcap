@@ -279,6 +279,8 @@ class OpenXrBackend final {
   bool InitializeGlesSessionLocked(std::string *error);
   bool InitializeSessionResourcesLocked(std::string *error);
   bool CopyGlesEyesIntoSwapchains();
+  bool EnsureXrInstanceLocked(std::string* error = nullptr);
+  void DestroyXrInstanceLocked();
   void DisarmLocked();
   void* ResolveFunction(const char* name) const;
   void SetupDeviceAfterCreationLocked(VkPhysicalDevice physical_device,
@@ -339,6 +341,9 @@ class OpenXrBackend final {
   // Runtime name captured at xrCreateInstance so the bind-time diagnostics line
   // can report it without re-entering runtime_name() under the held mutex.
   std::string runtime_name_;
+  bool xr_instance_used_ = false;
+  std::string user_manifest_;
+  std::string runtime_manifest_;
 
   VkInstance vk_instance_ = VK_NULL_HANDLE;
   VkDevice vk_device_ = VK_NULL_HANDLE;

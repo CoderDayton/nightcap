@@ -251,65 +251,26 @@ OpenXrBackend* ActiveVrBackend() {
   return g_backend;
 }
 
-Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (armed_.load(std::memory_order_acquire)) {
-    return Status::Ok();
-  }
+void OpenXrBackend::DestroyXrInstanceLocked() {
   {
-    std::lock_guard<std::mutex> slot_lock(g_backend_slot_mutex);
-    if (g_backend != nullptr && g_backend != this) {
-      return Status::Error(StatusCode::kFailedPrecondition,
-                           "another OpenXR backend owns the process");
-    }
-    g_backend = this;
+    std::lock_guard<std::mutex> lock(controller_mutex_);
+    actions_.Destroy();
+    actions_created_ = false;
+  }
+  if (xr_instance_ != nullptr) {
+    const auto instance = static_cast<XrInstance>(xr_instance_);
+    (void)xrDestroyInstance(instance);
+    xr_instance_ = nullptr;
+  }
+  xr_system_ = 0;
+  xr_instance_used_ = false;
+}
+
+bool OpenXrBackend::EnsureXrInstanceLocked(std::string* error) {
+  if (xr_instance_ != nullptr) {
+    return true;
   }
   try {
-    const std::string user_manifest = EnvString("XR_RUNTIME_JSON", "");
-    const auto preference = EnvString("MOCKTAIL_VR_RUNTIME", "auto");
-    Require(
-        preference == "auto" || preference == "system" ||
-            preference == "wivrn" || preference == "steamvr" ||
-            preference == "alvr",
-        "MOCKTAIL_VR_RUNTIME must be auto, system, wivrn, steamvr, or alvr");
-    const auto discovery =
-        user_manifest.empty()
-            ? DiscoverVrRuntime(
-                  preference, EnvString("HOME", ""),
-                  EnvString("XDG_CONFIG_HOME", ""),
-                  EnvString("XDG_CONFIG_DIRS", ""),
-                  EnvString("XDG_RUNTIME_DIR",
-                            ("/run/user/" + std::to_string(getuid())).c_str()))
-            : VrRuntimeDiscovery{{}, "explicit XR_RUNTIME_JSON override"};
-    const auto manifest =
-        SelectVrRuntimeManifest(user_manifest, discovery.candidates);
-    Log("  [vr-backend] runtime selection: %s\n", discovery.reason.c_str());
-    Require(!manifest.empty() ||
-                (preference != "steamvr" && preference != "alvr" &&
-                 preference != "wivrn"),
-            "Selected VR runtime was not found. For ALVR, install SteamVR and "
-            "set XR_RUNTIME_JSON "
-            "to its steamxr_linux64.json if automatic discovery cannot find "
-            "the installation. "
-            "For WiVRn, install its native runtime or select its manifest "
-            "explicitly.");
-    if (!manifest.empty()) {
-      Require(setenv("XR_RUNTIME_JSON", manifest.c_str(), 1) == 0,
-              "Cannot select the OpenXR runtime");
-      Log("  [vr-backend] runtime manifest: %s\n", manifest.c_str());
-    } else {
-      Log("  [vr-backend] using registered OpenXR runtime; connect the headset "
-          "in WiVRn or SteamVR/ALVR first\n");
-    }
-    graphics_api_ = graphics_api;
-    if (graphics_api_ == VrGraphicsApi::kVulkan) {
-      vk_loader_ = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
-      Require(vk_loader_ != nullptr,
-              "Cannot load the host Vulkan loader libvulkan.so.1");
-      auto loader_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-          dlsym(vk_loader_, "vkGetInstanceProcAddr"));
-      Require(loader_gipa != nullptr, "Host vkGetInstanceProcAddr is missing");
-    }
     const char *vk_extensions[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME};
     const char *gl_extensions[] = {XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
                                    XR_MNDX_EGL_ENABLE_EXTENSION_NAME};
@@ -357,7 +318,7 @@ Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
     }
     if (instance_result == XR_ERROR_RUNTIME_UNAVAILABLE) {
       throw std::runtime_error("xrCreateInstance: " +
-          VrRuntimeUnavailableHint(!user_manifest.empty(), manifest));
+          VrRuntimeUnavailableHint(!user_manifest_.empty(), runtime_manifest_));
     }
     if (instance_result == XR_ERROR_EXTENSION_NOT_PRESENT &&
         graphics_api_ == VrGraphicsApi::kOpenGles) {
@@ -434,6 +395,79 @@ Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
           "continues without controller input)\n",
           actions_status.message().c_str());
     }
+    return true;
+  } catch (const std::exception& err) {
+    if (error != nullptr) {
+      *error = err.what();
+    }
+    DestroyXrInstanceLocked();
+    return false;
+  }
+}
+
+Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (armed_.load(std::memory_order_acquire)) {
+    return Status::Ok();
+  }
+  {
+    std::lock_guard<std::mutex> slot_lock(g_backend_slot_mutex);
+    if (g_backend != nullptr && g_backend != this) {
+      return Status::Error(StatusCode::kFailedPrecondition,
+                           "another OpenXR backend owns the process");
+    }
+    g_backend = this;
+  }
+  try {
+    user_manifest_ = EnvString("XR_RUNTIME_JSON", "");
+    const auto preference = EnvString("MOCKTAIL_VR_RUNTIME", "auto");
+    Require(
+        preference == "auto" || preference == "system" ||
+            preference == "wivrn" || preference == "steamvr" ||
+            preference == "alvr",
+        "MOCKTAIL_VR_RUNTIME must be auto, system, wivrn, steamvr, or alvr");
+    const auto discovery =
+        user_manifest_.empty()
+            ? DiscoverVrRuntime(
+                  preference, EnvString("HOME", ""),
+                  EnvString("XDG_CONFIG_HOME", ""),
+                  EnvString("XDG_CONFIG_DIRS", ""),
+                  EnvString("XDG_RUNTIME_DIR",
+                            ("/run/user/" + std::to_string(getuid())).c_str()))
+            : VrRuntimeDiscovery{{}, "explicit XR_RUNTIME_JSON override"};
+    runtime_manifest_ =
+        SelectVrRuntimeManifest(user_manifest_, discovery.candidates);
+    Log("  [vr-backend] runtime selection: %s\n", discovery.reason.c_str());
+    Require(!runtime_manifest_.empty() ||
+                (preference != "steamvr" && preference != "alvr" &&
+                 preference != "wivrn"),
+            "Selected VR runtime was not found. For ALVR, install SteamVR and "
+            "set XR_RUNTIME_JSON "
+            "to its steamxr_linux64.json if automatic discovery cannot find "
+            "the installation. "
+            "For WiVRn, install its native runtime or select its manifest "
+            "explicitly.");
+    if (!runtime_manifest_.empty()) {
+      Require(setenv("XR_RUNTIME_JSON", runtime_manifest_.c_str(), 1) == 0,
+              "Cannot select the OpenXR runtime");
+      Log("  [vr-backend] runtime manifest: %s\n", runtime_manifest_.c_str());
+    } else {
+      Log("  [vr-backend] using registered OpenXR runtime; connect the headset "
+          "in WiVRn or SteamVR/ALVR first\n");
+    }
+    graphics_api_ = graphics_api;
+    if (graphics_api_ == VrGraphicsApi::kVulkan) {
+      vk_loader_ = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+      Require(vk_loader_ != nullptr,
+              "Cannot load the host Vulkan loader libvulkan.so.1");
+      auto loader_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+          dlsym(vk_loader_, "vkGetInstanceProcAddr"));
+      Require(loader_gipa != nullptr, "Host vkGetInstanceProcAddr is missing");
+    }
+    std::string err;
+    if (!EnsureXrInstanceLocked(&err)) {
+      throw std::runtime_error(err);
+    }
     armed_.store(true, std::memory_order_release);
     Log("  [vr-backend] armed: OpenXR instance/system ready; awaiting guest "
         "%s\n",
@@ -453,25 +487,19 @@ void OpenXrBackend::Disarm() {
 
 void OpenXrBackend::DisarmLocked() {
   TeardownSessionLocked("disarm");
-  { std::lock_guard<std::mutex> lock(controller_mutex_);
-    actions_.Destroy();
-    actions_created_ = false; }
+  DestroyXrInstanceLocked();
   if (gles_)
     gles_->Destroy();
   delete gles_;
   gles_ = nullptr;
-  if (xr_instance_ != nullptr) {
-    const auto instance = static_cast<XrInstance>(xr_instance_);
-    (void)xrDestroyInstance(instance);
-    xr_instance_ = nullptr;
-  }
-  xr_system_ = 0;
   runtime_name_.clear();
   vk_instance_ = VK_NULL_HANDLE;
   if (vk_loader_ != nullptr) {
     dlclose(vk_loader_);
     vk_loader_ = nullptr;
   }
+  user_manifest_.clear();
+  runtime_manifest_.clear();
   armed_.store(false, std::memory_order_release);
   recording_.store(false, std::memory_order_release);
   eyes_bound_.store(false, std::memory_order_release);
@@ -506,11 +534,24 @@ bool OpenXrBackend::CreateVulkanInstance(
     const VkAllocationCallbacks* allocator, VkInstance* instance,
     VkResult* result) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!armed_.load(std::memory_order_acquire) || xr_instance_ == nullptr ||
-      vk_loader_ == nullptr) {
+  if (!armed_.load(std::memory_order_acquire) || vk_loader_ == nullptr) {
     return false;
   }
   try {
+    if (xr_instance_used_ || vk_instance_ != VK_NULL_HANDLE ||
+        xr_session_ != nullptr) {
+      TeardownSessionLocked("recycling OpenXR instance for new Vulkan instance");
+      DestroyXrInstanceLocked();
+      vk_instance_ = VK_NULL_HANDLE;
+    }
+    if (xr_instance_ == nullptr) {
+      std::string err;
+      if (!EnsureXrInstanceLocked(&err)) {
+        Log("  [vr-backend] failed to recreate OpenXR instance: %s\n",
+            err.c_str());
+        return false;
+      }
+    }
     auto loader_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         dlsym(vk_loader_, "vkGetInstanceProcAddr"));
     Require(loader_gipa != nullptr, "Host vkGetInstanceProcAddr is missing");
@@ -533,6 +574,7 @@ bool OpenXrBackend::CreateVulkanInstance(
       return true;
     }
     vk_instance_ = created;
+    xr_instance_used_ = true;
     *instance = created;
     *result = VK_SUCCESS;
     Log("  [vr-backend] guest VkInstance created through the OpenXR runtime\n");
@@ -1222,6 +1264,7 @@ void OpenXrBackend::NoteInstanceDestroyed(VkInstance instance) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (instance == vk_instance_) {
     TeardownSessionLocked("guest VkInstance destroyed");
+    DestroyXrInstanceLocked();
     vk_instance_ = VK_NULL_HANDLE;
   }
 }
