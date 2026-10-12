@@ -55,6 +55,7 @@ class AssetManagerTest : public ::testing::Test {
     root_ = MakeTempRoot();
     ASSERT_FALSE(root_.empty());
     setenv("MOCKTAIL_ASSET_ROOT", root_.c_str(), 1);
+    unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
     const char* backend = std::getenv("MOCKTAIL_GRAPHICS_BACKEND");
     had_backend_ = backend != nullptr;
     previous_backend_ = backend != nullptr ? backend : "";
@@ -63,6 +64,7 @@ class AssetManagerTest : public ::testing::Test {
 
   void TearDown() override {
     unsetenv("MOCKTAIL_ASSET_ROOT");
+    unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
     if (had_backend_) {
       setenv("MOCKTAIL_GRAPHICS_BACKEND", previous_backend_.c_str(), 1);
     } else {
@@ -295,6 +297,117 @@ TEST_F(AssetManagerTest, CacheSeparatesRuntimeAssetRootChanges) {
   EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(second)),
                         static_cast<std::size_t>(AAsset_getLength(second))),
             "second-root");
+  AAsset_close(second);
+}
+
+TEST_F(AssetManagerTest, OverlayAssetTakesPrecedenceOverRootAsset) {
+  WriteAsset("content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
+             "stock-arrow");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root,
+               "content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
+               "custom-overlay-arrow");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  // 1. Direct content/ path
+  AAsset* direct = AAssetManager_open(
+      manager, "content/textures/Cursors/KeyboardMouse/ArrowCursor.png", 0);
+  ASSERT_NE(direct, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(direct)),
+                        static_cast<std::size_t>(AAsset_getLength(direct))),
+            "custom-overlay-arrow");
+  AAsset_close(direct);
+
+  // 2. rbxasset:// URI prefix without content/
+  AAsset* rbxasset = AAssetManager_open(
+      manager, "rbxasset://textures/Cursors/KeyboardMouse/ArrowCursor.png", 0);
+  ASSERT_NE(rbxasset, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(rbxasset)),
+                        static_cast<std::size_t>(AAsset_getLength(rbxasset))),
+            "custom-overlay-arrow");
+  AAsset_close(rbxasset);
+
+  // 3. Bare textures/ prefix
+  AAsset* bare = AAssetManager_open(
+      manager, "textures/Cursors/KeyboardMouse/ArrowCursor.png", 0);
+  ASSERT_NE(bare, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(bare)),
+                        static_cast<std::size_t>(AAsset_getLength(bare))),
+            "custom-overlay-arrow");
+  AAsset_close(bare);
+}
+
+TEST_F(AssetManagerTest, OverlayOpenFileDescriptorReadsDirectlyFromFile) {
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/custom_shader.bin", "custom-overlay-shader");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  // Point APK path to non-existent or dummy file to ensure descriptor reads overlay
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_APK_PATH", "/nonexistent/apk/path.apk", 1), 0);
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+  AAsset* asset = AAssetManager_open(manager, "content/custom_shader.bin", 0);
+  ASSERT_NE(asset, nullptr);
+
+  off_t start = -1;
+  off_t length = -1;
+  int fd = AAsset_openFileDescriptor(asset, &start, &length);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(start, 0);
+  EXPECT_EQ(length, 21);
+
+  char buf[32] = {};
+  EXPECT_EQ(pread(fd, buf, 21, start), 21);
+  EXPECT_STREQ(buf, "custom-overlay-shader");
+  close(fd);
+  AAsset_close(asset);
+  unsetenv("MOCKTAIL_ASSET_APK_PATH");
+}
+
+TEST_F(AssetManagerTest, NonOverlaidAssetFallsBackToRootAsset) {
+  WriteAsset("content/sounds/oof.mp3", "stock-sound");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/textures/unrelated.png", "other-texture");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+  AAsset* asset = AAssetManager_open(manager, "sounds/oof.mp3", 0);
+  ASSERT_NE(asset, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(asset)),
+                        static_cast<std::size_t>(AAsset_getLength(asset))),
+            "stock-sound");
+  AAsset_close(asset);
+}
+
+TEST_F(AssetManagerTest, CacheSeparatesOverlayDirectoryChanges) {
+  WriteAsset("content/test.txt", "stock");
+  const std::string first_overlay = MakeTempRoot();
+  ASSERT_FALSE(first_overlay.empty());
+  WriteAssetAt(first_overlay, "content/test.txt", "overlay-1");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", first_overlay.c_str(), 1), 0);
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+  AAsset* first = AAssetManager_open(manager, "content/test.txt", 0);
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(first)),
+                        static_cast<std::size_t>(AAsset_getLength(first))),
+            "overlay-1");
+  AAsset_close(first);
+
+  const std::string second_overlay = MakeTempRoot();
+  ASSERT_FALSE(second_overlay.empty());
+  WriteAssetAt(second_overlay, "content/test.txt", "overlay-2");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", second_overlay.c_str(), 1), 0);
+
+  AAsset* second = AAssetManager_open(manager, "content/test.txt", 0);
+  ASSERT_NE(second, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(second)),
+                        static_cast<std::size_t>(AAsset_getLength(second))),
+            "overlay-2");
   AAsset_close(second);
 }
 
