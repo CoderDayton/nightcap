@@ -194,6 +194,72 @@ TEST_F(SettingsModelTest, SavedValuesReachTheLoadedConfig) {
   EXPECT_TRUE(loaded.config.input_capabilities().raw_mouse);
 }
 
+std::vector<std::string> Values(const std::vector<DeviceChoice>& choices) {
+  std::vector<std::string> values;
+  for (const DeviceChoice& choice : choices) {
+    values.push_back(choice.value);
+  }
+  return values;
+}
+
+TEST_F(SettingsModelTest, DeviceRowsOfferTheirChoicesThenTheDevices) {
+  const Setting& output = Find("audio.output_device");
+  const Setting& input = Find("audio.input_device");
+  ASSERT_EQ(output.kind, SettingKind::kDevice);
+  ASSERT_EQ(input.kind, SettingKind::kDevice);
+
+  const std::vector<std::string> devices = {"USB Headset", "Built-in Audio"};
+  EXPECT_EQ(Values(DeviceChoices(output, devices, "")),
+            (std::vector<std::string>{"default", "USB Headset",
+                                      "Built-in Audio"}));
+  const std::vector<DeviceChoice> inputs = DeviceChoices(input, devices, "");
+  EXPECT_EQ(Values(inputs),
+            (std::vector<std::string>{"default", "disabled", "USB Headset",
+                                      "Built-in Audio"}));
+  EXPECT_EQ(inputs[0].label, "System default");
+  EXPECT_EQ(inputs[1].label, "Off");
+  EXPECT_EQ(inputs[2].label, "USB Headset");
+}
+
+TEST_F(SettingsModelTest, ADeviceNightcapCouldNotPickByNameIsLeftOut) {
+  const Setting& input = Find("audio.input_device");
+  EXPECT_EQ(Values(DeviceChoices(
+                input,
+                {"Webcam", "USB Mic", "Webcam", "disabled", "default", ""},
+                "")),
+            (std::vector<std::string>{"default", "disabled", "USB Mic"}));
+}
+
+TEST_F(SettingsModelTest, ADeviceTheFileNamesStaysListedWhenItIsNotFound) {
+  const Setting& input = Find("audio.input_device");
+  for (const std::string value : {"Old Mic", "id:7"}) {
+    const std::vector<DeviceChoice> choices =
+        DeviceChoices(input, {"USB Mic"}, value);
+    ASSERT_EQ(Values(choices),
+              (std::vector<std::string>{"default", "disabled", "USB Mic",
+                                        value}));
+    EXPECT_EQ(choices.back().label, value + " (not found)");
+  }
+  // A device that is found is listed once.
+  EXPECT_EQ(Values(DeviceChoices(input, {"USB Mic"}, "USB Mic")),
+            (std::vector<std::string>{"default", "disabled", "USB Mic"}));
+}
+
+TEST_F(SettingsModelTest, APickedDeviceReachesTheLoadedConfig) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  const std::string name = "Alder Lake: PCH-P #2 [HiFi]";
+  ASSERT_TRUE(document.Set("audio.output_device", name, &error)) << error;
+  ASSERT_TRUE(document.Set("audio.input_device", "disabled", &error)) << error;
+  EXPECT_EQ(document.Value("audio.output_device"), name);
+
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.audio_output_device(), name);
+  EXPECT_FALSE(loaded.config.microphone_enabled());
+}
+
 TEST_F(SettingsModelTest, TouchInputIsASwitchThatReachesTheLoadedConfig) {
   const Setting& touch = Find("device.touch");
   EXPECT_EQ(touch.kind, SettingKind::kToggle);

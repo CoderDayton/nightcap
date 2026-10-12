@@ -394,10 +394,20 @@ const std::vector<SettingsPage>& SettingsPages() {
        {
            {"Devices",
             {
-                {"audio.output_device", "Output device", "",
-                 SettingKind::kText, {}, "default", {}},
-                {"audio.input_device", "Input device", "",
-                 SettingKind::kText, {}, "default", {}},
+                {"audio.output_device",
+                 "Output device",
+                 "",
+                 SettingKind::kDevice,
+                 {{"default", "System default"}},
+                 "default",
+                 {}},
+                {"audio.input_device",
+                 "Input device",
+                 "Off keeps the microphone closed.",
+                 SettingKind::kDevice,
+                 {{"default", "System default"}, {"disabled", "Off"}},
+                 "default",
+                 {}},
             }},
        }},
       {"discord",
@@ -511,6 +521,35 @@ std::size_t ChoiceIndex(const Setting& setting, std::string_view value) {
     }
   }
   return kNoChoice;
+}
+
+std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
+                                        const std::vector<std::string>& devices,
+                                        std::string_view value) {
+  std::vector<DeviceChoice> choices;
+  for (const SettingChoice& choice : setting.choices) {
+    choices.push_back({std::string(choice.value), std::string(choice.label)});
+  }
+  const auto listed = [&choices](std::string_view name) {
+    return std::any_of(choices.begin(), choices.end(),
+                       [name](const DeviceChoice& choice) {
+                         return choice.value == name;
+                       });
+  };
+  for (const std::string& device : devices) {
+    if (device.empty() || listed(device) ||
+        std::count(devices.begin(), devices.end(), device) != 1) {
+      continue;
+    }
+    choices.push_back({device, device});
+  }
+  if (value.empty()) {
+    value = setting.default_value;
+  }
+  if (!listed(value)) {
+    choices.push_back({std::string(value), std::string(value) + " (not found)"});
+  }
+  return choices;
 }
 
 bool ToggleState(const Setting& setting, std::string_view value) {

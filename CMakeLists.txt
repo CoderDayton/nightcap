@@ -391,6 +391,7 @@ target_include_directories(mocktail_settings PRIVATE
 target_link_libraries(mocktail_settings PRIVATE
   Mocktail::SettingsModel
   PkgConfig::LIBADWAITA
+  SDL3::SDL3
 )
 mocktail_apply_compile_options(mocktail_settings)
 

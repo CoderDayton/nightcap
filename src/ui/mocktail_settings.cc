@@ -1,9 +1,11 @@
+#include <SDL3/SDL.h>
 #include <adwaita.h>
 
 #include <cstdlib>
 #include <deque>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "mocktail/platform/sdl_window_icon_data.h"
 #include "runtime/environment.h"
@@ -13,6 +15,7 @@
 namespace {
 
 using mocktail::ui::ChoiceIndex;
+using mocktail::ui::DeviceChoice;
 using mocktail::ui::FFlagsDocument;
 using mocktail::ui::FrameRate;
 using mocktail::ui::FrameRateMode;
@@ -41,6 +44,7 @@ struct Row {
   std::string unlisted;
   // Whether the choices have been put in the drop-down yet.
   bool choices_set = false;
+  std::vector<DeviceChoice> devices;
   // The text a kText row was last filled with. A field that holds anything
   // else has an edit that is not saved yet.
   std::string shown;
@@ -59,6 +63,8 @@ struct SettingsWindow {
   AdwNavigationPage* content_page = nullptr;
   GtkStack* stack = nullptr;
   AdwToastOverlay* toasts = nullptr;
+  std::vector<std::string> output_devices;
+  std::vector<std::string> input_devices;
   // The card under the settings that says when changes take effect.
   GtkRevealer* notice = nullptr;
   // Set while rows are filled from the file, so that filling one is not
@@ -78,6 +84,49 @@ void SetChoices(Row* row) {
   }
   adw_combo_row_set_model(ADW_COMBO_ROW(row->widget), G_LIST_MODEL(labels));
   g_object_unref(labels);
+}
+
+// The names SDL gives the audio devices, which are the names Nightcap picks
+// a device by. Empty when SDL finds no audio system.
+std::vector<std::string> AudioDeviceNames(bool recording) {
+  std::vector<std::string> names;
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    return names;
+  }
+  int count = 0;
+  SDL_AudioDeviceID* ids = recording ? SDL_GetAudioRecordingDevices(&count)
+                                     : SDL_GetAudioPlaybackDevices(&count);
+  for (int index = 0; ids != nullptr && index < count; ++index) {
+    if (const char* name = SDL_GetAudioDeviceName(ids[index])) {
+      names.emplace_back(name);
+    }
+  }
+  SDL_free(ids);
+  SDL_QuitSubSystem(SDL_INIT_AUDIO);
+  return names;
+}
+
+void RefreshDeviceRow(Row* row, const std::string& value) {
+  const SettingsWindow& window = *row->window;
+  std::vector<DeviceChoice> devices = mocktail::ui::DeviceChoices(
+      *row->setting,
+      row->setting->key == "audio.input_device" ? window.input_devices
+                                                : window.output_devices,
+      value);
+  const std::string chosen =
+      value.empty() ? Text(row->setting->default_value) : value;
+  guint selected = 0;
+  GtkStringList* labels = gtk_string_list_new(nullptr);
+  for (std::size_t index = 0; index < devices.size(); ++index) {
+    gtk_string_list_append(labels, devices[index].label.c_str());
+    if (devices[index].value == chosen) {
+      selected = static_cast<guint>(index);
+    }
+  }
+  row->devices = std::move(devices);
+  adw_combo_row_set_model(ADW_COMBO_ROW(row->widget), G_LIST_MODEL(labels));
+  g_object_unref(labels);
+  adw_combo_row_set_selected(ADW_COMBO_ROW(row->widget), selected);
 }
 
 // Shows the file's value in `row`. With `keep_edit`, text typed into the row
@@ -137,6 +186,9 @@ void RefreshRow(Row* row, bool keep_edit) {
       gtk_widget_set_sensitive(row->reset, is_set);
       break;
     }
+    case SettingKind::kDevice:
+      RefreshDeviceRow(row, value);
+      break;
     case SettingKind::kEditor:
       break;
   }
@@ -215,6 +267,17 @@ void OnChoiceChanged(GObject* object, GParamSpec*, gpointer user_data) {
     return;
   }
   Apply(row, Text(row->setting->choices[selected].value));
+}
+
+void OnDeviceChanged(GObject* object, GParamSpec*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  const guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(object));
+  if (selected >= row->devices.size()) {
+    return;
+  }
+  // Apply fills the rows again, which replaces row->devices.
+  const std::string value = row->devices[selected].value;
+  Apply(row, value);
 }
 
 void OnFrameRateChanged(GObject*, GParamSpec*, gpointer user_data) {
@@ -433,6 +496,11 @@ void AddRow(SettingsWindow* window, AdwPreferencesGroup* group,
       row.widget = adw_combo_row_new();
       g_signal_connect(row.widget, "notify::selected",
                        G_CALLBACK(OnChoiceChanged), &row);
+      break;
+    case SettingKind::kDevice:
+      row.widget = adw_combo_row_new();
+      g_signal_connect(row.widget, "notify::selected",
+                       G_CALLBACK(OnDeviceChanged), &row);
       break;
     case SettingKind::kFrameRate:
       row.widget = adw_combo_row_new();
@@ -700,6 +768,8 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   GtkWidget* content = nullptr;
   std::string error;
   if (window->document.Load(&error)) {
+    window->output_devices = AudioDeviceNames(false);
+    window->input_devices = AudioDeviceNames(true);
     content = BuildSplitView(window, ADW_APPLICATION_WINDOW(window_widget));
     RefreshRows(window);
   } else {

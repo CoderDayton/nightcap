@@ -23,6 +23,8 @@ enum class SettingKind {
   kFrameRate,
   kNumber,
   kText,
+  // A drop-down of the setting's choices and the audio devices found.
+  kDevice,
   // A row that opens the editor for fflags.json.
   kEditor,
 };
@@ -67,6 +69,19 @@ inline constexpr std::size_t kNoChoice = static_cast<std::size_t>(-1);
 // Index of the choice that `value`, the file's value or empty when unset,
 // stands for. kNoChoice when the file holds a value the window does not list.
 std::size_t ChoiceIndex(const Setting& setting, std::string_view value);
+
+struct DeviceChoice {
+  std::string value;
+  std::string label;
+};
+
+// What a kDevice row offers: the setting's choices, then each name in
+// `devices`, then `value`, the file's value, when nothing listed stands for
+// it. A name Nightcap could not pick the device by is left out: one that two
+// devices share, and one that is also a choice's value.
+std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
+                                        const std::vector<std::string>& devices,
+                                        std::string_view value);
 
 // Whether a toggle is on for `value`, the file's value or empty when unset.
 bool ToggleState(const Setting& setting, std::string_view value);
