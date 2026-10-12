@@ -40,3 +40,26 @@ it in the override directory.
 
 Overrides are resampled to the size the game asked for, so the replacement does
 not have to match the original's dimensions.
+
+## Files that ship with Roblox
+
+A texture override only reaches ETC2 textures. To replace a file Roblox ships
+with, such as a cursor, a font or a sky texture, use the asset overlay folder
+instead. It needs no hash: the file goes at the same path Roblox uses.
+
+```sh
+dir=~/.local/share/mocktail/asset_overlay/content/textures/Cursors/KeyboardMouse
+mkdir -p "$dir"
+cp my-cursor.png "$dir/ArrowCursor.png"
+```
+
+Restart the game. The layout matches Sober's `asset_overlay` folder, so a file
+set made for Sober can be copied in as it is. The Flatpak build keeps the
+folder at `~/.var/app/io.github.CoderDayton.nightcap/data/mocktail/asset_overlay`.
+
+Set `MOCKTAIL_ASSET_TRACE=1` to print every file Roblox opens as
+`[asset] open <name> -> <path>`. A line that ends in `[overlay]` came from the
+overlay folder. `MOCKTAIL_ASSET_OVERLAY_DIR` points the lookup somewhere else.
+
+An overlay file changes the texture's bytes, so a texture override keyed on the
+original file's hash stops matching it. Use one of the two for a given texture.

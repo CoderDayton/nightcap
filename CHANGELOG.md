@@ -5,6 +5,13 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- An asset overlay folder, `~/.local/share/mocktail/asset_overlay`. A file there replaces the file Roblox
+  ships at the same path, such as a cursor, a font or a sky texture, and it stays in place when Roblox
+  updates. The layout matches Sober's `asset_overlay` folder. `MOCKTAIL_ASSET_OVERLAY_DIR` moves it. Thanks to
+  @dim-ghub.
+
 ## [0.3.4] - 2026-10-11
 
 ### Added

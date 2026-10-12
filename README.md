@@ -33,6 +33,10 @@ side by side.
   can replace any texture with your own PNG in `~/.config/mocktail/textures`.
   A ready-made crosshair is in [`textures/`](textures/README.md). Set
   `MOCKTAIL_SMALL_TEXTURE_UPSCALE=1` to turn the upscale off.
+- **Replace bundled files.** Put your own cursors, fonts or sky textures in
+  `~/.local/share/mocktail/asset_overlay`, under the same path Roblox uses,
+  and Nightcap loads them instead. The layout matches Sober's `asset_overlay`
+  folder. See [`textures/`](textures/README.md) for which folder to use.
 - **ETC2 textures on any GPU.** Games that use compressed mobile textures now
   render correctly on desktop GPUs, without stutter.
 - **No more error 319 kicks.** Servers no longer drop you shortly after
