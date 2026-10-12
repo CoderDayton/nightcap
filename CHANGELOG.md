@@ -15,6 +15,8 @@ Release notes on GitHub are taken from the matching section here.
   lock and text cursors. Put the file under `content/`, at the path Roblox uses. Thanks to @dim-ghub for the
   idea.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
+- Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
+  maintains it.
 
 ## [0.3.4] - 2026-10-11
 
