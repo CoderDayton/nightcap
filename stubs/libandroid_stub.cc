@@ -142,6 +142,19 @@ std::string AssetCacheKey(const std::string& root,
   return key;
 }
 
+// Stores a resolved asset, dropping one entry first when the cache is full.
+ResolvedAsset CacheResolvedAsset(const std::string& cache_key,
+                                 ResolvedAsset resolved) {
+  std::scoped_lock lock(g_asset_lookup_cache.mutex);
+  auto& cached = g_asset_lookup_cache.resolved_paths;
+  if (cached.size() >= kMaxCachedAssetPaths &&
+      cached.find(cache_key) == cached.end()) {
+    cached.erase(cached.begin());
+  }
+  cached.insert_or_assign(cache_key, resolved);
+  return resolved;
+}
+
 ResolvedAsset ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
@@ -183,18 +196,7 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
     };
     for (const std::string& candidate : overlay_candidates) {
       if (FileExists(candidate)) {
-        ResolvedAsset resolved{candidate, true};
-        std::scoped_lock lock(g_asset_lookup_cache.mutex);
-        if (g_asset_lookup_cache.resolved_paths.size() >=
-                kMaxCachedAssetPaths &&
-            g_asset_lookup_cache.resolved_paths.find(cache_key) ==
-                g_asset_lookup_cache.resolved_paths.end()) {
-          g_asset_lookup_cache.resolved_paths.erase(
-              g_asset_lookup_cache.resolved_paths.begin());
-        }
-        g_asset_lookup_cache.resolved_paths.insert_or_assign(cache_key,
-                                                             resolved);
-        return resolved;
+        return CacheResolvedAsset(cache_key, {candidate, true});
       }
     }
   }
@@ -209,18 +211,7 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   };
   for (const std::string& candidate : root_candidates) {
     if (FileExists(candidate)) {
-      ResolvedAsset resolved{candidate, false};
-      std::scoped_lock lock(g_asset_lookup_cache.mutex);
-      if (g_asset_lookup_cache.resolved_paths.size() >=
-              kMaxCachedAssetPaths &&
-          g_asset_lookup_cache.resolved_paths.find(cache_key) ==
-              g_asset_lookup_cache.resolved_paths.end()) {
-        g_asset_lookup_cache.resolved_paths.erase(
-            g_asset_lookup_cache.resolved_paths.begin());
-      }
-      g_asset_lookup_cache.resolved_paths.insert_or_assign(cache_key,
-                                                           resolved);
-      return resolved;
+      return CacheResolvedAsset(cache_key, {candidate, false});
     }
   }
 
