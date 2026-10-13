@@ -328,11 +328,15 @@ Status RobloxTextSurfaceOverlay::UpdateViewport(
 namespace {
 std::mutex g_display_mirror_mutex;
 RobloxTextDisplaySink g_display_mirror;
+// Lets a text update skip the lock while no mirror is installed.
+std::atomic<bool> g_display_mirror_set{false};
 }  // namespace
 
 void SetRobloxTextDisplayMirror(RobloxTextDisplaySink sink) {
   std::lock_guard<std::mutex> lock(g_display_mirror_mutex);
   g_display_mirror = sink;
+  g_display_mirror_set.store(sink.update != nullptr,
+                             std::memory_order_release);
 }
 
 RobloxTextDisplaySink RobloxTextSurfaceOverlay::sink() {
@@ -343,6 +347,9 @@ void RobloxTextSurfaceOverlay::UpdateCallback(
     void* context, const RobloxTextDisplayUpdate& update) {
   if (context != nullptr) {
     static_cast<RobloxTextSurfaceOverlay*>(context)->ApplyUpdate(update);
+  }
+  if (!g_display_mirror_set.load(std::memory_order_acquire)) {
+    return;
   }
   std::lock_guard<std::mutex> lock(g_display_mirror_mutex);
   if (g_display_mirror.update != nullptr) {

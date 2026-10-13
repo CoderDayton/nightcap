@@ -30,6 +30,9 @@ constexpr std::uint64_t kRepeatDelayNs = 450'000'000ULL;
 constexpr std::uint64_t kRepeatIntervalNs = 60'000'000ULL;
 // Cursor moves smaller than this (in UV) do not force a redraw.
 constexpr float kCursorRedrawStep = 0.004f;
+// A moving cursor redraws the panel at most this often; each redraw is a
+// full texture upload on the frame thread.
+constexpr std::uint64_t kCursorRedrawIntervalNs = 33'000'000ULL;
 
 constexpr float kPanelDistanceMetres = 0.45f;
 constexpr float kPanelDropMetres = 0.28f;
@@ -239,7 +242,13 @@ void VirtualKeyboard::Hide() {
   text_.revision = UINT64_MAX;  // the next SetText always reloads
   if (!visible_) return;
   visible_ = false;
-  for (Hand& hand : hands_) hand = Hand{};
+  for (int index = 0; index < 2; ++index) {
+    // Keeps a press already pending from an earlier hide of this same press.
+    release_pending_[index] =
+        release_pending_[index] ||
+        (hands_[index].trigger_down && hands_[index].captured);
+    hands_[index] = Hand{};
+  }
   Touch();
 }
 
@@ -255,7 +264,8 @@ int VirtualKeyboard::KeyAt(float u, float v) const {
 
 bool VirtualKeyboard::CapturesTrigger(int hand) const {
   const Hand& state = hands_[hand & 1];
-  return visible_ && (state.over_panel || state.captured);
+  return release_pending_[hand & 1] ||
+         (visible_ && (state.over_panel || state.captured));
 }
 
 bool VirtualKeyboard::cursor(int hand, float* u, float* v) const {
@@ -298,7 +308,6 @@ void VirtualKeyboard::Activate(const VirtualKey& key,
       return;
     case VirtualKeyAction::kClose:
       output->scancodes.push_back(kScancodeEscape);
-      output->closed = true;
       Hide();
       return;
   }
@@ -307,8 +316,18 @@ void VirtualKeyboard::Activate(const VirtualKey& key,
 VirtualKeyboardOutput VirtualKeyboard::Update(
     std::uint64_t now_ns, const VirtualKeyboardPointer (&pointers)[2]) {
   VirtualKeyboardOutput output;
-  if (!visible_) return output;
+  bool held_over[2] = {false, false};
+  for (int index = 0; index < 2; ++index) {
+    if (!release_pending_[index]) continue;
+    // Losing the aim pose is not a release: the trigger is read regardless.
+    held_over[index] = pointers[index].trigger > kTriggerRelease;
+    release_pending_[index] = held_over[index];
+  }
+  // Decided once per frame, or one moving hand starves the other's cursor.
+  const bool cursor_redraw_due =
+      now_ns - cursor_drawn_ns_ >= kCursorRedrawIntervalNs;
   for (int index = 0; index < 2 && visible_; ++index) {
+    if (held_over[index]) continue;
     Hand& hand = hands_[index];
     const VirtualKeyboardPointer& pointer = pointers[index];
     float u = 0.f, v = 0.f;
@@ -318,12 +337,15 @@ VirtualKeyboardOutput VirtualKeyboard::Update(
                                       kPanelHeightMetres, pointer.aim, &u, &v,
                                       nullptr);
     const int hovered = over ? KeyAt(u, v) : -1;
+    const bool cursor_moved =
+        over && (std::abs(u - hand.u) > kCursorRedrawStep ||
+                 std::abs(v - hand.v) > kCursorRedrawStep);
     if (over != hand.over_panel || hovered != hand.hovered ||
-        (over && (std::abs(u - hand.u) > kCursorRedrawStep ||
-                  std::abs(v - hand.v) > kCursorRedrawStep))) {
+        (cursor_moved && cursor_redraw_due)) {
       Touch();
       hand.u = u;
       hand.v = v;
+      cursor_drawn_ns_ = now_ns;
     }
     hand.over_panel = over;
     hand.hovered = hovered;

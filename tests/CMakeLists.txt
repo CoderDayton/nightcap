@@ -64,6 +64,12 @@ if(MOCKTAIL_ENABLE_VR)
   target_include_directories(openxr_backend_test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include")
   target_link_libraries(openxr_backend_test PRIVATE Mocktail::VR GTest::gtest_main)
   gtest_discover_tests(openxr_backend_test)
+  add_executable(virtual_keyboard_raster_test
+    vr/virtual_keyboard_raster_test.cc)
+  target_link_libraries(virtual_keyboard_raster_test PRIVATE
+    Mocktail::VR GTest::gtest_main)
+  mocktail_apply_compile_options(virtual_keyboard_raster_test)
+  gtest_discover_tests(virtual_keyboard_raster_test)
   add_executable(vr_queue_submission_test vr/queue_submission_test.cc)
   target_link_libraries(vr_queue_submission_test PRIVATE
     Mocktail::VR stub_vulkan GTest::gtest_main)

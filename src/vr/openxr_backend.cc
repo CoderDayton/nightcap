@@ -2725,8 +2725,10 @@ void OpenXrBackend::UpdateVirtualKeyboardLocked() {
     return;
   }
   const VirtualKeyboardHost host = CurrentVirtualKeyboardHost();
+  // A panel that cannot be drawn must not take triggers either.
   const bool requested =
-      host.input_requested != nullptr && host.input_requested(host.context);
+      !keyboard_swapchain_failed_ && host.input_requested != nullptr &&
+      host.input_requested(host.context);
   if (!requested) {
     keyboard_.Hide();
     keyboard_armed_ = true;
@@ -2735,10 +2737,9 @@ void OpenXrBackend::UpdateVirtualKeyboardLocked() {
     keyboard_armed_ = false;
     Log("  [vr-keyboard] shown for focused TextBox\n");
   }
-  if (!keyboard_.visible()) {
-    return;
-  }
-  {
+  // A hidden keyboard still runs below: it keeps a trigger that was pressed
+  // on the panel away from Roblox until that trigger is released.
+  if (keyboard_.visible()) {
     VirtualKeyboardText text = CurrentVirtualKeyboardText();
     keyboard_.SetText(text);
     std::fill(text.utf8.begin(), text.utf8.end(), '\0');
@@ -2904,6 +2905,8 @@ bool OpenXrBackend::UploadVirtualKeyboardVulkan(VkQueue queue, VkImage image) {
     if (vk_->CreateBuffer(vk_device_, &info, nullptr, &keyboard_staging_) !=
         VK_SUCCESS) {
       keyboard_staging_ = VK_NULL_HANDLE;
+      keyboard_swapchain_failed_ = true;
+      Log("  [vr-keyboard] disabled: no staging buffer\n");
       return false;
     }
     VkMemoryRequirements requirements{};
@@ -2932,7 +2935,11 @@ bool OpenXrBackend::UploadVirtualKeyboardVulkan(VkQueue queue, VkImage image) {
                               keyboard_staging_memory_, 0) != VK_SUCCESS ||
         vk_->MapMemory(vk_device_, keyboard_staging_memory_, 0, size, 0,
                        &keyboard_staging_mapped_) != VK_SUCCESS) {
-      DestroyVirtualKeyboardResources();
+      // The caller still holds an acquired swapchain image, so only the
+      // staging objects go; the latch stops a retry on every frame.
+      DestroyVirtualKeyboardStaging();
+      keyboard_swapchain_failed_ = true;
+      Log("  [vr-keyboard] disabled: no staging memory\n");
       return false;
     }
   }
@@ -2987,12 +2994,15 @@ bool OpenXrBackend::UploadVirtualKeyboardVulkan(VkQueue queue, VkImage image) {
   if (vk_->WaitForFences(vk_device_, 1, &copy_fence_, VK_TRUE,
                          2'000'000'000ULL) != VK_SUCCESS) {
     (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
-    throw std::runtime_error("keyboard upload fence wait failed");
+    // Returning lets the caller release the acquired swapchain image.
+    keyboard_swapchain_failed_ = true;
+    Log("  [vr-keyboard] disabled: upload fence wait failed\n");
+    return false;
   }
   return true;
 }
 
-void OpenXrBackend::DestroyVirtualKeyboardResources() {
+void OpenXrBackend::DestroyVirtualKeyboardStaging() {
   if (vk_ != nullptr && vk_device_ != VK_NULL_HANDLE) {
     if (keyboard_staging_mapped_ != nullptr) {
       vk_->UnmapMemory(vk_device_, keyboard_staging_memory_);
@@ -3007,6 +3017,10 @@ void OpenXrBackend::DestroyVirtualKeyboardResources() {
   keyboard_staging_mapped_ = nullptr;
   keyboard_staging_ = VK_NULL_HANDLE;
   keyboard_staging_memory_ = VK_NULL_HANDLE;
+}
+
+void OpenXrBackend::DestroyVirtualKeyboardResources() {
+  DestroyVirtualKeyboardStaging();
   EyeSwapchain& slot = keyboard_swapchain_;
   slot.images.clear();
   slot.gl_images.clear();

@@ -179,6 +179,8 @@ struct VirtualInput {
 };
 static std::mutex g_virtual_input_mutex;
 static std::deque<VirtualInput> g_virtual_input;
+// Set while the queue may hold input, so a pump with none takes no lock.
+static std::atomic<bool> g_virtual_input_pending{false};
 static std::unique_ptr<SdlPointerCaptureBackend> g_pointer_capture_backend;
 // The owner is created and destroyed on the SDL thread, but the experience
 // composition reaches it from its own thread. The mutex guards the pointer
@@ -1699,6 +1701,7 @@ void QueueVirtualTextInput(const char* utf8) {
   }
   std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
   g_virtual_input.push_back(VirtualInput{utf8, 0});
+  g_virtual_input_pending.store(true, std::memory_order_release);
 }
 void QueueVirtualKeyPress(uint32_t scancode) {
   if (scancode == 0) {
@@ -1706,6 +1709,7 @@ void QueueVirtualKeyPress(uint32_t scancode) {
   }
   std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
   g_virtual_input.push_back(VirtualInput{{}, scancode});
+  g_virtual_input_pending.store(true, std::memory_order_release);
 }
 void* GetGLProcAddress(const char* name) {
   if (!g_state.initialised || name == nullptr || name[0] == '\0') {
@@ -2320,7 +2324,7 @@ bool PumpEvents() {
                                      g_text_input_owner->active())) {
     fprintf(stderr, "  [input] SDL pointer capture state update failed\n");
   }
-  {
+  if (g_virtual_input_pending.exchange(false, std::memory_order_acq_rel)) {
     std::deque<VirtualInput> virtual_input;
     {
       std::lock_guard<std::mutex> lock(g_virtual_input_mutex);

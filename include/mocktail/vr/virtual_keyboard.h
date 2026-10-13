@@ -74,7 +74,6 @@ struct VirtualKeyboardPointer {
 struct VirtualKeyboardOutput {
   std::vector<std::string> text;          // committed in order
   std::vector<std::uint32_t> scancodes;   // pressed in order, after text
-  bool closed = false;                    // user pressed Close
 };
 
 // Ray/quad intersection. The quad is centred on `quad` with its face along
@@ -118,8 +117,9 @@ class VirtualKeyboard {
                                const VirtualKeyboardPointer (&pointers)[2]);
 
   // True when this hand's trigger belongs to the keyboard this frame (aimed
-  // at the panel, or a press that began on it is still held). The backend
-  // withholds that trigger from Roblox so a key press is not also a click.
+  // at the panel, or a press that began on it is still held, including after
+  // the panel hid mid-press). The backend withholds that trigger from Roblox
+  // so a key press is not also a click.
   bool CapturesTrigger(int hand) const;
 
   // Current layout, with Shift/Caps Lock applied to the labels.
@@ -159,6 +159,9 @@ class VirtualKeyboard {
   pose::Pose panel_{};
   VirtualKeyboardText text_;
   Hand hands_[2];
+  // A press the keyboard owned when it hid; held until that trigger releases.
+  bool release_pending_[2] = {false, false};
+  std::uint64_t cursor_drawn_ns_ = 0;
   std::vector<VirtualKey> keys_;
   std::uint64_t revision_ = 1;
 };

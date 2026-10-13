@@ -336,6 +336,7 @@ class OpenXrBackend final {
   // keyboard swapchain holds a released image ready for a quad layer.
   bool PrepareVirtualKeyboardLayerLocked(VkQueue queue);
   bool UploadVirtualKeyboardVulkan(VkQueue queue, VkImage image);
+  void DestroyVirtualKeyboardStaging();
   void DestroyVirtualKeyboardResources();
   bool CaptureEyeEvidence(VkQueue queue, int eye);
   ScriptedPoseSample ComputeScriptedPose(std::uint64_t frame) const;

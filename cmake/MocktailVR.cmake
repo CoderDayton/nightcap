@@ -32,17 +32,11 @@ add_library(mocktail_vr STATIC
   src/vr/vr_mirror.cc
   src/vr/xr_controller.cc
   src/vr/roblox_vr_device_bridge.cc
-  src/vr/virtual_keyboard.cc
-  src/vr/virtual_keyboard_raster.cc)
+  src/vr/virtual_keyboard.cc)
 add_library(Mocktail::VR ALIAS mocktail_vr)
 target_include_directories(mocktail_vr PUBLIC "${CMAKE_SOURCE_DIR}/include")
 target_include_directories(mocktail_vr PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(mocktail_vr PUBLIC Vulkan::Headers PRIVATE nlohmann_json::nlohmann_json)
-# The in-headset keyboard draws its labels with the same SDL3_ttf/fontconfig
-# stack as the TextBox overlay. MocktailInput/MocktailAudio find these
-# packages later in the same directory scope; links resolve at generate time.
-target_link_libraries(mocktail_vr PRIVATE SDL3_ttf::SDL3_ttf SDL3::SDL3
-  PkgConfig::FONTCONFIG)
 # shm_open for the desktop eye mirror lives in librt on glibc.
 find_library(MOCKTAIL_RT_LIBRARY rt)
 if(MOCKTAIL_RT_LIBRARY)
@@ -75,7 +69,16 @@ if(MOCKTAIL_ENABLE_VR)
   endfunction()
   mocktail_add_openxr_sdk()
   target_sources(mocktail_vr PRIVATE src/vr/openxr_probe.cc src/vr/openxr_preview.cc
-    src/vr/openxr_backend.cc src/vr/gles_transport.cc src/vr/xr_actions.cc)
+    src/vr/openxr_backend.cc src/vr/gles_transport.cc src/vr/xr_actions.cc
+    src/vr/virtual_keyboard_raster.cc)
+  # The in-headset keyboard draws its labels with the same SDL3_ttf and
+  # fontconfig stack as the TextBox overlay.
+  find_package(SDL3 3.4 REQUIRED CONFIG)
+  find_package(SDL3_ttf REQUIRED CONFIG)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+  target_link_libraries(mocktail_vr PRIVATE SDL3_ttf::SDL3_ttf SDL3::SDL3
+    PkgConfig::FONTCONFIG)
   # Error unwinding is confined to these native session implementations; their
   # public entry points catch errors before returning to the guest runtime.
   set_source_files_properties(src/vr/openxr_preview.cc src/vr/openxr_backend.cc

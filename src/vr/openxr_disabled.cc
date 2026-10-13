@@ -4,6 +4,9 @@
 
 namespace mocktail::vr {
 OpenXrBackend::~OpenXrBackend() = default;
+// The backend's keyboard_raster_ member needs this destructor. No rasterizer
+// is ever created here, so SDL3_ttf and fontconfig stay out of this build.
+VirtualKeyboardRasterizer::~VirtualKeyboardRasterizer() = default;
 Status OpenXrBackend::Arm(VrGraphicsApi) {
   return Status::Error(StatusCode::kUnavailable, "OpenXR support is disabled in this build");
 }

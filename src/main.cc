@@ -46,6 +46,7 @@
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
+#include "runtime/roblox_text_display_state.h"
 #include "runtime/roblox_text_editor.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_file.h"
@@ -1082,13 +1083,10 @@ int main(int argc, char* argv[]) {
                  mocktail::vr::ClearVirtualKeyboardText();
                  return;
                }
-               // RbxKeyboard password input types (see the SDL mapping).
-               const bool password = update.text_input_type == 5 ||
-                                     update.text_input_type == 9 ||
-                                     update.text_input_type == 10;
                mocktail::vr::SetVirtualKeyboardText(
                    update.utf8, update.utf8_size, update.cursor_utf16,
-                   password);
+                   mocktail::runtime::IsRobloxPasswordTextInputType(
+                       update.text_input_type));
              }});
       }
     }

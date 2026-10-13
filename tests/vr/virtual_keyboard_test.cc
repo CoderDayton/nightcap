@@ -346,11 +346,139 @@ TEST(VirtualKeyboardTest, LayoutRowsFillThePanelAndCloseKeyHides) {
   Driver d;
   d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
   const auto closed = d.Frame(AimAtKey(d.keyboard, "Close"), 1.f);
-  EXPECT_TRUE(closed.closed);
   EXPECT_EQ(closed.scancodes, std::vector<std::uint32_t>{kEscape});
   EXPECT_FALSE(d.keyboard.visible());
-  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
   EXPECT_TRUE(d.Frame(AimAtKey(d.keyboard, "q"), 0.f).text.empty());
+}
+
+TEST(VirtualKeyboardTest, TriggerStaysWithheldAfterCloseUntilReleased) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  const Pose close = AimAtKey(d.keyboard, "Close");
+  d.Frame(close, 1.f);
+  ASSERT_FALSE(d.keyboard.visible());
+  // The trigger that pressed Close is still down; Roblox must not see it as
+  // a click on whatever is behind the panel.
+  EXPECT_TRUE(d.keyboard.CapturesTrigger(1));
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(0));
+  d.Frame(close, 1.f);
+  EXPECT_TRUE(d.keyboard.CapturesTrigger(1));
+  d.Frame(close, 0.f);
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
+  d.Frame(close, 1.f);  // a new press belongs to Roblox
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
+}
+
+TEST(VirtualKeyboardTest, TriggerStaysWithheldWhenThePanelHidesMidPress) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  const Pose enter = AimAtKey(d.keyboard, "Enter");
+  d.Frame(enter, 1.f);
+  d.keyboard.Hide();  // Enter made the TextBox release focus
+  EXPECT_TRUE(d.keyboard.CapturesTrigger(1));
+  d.Frame(enter, 0.f);
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
+  // A hand that was only hovering is free at once.
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Frame(enter, 0.f);
+  d.keyboard.Hide();
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
+}
+
+TEST(VirtualKeyboardTest, HeldTriggerTypesNothingWhenThePanelReopens) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Frame(AimAtKey(d.keyboard, "Close"), 1.f);
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  const Pose q = AimAtKey(d.keyboard, "q");
+  EXPECT_TRUE(d.Frame(q, 1.f).text.empty());
+  d.Frame(q, 0.f);
+  EXPECT_EQ(d.Frame(q, 1.f).text, std::vector<std::string>{"q"});
+}
+
+TEST(VirtualKeyboardTest, CursorMovesRedrawAtMostThirtyTimesASecond) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  const VirtualKey space = d.keyboard.keys()[FindKey(d.keyboard, "Space")];
+  const float v = (space.v0 + space.v1) / 2;
+  float u = 0.10f;
+  d.Frame(AimAt(d.keyboard, u, v), 0.f);
+  const std::uint64_t before = d.keyboard.revision();
+  // 30 frames at 90 Hz sliding along one key: 330 ms of pointer motion.
+  for (int frame = 0; frame < 30; ++frame) {
+    u += 0.01f;
+    d.Frame(AimAt(d.keyboard, u, v), 0.f);
+  }
+  const std::uint64_t redraws = d.keyboard.revision() - before;
+  EXPECT_LE(redraws, 11u);
+  EXPECT_GE(redraws, 5u);
+  // Once the pointer rests, the drawn cursor catches up with it.
+  d.Frame(AimAt(d.keyboard, u, v), 0.f, 1, 40 * kMs);
+  float drawn_u = 0.f, drawn_v = 0.f;
+  ASSERT_TRUE(d.keyboard.cursor(1, &drawn_u, &drawn_v));
+  EXPECT_NEAR(drawn_u, u, 1e-3f);
+}
+
+TEST(VirtualKeyboardTest, BothCursorsKeepUpWhileBothHandsMove) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  const VirtualKey space = d.keyboard.keys()[FindKey(d.keyboard, "Space")];
+  const float v = (space.v0 + space.v1) / 2;
+  float left_u = 0.10f, right_u = 0.50f;
+  auto frame = [&] {
+    VirtualKeyboardPointer pointers[2];
+    pointers[0].valid = pointers[1].valid = true;
+    pointers[0].aim = AimAt(d.keyboard, left_u, v);
+    pointers[1].aim = AimAt(d.keyboard, right_u, v);
+    d.now += 11 * kMs;
+    d.keyboard.Update(d.now, pointers);
+  };
+  frame();
+  // 30 frames at 90 Hz, both hands sliding along one key.
+  for (int step = 0; step < 30; ++step) {
+    left_u += 0.005f;
+    right_u += 0.005f;
+    frame();
+  }
+  // Neither drawn cursor trails its hand by more than one redraw interval.
+  float drawn_u = 0.f, drawn_v = 0.f;
+  ASSERT_TRUE(d.keyboard.cursor(0, &drawn_u, &drawn_v));
+  EXPECT_NEAR(drawn_u, left_u, 0.02f);
+  ASSERT_TRUE(d.keyboard.cursor(1, &drawn_u, &drawn_v));
+  EXPECT_NEAR(drawn_u, right_u, 0.02f);
+}
+
+TEST(VirtualKeyboardTest, HeldTriggerStaysWithheldWhenAReopenedPanelHides) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  const Pose close = AimAtKey(d.keyboard, "Close");
+  d.Frame(close, 1.f);
+  // The panel reopens and hides again during the same trigger press.
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Frame(close, 1.f);
+  d.keyboard.Hide();
+  EXPECT_TRUE(d.keyboard.CapturesTrigger(1));
+  d.Frame(close, 1.f);
+  EXPECT_TRUE(d.keyboard.CapturesTrigger(1));
+  d.Frame(close, 0.f);
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
+}
+
+TEST(VirtualKeyboardTest, HeldTriggerStaysWithheldWhileAimTrackingDrops) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Frame(AimAtKey(d.keyboard, "Close"), 1.f);
+  ASSERT_TRUE(d.keyboard.CapturesTrigger(1));
+  // The aim pose is lost for a frame; the trigger is still down.
+  VirtualKeyboardPointer lost[2];
+  lost[1].trigger = 1.f;
+  d.now += 11 * kMs;
+  d.keyboard.Update(d.now, lost);
+  EXPECT_TRUE(d.keyboard.CapturesTrigger(1));
+  lost[1].trigger = 0.f;
+  d.now += 11 * kMs;
+  d.keyboard.Update(d.now, lost);
+  EXPECT_FALSE(d.keyboard.CapturesTrigger(1));
 }
 
 TEST(VirtualKeyboardTest, RevisionMovesOnlyWhenTheImageChanges) {
@@ -411,58 +539,6 @@ TEST(VirtualKeyboardTest, TextMirrorFollowsTheFocusedTextBox) {
 
   ClearVirtualKeyboardText();
   EXPECT_TRUE(CurrentVirtualKeyboardText().utf8.empty());
-}
-
-TEST(VirtualKeyboardTest, RasterizerDrawsFieldTextAndCaret) {
-  VirtualKeyboard keyboard;
-  keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
-  VirtualKeyboardRasterizer rasterizer;
-  auto field_light_pixels = [&](const std::vector<std::uint8_t>& rgba) {
-    const int bottom = static_cast<int>(VirtualKeyboard::kFieldFraction *
-                                        VirtualKeyboard::kTextureHeight);
-    int count = 0;
-    for (int y = 8; y < bottom - 8; ++y)
-      for (int x = 30; x < VirtualKeyboard::kTextureWidth - 30; ++x)
-        if (rgba[(static_cast<std::size_t>(y) *
-                      VirtualKeyboard::kTextureWidth + x) * 4 + 1] > 120)
-          ++count;
-    return count;
-  };
-  std::vector<std::uint8_t> empty, typed, masked;
-  if (!rasterizer.Draw(keyboard, &empty)) GTEST_SKIP() << "no host font";
-  VirtualKeyboardText text;
-  text.utf8 = "Hello world";
-  text.cursor_utf16 = 11;
-  text.revision = 1;
-  keyboard.SetText(text);
-  ASSERT_TRUE(rasterizer.Draw(keyboard, &typed));
-  // Text adds light glyph pixels; the empty field only has its caret.
-  EXPECT_GT(field_light_pixels(typed), field_light_pixels(empty) + 200);
-  text.password = true;
-  text.revision = 2;
-  keyboard.SetText(text);
-  ASSERT_TRUE(rasterizer.Draw(keyboard, &masked));
-  EXPECT_NE(masked, typed);  // dots, not the letters
-  EXPECT_GT(field_light_pixels(masked), field_light_pixels(empty));
-}
-
-TEST(VirtualKeyboardTest, RasterizerFillsAnOpaqueTexture) {
-  VirtualKeyboard keyboard;
-  keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
-  VirtualKeyboardRasterizer rasterizer;
-  std::vector<std::uint8_t> rgba;
-  (void)rasterizer.Draw(keyboard, &rgba);  // labels depend on host fonts
-  ASSERT_EQ(rgba.size(), static_cast<std::size_t>(
-                             VirtualKeyboard::kTextureWidth) *
-                             VirtualKeyboard::kTextureHeight * 4);
-  for (std::size_t i = 3; i < rgba.size(); i += 4) ASSERT_EQ(rgba[i], 255);
-  // A key is lighter than the background behind it.
-  const auto& q = keyboard.keys()[FindKey(keyboard, "q")];
-  const int x = static_cast<int>(q.u0 * VirtualKeyboard::kTextureWidth) + 20;
-  const int y = static_cast<int>(q.v0 * VirtualKeyboard::kTextureHeight) + 20;
-  const std::size_t key_px =
-      (static_cast<std::size_t>(y) * VirtualKeyboard::kTextureWidth + x) * 4;
-  EXPECT_GT(rgba[key_px], rgba[0]);
 }
 
 }  // namespace
