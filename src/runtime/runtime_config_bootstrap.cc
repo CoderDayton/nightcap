@@ -72,7 +72,7 @@ graphics:
   # vsync: off
 
 # vr:
-  # Boolean (default: enabled in VR builds, disabled in non-VR builds).
+  # Boolean (default: false). Same as launching with --vr.
   # Experimental VR for verified builds 2998 and 3092. Mocktail initializes
   # the guest DebugDeviceVR eye resources (two
   # distinct 500x500 eye framebuffers), the Roblox renderer draws both eyes

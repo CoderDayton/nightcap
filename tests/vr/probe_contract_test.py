@@ -9,19 +9,15 @@ import tempfile
 
 
 probe = Path(sys.argv[1])
-if sys.argv[2] == "--disabled":
-    result = subprocess.run([str(probe)], text=True, capture_output=True, timeout=15)
-    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
-    assert "does not include OpenXR support" in result.stdout, result.stdout
-    result = subprocess.run([str(probe), "--scene", "--frames", "1"],
-                            text=True, capture_output=True, timeout=15)
-    assert result.returncode == 1 and "does not include OpenXR support" in result.stdout, result
+if sys.argv[1] == "--disabled":
+    # Non-VR builds install no probe; --vr must still fail clearly and early.
+    mocktail = sys.argv[2]
     with tempfile.TemporaryDirectory(prefix="mocktail-xr-disabled-") as directory:
         root = Path(directory)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("XR_", "MOCKTAIL_"))}
         for kind in ("CONFIG", "DATA", "STATE"):
             env["MOCKTAIL_" + kind + "_ROOT"] = str(root / kind.lower())
-        result = subprocess.run([sys.argv[3], "--headless", "--vr"], env=env,
+        result = subprocess.run([mocktail, "--headless", "--vr"], env=env,
                                 text=True, capture_output=True, timeout=15)
         assert result.returncode == 1 and "does not include OpenXR support" in result.stderr, result
         assert not (root / "data").exists() and not (root / "state").exists()

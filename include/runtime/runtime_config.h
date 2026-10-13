@@ -16,10 +16,9 @@
 namespace mocktail {
 namespace runtime {
 
-#ifndef MOCKTAIL_VR_DEFAULT_ENABLED
-#define MOCKTAIL_VR_DEFAULT_ENABLED 0
-#endif
-inline constexpr bool kDefaultVrEnabled = MOCKTAIL_VR_DEFAULT_ENABLED != 0;
+// VR is opt-in in every build (--vr or vr.enabled: true). A VR-capable build
+// must not try to reach an OpenXR runtime on a normal desktop launch.
+inline constexpr bool kDefaultVrEnabled = false;
 
 enum class GraphicsBackend {
   kAuto,

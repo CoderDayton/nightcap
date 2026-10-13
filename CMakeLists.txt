@@ -319,9 +319,6 @@ target_include_directories(mocktail_runtime PUBLIC include)
 target_include_directories(mocktail_runtime PUBLIC
   ${MOCKTAIL_JNI_INCLUDE_DIRS}
 )
-target_compile_definitions(mocktail_runtime PUBLIC
-  MOCKTAIL_VR_DEFAULT_ENABLED=$<BOOL:${MOCKTAIL_ENABLE_VR}>
-)
 target_compile_definitions(mocktail_runtime PRIVATE
   "MOCKTAIL_DISCORD_APPLICATION_ID=\"${MOCKTAIL_DISCORD_APPLICATION_ID}\""
 )

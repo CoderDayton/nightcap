@@ -3,7 +3,27 @@
 
 include_guard(GLOBAL)
 
-option(MOCKTAIL_ENABLE_VR "Build experimental native OpenXR support (VR branch default)" ON)
+# AUTO builds OpenXR support when the third_party/OpenXR-SDK submodule is
+# checked out and skips it otherwise, so source packages that do not fetch
+# submodules still build. ON requires the submodule; OFF never builds it.
+set(MOCKTAIL_ENABLE_VR "AUTO" CACHE STRING
+  "Build experimental OpenXR support: AUTO, ON or OFF")
+set_property(CACHE MOCKTAIL_ENABLE_VR PROPERTY STRINGS AUTO ON OFF)
+set(_mocktail_openxr_sdk "${CMAKE_SOURCE_DIR}/third_party/OpenXR-SDK/CMakeLists.txt")
+string(TOUPPER "${MOCKTAIL_ENABLE_VR}" _mocktail_vr_request)
+if(_mocktail_vr_request STREQUAL "AUTO")
+  if(EXISTS "${_mocktail_openxr_sdk}" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(MOCKTAIL_ENABLE_VR ON)
+  else()
+    message(STATUS "OpenXR SDK submodule not found; building without VR "
+      "(git submodule update --init third_party/OpenXR-SDK to enable it)")
+    set(MOCKTAIL_ENABLE_VR OFF)
+  endif()
+elseif(MOCKTAIL_ENABLE_VR)
+  set(MOCKTAIL_ENABLE_VR ON)
+else()
+  set(MOCKTAIL_ENABLE_VR OFF)
+endif()
 
 add_library(mocktail_vr STATIC
   src/vr/diagnostics.cc
@@ -34,7 +54,7 @@ if(MOCKTAIL_ENABLE_VR)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "Mocktail OpenXR support currently targets Linux")
   endif()
-  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/OpenXR-SDK/CMakeLists.txt")
+  if(NOT EXISTS "${_mocktail_openxr_sdk}")
     message(FATAL_ERROR
       "Initialize OpenXR: git submodule update --init third_party/OpenXR-SDK")
   endif()
@@ -70,8 +90,12 @@ else()
     src/vr/xr_actions_disabled.cc)
 endif()
 
-add_executable(mocktail_vr_probe src/vr/probe_main.cc)
-set_target_properties(mocktail_vr_probe PROPERTIES OUTPUT_NAME mocktail-vr-probe)
-target_link_libraries(mocktail_vr_probe PRIVATE Mocktail::VR)
-mocktail_apply_compile_options(mocktail_vr_probe)
-install(TARGETS mocktail_vr_probe RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if(MOCKTAIL_ENABLE_VR)
+  add_executable(mocktail_vr_probe src/vr/probe_main.cc)
+  set_target_properties(mocktail_vr_probe PROPERTIES
+    OUTPUT_NAME mocktail-vr-probe)
+  target_link_libraries(mocktail_vr_probe PRIVATE Mocktail::VR)
+  mocktail_apply_compile_options(mocktail_vr_probe)
+  install(TARGETS mocktail_vr_probe
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()

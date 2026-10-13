@@ -93,7 +93,7 @@ if(MOCKTAIL_ENABLE_VR)
 else()
   add_test(NAME OpenXrProbeDisabled
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/probe_contract_test.py"
-      "$<TARGET_FILE:mocktail_vr_probe>" --disabled "$<TARGET_FILE:mocktail>")
+      --disabled "$<TARGET_FILE:mocktail>")
 endif()
 
 add_executable(jnivm_test

@@ -240,10 +240,18 @@ Experimental OpenXR VR support on Linux `x86_64` using WiVRn or SteamVR/ALVR.
 
 ### Build with VR
 
+VR support is compiled in when the OpenXR SDK submodule is checked out
+(`MOCKTAIL_ENABLE_VR` defaults to `AUTO`). Without the submodule the build
+skips VR. Pass `-DMOCKTAIL_ENABLE_VR=ON` to make a missing submodule an error,
+or `OFF` to leave VR out:
+
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMOCKTAIL_ENABLE_VR=ON
+git submodule update --init third_party/OpenXR-SDK
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ```
+
+VR stays off at runtime until you pass `--vr` or set `vr.enabled: true`.
 
 ### Run
 
