@@ -161,6 +161,26 @@ bool FormatIsCopyCompatible(VkFormat a, VkFormat b) {
   return false;
 }
 
+VkFormat OtherChannelOrder(VkFormat format) {
+  switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
+    default: return VK_FORMAT_UNDEFINED;
+  }
+}
+
+VkFormat SrgbSibling(VkFormat format) {
+  switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    default: return VK_FORMAT_UNDEFINED;
+  }
+}
+
 OpenXrBackend* g_backend = nullptr;
 std::mutex g_backend_slot_mutex;
 
@@ -502,6 +522,8 @@ Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
 }
 
 void OpenXrBackend::Disarm() {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   DisarmLocked();
 }
@@ -554,6 +576,8 @@ bool OpenXrBackend::CreateVulkanInstance(
     const VkInstanceCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkInstance* instance,
     VkResult* result) {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   if (!armed_.load(std::memory_order_acquire) || vk_loader_ == nullptr) {
     return false;
@@ -612,6 +636,8 @@ bool OpenXrBackend::CreateVulkanDevice(VkPhysicalDevice physical_device,
                                        const VkDeviceCreateInfo* create_info,
                                        const VkAllocationCallbacks* allocator,
                                        VkDevice* device, VkResult* result) {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   if (!armed_.load(std::memory_order_acquire) || xr_instance_ == nullptr ||
       vk_instance_ == VK_NULL_HANDLE || vk_loader_ == nullptr) {
@@ -850,6 +876,8 @@ bool OpenXrBackend::InitializeSessionLocked(
 Status OpenXrBackend::AttachGlesContext(void *display, void *config,
                                         void *context, void *egl_get_proc,
                                         void *(*resolve)(const char *)) {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   if (!armed_ || graphics_api_ != VrGraphicsApi::kOpenGles ||
       gles_attach_failed_)
@@ -918,6 +946,8 @@ bool OpenXrBackend::InitializeGlesSessionLocked(std::string *error) {
 }
 
 void OpenXrBackend::DetachGlesContext(void *context) {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   if (!gles_ || gles_->context() != context)
     return;
@@ -1146,7 +1176,14 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
     // The swapchain format must accept the guest eye content. Prefer the
     // common 8-bit formats; the final choice is cross-checked against the
     // recorded eye images before the first copy (blit converts if needed).
+    xr_swapchain_formats_ = formats;
     std::int64_t chosen = 0;
+    if (eye_swapchain_format_ != VK_FORMAT_UNDEFINED &&
+        std::find(formats.begin(), formats.end(),
+                  static_cast<std::int64_t>(eye_swapchain_format_)) !=
+            formats.end()) {
+      chosen = eye_swapchain_format_;
+    }
     const std::vector<std::int64_t> candidates =
         graphics_api_ == VrGraphicsApi::kVulkan
             ? std::vector<std::int64_t>{VK_FORMAT_R8G8B8A8_UNORM,
@@ -1155,6 +1192,7 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
                                         VK_FORMAT_B8G8R8A8_SRGB}
             : std::vector<std::int64_t>{GL_RGBA8, GL_SRGB8_ALPHA8};
     for (const auto candidate : candidates) {
+      if (chosen != 0) break;
       if (std::find(formats.begin(), formats.end(),
                     static_cast<std::int64_t>(candidate)) != formats.end()) {
         chosen = candidate;
@@ -1236,6 +1274,38 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
     *error = exception.what();
     return false;
   }
+}
+
+void OpenXrBackend::MatchSwapchainFormatToEyesLocked() {
+  const VkFormat eye = eyes_[0].format;
+  if (graphics_api_ != VrGraphicsApi::kVulkan || eye == VK_FORMAT_UNDEFINED ||
+      eye == eye_format_checked_) {
+    return;
+  }
+  eye_format_checked_ = eye;
+  const VkFormat current = eye_swapchains_[0].format;
+  const VkFormat preferred =
+      internal::PreferredEyeSwapchainFormat(eye, xr_swapchain_formats_);
+  if (preferred == VK_FORMAT_UNDEFINED) {
+    if (!FormatIsCopyCompatible(eye, current)) {
+      Log("  [vr-backend] runtime offers no swapchain format that keeps guest "
+          "eye format %d bytes; colours may be off\n",
+          static_cast<int>(eye));
+    }
+    return;
+  }
+  if (preferred == current ||
+      (FormatIsCopyCompatible(eye, current) &&
+       FormatIsCopyCompatible(eye, preferred))) {
+    return;  // already a raw copy
+  }
+  eye_swapchain_format_ = preferred;
+  DestroySwapchains();
+  std::string error;
+  Require(CreateSwapchains(&error), error);
+  Log("  [vr-backend] eye swapchains recreated in format %d to match guest "
+      "eye format %d\n",
+      static_cast<int>(preferred), static_cast<int>(eye));
 }
 
 void OpenXrBackend::DestroySwapchains() {
@@ -1336,6 +1406,8 @@ void OpenXrBackend::TeardownSessionLocked(const char* reason, bool preserve_devi
 }
 
 void OpenXrBackend::NoteInstanceDestroyed(VkInstance instance) {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   if (instance == vk_instance_) {
     TeardownSessionLocked("guest VkInstance destroyed");
@@ -1345,6 +1417,8 @@ void OpenXrBackend::NoteInstanceDestroyed(VkInstance instance) {
 }
 
 void OpenXrBackend::NoteDeviceDestroyed(VkDevice device) {
+  // Lock order: frame_mutex_, then mutex_ (see NoteHostPresent).
+  std::lock_guard<std::mutex> frame(frame_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   if (device != VK_NULL_HANDLE && device == vk_device_) {
     // Tear down while the device is still valid; the adapter notifies before
@@ -2011,6 +2085,20 @@ bool OpenXrBackend::RecoverSessionLocked(std::uint64_t now_ns) {
   return true;
 }
 
+VkFormat internal::PreferredEyeSwapchainFormat(
+    VkFormat eye, const std::vector<std::int64_t>& available) {
+  const auto offered = [&](VkFormat format) {
+    return format != VK_FORMAT_UNDEFINED &&
+           std::find(available.begin(), available.end(),
+                     static_cast<std::int64_t>(format)) != available.end();
+  };
+  for (const VkFormat candidate :
+       {eye, SrgbSibling(eye), OtherChannelOrder(eye)}) {
+    if (offered(candidate)) return candidate;
+  }
+  return VK_FORMAT_UNDEFINED;
+}
+
 VkResult internal::WaitForPresentDependencies(VkDevice device, VkQueue queue,
                                               const VkPresentInfoKHR &present,
                                               VkFence fence,
@@ -2104,8 +2192,14 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
 void OpenXrBackend::NoteHostPresent(VkQueue queue, VkDevice device) {
   bool idle = false;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // frame_mutex_ keeps the session alive for the whole frame cycle, so
+    // mutex_ (which guest render-thread hooks take) can be released while the
+    // cycle blocks in xrWaitFrame. Teardown paths take frame_mutex_ first.
+    std::lock_guard<std::mutex> frame(frame_mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    state_lock_ = &lock;
     idle = NoteHostPresentLocked(queue, device);
+    state_lock_ = nullptr;
   }
   if (idle) {
     // No running XR session (headset off or idle, session not READY, or
@@ -2227,6 +2321,7 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
     }
     bool images_held[2] = {false, false};
     if (can_submit) {
+      MatchSwapchainFormatToEyesLocked();
       projection.space = static_cast<XrSpace>(xr_local_space_);
       projection.viewCount = 2;
       for (int eye = 0; eye < 2; ++eye) {
@@ -2373,7 +2468,20 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
     const ScopedStageTimer wait_timer(perf::Stage::kXrWaitFrame);
     auto wait = XrInfo<XrFrameWaitInfo>(XR_TYPE_FRAME_WAIT_INFO);
     XrFrameState state = XrInfo<XrFrameState>(XR_TYPE_FRAME_STATE);
-    CheckXr(instance, xrWaitFrame(session, &wait, &state), "xrWaitFrame");
+    XrResult wait_result = XR_SUCCESS;
+    {
+      // Runtime pacing can block for a whole display period. Guest hooks
+      // must not wait on it; frame_mutex_ still excludes teardown.
+      struct Relock {
+        std::unique_lock<std::mutex>* lock;
+        ~Relock() {
+          if (lock != nullptr) lock->lock();
+        }
+      } relock{state_lock_};
+      if (state_lock_ != nullptr) state_lock_->unlock();
+      wait_result = xrWaitFrame(session, &wait, &state);
+    }
+    CheckXr(instance, wait_result, "xrWaitFrame");
     {
       const ScopedStageTimer begin_timer(perf::Stage::kXrBeginFrame);
       auto begin_info = XrInfo<XrFrameBeginInfo>(XR_TYPE_FRAME_BEGIN_INFO);

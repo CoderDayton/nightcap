@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -226,3 +227,31 @@ TEST(VrRuntimeSelection, RegisteredRuntimePrecedesInstalledWiVRn) {
   EXPECT_EQ(paths.back(), "/usr/share/openxr/1/openxr_wivrn.json");
 }
 } // namespace mocktail::vr
+
+namespace mocktail::vr {
+namespace {
+
+TEST(VrMirrorProducer, ReplacesAStaleSegmentWithAPrivateOne) {
+  const std::string name = "/mocktail-vr-mirror-unittest-stale";
+  // A crashed run left a world-readable segment with this name behind.
+  const int stale = shm_open(name.c_str(), O_CREAT | O_RDWR, 0644);
+  ASSERT_GE(stale, 0);
+  ASSERT_EQ(fchmod(stale, 0644), 0);
+  close(stale);
+
+  VrMirror mirror;
+  std::string error;
+  ASSERT_TRUE(mirror.Open(name, 4, 4, &error)) << error;
+  const int fresh = shm_open(name.c_str(), O_RDONLY, 0);
+  ASSERT_GE(fresh, 0);
+  struct stat status{};
+  ASSERT_EQ(fstat(fresh, &status), 0);
+  close(fresh);
+  EXPECT_EQ(status.st_uid, getuid());
+  EXPECT_EQ(status.st_mode & 077, 0u);  // not the stale 0644 segment
+  mirror.Close();
+  EXPECT_LT(shm_open(name.c_str(), O_RDONLY, 0), 0);  // unlinked on close
+}
+
+}  // namespace
+}  // namespace mocktail::vr

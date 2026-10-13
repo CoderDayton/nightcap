@@ -63,12 +63,27 @@ bool VrMirror::Open(const std::string& shm_name, std::uint32_t width,
     return false;
   }
   const std::uint64_t bytes = VrMirrorBytes(width, height);
-  const int descriptor =
-      shm_open(shm_name.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+  // A crashed run leaves its segment behind; remove our own stale one. In the
+  // sticky /dev/shm this cannot remove another user's segment, and O_EXCL
+  // then refuses to adopt it, so eye images never go into a segment someone
+  // else created or can read.
+  (void)shm_unlink(shm_name.c_str());
+  const int descriptor = shm_open(shm_name.c_str(),
+                                  O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0) {
     if (error != nullptr) {
-      *error = "shm_open failed: " + std::string(std::strerror(errno));
+      *error = "shm_open failed: " + std::string(std::strerror(errno)) +
+               (errno == EEXIST ? " (segment owned by another user)" : "");
     }
+    return false;
+  }
+  struct stat status{};
+  if (fstat(descriptor, &status) != 0 || status.st_uid != getuid() ||
+      (status.st_mode & 077) != 0) {
+    if (error != nullptr) {
+      *error = "mirror segment is not private to this user";
+    }
+    close(descriptor);
     return false;
   }
   if (ftruncate(descriptor, static_cast<off_t>(bytes)) != 0) {

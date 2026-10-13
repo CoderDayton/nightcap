@@ -564,3 +564,44 @@ TEST_F(OpenXrSplitPresentation,
 }
 }  // namespace
 }  // namespace mocktail::vr
+
+namespace mocktail::vr {
+namespace {
+
+TEST(OpenXrEyeSwapchainFormat, KeepsGuestEyeBytesWithoutGammaConversion) {
+  using internal::PreferredEyeSwapchainFormat;
+  const auto formats = [](std::initializer_list<VkFormat> list) {
+    std::vector<std::int64_t> out;
+    for (const VkFormat format : list) out.push_back(format);
+    return out;
+  };
+  // The guest's own format wins.
+  EXPECT_EQ(PreferredEyeSwapchainFormat(
+                VK_FORMAT_R8G8B8A8_UNORM,
+                formats({VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM})),
+            VK_FORMAT_R8G8B8A8_UNORM);
+  // SteamVR-style SRGB-only runtime: the same-order sibling is a raw copy.
+  EXPECT_EQ(PreferredEyeSwapchainFormat(
+                VK_FORMAT_R8G8B8A8_UNORM,
+                formats({VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB})),
+            VK_FORMAT_R8G8B8A8_SRGB);
+  // Only the other channel order: keep the sRGB-ness so the blit only
+  // swizzles.
+  EXPECT_EQ(PreferredEyeSwapchainFormat(
+                VK_FORMAT_R8G8B8A8_UNORM,
+                formats({VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM})),
+            VK_FORMAT_B8G8R8A8_UNORM);
+  EXPECT_EQ(PreferredEyeSwapchainFormat(VK_FORMAT_B8G8R8A8_SRGB,
+                                        formats({VK_FORMAT_R8G8B8A8_SRGB})),
+            VK_FORMAT_R8G8B8A8_SRGB);
+  // Only a gamma-converting blit remains.
+  EXPECT_EQ(PreferredEyeSwapchainFormat(VK_FORMAT_R8G8B8A8_UNORM,
+                                        formats({VK_FORMAT_B8G8R8A8_SRGB})),
+            VK_FORMAT_UNDEFINED);
+  EXPECT_EQ(PreferredEyeSwapchainFormat(VK_FORMAT_R16G16B16A16_SFLOAT,
+                                        formats({VK_FORMAT_R8G8B8A8_SRGB})),
+            VK_FORMAT_UNDEFINED);
+}
+
+}  // namespace
+}  // namespace mocktail::vr

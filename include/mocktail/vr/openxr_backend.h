@@ -21,6 +21,13 @@
 namespace mocktail::vr {
 
 namespace internal {
+// Swapchain format for guest eyes of `eye` given the runtime's formats:
+// `eye` itself, else its UNORM/SRGB sibling (a raw byte copy, since the guest
+// writes sRGB-encoded bytes either way), else the other channel order with
+// the same sRGB-ness (a blit that only swizzles). VK_FORMAT_UNDEFINED when
+// only a gamma-converting blit remains.
+VkFormat PreferredEyeSwapchainFormat(VkFormat eye,
+                                     const std::vector<std::int64_t>& available);
 // Consume binary present dependencies exactly once. On success a later present
 // must omit them. VK_NOT_READY means nothing was consumed and the guest's
 // present proceeds unchanged; any other failure consumed them (or lost the
@@ -308,6 +315,9 @@ class OpenXrBackend final {
   // the caller paces the guest itself.
   bool NoteHostPresentLocked(VkQueue queue, VkDevice device);
   bool CreateSwapchains(std::string* error);
+  // Recreates the eye swapchains once in the format that copies the guest's
+  // eye bytes without a gamma change (see PreferredEyeSwapchainFormat).
+  void MatchSwapchainFormatToEyesLocked();
   void DestroySwapchains();
   bool EnsureCopyResources(VkDevice device, std::uint32_t queue_family,
                            std::string* error);
@@ -334,7 +344,13 @@ class OpenXrBackend final {
   std::uint64_t gl_min_version_ = 0;
   std::uint64_t gl_max_version_ = 0;
 
+  // Held for a whole XR frame cycle and by every path that can destroy the
+  // session; always taken before mutex_.
+  std::mutex frame_mutex_;
   mutable std::mutex mutex_;
+  // The frame cycle's hold on mutex_, so it can release it around
+  // xrWaitFrame. Only set while NoteHostPresent runs the cycle.
+  std::unique_lock<std::mutex>* state_lock_ = nullptr;
   std::atomic<bool> armed_{false};
   std::atomic<bool> recording_{false};
   std::atomic<bool> eyes_bound_{false};
@@ -435,6 +451,11 @@ class OpenXrBackend final {
   bool xr_instance_stale_ = false;
   bool present_sync_failure_logged_ = false;
   bool gles_attach_failed_ = false;
+  // Runtime swapchain formats, and the format chosen once the guest eye
+  // format is known (VK_FORMAT_UNDEFINED until then).
+  std::vector<std::int64_t> xr_swapchain_formats_;
+  VkFormat eye_swapchain_format_ = VK_FORMAT_UNDEFINED;
+  VkFormat eye_format_checked_ = VK_FORMAT_UNDEFINED;
   std::uint64_t frame_display_time_ = 0;
   // MOCKTAIL_VR_UNPACED benchmark mode: guest presents before this monotonic
   // time leave the open XR frame alone instead of blocking in xrWaitFrame.
