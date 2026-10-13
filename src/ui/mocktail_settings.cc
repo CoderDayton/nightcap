@@ -813,6 +813,47 @@ GtkWidget* BuildProblemPage(const SettingsWindow& window,
   return page;
 }
 
+void OnDiscardTextResponse(AdwAlertDialog*, const char* response,
+                           gpointer user_data) {
+  if (g_strcmp0(response, "discard") == 0) {
+    gtk_window_destroy(
+        GTK_WINDOW(static_cast<SettingsWindow*>(user_data)->widget));
+  }
+}
+
+// Closing asks first while a text row holds text that is not applied.
+gboolean OnCloseRequest(GtkWindow*, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  const Row* edited = nullptr;
+  for (const Row& row : window->rows) {
+    if (row.setting->kind == SettingKind::kText &&
+        row.shown != gtk_editable_get_text(GTK_EDITABLE(row.widget))) {
+      edited = &row;
+      break;
+    }
+  }
+  if (edited == nullptr) {
+    return FALSE;
+  }
+  const std::string body = "The text typed into \"" +
+                           Text(edited->setting->title) +
+                           "\" is not applied.";
+  AdwDialog* question = adw_alert_dialog_new("Discard changes?", nullptr);
+  adw_alert_dialog_set_body(ADW_ALERT_DIALOG(question), body.c_str());
+  adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(question), "keep",
+                                 "Keep Editing", "discard", "Discard",
+                                 nullptr);
+  adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(question),
+                                           "discard",
+                                           ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(question), "keep");
+  adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(question), "keep");
+  g_signal_connect(question, "response", G_CALLBACK(OnDiscardTextResponse),
+                   window);
+  adw_dialog_present(question, window->widget);
+  return TRUE;
+}
+
 void OnActivate(GtkApplication* application, gpointer user_data) {
   auto* window = static_cast<SettingsWindow*>(user_data);
   if (GtkWindow* existing = gtk_application_get_active_window(application)) {
@@ -826,6 +867,8 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   gtk_window_set_default_size(GTK_WINDOW(window_widget), 860, 620);
   gtk_widget_set_size_request(window_widget, 360, 420);
   gtk_window_set_icon_name(GTK_WINDOW(window_widget), kApplicationId);
+  g_signal_connect(window_widget, "close-request",
+                   G_CALLBACK(OnCloseRequest), window);
 
   GtkWidget* content = nullptr;
   std::string error;
