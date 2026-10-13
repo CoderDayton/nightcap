@@ -998,8 +998,14 @@ int main(int argc, char* argv[]) {
 
   mocktail::runtime::RobloxFullscreenRuntimeBridge fullscreen_bridge;
   mocktail::audio::RobloxOutputDeviceBridge output_device_bridge;
-  mocktail::vr::RobloxVrDeviceBridge vr_device_bridge;
-  mocktail::vr::OpenXrBackend xr_backend;
+  // Never destroyed: Shutdown() stops waiting after 2 s, and a guest thread
+  // still inside a hook then keeps using this object until the process ends.
+  static auto& vr_device_bridge = *new mocktail::vr::RobloxVrDeviceBridge;
+  // Never destroyed, for the same reason: the hooks call into the backend.
+  static auto& xr_backend = *new mocktail::vr::OpenXrBackend;
+  struct DisarmOnExit {
+    ~DisarmOnExit() { xr_backend.Disarm(); }
+  } disarm_xr_backend_on_exit;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     const mocktail::Status fullscreen_status =
         fullscreen_bridge.Install(compatibility.profile);
