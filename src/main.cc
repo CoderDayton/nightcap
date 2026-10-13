@@ -859,7 +859,8 @@ int main(int argc, char* argv[]) {
     std::string client_settings_overrides;
     std::vector<std::string> kept_fflag_overrides;
     if (!mocktail::runtime::MergeRuntimeClientSettingsOverrides(
-            runtime_config.config.frame_rate(),
+            vr_active ? runtime_config.config.vr_frame_rate()
+                      : runtime_config.config.frame_rate(),
             runtime_config.config.performance(), fflags.json,
             &client_settings_overrides, &command_line_error,
             &kept_fflag_overrides)) {
@@ -947,10 +948,14 @@ int main(int argc, char* argv[]) {
                    "counts under Roblox client-settings control\n";
     }
   }
+  const mocktail::runtime::FrameRatePolicy& active_frame_rate =
+      vr_active ? runtime_config.config.vr_frame_rate()
+                : runtime_config.config.frame_rate();
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
-      runtime_config.config.frame_rate().mode ==
+      active_frame_rate.mode ==
           mocktail::runtime::FrameRateLimitMode::kUnlimited) {
-    std::cout << "  [runtime] frame-rate mode=unlimited scheduler_target="
+    std::cout << "  [runtime] " << (vr_active ? "vr " : "")
+              << "frame-rate mode=unlimited scheduler_target="
               << mocktail::runtime::kMaximumSupportedRobloxSchedulerFps
               << " vsync=" << runtime_config.config.vsync_mode() << '\n';
   }

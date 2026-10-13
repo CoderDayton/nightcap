@@ -150,6 +150,8 @@ Edit `~/.config/mocktail/config.yaml`. Useful options:
 
 - `graphics.frame_rate_limit: display` to unlock FPS to your monitor's rate.
 - `graphics.vsync: off` for the lowest lag, at the cost of tearing.
+- `vr.frame_rate_limit` sets the cap in VR. It defaults to `unlimited`, so the
+  headset's refresh rate paces frames; use `-1` for Roblox's 60 FPS cap.
 - `graphics.backend: opengl` if Vulkan does not work on your GPU.
 
 ## Building

@@ -283,6 +283,8 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   }
   config.frame_rate_ = ParseFrameRatePolicy(
       environment.GetOr("MOCKTAIL_FRAME_RATE_LIMIT", "-1"));
+  config.vr_frame_rate_ = ParseFrameRatePolicy(
+      environment.GetOr("MOCKTAIL_VR_FRAME_RATE_LIMIT", "unlimited"));
   config.vsync_mode_ = environment.GetOr("MOCKTAIL_VSYNC", "auto");
   config.performance_ = ParsePerformancePolicy(
       environment.GetOr("MOCKTAIL_MULTITHREADED_RENDERING", "0"),

@@ -134,6 +134,43 @@ TEST(RuntimeConfigFileTest,
   EXPECT_NE(invalid.error.find("VR configuration"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
+  TemporaryDirectory temporary;
+  const auto defaults = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "1"}}),
+      temporary.Write("version: 1\n"));
+  ASSERT_TRUE(defaults) << defaults.error;
+  EXPECT_EQ(defaults.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
+  EXPECT_EQ(defaults.config.vr_frame_rate().mode,
+            FrameRateLimitMode::kUnlimited);
+  EXPECT_EQ(defaults.config.active_frame_rate().mode,
+            FrameRateLimitMode::kUnlimited);
+
+  const auto file = temporary.Write(
+      "version: 1\ngraphics:\n  frame_rate_limit: 60\n"
+      "vr:\n  enabled: true\n  frame_rate_limit: 90\n");
+  const auto configured = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(configured) << configured.error;
+  EXPECT_EQ(configured.config.frame_rate().fixed_fps, 60);
+  EXPECT_EQ(configured.config.vr_frame_rate().fixed_fps, 90);
+  EXPECT_EQ(configured.config.active_frame_rate().fixed_fps, 90);
+
+  const auto desktop =
+      LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_VR_ENABLED", "0"},
+                                        {"MOCKTAIL_VR_FRAME_RATE_LIMIT", "-1"}}),
+                        file);
+  ASSERT_TRUE(desktop) << desktop.error;
+  EXPECT_EQ(desktop.config.vr_frame_rate().mode,
+            FrameRateLimitMode::kUnmanaged);
+  EXPECT_EQ(desktop.config.active_frame_rate().fixed_fps, 60);
+
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  frame_rate_limit: fastest\n"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.frame_rate_limit"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, RejectsMalformedVrSectionAndUnsupportedKeys) {
   TemporaryDirectory temporary;
   for (const auto* yaml :

@@ -81,6 +81,12 @@ graphics:
   # desktop testing). Controllers use the native VR bridge. Standalone OpenXR
   # test scene: mocktail-vr-probe --scene. Use --no-vr to launch normally.
   # enabled: false
+  # Optional string or integer: frame-rate limit used instead of
+  # graphics.frame_rate_limit while VR is active. Same values: -1 (Roblox's
+  # own cap, usually 60), display, unlimited, or any positive integer. The
+  # default, unlimited, lets the OpenXR runtime pace frames at the headset's
+  # refresh rate.
+  # frame_rate_limit: unlimited
 
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every

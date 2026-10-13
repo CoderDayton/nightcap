@@ -37,9 +37,14 @@ PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
 
 PresentModePolicy CachedPresentModePolicy() {
   static const PresentModePolicy policy = [] {
+    // main() clears MOCKTAIL_VR_ENABLED when VR cannot start for this build,
+    // so the VR limit only applies while VR is actually active.
+    const std::string_view vr = EnvironmentOr("MOCKTAIL_VR_ENABLED", "0");
+    const bool vr_enabled = vr == "1" || vr == "true" || vr == "on";
     return ResolvePresentModePolicy(
         EnvironmentOr("MOCKTAIL_VSYNC", "auto"),
-        EnvironmentOr("MOCKTAIL_FRAME_RATE_LIMIT", "-1"));
+        vr_enabled ? EnvironmentOr("MOCKTAIL_VR_FRAME_RATE_LIMIT", "unlimited")
+                   : EnvironmentOr("MOCKTAIL_FRAME_RATE_LIMIT", "-1"));
   }();
   return policy;
 }

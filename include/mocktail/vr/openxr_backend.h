@@ -399,6 +399,9 @@ class OpenXrBackend final {
   bool test_session_loss_injected_ = false;
   std::uint64_t next_session_retry_ns_ = 0;
   std::uint64_t frame_display_time_ = 0;
+  // MOCKTAIL_VR_UNPACED benchmark mode: guest presents before this monotonic
+  // time leave the open XR frame alone instead of blocking in xrWaitFrame.
+  std::uint64_t frame_due_ns_ = 0;
   struct ViewState {
     float position[3];
     float orientation[4];

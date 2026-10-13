@@ -169,6 +169,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "runtime.headless",
       "runtime.roblox_library",
       "vr.enabled",
+      "vr.frame_rate_limit",
       "appearance.theme",
       "graphics.backend",
       "graphics.frame_rate_limit",
@@ -326,6 +327,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_VR_ENABLED"] = parsed ? "1" : "0";
+  }
+  if (const auto frame_rate = value("vr.frame_rate_limit");
+      frame_rate.has_value()) {
+    if (!ParseFrameRatePolicy(*frame_rate).valid()) {
+      *error = "vr.frame_rate_limit is not supported: " + *frame_rate;
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_FRAME_RATE_LIMIT"] = *frame_rate;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -790,6 +799,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
   result.config = RuntimeConfig::FromEnvironment(layered);
   if (!result.config.frame_rate().valid()) {
     result.error = "frame-rate policy is invalid";
+  } else if (!result.config.vr_frame_rate().valid()) {
+    result.error = "VR frame-rate policy is invalid";
   } else if (!result.config.vr_valid()) {
     result.error = "VR configuration is invalid: MOCKTAIL_VR_ENABLED must be "
                    "1/0, true/false, or on/off";
@@ -944,6 +955,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                           config.desktop_playability() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
                           FrameRateValue(config.frame_rate()), error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_FRAME_RATE_LIMIT",
+                          FrameRateValue(config.vr_frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

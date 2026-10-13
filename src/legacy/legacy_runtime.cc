@@ -4669,6 +4669,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                  "-1, display, unlimited, or a positive integer\n";
     return EXIT_FAILURE;
   }
+  if (!runtime_config.vr_frame_rate().valid()) {
+    std::cerr << "[FATAL] Invalid MOCKTAIL_VR_FRAME_RATE_LIMIT; expected "
+                 "-1, display, unlimited, or a positive integer\n";
+    return EXIT_FAILURE;
+  }
   if (!runtime_config.theme_mode_valid()) {
     std::cerr
         << "[FATAL] Invalid MOCKTAIL_THEME; expected roblox, system, light, "

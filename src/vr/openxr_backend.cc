@@ -1041,6 +1041,40 @@ bool OpenXrBackend::InitializeSessionResourcesLocked(std::string *error) {
         xr_eye_width_[0], xr_eye_height_[0], xr_eye_width_[1],
         xr_eye_height_[1]);
 
+    // Per-axis scale on the runtime's recommendation. The swapchains, the
+    // guest eye framebuffers and the submitted image rect all derive from
+    // these extents, so Roblox renders at the scaled size end to end.
+    double render_scale = EnvDouble("MOCKTAIL_VR_RENDER_SCALE", 1.0);
+    if (!std::isfinite(render_scale) || render_scale <= 0.0) {
+      render_scale = 1.0;
+    }
+    render_scale = std::clamp(render_scale, 0.25, 2.0);
+    if (render_scale != 1.0) {
+      const std::uint32_t max_width =
+          config_views[0].maxImageRectWidth != 0
+              ? std::min(config_views[0].maxImageRectWidth,
+                         config_views[1].maxImageRectWidth)
+              : UINT32_MAX;
+      const std::uint32_t max_height =
+          config_views[0].maxImageRectHeight != 0
+              ? std::min(config_views[0].maxImageRectHeight,
+                         config_views[1].maxImageRectHeight)
+              : UINT32_MAX;
+      for (int eye = 0; eye < 2; ++eye) {
+        xr_eye_width_[eye] = std::clamp<std::uint32_t>(
+            static_cast<std::uint32_t>(
+                std::lround(xr_eye_width_[eye] * render_scale)),
+            1, max_width);
+        xr_eye_height_[eye] = std::clamp<std::uint32_t>(
+            static_cast<std::uint32_t>(
+                std::lround(xr_eye_height_[eye] * render_scale)),
+            1, max_height);
+      }
+      Log("  [vr-backend] render scale %.2f: eye extents L=%ux%u R=%ux%u\n",
+          render_scale, xr_eye_width_[0], xr_eye_height_[0],
+          xr_eye_width_[1], xr_eye_height_[1]);
+    }
+
     if (!CreateSwapchains(error)) {
       TeardownSessionLocked("swapchain failure", session_recovery_pending_);
       return false;
@@ -2058,6 +2092,14 @@ void OpenXrBackend::NoteHostPresent(VkQueue queue, VkDevice device) {
 }
 
 void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
+  // Benchmark mode: let Roblox render as fast as it can. The open XR frame
+  // spans several guest frames (all rendered with its pose) and is submitted
+  // with the newest eyes once per display period. Frames beyond the headset
+  // refresh are never shown, so this is for measuring, not for playing.
+  static const bool unpaced = EnvString("MOCKTAIL_VR_UNPACED", "0") == "1";
+  if (unpaced && frame_open_ && perf::NowNs() < frame_due_ns_) {
+    return;
+  }
   const ScopedStageTimer cycle_timer(perf::Stage::kFrameCycle);
   const auto session = static_cast<XrSession>(xr_session_);
   const auto instance = static_cast<XrInstance>(xr_instance_);
@@ -2236,6 +2278,9 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
     }
     predicted_display_time = state.predictedDisplayTime;
     should_render = state.shouldRender;
+    frame_due_ns_ =
+        perf::NowNs() + static_cast<std::uint64_t>(
+                            std::max<XrDuration>(0, state.predictedDisplayPeriod));
   }
   frame_open_ = true;
   frame_display_time_ = predicted_display_time;
