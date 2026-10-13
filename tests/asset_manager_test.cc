@@ -447,4 +447,52 @@ TEST_F(AssetManagerTest, ResolvesShadersWhenAssetRootPointsToContentOrAssets) {
   AAsset_close(fallback_asset);
 }
 
+TEST_F(AssetManagerTest, OverlayStillWinsWhenTheRootIsTheContentFolder) {
+  WriteAsset("content/textures/ArrowCursor.png", "stock-arrow");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/textures/ArrowCursor.png",
+               "custom-overlay-arrow");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  const std::string content_root = root_ + "/content";
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_ROOT", content_root.c_str(), 1), 0);
+
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+  for (const char* name :
+       {"content/textures/ArrowCursor.png", "textures/ArrowCursor.png",
+        "content/fonts/../textures/ArrowCursor.png"}) {
+    AAsset* asset = AAssetManager_open(manager, name, 0);
+    ASSERT_NE(asset, nullptr) << name;
+    EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(asset)),
+                          static_cast<std::size_t>(AAsset_getLength(asset))),
+              "custom-overlay-arrow")
+        << name;
+    AAsset_close(asset);
+  }
+}
+
+TEST_F(AssetManagerTest, DotDotPathsCannotLeaveTheAssetFolders) {
+  // The file sits beside the asset root, where only an escape can reach it.
+  const std::string outside = root_ + "/../outside-" +
+                              std::to_string(static_cast<long>(getpid())) +
+                              ".txt";
+  { std::ofstream(outside) << "secret"; }
+  const std::string outside_name =
+      outside.substr(outside.find_last_of('/') + 1);
+  const std::string content_root = root_ + "/content";
+  WriteAsset("content/inside.txt", "inside");
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+  for (const std::string& root : {root_, content_root}) {
+    ASSERT_EQ(setenv("MOCKTAIL_ASSET_ROOT", root.c_str(), 1), 0);
+    for (const std::string& name :
+         {"../" + outside_name, "content/../../" + outside_name,
+          "content/../../../" + outside_name, "a/../../" + outside_name,
+          std::string("content/.."), std::string("content/../")}) {
+      EXPECT_EQ(AAssetManager_open(manager, name.c_str(), 0), nullptr)
+          << root << " " << name;
+    }
+  }
+  std::remove(outside.c_str());
+}
+
 }  // namespace
