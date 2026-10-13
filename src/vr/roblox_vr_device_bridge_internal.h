@@ -24,6 +24,11 @@ struct VrBuildContract {
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id);
 
+// Computes the record orientation for a hand pose, incorporating native
+// hand pitch cancellation and configurable pitch offsets.
+pose::Quat ComputeHandRecordOrientation(const VrHandPose& source);
+float GetHandPitchOffsetDeg();
+
 // Writes only a caller-owned state copy; preserves all resource readiness.
 bool ApplyXrPose(void* state, const ScriptedPoseSample& pose);
 // Adjust a world-space grip CoordinateFrame to OpenXR aim without changing

@@ -638,6 +638,95 @@ const compat::VrDebugDeviceBridgeProfile* FindRobloxVrDeviceProfile(
   return contract == nullptr ? nullptr : &contract->device;
 }
 
+namespace internal {
+
+float GetHandPitchOffsetDeg() {
+  static const float offset = [] {
+    if (const char* env = std::getenv("MOCKTAIL_VR_HAND_PITCH_OFFSET")) {
+      char* end = nullptr;
+      const float val = std::strtof(env, &end);
+      if (end != env && std::isfinite(val)) {
+        Log("  [vr-device] hand pitch offset (MOCKTAIL_VR_HAND_PITCH_OFFSET): %.1f deg\n", val);
+        return val;
+      }
+    }
+    // Default -20 deg matches user preference for controller/laser pitch.
+    return -20.f;
+  }();
+  return offset;
+}
+
+float GetTotalHandPitchDeg() {
+  static const float total = [] {
+    if (const char* env = std::getenv("MOCKTAIL_VR_HAND_PITCH")) {
+      char* end = nullptr;
+      const float val = std::strtof(env, &end);
+      if (end != env && std::isfinite(val)) {
+        Log("  [vr-device] hand pitch override (MOCKTAIL_VR_HAND_PITCH): %.1f deg\n", val);
+        return val;
+      }
+    }
+    return 20.f + GetHandPitchOffsetDeg();
+  }();
+  return total;
+}
+
+pose::Quat ComputeHandRecordOrientation(const VrHandPose& source) {
+  const float total_pitch_deg = GetTotalHandPitchDeg();
+
+  static const bool use_grip = [] {
+    if (const char* env = std::getenv("MOCKTAIL_VR_HAND_POSE_SOURCE")) {
+      if (std::strcmp(env, "grip") == 0) {
+        Log("  [vr-device] hand pose source override: grip\n");
+        return true;
+      }
+    }
+    return false;
+  }();
+
+  if (!source.aim_valid && !use_grip) {
+    pose::Quat grip{};
+    if (pose::QuatNormalize(
+            {source.grip_orientation[0], source.grip_orientation[1],
+             source.grip_orientation[2], source.grip_orientation[3]},
+            &grip)) {
+      return grip;
+    }
+    return {source.grip_orientation[0], source.grip_orientation[1],
+            source.grip_orientation[2], source.grip_orientation[3]};
+  }
+
+  pose::Quat base_ori{};
+  if (!use_grip && source.aim_valid) {
+    float aim_norm = 0.f;
+    bool aim_finite = true;
+    for (float v : source.aim_orientation) {
+      aim_finite = aim_finite && std::isfinite(v);
+      aim_norm += v * v;
+    }
+    if (aim_finite && aim_norm >= 0.99f && aim_norm <= 1.01f) {
+      (void)pose::QuatNormalize(
+          {source.aim_orientation[0], source.aim_orientation[1],
+           source.aim_orientation[2], source.aim_orientation[3]},
+          &base_ori);
+    }
+  }
+  if (!std::isfinite(base_ori.w) || QuatNorm(base_ori) < 0.5f) {
+    if (!pose::QuatNormalize(
+            {source.grip_orientation[0], source.grip_orientation[1],
+             source.grip_orientation[2], source.grip_orientation[3]},
+            &base_ori)) {
+      base_ori = {0.f, 0.f, 0.f, 1.f};
+    }
+  }
+
+  const float half_angle = total_pitch_deg * pose::kPi / 360.f;
+  return pose::QuatMultiply(
+      base_ori, {std::sin(half_angle), 0.f, 0.f, std::cos(half_angle)});
+}
+
+}  // namespace internal
+
 RobloxVrDeviceBridge::~RobloxVrDeviceBridge() {
   Shutdown();
   RobloxVrDeviceBridge *expected = this;
@@ -679,20 +768,40 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   std::memcpy(&degrees,
               reinterpret_cast<void*>(base + contract_->hand_pitch_storage_rva),
               4);
-  VrHandPose pointer_hand = hand;
-  pose::Quat aim{};
-  if (pose::QuatNormalize({hand.aim_orientation[0], hand.aim_orientation[1],
-                           hand.aim_orientation[2], hand.aim_orientation[3]},
-                          &aim)) {
-    constexpr float kNativeHandPitchHalfAngle = 20.f * pose::kPi / 360.f;
-    const pose::Quat pitched = pose::QuatMultiply(
-        aim, {std::sin(kNativeHandPitchHalfAngle), 0.f, 0.f,
-              std::cos(kNativeHandPitchHalfAngle)});
-    pointer_hand.grip_orientation[0] = pitched.x;
-    pointer_hand.grip_orientation[1] = pitched.y;
-    pointer_hand.grip_orientation[2] = pitched.z;
-    pointer_hand.grip_orientation[3] = pitched.w;
+  {
+    static std::atomic<float> last_scale{-1.f};
+    const float previous = last_scale.exchange(scale);
+    if (std::abs(previous - scale) > 1e-4f)
+      std::fprintf(stderr,
+                   "  [vr-device][evidence] camera HeadScale=%.4f hand_pitch=%d\n",
+                   scale, degrees);
   }
+  VrHandPose pointer_hand = hand;
+  const pose::Quat pitched = internal::ComputeHandRecordOrientation(hand);
+  pointer_hand.grip_orientation[0] = pitched.x;
+  pointer_hand.grip_orientation[1] = pitched.y;
+  pointer_hand.grip_orientation[2] = pitched.z;
+  pointer_hand.grip_orientation[3] = pitched.w;
+  // Apply the same hand pitch offset to aim orientation so that the native
+  // pointer ray rotates in lockstep with the controller and laser beam.
+  const float pitch_offset_rad =
+      internal::GetHandPitchOffsetDeg() * pose::kPi / 180.f;
+  const float half_pitch = pitch_offset_rad * 0.5f;
+  const pose::Quat aim_rot = pose::QuatMultiply(
+      {pointer_hand.aim_orientation[0], pointer_hand.aim_orientation[1],
+       pointer_hand.aim_orientation[2], pointer_hand.aim_orientation[3]},
+      {std::sin(half_pitch), 0.f, 0.f, std::cos(half_pitch)});
+  pointer_hand.aim_orientation[0] = aim_rot.x;
+  pointer_hand.aim_orientation[1] = aim_rot.y;
+  pointer_hand.aim_orientation[2] = aim_rot.z;
+  pointer_hand.aim_orientation[3] = aim_rot.w;
+  // Keep ray origin identical to UserCFrame[hand].p (grip origin), so the
+  // C++ pointer ray and Luau's LaserPointer share the exact same origin
+  // with zero vertical or lateral offset.
+  pointer_hand.aim_position[0] = pointer_hand.grip_position[0];
+  pointer_hand.aim_position[1] = pointer_hand.grip_position[1];
+  pointer_hand.aim_position[2] = pointer_hand.grip_position[2];
+
   if (internal::ApplyAimToWorldFrame(static_cast<float*>(result), pointer_hand,
                                      scale, -static_cast<float>(degrees))) {
     static std::atomic<bool> logged[2]{};
@@ -1125,8 +1234,28 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
   }
   bytes[0x132] = pose.valid && pose.controllers_connected;
 
+  // World scale factor: scales spatial tracking metrics (head, hands, floor,
+  // eye separation). Defaults to 1.0f (raw metres, unscaled); configurable
+  // via MOCKTAIL_VR_WORLD_SCALE or MOCKTAIL_VR_EYE_OFFSET_SCALE.
+  static const float world_scale = [] {
+    for (const char* var : {"MOCKTAIL_VR_WORLD_SCALE", "MOCKTAIL_VR_EYE_OFFSET_SCALE"}) {
+      if (const char *env = std::getenv(var)) {
+        char *end = nullptr;
+        const float value = std::strtof(env, &end);
+        if (end != env && std::isfinite(value) && value > 0.f && value < 100.f) {
+          Log("  [vr-device] world scale override (%s): %.4f\n", var, value);
+          return value;
+        }
+      }
+    }
+    return 1.0f;
+  }();
+
   // The verified guest pose helper applies metres-to-studs conversion.
-  std::memcpy(bytes + 4, pose.position, sizeof(pose.position));
+  const float head_pos[3] = {pose.position[0] * world_scale,
+                             pose.position[1] * world_scale,
+                             pose.position[2] * world_scale};
+  std::memcpy(bytes + 4, head_pos, sizeof(head_pos));
   std::memcpy(bytes + 0x10, pose.orientation, sizeof(pose.orientation));
   if (pose.floor_valid) {
     bool finite = true;
@@ -1137,8 +1266,11 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
       floor_norm += value * value;
     }
     if (finite && floor_norm >= .99f && floor_norm <= 1.01f) {
+      const float floor_pos[3] = {pose.floor_position[0] * world_scale,
+                                  pose.floor_position[1] * world_scale,
+                                  pose.floor_position[2] * world_scale};
       std::memcpy(bytes + kExtraRecordOffset + kRecordPositionOffset,
-                  pose.floor_position, sizeof(pose.floor_position));
+                  floor_pos, sizeof(floor_pos));
       std::memcpy(bytes + kExtraRecordOffset + kRecordOrientationOffset,
                   pose.floor_orientation, sizeof(pose.floor_orientation));
       bytes[kExtraRecordOffset + kRecordValidOffset] = 1;
@@ -1163,48 +1295,24 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
     }
     if (!finite || hand_norm < 0.99f || hand_norm > 1.01f)
       continue;
-    float orientation[4] = {
-        source.grip_orientation[0], source.grip_orientation[1],
-        source.grip_orientation[2], source.grip_orientation[3]};
-    if (source.aim_valid) {
-      float aim_norm = 0.f;
-      bool aim_finite = true;
-      for (float v : source.aim_orientation) {
-        aim_finite = aim_finite && std::isfinite(v);
-        aim_norm += v * v;
-      }
-      pose::Quat aim{};
-      if (aim_finite && aim_norm >= 0.99f && aim_norm <= 1.01f &&
-          pose::QuatNormalize(
-              {source.aim_orientation[0], source.aim_orientation[1],
-               source.aim_orientation[2], source.aim_orientation[3]},
-              &aim)) {
-        // The guest's VRService consumer (0x28a6242) pitches each hand record
-        // by -NewVRSystemHandPitch (-20 deg) to form UserCFrame[hand], which
-        // Luau's LaserPointer uses directly as lookVector and TouchController
-        // pitches back by +20 deg (0.34906585 rad). Pre-applying +20 deg to
-        // the OpenXR aim orientation makes UserCFrame[hand] match the OpenXR
-        // aim/handmodel orientation while keeping the grip palm position.
-        constexpr float kNativeHandPitchHalfAngle = 20.f * pose::kPi / 360.f;
-        const pose::Quat pitched = pose::QuatMultiply(
-            aim, {std::sin(kNativeHandPitchHalfAngle), 0.f, 0.f,
-                  std::cos(kNativeHandPitchHalfAngle)});
-        orientation[0] = pitched.x;
-        orientation[1] = pitched.y;
-        orientation[2] = pitched.z;
-        orientation[3] = pitched.w;
-      }
-    }
+    const pose::Quat pitched = ComputeHandRecordOrientation(source);
+    const float orientation[4] = {pitched.x, pitched.y, pitched.z, pitched.w};
     const std::size_t record =
         hand == 0 ? kLeftHandRecordOffset : kRightHandRecordOffset;
-    std::memcpy(bytes + record + kRecordPositionOffset, source.grip_position,
-                sizeof(source.grip_position));
+    const float grip_pos[3] = {source.grip_position[0] * world_scale,
+                               source.grip_position[1] * world_scale,
+                               source.grip_position[2] * world_scale};
+    std::memcpy(bytes + record + kRecordPositionOffset, grip_pos,
+                sizeof(grip_pos));
     std::memcpy(bytes + record + kRecordOrientationOffset, orientation,
                 sizeof(orientation));
     bytes[record + kRecordValidOffset] = 1;
   }
   for (int eye = 0; eye < 2; ++eye) {
-    std::memcpy(bytes + 0xf8 + eye * 12, pose.eye_offset[eye], 12);
+    const float offset[3] = {pose.eye_offset[eye][0] * world_scale,
+                             pose.eye_offset[eye][1] * world_scale,
+                             pose.eye_offset[eye][2] * world_scale};
+    std::memcpy(bytes + 0xf8 + eye * 12, offset, sizeof(offset));
     const auto *fov = pose.eye_fov[eye];
     const float tangents[4] = {std::tan(fov[2]), -std::tan(fov[3]),
                                -std::tan(fov[0]), std::tan(fov[1])};

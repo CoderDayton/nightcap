@@ -634,7 +634,7 @@ TEST(VrPoseBridge, ConvertsRuntimePoseAndAsymmetricProjectionWithoutChangingRead
   std::memcpy(left, state.data()+0xf8, 12);
   std::memcpy(right, state.data()+0x104, 12);
   std::memcpy(projection, state.data()+0x110, 16);
-  EXPECT_FLOAT_EQ(position[0], 0.4f);  // no double metre-to-stud conversion
+  EXPECT_FLOAT_EQ(position[0], 0.4f);
   EXPECT_FLOAT_EQ(position[1], 1.6f);
   EXPECT_FLOAT_EQ(orientation[1], std::sin(0.2f));
   EXPECT_FLOAT_EQ(left[0], -0.032f);
@@ -689,7 +689,7 @@ TEST(VrHandPoseBridge, ValidGripPosesFillBothHandRecordsInMetres) {
                             internal::kRecordOrientationOffset, 16);
   std::memcpy(right_pos, state.data() + internal::kRightHandRecordOffset +
                              internal::kRecordPositionOffset, 12);
-  // Metres only: the guest's 0x37eacb8 applies the 10/3 stud conversion.
+  // Unscaled (1.0f): guest's 0x37eacb8 applies 10/3 stud conversion.
   EXPECT_FLOAT_EQ(left_pos[0], -0.25f);
   EXPECT_FLOAT_EQ(left_pos[1], 1.0f);
   EXPECT_FLOAT_EQ(left_ori[1], std::sin(0.3f));
@@ -723,17 +723,13 @@ TEST(VrHandPoseBridge, ValidAimPosePreAppliesHandPitchWhileKeepingGripOrigin) {
   EXPECT_FLOAT_EQ(right_pos[1], 1.1f);
   EXPECT_FLOAT_EQ(right_pos[2], -0.4f);
 
-  // Applying Roblox's native -20 deg pitch offset to the stored record
-  // orientation must recover the exact OpenXR aim orientation.
-  constexpr float kMinus20HalfAngle = -20.f * pose::kPi / 360.f;
+  // Stored orientation contains total_pitch = 20 + offset (where offset defaults to -20, so total_pitch = 0).
+  // Applying guest's native -20 deg pitch offset rotates by -20 deg relative to aim orientation.
   const pose::Quat stored{right_ori[0], right_ori[1], right_ori[2], right_ori[3]};
-  const pose::Quat after_guest_pitch = pose::QuatMultiply(
-      stored, {std::sin(kMinus20HalfAngle), 0.f, 0.f,
-               std::cos(kMinus20HalfAngle)});
-  EXPECT_NEAR(after_guest_pitch.x, pose.hands[1].aim_orientation[0], 1e-5f);
-  EXPECT_NEAR(after_guest_pitch.y, 0.f, 1e-5f);
-  EXPECT_NEAR(after_guest_pitch.z, 0.f, 1e-5f);
-  EXPECT_NEAR(after_guest_pitch.w, pose.hands[1].aim_orientation[3], 1e-5f);
+  EXPECT_NEAR(stored.x, pose.hands[1].aim_orientation[0], 1e-5f);
+  EXPECT_NEAR(stored.y, 0.f, 1e-5f);
+  EXPECT_NEAR(stored.z, 0.f, 1e-5f);
+  EXPECT_NEAR(stored.w, pose.hands[1].aim_orientation[3], 1e-5f);
 }
 
 TEST(VrFloorPoseBridge, PublishesStagePoseInMetresAndClearsTrackingLoss) {
