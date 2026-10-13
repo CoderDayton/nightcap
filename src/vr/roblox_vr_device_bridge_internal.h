@@ -26,10 +26,16 @@ struct VrBuildContract {
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id);
 
-// Computes the record orientation for a hand pose, incorporating native
-// hand pitch cancellation and configurable pitch offsets.
-pose::Quat ComputeHandRecordOrientation(const VrHandPose& source);
+// Computes the record orientation for a hand pose: the aim pose (or, with
+// MOCKTAIL_VR_HAND_POSE_SOURCE=grip, the grip pose) pitched by the engine's
+// own hand pitch plus the configurable offset.
+pose::Quat ComputeHandRecordOrientation(const VrHandPose& source,
+                                        float native_pitch_deg);
 float GetHandPitchOffsetDeg();
+// The engine's stored hand pitch (degrees), as last read from the guest;
+// 20 until it has been read.
+void NoteNativeHandPitchDeg(int degrees);
+float NativeHandPitchDeg();
 
 // Writes only a caller-owned state copy; preserves all resource readiness.
 bool ApplyXrPose(void* state, const ScriptedPoseSample& pose);

@@ -888,3 +888,55 @@ TEST(VrSupportedBuilds, InstallNamesTheBuildAndTheSupportedOnes) {
 
 }  // namespace
 }  // namespace mocktail::vr
+
+namespace mocktail::vr {
+namespace {
+
+VrHandPose HandWith(const pose::Quat& aim, const pose::Quat& grip) {
+  VrHandPose hand;
+  hand.aim_valid = hand.grip_valid = true;
+  const float a[4] = {aim.x, aim.y, aim.z, aim.w};
+  const float g[4] = {grip.x, grip.y, grip.z, grip.w};
+  std::copy(a, a + 4, hand.aim_orientation);
+  std::copy(g, g + 4, hand.grip_orientation);
+  return hand;
+}
+
+pose::Quat Pitch(float degrees) {
+  return pose::QuatFromAxisAngle({1.f, 0.f, 0.f}, degrees * pose::kPi / 180.f);
+}
+
+TEST(VrHandOrientation, CancelsTheEnginesStoredPitchNotAnAssumedOne) {
+  const pose::Quat yaw = pose::QuatFromAxisAngle({0.f, 1.f, 0.f}, 0.7f);
+  const VrHandPose hand = HandWith(yaw, pose::Quat{});
+  const float offset = internal::GetHandPitchOffsetDeg();
+  for (const float native : {20.f, 35.f, 0.f}) {
+    const pose::Quat result =
+        internal::ComputeHandRecordOrientation(hand, native);
+    EXPECT_TRUE(pose::QuatSameRotation(
+        result, pose::QuatMultiply(yaw, Pitch(native + offset)), 1e-4f))
+        << native;
+  }
+  internal::NoteNativeHandPitchDeg(35);
+  EXPECT_FLOAT_EQ(internal::NativeHandPitchDeg(), 35.f);
+  internal::NoteNativeHandPitchDeg(100000);  // garbage is ignored
+  EXPECT_FLOAT_EQ(internal::NativeHandPitchDeg(), 35.f);
+}
+
+TEST(VrHandOrientation, GripSourceKeepsTheGripRotation) {
+  // ctest runs each test in its own process; the source is read once.
+  setenv("MOCKTAIL_VR_HAND_POSE_SOURCE", "grip", 1);
+  const pose::Quat grip = pose::QuatFromAxisAngle({0.f, 1.f, 0.f}, 1.2f);
+  const pose::Quat aim = pose::QuatFromAxisAngle({0.f, 1.f, 0.f}, -0.4f);
+  const pose::Quat result = internal::ComputeHandRecordOrientation(
+      HandWith(aim, grip), 20.f);
+  EXPECT_TRUE(pose::QuatSameRotation(
+      result,
+      pose::QuatMultiply(grip,
+                         Pitch(20.f + internal::GetHandPitchOffsetDeg())),
+      1e-4f));
+  unsetenv("MOCKTAIL_VR_HAND_POSE_SOURCE");
+}
+
+}  // namespace
+}  // namespace mocktail::vr

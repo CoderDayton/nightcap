@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include "mocktail/vr/openxr_backend.h"
@@ -18,9 +19,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <iterator>
+#include <limits>
+#include <optional>
 #include <string>
+#include <thread>
 
 #include "vr/roblox_vr_device_bridge_internal.h"
 
@@ -53,6 +56,21 @@ std::uintptr_t RelativeTarget(const std::uint8_t* displacement,
 }
 
 std::atomic<RobloxVrDeviceBridge *> g_active_bridge{nullptr};
+// Guest calls currently inside an interposed hook. Shutdown unpublishes the
+// bridge and then waits for this to drain, so no hook ever dereferences a
+// bridge that is being destroyed.
+std::atomic<int> g_hook_calls{0};
+struct HookCall {
+  HookCall() { g_hook_calls.fetch_add(1, std::memory_order_seq_cst); }
+  ~HookCall() { g_hook_calls.fetch_sub(1, std::memory_order_release); }
+  HookCall(const HookCall&) = delete;
+  HookCall& operator=(const HookCall&) = delete;
+};
+// Roblox's original getters, kept for the process lifetime (libroblox is
+// never unloaded) so a hook still reachable after shutdown, or whose vtable
+// could not be restored, always forwards instead of returning garbage.
+std::atomic<void *(*)(void *, void *)> g_original_state_getter{nullptr};
+std::atomic<void *(*)(void *, int)> g_original_eye_getter{nullptr};
 // Evidence queries expose only the current native call's provenance. These
 // pointers are identities for the layer, never retained/dereferenced by it.
 thread_local void *g_initializing_object = nullptr;
@@ -77,11 +95,12 @@ void AbsoluteJump(unsigned char *code, std::uintptr_t target) {
 }
 
 extern "C" void *mocktail_vr_pointer_frame(void *result, void *service) {
+  HookCall in_flight;
   auto original = g_pointer_original.load(std::memory_order_acquire);
   if (!original)
     return result;
   original(result, service);
-  auto *bridge = g_active_bridge.load(std::memory_order_acquire);
+  auto *bridge = g_active_bridge.load(std::memory_order_seq_cst);
   if (!bridge || !bridge->active()) return result;
   bridge->OnPointerFrameCall(result, service);
   return result;
@@ -99,8 +118,10 @@ bool SetCodeWritable(std::uintptr_t target, bool writable) {
 }
 
 bool InstallPointerHook(std::uintptr_t base, std::uintptr_t pointer_rva) {
+  // The jump stays installed for the process lifetime (see
+  // RestorePointerHook); a later activation reuses it.
   if (g_pointer_target)
-    return false;
+    return g_pointer_target == base + pointer_rva;
   auto* target = reinterpret_cast<unsigned char*>(base + pointer_rva);
   if (std::memcmp(target, kPointerPrologue.data(), kPointerPrologue.size()) !=
       0)
@@ -135,18 +156,11 @@ bool InstallPointerHook(std::uintptr_t base, std::uintptr_t pointer_rva) {
   return true;
 }
 
-bool RestorePointerHook() {
-  if (!g_pointer_target)
-    return true;
-  if (!SetCodeWritable(g_pointer_target, true))
-    return false;
-  std::memcpy(reinterpret_cast<void *>(g_pointer_target),
-              kPointerPrologue.data(), kPointerPrologue.size());
-  const bool restored = SetCodeWritable(g_pointer_target, false);
-  if (restored)
-    g_pointer_target = 0;
-  return restored;
-}
+// Never rewrites the guest prologue: guest threads may be executing those
+// bytes, and a torn 15-byte store would crash them. The installed jump stays;
+// with no active bridge mocktail_vr_pointer_frame only forwards to the
+// original code through the retained trampoline.
+bool RestorePointerHook() { return true; }
 
 Status InvalidArgument(std::string message) {
   return Status::Error(StatusCode::kInvalidArgument, std::move(message));
@@ -289,7 +303,8 @@ std::uintptr_t* g_is_vr_app_build_slot = nullptr;
 std::uintptr_t g_is_vr_app_build_original = 0;
 
 extern "C" bool mocktail_vr_is_vr_app_build(const void*) {
-  auto* bridge = g_active_bridge.load(std::memory_order_acquire);
+  HookCall in_flight;
+  auto* bridge = g_active_bridge.load(std::memory_order_seq_cst);
   return bridge != nullptr && bridge->active();
 }
 
@@ -579,26 +594,32 @@ namespace {
 // takes (rdi = device object, esi = eye index) and returns the framebuffer
 // object pointer.
 extern "C" void mocktail_vr_debug_device_haptics(void* object, int hand, float amplitude) {
-  if (auto* bridge = g_active_bridge.load(std::memory_order_acquire))
+  HookCall in_flight;
+  if (auto* bridge = g_active_bridge.load(std::memory_order_seq_cst))
     bridge->OnHapticsCall(object, hand, amplitude);
 }
 
 extern "C" void *mocktail_vr_debug_device_state_getter(void *result_buffer,
                                                        void *device_object) {
+  HookCall in_flight;
   RobloxVrDeviceBridge *bridge =
-      g_active_bridge.load(std::memory_order_acquire);
+      g_active_bridge.load(std::memory_order_seq_cst);
   if (bridge != nullptr) {
     bridge->OnStateGetterCall(result_buffer, device_object);
+  } else if (const auto original =
+                 g_original_state_getter.load(std::memory_order_acquire)) {
+    // Bridge gone but the slot still points here: Roblox's own answer.
+    original(result_buffer, device_object);
   }
   return result_buffer;
 }
 
 extern "C" void *mocktail_vr_debug_device_eye_getter(void *device_object,
                                                      int eye_index) {
+  HookCall in_flight;
   RobloxVrDeviceBridge *bridge =
-      g_active_bridge.load(std::memory_order_acquire);
-  const auto original =
-      bridge != nullptr ? bridge->original_eye_getter() : nullptr;
+      g_active_bridge.load(std::memory_order_seq_cst);
+  const auto original = g_original_eye_getter.load(std::memory_order_acquire);
   void *framebuffer =
       original != nullptr ? original(device_object, eye_index) : nullptr;
   if (bridge != nullptr) {
@@ -629,8 +650,9 @@ extern "C" void mocktail_vr_consume_eye() {
 }
 
 extern "C" void mocktail_vr_note_host_present_begin() {
+  HookCall in_flight;
   RobloxVrDeviceBridge *bridge =
-      g_active_bridge.load(std::memory_order_acquire);
+      g_active_bridge.load(std::memory_order_seq_cst);
   if (bridge != nullptr) {
     bridge->NoteHostPresent();
   }
@@ -670,8 +692,24 @@ float GetHandPitchOffsetDeg() {
   return offset;
 }
 
-float GetTotalHandPitchDeg() {
-  static const float total = [] {
+namespace {
+// Engine default hand pitch; replaced by the guest's stored value once read.
+std::atomic<float> g_native_hand_pitch_deg{20.f};
+}  // namespace
+
+void NoteNativeHandPitchDeg(int degrees) {
+  if (std::abs(degrees) <= 360)
+    g_native_hand_pitch_deg.store(static_cast<float>(degrees),
+                                  std::memory_order_relaxed);
+}
+
+float NativeHandPitchDeg() {
+  return g_native_hand_pitch_deg.load(std::memory_order_relaxed);
+}
+
+float GetTotalHandPitchDeg(float native_pitch_deg) {
+  static const std::optional<float> override_deg =
+      []() -> std::optional<float> {
     if (const char* env = std::getenv("MOCKTAIL_VR_HAND_PITCH")) {
       char* end = nullptr;
       const float val = std::strtof(env, &end);
@@ -680,13 +718,17 @@ float GetTotalHandPitchDeg() {
         return val;
       }
     }
-    return 20.f + GetHandPitchOffsetDeg();
+    return std::nullopt;
   }();
-  return total;
+  // Cancel the pitch the engine itself applies (read from the guest, not
+  // assumed), then add the configurable offset.
+  return override_deg ? *override_deg
+                      : native_pitch_deg + GetHandPitchOffsetDeg();
 }
 
-pose::Quat ComputeHandRecordOrientation(const VrHandPose& source) {
-  const float total_pitch_deg = GetTotalHandPitchDeg();
+pose::Quat ComputeHandRecordOrientation(const VrHandPose& source,
+                                        float native_pitch_deg) {
+  const float total_pitch_deg = GetTotalHandPitchDeg(native_pitch_deg);
 
   static const bool use_grip = [] {
     if (const char* env = std::getenv("MOCKTAIL_VR_HAND_POSE_SOURCE")) {
@@ -711,6 +753,7 @@ pose::Quat ComputeHandRecordOrientation(const VrHandPose& source) {
   }
 
   pose::Quat base_ori{};
+  bool have_base = false;
   if (!use_grip && source.aim_valid) {
     float aim_norm = 0.f;
     bool aim_finite = true;
@@ -719,13 +762,15 @@ pose::Quat ComputeHandRecordOrientation(const VrHandPose& source) {
       aim_norm += v * v;
     }
     if (aim_finite && aim_norm >= 0.99f && aim_norm <= 1.01f) {
-      (void)pose::QuatNormalize(
+      have_base = pose::QuatNormalize(
           {source.aim_orientation[0], source.aim_orientation[1],
            source.aim_orientation[2], source.aim_orientation[3]},
           &base_ori);
     }
   }
-  if (!std::isfinite(base_ori.w) || QuatNorm(base_ori) < 0.5f) {
+  // The grip source, or an unusable aim pose: rotate from the grip pose.
+  // (base_ori starts as identity, so a norm check alone never caught this.)
+  if (!have_base) {
     if (!pose::QuatNormalize(
             {source.grip_orientation[0], source.grip_orientation[1],
              source.grip_orientation[2], source.grip_orientation[3]},
@@ -782,6 +827,7 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   std::memcpy(&degrees,
               reinterpret_cast<void*>(base + contract_->hand_pitch_storage_rva),
               4);
+  internal::NoteNativeHandPitchDeg(degrees);
   {
     static std::atomic<float> last_scale{-1.f};
     const float previous = last_scale.exchange(scale);
@@ -791,7 +837,8 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
                    scale, degrees);
   }
   VrHandPose pointer_hand = hand;
-  const pose::Quat pitched = internal::ComputeHandRecordOrientation(hand);
+  const pose::Quat pitched =
+      internal::ComputeHandRecordOrientation(hand, static_cast<float>(degrees));
   pointer_hand.grip_orientation[0] = pitched.x;
   pointer_hand.grip_orientation[1] = pitched.y;
   pointer_hand.grip_orientation[2] = pitched.z;
@@ -997,6 +1044,11 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
       std::memory_order_release);
   original_eye_getter_.store(reinterpret_cast<EyeGetterFn>(original_eye_slot_),
                              std::memory_order_release);
+  g_original_state_getter.store(
+      reinterpret_cast<StateGetterFn>(original_state_slot_),
+      std::memory_order_release);
+  g_original_eye_getter.store(reinterpret_cast<EyeGetterFn>(original_eye_slot_),
+                              std::memory_order_release);
   __atomic_store_n(&vtable_[3], FunctionAddress(&mocktail_vr_debug_device_haptics), __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kStateGetterVtableSlot / 8],
                    FunctionAddress(&mocktail_vr_debug_device_state_getter),
@@ -1029,7 +1081,7 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
     g_native_pose = {};
   }
   active_.store(true, std::memory_order_release);
-  Log("  [vr-device] activated: DebugDeviceVR input/eyes/haptics +0x18/+0x28/+0x48 and aim pointer "
+  Log("  [vr-device] activated: DebugDeviceVR haptics/input/eyes +0x18/+0x28/+0x48 and aim pointer "
       "interposed at image base 0x%" PRIxPTR "\n",
       image_base);
   return Status::Ok();
@@ -1060,12 +1112,27 @@ void RobloxVrDeviceBridge::Shutdown() {
     std::fprintf(stderr, "  [vr-device] failed to restore DebugDeviceVR vtable "
                          "protection\n");
   }
+  // Unpublish, then wait out guest calls already inside a hook: they hold a
+  // raw pointer to this bridge. New calls see no bridge and only forward.
+  RobloxVrDeviceBridge *expected = this;
+  (void)g_active_bridge.compare_exchange_strong(
+      expected, nullptr, std::memory_order_seq_cst, std::memory_order_seq_cst);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (g_hook_calls.load(std::memory_order_acquire) != 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  if (g_hook_calls.load(std::memory_order_acquire) != 0) {
+    std::fprintf(stderr, "  [vr-device] shutdown: a guest call is still "
+                         "inside a VR hook after 2 s\n");
+  }
   installed_ = false;
 }
 
 bool RobloxVrDeviceBridge::RestoreVtableLocked() {
   RestoreIsVrAppBuildHook();
-  if (!RestorePointerHook()) return false;
+  (void)RestorePointerHook();
   if (vtable_ == nullptr) {
     return false;
   }
@@ -1310,7 +1377,8 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
     }
     if (!finite || hand_norm < 0.99f || hand_norm > 1.01f)
       continue;
-    const pose::Quat pitched = ComputeHandRecordOrientation(source);
+    const pose::Quat pitched =
+        ComputeHandRecordOrientation(source, NativeHandPitchDeg());
     const float orientation[4] = {pitched.x, pitched.y, pitched.z, pitched.w};
     const std::size_t record =
         hand == 0 ? kLeftHandRecordOffset : kRightHandRecordOffset;
