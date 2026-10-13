@@ -32,9 +32,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// Defined by the Vulkan adapter (bionic_vulkan_loader_adapter.cc).
-extern "C" __attribute__((weak)) void mocktail_vulkan_enable_queue_sharing();
-
 namespace mocktail::vr {
 namespace {
 
@@ -198,6 +195,8 @@ VkFormat SrgbSibling(VkFormat format) {
 }
 
 OpenXrBackend* g_backend = nullptr;
+// Read by the Vulkan adapter through mocktail_vr_xr_queue_sharing_requested().
+std::atomic<bool> g_queue_sharing_requested{false};
 std::mutex g_backend_slot_mutex;
 
 }  // namespace
@@ -455,6 +454,10 @@ bool OpenXrBackend::EnsureXrInstanceLocked(std::string* error) {
   }
 }
 
+void internal::RequestVulkanQueueSharing() {
+  g_queue_sharing_requested.store(true, std::memory_order_release);
+}
+
 Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (armed_.load(std::memory_order_acquire)) {
@@ -521,11 +524,8 @@ Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
     armed_.store(true, std::memory_order_release);
     // From here the runtime and the eye copies share the guest's queue, so
     // the Vulkan adapter must serialize queue calls. Armed before Roblox
-    // creates its device, so no queue call ever started unlocked. Weak: the
-    // adapter is absent from VR-only test binaries.
-    if (mocktail_vulkan_enable_queue_sharing != nullptr) {
-      mocktail_vulkan_enable_queue_sharing();
-    }
+    // creates its device, so no queue call ever started unlocked.
+    internal::RequestVulkanQueueSharing();
     Log("  [vr-backend] armed: OpenXR instance/system ready; awaiting guest "
         "%s\n",
         graphics_api_ == VrGraphicsApi::kVulkan ? "Vulkan device"
@@ -3246,6 +3246,8 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
   }
   VkResult fence_result = VK_SUCCESS;
   {
+    // mutex_ stays held: the guest's vkDestroyImage waits on it in
+    // NoteDestroyImage, which keeps the eye image alive until the copy ends.
     const ScopedStageTimer fence_timer(perf::Stage::kCopyFenceWait);
     fence_result = vk_->WaitForFences(vk_device_, 1, &copy_fence_, VK_TRUE,
                                       2'000'000'000ULL);
@@ -3825,6 +3827,13 @@ void mocktail_vr_xr_note_present(VkQueue queue, VkDevice device) {
   if (backend != nullptr) {
     backend->NoteHostPresent(queue, device);
   }
+}
+
+// The Vulkan adapter is loaded with dlopen() after the backend arms, so it
+// asks for this instead of being called.
+bool mocktail_vr_xr_queue_sharing_requested() {
+  return mocktail::vr::g_queue_sharing_requested.load(
+      std::memory_order_acquire);
 }
 
 VkResult mocktail_vr_xr_prepare_present(VkQueue queue, VkDevice device,

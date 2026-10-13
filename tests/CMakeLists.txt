@@ -67,7 +67,20 @@ if(MOCKTAIL_ENABLE_VR)
   add_executable(vr_queue_submission_test vr/queue_submission_test.cc)
   target_link_libraries(vr_queue_submission_test PRIVATE
     Mocktail::VR stub_vulkan GTest::gtest_main)
+  # The adapter looks up the backend's exported symbols at run time.
+  set_target_properties(vr_queue_submission_test PROPERTIES ENABLE_EXPORTS ON)
   gtest_discover_tests(vr_queue_submission_test)
+  # Loads the adapter with dlopen() like the runtime does, so it must not
+  # link it; the adapter finds the backend through the exported symbols.
+  add_executable(vr_queue_sharing_load_test vr/queue_sharing_load_test.cc)
+  target_link_libraries(vr_queue_sharing_load_test PRIVATE
+    Mocktail::VR ${CMAKE_DL_LIBS} GTest::gtest_main)
+  target_compile_definitions(vr_queue_sharing_load_test PRIVATE
+    "MOCKTAIL_TEST_VULKAN_ADAPTER=\"$<TARGET_FILE:stub_vulkan>\"")
+  set_target_properties(vr_queue_sharing_load_test PROPERTIES
+    ENABLE_EXPORTS ON)
+  add_dependencies(vr_queue_sharing_load_test stub_vulkan)
+  gtest_discover_tests(vr_queue_sharing_load_test)
   add_executable(gles_vr_transport_test vr/gles_transport_test.cc)
   target_include_directories(gles_vr_transport_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include" ${MOCKTAIL_GLES3_INCLUDE_DIR})
   target_link_libraries(gles_vr_transport_test PRIVATE Mocktail::VR SDL3::SDL3 GTest::gtest_main)

@@ -37,6 +37,9 @@ VkResult WaitForPresentDependencies(VkDevice device, VkQueue queue,
                                     VkFence fence, PFN_vkResetFences reset,
                                     PFN_vkQueueSubmit submit,
                                     PFN_vkWaitForFences wait);
+// Makes the Vulkan adapter serialize queue calls for the rest of the process.
+// Called when a backend arms; the adapter library may load before or after.
+void RequestVulkanQueueSharing();
 }  // namespace internal
 
 // Resolved --vr output mode. kXrOutput drives the real Roblox stereo images

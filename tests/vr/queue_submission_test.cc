@@ -17,7 +17,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mocktail_vulkan_submit_synchronized(
 extern "C" void mocktail_vr_xr_queue_submit_adapter(SubmitAdapter);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL
 mocktail_vulkan_idle_synchronized(PFN_vkDeviceWaitIdle raw, VkDevice device);
-extern "C" void mocktail_vulkan_enable_queue_sharing();
 
 namespace {
 std::mutex state_mutex;
@@ -68,7 +67,8 @@ VKAPI_ATTR VkResult VKAPI_CALL BlockingIdle(VkDevice) {
              : VK_TIMEOUT;
 }
 TEST(VrQueueSubmission, DeviceIdleExcludesPrivateSubmitsUntilDriverReturns) {
-  mocktail_vulkan_enable_queue_sharing();  // an armed VR backend does this
+  // An armed VR backend does this.
+  mocktail::vr::internal::RequestVulkanQueueSharing();
   waiting = signal_submitted = idle_release = false;
   VkResult idle_result = VK_NOT_READY;
   std::thread idler([&] {
@@ -183,7 +183,7 @@ TEST(VrQueueSubmission, GuestCallsAreNotSerializedWithoutVr) {
   EXPECT_EQ(max_inside, 2);
 }
 TEST(VrQueueSubmission, PrivateAndGuestCallsCannotEnterOneQueueConcurrently) {
-  mocktail_vulkan_enable_queue_sharing();
+  mocktail::vr::internal::RequestVulkanQueueSharing();
   inside_driver = max_inside = 0;
   const auto queue = reinterpret_cast<VkQueue>(30);
   auto call = [&] {

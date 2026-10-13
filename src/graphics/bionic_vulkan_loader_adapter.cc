@@ -322,12 +322,20 @@ Function ResolveProcessFunction(const char* name) {
 // xrEndFrame), so only then must every queue call be serialized: queue calls
 // share a per-device gate and a per-queue mutex, and device idle takes the
 // gate exclusively. Without VR (or in a build without it) nothing is locked.
-// Set by mocktail_vulkan_enable_queue_sharing() when the VR backend arms;
-// never cleared, since the runtime may use the queue until the process ends.
+// Latched once the VR backend reports it armed; never cleared, since the
+// runtime may use the queue until the process ends. The backend lives in the
+// executable and arms before this library is loaded, so it is asked here.
 std::atomic<bool> g_queue_sharing{false};
 
 bool QueueSharingActive() {
-  return g_queue_sharing.load(std::memory_order_acquire);
+  if (g_queue_sharing.load(std::memory_order_acquire))
+    return true;
+  static const auto requested = ResolveProcessFunction<bool (*)()>(
+      "mocktail_vr_xr_queue_sharing_requested");
+  if (requested == nullptr || !requested())
+    return false;
+  g_queue_sharing.store(true, std::memory_order_release);
+  return true;
 }
 
 std::shared_ptr<std::shared_mutex> DeviceIdleGate(VkDevice device) {
@@ -3501,12 +3509,6 @@ VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2(VkCommandBuffer command,
 VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2KHR(
     VkCommandBuffer command, const VkDependencyInfo *info) {
   ForwardVrBarrier2(command, info, "vkCmdPipelineBarrier2KHR");
-}
-
-// Called once by the VR backend when it arms, before Roblox creates its
-// device: from then on queue calls are serialized (see QueueCallGuard).
-void mocktail_vulkan_enable_queue_sharing() {
-  g_queue_sharing.store(true, std::memory_order_release);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL mocktail_vulkan_submit_synchronized(
