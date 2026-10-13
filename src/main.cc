@@ -329,31 +329,10 @@ int main(int argc, char* argv[]) {
   mocktail::runtime::ScrubCommandLineLaunchArguments(&command_line.options,
                                                      argc, argv);
 
-  const mocktail::runtime::RuntimeConfigBootstrapResult config_bootstrap =
-      mocktail::runtime::EnsureRuntimeConfigFile(paths.config_file());
-  if (!config_bootstrap) {
-    std::cerr << "[FATAL] Cannot prepare " << paths.config_file() << ": "
-              << config_bootstrap.error << '\n';
-    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
-      (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not prepare its configuration.");
-    }
-    return EXIT_FAILURE;
-  }
-  mocktail::runtime::RuntimeConfigLoadResult runtime_config =
-      mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
-  if (!runtime_config) {
-    std::cerr << "[FATAL] Cannot load " << paths.config_file() << ": "
-              << runtime_config.error << '\n';
-    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
-      (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not load its configuration.");
-    }
-    return EXIT_FAILURE;
-  }
-  // The standalone OpenXR scene belongs to mocktail-vr-probe --scene.
-  // --vr continues through Roblox startup as a native stereo prototype.
-  if (runtime_config.config.vr_enabled() &&
+  // Reject --vr in a build without OpenXR before touching any data or state
+  // directories. A vr.enabled config is checked once the config is loaded.
+  const std::string vr_request = environment.GetOr("MOCKTAIL_VR_ENABLED", "");
+  if ((vr_request == "1" || vr_request == "true" || vr_request == "on") &&
       !mocktail::vr::IsOpenXrSupportCompiled()) {
     std::cerr << "  [vr] This build does not include OpenXR support. "
                  "Use a VR-enabled build of Mocktail; refusing to start "
@@ -406,6 +385,35 @@ int main(int argc, char* argv[]) {
       }
       return EXIT_FAILURE;
     }
+  }
+  const mocktail::runtime::RuntimeConfigBootstrapResult config_bootstrap =
+      mocktail::runtime::EnsureRuntimeConfigFile(paths.config_file());
+  if (!config_bootstrap) {
+    std::cerr << "[FATAL] Cannot prepare " << paths.config_file() << ": "
+              << config_bootstrap.error << '\n';
+    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+      (void)mocktail::runtime::ShowFailureDialog(
+          environment, "Mocktail could not prepare its configuration.");
+    }
+    return EXIT_FAILURE;
+  }
+  mocktail::runtime::RuntimeConfigLoadResult runtime_config =
+      mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
+  if (!runtime_config) {
+    std::cerr << "[FATAL] Cannot load " << paths.config_file() << ": "
+              << runtime_config.error << '\n';
+    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+      (void)mocktail::runtime::ShowFailureDialog(
+          environment, "Mocktail could not load its configuration.");
+    }
+    return EXIT_FAILURE;
+  }
+  if (runtime_config.config.vr_enabled() &&
+      !mocktail::vr::IsOpenXrSupportCompiled()) {
+    std::cerr << "  [vr] This build does not include OpenXR support, but "
+                 "vr.enabled is set; disable it in " << paths.config_file()
+              << ".\n";
+    return EXIT_FAILURE;
   }
   if (runtime_config.config.use_system_proxy()) {
     const mocktail::runtime::SystemProxyResult system_proxy =

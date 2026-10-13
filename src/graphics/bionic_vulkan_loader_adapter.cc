@@ -317,8 +317,19 @@ Function ResolveProcessFunction(const char* name) {
   return reinterpret_cast<Function>(dlsym(RTLD_DEFAULT, name));
 }
 
-// Queue calls share the gate; device idle is exclusive.
-// Release it before fence waits and backend callbacks.
+// The guest synchronizes its own queue use. An armed OpenXR backend adds
+// another user of the same queue (eye copies, and the runtime inside
+// xrEndFrame), so only then must every queue call be serialized: queue calls
+// share a per-device gate and a per-queue mutex, and device idle takes the
+// gate exclusively. Without VR (or in a build without it) nothing is locked.
+// Set by mocktail_vulkan_enable_queue_sharing() when the VR backend arms;
+// never cleared, since the runtime may use the queue until the process ends.
+std::atomic<bool> g_queue_sharing{false};
+
+bool QueueSharingActive() {
+  return g_queue_sharing.load(std::memory_order_acquire);
+}
+
 std::shared_ptr<std::shared_mutex> DeviceIdleGate(VkDevice device) {
   static std::mutex registry_mutex;
   static std::unordered_map<VkDevice, std::shared_ptr<std::shared_mutex>>
@@ -338,6 +349,41 @@ std::shared_ptr<std::mutex> QueueCallMutex(VkQueue queue) {
     mutex = std::make_shared<std::mutex>();
   return mutex;
 }
+
+// Held for one queue call while VR shares the queue; a no-op otherwise.
+// Release it before fence waits and backend callbacks.
+class QueueCallGuard {
+public:
+  QueueCallGuard(VkDevice device, VkQueue queue) {
+    if (!QueueSharingActive())
+      return;
+    gate_ = DeviceIdleGate(device);
+    gate_lock_ = std::shared_lock<std::shared_mutex>(*gate_);
+    mutex_ = QueueCallMutex(queue);
+    lock_ = std::unique_lock<std::mutex>(*mutex_);
+  }
+
+private:
+  std::shared_ptr<std::shared_mutex> gate_;
+  std::shared_lock<std::shared_mutex> gate_lock_;
+  std::shared_ptr<std::mutex> mutex_;
+  std::unique_lock<std::mutex> lock_;
+};
+
+// Exclusive device idle while VR shares the queue; a no-op otherwise.
+class DeviceIdleGuard {
+public:
+  explicit DeviceIdleGuard(VkDevice device) {
+    if (!QueueSharingActive())
+      return;
+    gate_ = DeviceIdleGate(device);
+    lock_ = std::unique_lock<std::shared_mutex>(*gate_);
+  }
+
+private:
+  std::shared_ptr<std::shared_mutex> gate_;
+  std::unique_lock<std::shared_mutex> lock_;
+};
 
 void NoteVrSubmitted(VkQueue queue, uint32_t count,
                      const VkSubmitInfo *submits) {
@@ -658,38 +704,26 @@ VkResult VKAPI_CALL LockedHostSubmit2(VkQueue queue, uint32_t count,
                                       const VkSubmitInfo2 *submits,
                                       VkFence fence) {
   const auto raw = HostDispatchForQueue(queue).queue_submit2;
-  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
-  std::shared_lock<std::shared_mutex> device_gate(*gate);
-  const auto mutex = QueueCallMutex(queue);
-  std::lock_guard<std::mutex> lock(*mutex);
+  const QueueCallGuard guard(HostDispatchForQueue(queue).device, queue);
   return raw(queue, count, submits, fence);
 }
 VkResult VKAPI_CALL LockedHostSubmit2KHR(VkQueue queue, uint32_t count,
                                          const VkSubmitInfo2 *submits,
                                          VkFence fence) {
   const auto raw = HostDispatchForQueue(queue).queue_submit2_khr;
-  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
-  std::shared_lock<std::shared_mutex> device_gate(*gate);
-  const auto mutex = QueueCallMutex(queue);
-  std::lock_guard<std::mutex> lock(*mutex);
+  const QueueCallGuard guard(HostDispatchForQueue(queue).device, queue);
   return raw(queue, count, submits, fence);
 }
 VkResult VKAPI_CALL LockedHostBindSparse(VkQueue queue, uint32_t count,
                                          const VkBindSparseInfo *binds,
                                          VkFence fence) {
   const auto raw = HostDispatchForQueue(queue).queue_bind_sparse;
-  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
-  std::shared_lock<std::shared_mutex> device_gate(*gate);
-  const auto mutex = QueueCallMutex(queue);
-  std::lock_guard<std::mutex> lock(*mutex);
+  const QueueCallGuard guard(HostDispatchForQueue(queue).device, queue);
   return raw(queue, count, binds, fence);
 }
 VkResult VKAPI_CALL LockedHostQueueWaitIdle(VkQueue queue) {
   const auto raw = HostDispatchForQueue(queue).queue_wait_idle;
-  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
-  std::shared_lock<std::shared_mutex> device_gate(*gate);
-  const auto mutex = QueueCallMutex(queue);
-  std::lock_guard<std::mutex> lock(*mutex);
+  const QueueCallGuard guard(HostDispatchForQueue(queue).device, queue);
   return raw(queue);
 }
 
@@ -1457,10 +1491,7 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t present_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult result = [&] {
-    const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
-    std::shared_lock<std::shared_mutex> device_gate(*gate);
-    const auto mutex = QueueCallMutex(queue);
-    std::lock_guard<std::mutex> lock(*mutex);
+    const QueueCallGuard guard(HostDispatchForQueue(queue).device, queue);
     mocktail::graphics::TraceScope scope(
         mocktail::graphics::ActiveProfileTrace(), "host present", "present");
     return host_present(queue, present_info);
@@ -3472,15 +3503,18 @@ VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2KHR(
   ForwardVrBarrier2(command, info, "vkCmdPipelineBarrier2KHR");
 }
 
+// Called once by the VR backend when it arms, before Roblox creates its
+// device: from then on queue calls are serialized (see QueueCallGuard).
+void mocktail_vulkan_enable_queue_sharing() {
+  g_queue_sharing.store(true, std::memory_order_release);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL mocktail_vulkan_submit_synchronized(
     PFN_vkQueueSubmit raw, VkDevice device, VkQueue queue, uint32_t count,
     const VkSubmitInfo *submits, VkFence fence) {
   if (!raw)
     return VK_ERROR_INITIALIZATION_FAILED;
-  const auto gate = DeviceIdleGate(device);
-  std::shared_lock<std::shared_mutex> device_gate(*gate);
-  const auto mutex = QueueCallMutex(queue);
-  std::lock_guard<std::mutex> lock(*mutex);
+  const QueueCallGuard guard(device, queue);
   return raw(queue, count, submits, fence);
 }
 
@@ -3488,8 +3522,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 mocktail_vulkan_idle_synchronized(PFN_vkDeviceWaitIdle raw, VkDevice device) {
   if (!raw)
     return VK_ERROR_INITIALIZATION_FAILED;
-  const auto gate = DeviceIdleGate(device);
-  std::unique_lock<std::shared_mutex> device_gate(*gate);
+  const DeviceIdleGuard guard(device);
   return raw(device);
 }
 

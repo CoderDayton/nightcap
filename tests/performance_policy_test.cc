@@ -358,9 +358,15 @@ TEST(PerformancePolicyTest,
   EXPECT_EQ(json["FFlagSlowDownRendering"], "False");
   EXPECT_EQ(json["FFlagFixVRAvatarPlacement"], "True");
   EXPECT_EQ(json["FIntUnrelated"], "42");
-  ASSERT_TRUE(MergeVrClientSettingsOverrides(false, merged, &merged, &error));
-  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugEnableVREmulator"],
-            "False");
+  // Without VR the user's own value is kept, and nothing is added.
+  std::string kept;
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(
+      false, R"({"FFlagDebugEnableVREmulator":"True","FIntUnrelated":"42"})",
+      &kept, &error));
+  EXPECT_EQ(nlohmann::json::parse(kept)["FFlagDebugEnableVREmulator"], "True");
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(false, "{}", &kept, &error));
+  EXPECT_FALSE(nlohmann::json::parse(kept).contains(
+      "FFlagDebugEnableVREmulator"));
   EXPECT_FALSE(MergeVrClientSettingsOverrides(true, "[]", &merged, &error));
   EXPECT_FALSE(MergeVrClientSettingsOverrides(true, "bad", &merged, &error));
 }

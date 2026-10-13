@@ -31,6 +31,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// Defined by the Vulkan adapter (bionic_vulkan_loader_adapter.cc).
+extern "C" __attribute__((weak)) void mocktail_vulkan_enable_queue_sharing();
+
 namespace mocktail::vr {
 namespace {
 
@@ -479,6 +482,13 @@ Status OpenXrBackend::Arm(VrGraphicsApi graphics_api) {
       throw std::runtime_error(err);
     }
     armed_.store(true, std::memory_order_release);
+    // From here the runtime and the eye copies share the guest's queue, so
+    // the Vulkan adapter must serialize queue calls. Armed before Roblox
+    // creates its device, so no queue call ever started unlocked. Weak: the
+    // adapter is absent from VR-only test binaries.
+    if (mocktail_vulkan_enable_queue_sharing != nullptr) {
+      mocktail_vulkan_enable_queue_sharing();
+    }
     Log("  [vr-backend] armed: OpenXR instance/system ready; awaiting guest "
         "%s\n",
         graphics_api_ == VrGraphicsApi::kVulkan ? "Vulkan device"
