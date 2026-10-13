@@ -192,6 +192,7 @@ void RefreshRow(Row* row, bool keep_edit) {
       RefreshDeviceRow(row, value);
       break;
     case SettingKind::kEditor:
+    case SettingKind::kFolder:
       break;
   }
 }
@@ -482,6 +483,30 @@ void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
   gtk_widget_grab_focus(view);
 }
 
+void OnFolderOpened(GObject* source, GAsyncResult* result,
+                    gpointer user_data) {
+  GError* error = nullptr;
+  if (gtk_file_launcher_open_containing_folder_finish(
+          GTK_FILE_LAUNCHER(source), result, &error)) {
+    return;
+  }
+  if (!g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED)) {
+    ShowError(static_cast<SettingsWindow*>(user_data), error->message);
+  }
+  g_error_free(error);
+}
+
+// Shows config.yaml in the file manager.
+void OnFolderActivated(AdwActionRow*, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  GFile* file = g_file_new_for_path(window->document.config_file().c_str());
+  GtkFileLauncher* launcher = gtk_file_launcher_new(file);
+  gtk_file_launcher_open_containing_folder(
+      launcher, GTK_WINDOW(window->widget), nullptr, OnFolderOpened, window);
+  g_object_unref(launcher);
+  g_object_unref(file);
+}
+
 void SetRowText(GtkWidget* widget, std::string_view title,
                 std::string_view subtitle) {
   adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(widget), FALSE);
@@ -552,6 +577,15 @@ void AddRow(SettingsWindow* window, AdwPreferencesGroup* group,
       gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row.widget), TRUE);
       g_signal_connect(row.widget, "activated",
                        G_CALLBACK(OnFFlagsActivated), window);
+      break;
+    case SettingKind::kFolder:
+      row.widget = adw_action_row_new();
+      adw_action_row_add_suffix(
+          ADW_ACTION_ROW(row.widget),
+          gtk_image_new_from_icon_name("folder-open-symbolic"));
+      gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row.widget), TRUE);
+      g_signal_connect(row.widget, "activated",
+                       G_CALLBACK(OnFolderActivated), window);
       break;
   }
   SetRowText(row.widget, setting.title, setting.subtitle);

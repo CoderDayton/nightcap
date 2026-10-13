@@ -117,6 +117,14 @@ TEST_F(SettingsModelTest, PagesOfOneSectionAreNextToEachOther) {
   }
 }
 
+TEST_F(SettingsModelTest, TheAdvancedPageOpensTheConfigFolder) {
+  const SettingsPage& advanced = SettingsPages().back();
+  ASSERT_EQ(advanced.name, "advanced");
+  const Setting& folder = Find("config_folder");
+  EXPECT_EQ(folder.kind, SettingKind::kFolder);
+  EXPECT_EQ(&advanced.groups.back().settings.back(), &folder);
+}
+
 TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
   SettingsDocument document(file_);
   std::string error;

@@ -27,6 +27,8 @@ enum class SettingKind {
   kDevice,
   // A row that opens the editor for fflags.json.
   kEditor,
+  // A row that opens the folder config.yaml is in.
+  kFolder,
 };
 
 struct SettingChoice {

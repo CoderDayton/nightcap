@@ -497,6 +497,16 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "",
                  {}},
             }},
+           {"Files",
+            {
+                {"config_folder",
+                 "Open config folder",
+                 "Where config.yaml and fflags.json are kept.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
+                 {}},
+            }},
        }},
   };
   return pages;
