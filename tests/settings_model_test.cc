@@ -332,6 +332,23 @@ TEST_F(SettingsModelTest, AChangeThatIsNotSavedLeavesNothingToUndo) {
   EXPECT_FALSE(document.CanUndo());
 }
 
+TEST_F(SettingsModelTest, OnlyAChangeThatReachesTheFileCountsAsSaved) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.saved_changes(), 0u);
+
+  // The value the file already holds.
+  ASSERT_TRUE(document.Set("input.raw_mouse", "false", &error)) << error;
+  EXPECT_EQ(document.saved_changes(), 0u);
+
+  ASSERT_TRUE(document.Set("input.raw_mouse", "true", &error)) << error;
+  EXPECT_EQ(document.saved_changes(), 1u);
+
+  EXPECT_FALSE(document.Set("graphics.backend", "directx", &error));
+  EXPECT_EQ(document.saved_changes(), 1u);
+}
+
 TEST_F(SettingsModelTest, UndoLeavesAHandEditMadeMeanwhileAlone) {
   SettingsDocument document(file_);
   std::string error;

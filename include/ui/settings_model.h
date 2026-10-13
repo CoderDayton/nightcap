@@ -147,6 +147,10 @@ class SettingsDocument {
   // file edited by hand since then is left alone, and that is an error.
   bool Undo(std::string* error);
 
+  // How many times this document has changed the file. Setting a value the
+  // file already holds does not count.
+  std::size_t saved_changes() const { return saved_changes_; }
+
   const std::filesystem::path& config_file() const { return config_file_; }
 
  private:
@@ -155,6 +159,7 @@ class SettingsDocument {
   std::filesystem::path config_file_;
   std::string text_;
   std::optional<std::string> undo_;
+  std::size_t saved_changes_ = 0;
 };
 
 // A place in a text. Both numbers start at 1, and the column counts

@@ -215,12 +215,14 @@ void ShowError(SettingsWindow* window, const std::string& error) {
 }
 
 // Shows how saving `row` went, then shows every row as the file now has it.
-void ShowSaved(Row* row, bool saved, const std::string& error) {
+// `before` is the document's count of saved changes from before the save.
+void ShowSaved(Row* row, std::size_t before, bool saved,
+               const std::string& error) {
   SettingsWindow* window = row->window;
-  if (saved) {
-    gtk_revealer_set_reveal_child(window->notice, TRUE);
-  } else {
+  if (!saved) {
     ShowError(window, error);
+  } else if (window->document.saved_changes() != before) {
+    gtk_revealer_set_reveal_child(window->notice, TRUE);
   }
   gtk_widget_set_visible(window->undo, window->document.CanUndo());
   // On failure the rows go back to what the file holds. A text that was
@@ -234,8 +236,9 @@ void Apply(Row* row, const std::string& value) {
     return;
   }
   std::string error;
+  const std::size_t before = window->document.saved_changes();
   const bool saved = window->document.Set(row->setting->key, value, &error);
-  ShowSaved(row, saved, error);
+  ShowSaved(row, before, saved, error);
 }
 
 void OnUndo(GtkButton*, gpointer user_data) {
@@ -258,9 +261,10 @@ void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
   SettingsWindow* window = row->window;
   std::string error;
+  const std::size_t before = window->document.saved_changes();
   const bool saved = window->document.SetText(
       row->setting->key, gtk_editable_get_text(GTK_EDITABLE(entry)), &error);
-  ShowSaved(row, saved, error);
+  ShowSaved(row, before, saved, error);
 }
 
 void OnTextReset(GtkButton*, gpointer user_data) {

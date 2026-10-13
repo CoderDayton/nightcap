@@ -708,6 +708,7 @@ bool SettingsDocument::Save(std::string edited, std::string edit_error,
   }
   undo_ = std::move(text_);
   text_ = std::move(edited);
+  ++saved_changes_;
   return true;
 }
 
