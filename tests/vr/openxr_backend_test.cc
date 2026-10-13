@@ -327,6 +327,12 @@ TEST_F(OpenXrPresentDependencies, SubmitFailureDoesNotWaitForUnsignalledFence) {
   EXPECT_EQ(submits, 1);
   EXPECT_EQ(waits, 0);
 }
+TEST_F(OpenXrPresentDependencies, FailedSubmitLeavesThePresentToTheGuest) {
+  submit_result = VK_ERROR_OUT_OF_HOST_MEMORY;
+  EXPECT_EQ(Run(), VK_NOT_READY);
+  EXPECT_EQ(submits, 1);
+  EXPECT_EQ(waits, 0);
+}
 TEST_F(OpenXrPresentDependencies,
        ConsumedWaitsNeverAuthorizeFallbackOnTimeout) {
   wait_result = VK_TIMEOUT;

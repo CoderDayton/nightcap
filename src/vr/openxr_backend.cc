@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <thread>
 #include <vector>
 
 #ifndef M_PI
@@ -634,11 +635,26 @@ bool OpenXrBackend::CreateVulkanDevice(VkPhysicalDevice physical_device,
                                 &device_get_info, &runtime_device),
             "xrGetVulkanGraphicsDevice2KHR");
     if (runtime_device != physical_device) {
-      *device = VK_NULL_HANDLE;
-      *result = VK_ERROR_INCOMPATIBLE_DRIVER;
-      Log("  [vr-backend] refusing a guest GPU different from the OpenXR "
-          "GPU\n");
-      return true;
+      // The runtime can only share images on its own GPU. Using it for
+      // Roblox is not possible here (Roblox already chose its device, queue
+      // families and memory types), so let the plain loader create Roblox's
+      // device and keep playing without headset output.
+      const auto properties_of =
+          reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+              loader_gipa(vk_instance_, "vkGetPhysicalDeviceProperties"));
+      VkPhysicalDeviceProperties guest_gpu{}, runtime_gpu{};
+      if (properties_of != nullptr) {
+        properties_of(physical_device, &guest_gpu);
+        if (runtime_device != VK_NULL_HANDLE)
+          properties_of(runtime_device, &runtime_gpu);
+      }
+      Log("  [vr-backend] XR OUTPUT UNAVAILABLE: Roblox renders on '%s' but "
+          "the OpenXR runtime uses '%s'. Continuing without headset output; "
+          "select the runtime's GPU for Roblox (e.g. DRI_PRIME or "
+          "MESA_VK_DEVICE_SELECT) to use VR.\n",
+          guest_gpu.deviceName[0] ? guest_gpu.deviceName : "unknown GPU",
+          runtime_gpu.deviceName[0] ? runtime_gpu.deviceName : "unknown GPU");
+      return false;
     }
 
     auto xr_create = reinterpret_cast<PFN_xrCreateVulkanDeviceKHR>(
@@ -835,7 +851,8 @@ Status OpenXrBackend::AttachGlesContext(void *display, void *config,
                                         void *context, void *egl_get_proc,
                                         void *(*resolve)(const char *)) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!armed_ || graphics_api_ != VrGraphicsApi::kOpenGles)
+  if (!armed_ || graphics_api_ != VrGraphicsApi::kOpenGles ||
+      gles_attach_failed_)
     return Status::Ok();
   try {
     if (gles_) {
@@ -865,6 +882,8 @@ Status OpenXrBackend::AttachGlesContext(void *display, void *config,
       gles_->Destroy();
     delete gles_;
     gles_ = nullptr;
+    // Every later MakeCurrent would retry the same failing bind; stay inert.
+    gles_attach_failed_ = true;
     return Status::Error(StatusCode::kUnavailable, error.what());
   }
 }
@@ -1794,8 +1813,10 @@ void OpenXrBackend::PollSessionEvents() {
       break;
     }
     if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
-      Log("  [vr-backend] OpenXR instance loss pending; XR output stopped\n");
-      TeardownSessionLocked("instance loss pending");
+      Log("  [vr-backend] OpenXR instance loss pending; recreating it once "
+          "the runtime is back\n");
+      xr_instance_stale_ = true;
+      TeardownSessionLocked("instance loss pending", true);
       return;
     }
     if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
@@ -1953,19 +1974,38 @@ bool OpenXrBackend::RecoverSessionLocked(std::uint64_t now_ns) {
       (graphics_api_ == VrGraphicsApi::kVulkan
            ? (vk_device_ == VK_NULL_HANDLE || vk_ == nullptr)
            : gles_ == nullptr) ||
-      xr_instance_ == nullptr || now_ns < next_session_retry_ns_)
+      now_ns < next_session_retry_ns_)
     return false;
-  next_session_retry_ns_ = now_ns + 1'000'000'000ULL;
+  // Back off 1, 2, 4 then 8 s so a runtime that stays down costs nothing.
+  const std::uint32_t shift = std::min<std::uint32_t>(session_recovery_failures_, 3);
+  next_session_retry_ns_ = now_ns + (1'000'000'000ULL << shift);
   std::string error;
+  // A restarted runtime (SteamVR, WiVRn) invalidates the old XrInstance; a
+  // session can never be created on it again. Recreate the instance when the
+  // runtime said so, or when recovery keeps failing on the current one.
+  if (xr_instance_stale_ || session_recovery_failures_ >= 3 ||
+      xr_instance_ == nullptr) {
+    DestroyXrInstanceLocked();
+    if (!EnsureXrInstanceLocked(&error)) {
+      ++session_recovery_failures_;
+      Log("  [vr-backend] waiting for the OpenXR runtime: %s\n",
+          error.c_str());
+      return false;
+    }
+    xr_instance_stale_ = false;
+    Log("  [vr-backend] OpenXR instance recreated for session recovery\n");
+  }
   // nullptr means reuse the verified queue family of this existing VkDevice.
   if (!(graphics_api_ == VrGraphicsApi::kVulkan
             ? InitializeSessionLocked(vk_physical_device_, vk_device_, nullptr,
                                       &error)
             : InitializeGlesSessionLocked(&error))) {
+    ++session_recovery_failures_;
     Log("  [vr-backend] waiting to restore XR session: %s\n", error.c_str());
     return false;
   }
   session_recovery_pending_ = false;
+  session_recovery_failures_ = 0;
   Log("  [vr-backend] XR session recreated on the existing guest device; "
       "awaiting READY\n");
   return true;
@@ -1988,12 +2028,15 @@ VkResult internal::WaitForPresentDependencies(VkDevice device, VkQueue queue,
   info.waitSemaphoreCount = present.waitSemaphoreCount;
   info.pWaitSemaphores = present.pWaitSemaphores;
   info.pWaitDstStageMask = stages.data();
+  // Before the submit succeeds nothing is consumed (a failed vkQueueSubmit
+  // leaves its semaphores unaffected), so the guest's own present can still
+  // wait on them: VK_NOT_READY. Device loss stays an error either way.
   VkResult result = reset(device, 1, &fence);
   if (result != VK_SUCCESS)
-    return result;
+    return result == VK_ERROR_DEVICE_LOST ? result : VK_NOT_READY;
   result = SubmitHostQueue(submit, device, queue, 1, &info, fence);
   if (result != VK_SUCCESS)
-    return result;
+    return result == VK_ERROR_DEVICE_LOST ? result : VK_NOT_READY;
   // The completed fence permits presentation without repeating these waits.
   result = wait(device, 1, &fence, VK_TRUE, UINT64_MAX);
   // A consumed binary semaphore cannot be retried after a timeout.
@@ -2044,9 +2087,14 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
     return VK_SUCCESS;
   std::string error;
   if (!EnsureCopyResources(device, vk_queue_family_, &error)) {
-    Log("  [vr-backend] cannot synchronize present dependencies: %s\n",
-        error.c_str());
-    return VK_ERROR_INITIALIZATION_FAILED;
+    // Nothing consumed yet: present normally and skip VR for this frame.
+    if (!present_sync_failure_logged_) {
+      present_sync_failure_logged_ = true;
+      Log("  [vr-backend] cannot synchronize present dependencies: %s; "
+          "presenting without XR this frame\n",
+          error.c_str());
+    }
+    return VK_NOT_READY;
   }
   return internal::WaitForPresentDependencies(
       device, GraphicsQueueForPresentLocked(queue), *info, copy_fence_,
@@ -2054,21 +2102,38 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
 }
 
 void OpenXrBackend::NoteHostPresent(VkQueue queue, VkDevice device) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  bool idle = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    idle = NoteHostPresentLocked(queue, device);
+  }
+  if (idle) {
+    // No running XR session (headset off or idle, session not READY, or
+    // recovering): nothing paces the guest, and with VR the desktop present
+    // is unthrottled. Cap it at 60 Hz, outside the backend lock.
+    constexpr auto kIdleFrame = std::chrono::nanoseconds(16'666'667);
+    static thread_local auto next = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (next > now) std::this_thread::sleep_until(next);
+    next = std::max(next, now) + kIdleFrame;
+  }
+}
+
+bool OpenXrBackend::NoteHostPresentLocked(VkQueue queue, VkDevice device) {
   if (!armed_.load(std::memory_order_acquire) || device != vk_device_) {
-    return;
+    return false;
   }
   if (graphics_api_ == VrGraphicsApi::kVulkan &&
       !SupportsPresentQueueLocked(queue))
-    return;
+    return false;
   if (graphics_api_ == VrGraphicsApi::kVulkan)
     queue = GraphicsQueueForPresentLocked(queue);
   try {
     if (xr_session_ == nullptr && !RecoverSessionLocked(perf::NowNs()))
-      return;
+      return true;
     PollSessionEvents();
     if (!session_running_.load(std::memory_order_acquire)) {
-      return;
+      return true;
     }
     perf::ProcessCollector().Count(perf::Counter::kPresents);
     RunFrameCycle(queue, device);
@@ -2085,23 +2150,26 @@ void OpenXrBackend::NoteHostPresent(VkQueue queue, VkDevice device) {
       HandleSessionState(XR_SESSION_STATE_LOSS_PENDING);
     }
     perf::ProcessCollector().EmitIfDue(perf::NowNs(), "xr-frame-cycle");
+    return false;
   } catch (const XrCallError &error) {
-    if (error.result == XR_ERROR_SESSION_LOST) {
-      Log("  [vr-backend] XR session lost; scheduling recovery on the existing "
-          "device\n");
-      TeardownSessionLocked("XR_ERROR_SESSION_LOST", true);
-    } else {
-      Log("  [vr-backend] XR frame failed: %s; restart the client if the "
-          "runtime instance was lost\n",
-          error.what());
-      TeardownSessionLocked("unrecoverable XR frame error");
+    // Every frame error is retried on the existing guest device with backoff;
+    // a lost or failed runtime additionally gets a fresh XrInstance.
+    if (error.result == XR_ERROR_INSTANCE_LOST ||
+        error.result == XR_ERROR_RUNTIME_FAILURE ||
+        error.result == XR_ERROR_RUNTIME_UNAVAILABLE) {
+      xr_instance_stale_ = true;
     }
-  } catch (const std::exception &error) {
-    Log("  [vr-backend] frame cycle failed: %s; XR output stopped, native "
-        "stereo continues\n",
+    Log("  [vr-backend] XR frame failed: %s; recovering the session\n",
         error.what());
-    TeardownSessionLocked("frame cycle failure");
+    TeardownSessionLocked("XR frame error", true);
+  } catch (const std::exception &error) {
+    // Includes the swapchain-image and copy-fence timeouts: transient stalls
+    // (a hitching compositor) must not end VR for the rest of the session.
+    Log("  [vr-backend] frame cycle failed: %s; recovering the session\n",
+        error.what());
+    TeardownSessionLocked("frame cycle failure", true);
   }
+  return true;
 }
 
 void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
@@ -3710,9 +3778,12 @@ extern "C" bool mocktail_vr_attach_egl(void *display, void *config,
   if (auto *backend = mocktail::vr::ActiveVrBackend()) {
     const auto status = backend->AttachGlesContext(display, config, context,
                                                    egl_get_proc, resolve);
+    // Headset output is optional: the game still runs on the desktop window.
     if (!status.ok())
-      std::fprintf(stderr, "  [vr-backend] %s\n", status.message().c_str());
-    return status.ok();
+      std::fprintf(stderr,
+                   "  [vr-backend] XR OUTPUT UNAVAILABLE: %s. Continuing "
+                   "without headset output.\n",
+                   status.message().c_str());
   }
   return true;
 }

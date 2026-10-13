@@ -22,7 +22,9 @@ namespace mocktail::vr {
 
 namespace internal {
 // Consume binary present dependencies exactly once. On success a later present
-// must omit them; on failure the caller must propagate the error, not retry.
+// must omit them. VK_NOT_READY means nothing was consumed and the guest's
+// present proceeds unchanged; any other failure consumed them (or lost the
+// device) and must be propagated, not retried.
 VkResult WaitForPresentDependencies(VkDevice device, VkQueue queue,
                                     const VkPresentInfoKHR& present,
                                     VkFence fence, PFN_vkResetFences reset,
@@ -302,6 +304,9 @@ class OpenXrBackend final {
   // image paired with a pose that no longer describes the same origin.
   void InvalidateInFlightPose(const char* reason);
   void RunFrameCycle(VkQueue queue, VkDevice device);
+  // Returns true when the backend owns this present but ran no XR frame, so
+  // the caller paces the guest itself.
+  bool NoteHostPresentLocked(VkQueue queue, VkDevice device);
   bool CreateSwapchains(std::string* error);
   void DestroySwapchains();
   bool EnsureCopyResources(VkDevice device, std::uint32_t queue_family,
@@ -424,6 +429,12 @@ class OpenXrBackend final {
   bool session_recovery_pending_ = false;
   bool test_session_loss_injected_ = false;
   std::uint64_t next_session_retry_ns_ = 0;
+  // Consecutive failed session recoveries, for backoff and for deciding when
+  // the XrInstance itself must be recreated (e.g. after a runtime restart).
+  std::uint32_t session_recovery_failures_ = 0;
+  bool xr_instance_stale_ = false;
+  bool present_sync_failure_logged_ = false;
+  bool gles_attach_failed_ = false;
   std::uint64_t frame_display_time_ = 0;
   // MOCKTAIL_VR_UNPACED benchmark mode: guest presents before this monotonic
   // time leave the open XR frame alone instead of blocking in xrWaitFrame.
