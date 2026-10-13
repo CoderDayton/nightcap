@@ -128,8 +128,8 @@
         "vtable_layout_version": 2,
         "vtable_rva": "0x6cd3ce0"
       },
-      "reason": "Exact-Build-ID host ABI promoted from the validated probation profile; native stereo, VR state/pointer/haptic contracts and FMOD output-device layout v2 were re-derived for 3092. Physical headset acceptance remains pending.",
-      "status": "supported",
+      "reason": "Exact-Build-ID host ABI promoted from the validated probation profile; native stereo, VR state/pointer/haptic contracts and FMOD output-device layout v2 were re-derived for 3092. Experimental: runs when selected explicitly (--roblox-lib) but is never an update target, so non-VR users stay on the default payload.",
+      "status": "experimental",
       "user_game_settings_fullscreen_setter_rva": "0x45c5f42",
       "version_code": 3092,
       "version_name": "2.738.1397",
