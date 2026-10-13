@@ -403,6 +403,8 @@ constexpr VrBuildContract kContracts[] = {
      0x3a8,
      0x73677a8,
      0x1d48b70,
+     0x118,
+     0x140,
      "2998 (2.736.1408)"},
     {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
      {0x6d08108, 0x37f9fe4, 0x37fa3c6, 0x37fa3b6, 0x37fa3e8, 0x73f4690,
@@ -413,6 +415,8 @@ constexpr VrBuildContract kContracts[] = {
      0x3a0,
      0x73f24c8,
      0x1d8f8c0,
+     0x118,
+     0x140,
      "3092 (2.738.1397)"},
 };
 
@@ -431,11 +435,26 @@ bool HasExpectedVrPointerContract(const std::uint8_t* code, std::size_t size,
       code[0x59] != 0xe8 || code[0x6d] != 0xff || code[0x6e] != 0x91) {
     return false;
   }
-  std::uint32_t camera_slot;
+  // movsxd rax,[rsi+selector] at +0x24; movss xmm0,[r14+HeadScale] at +0x13d.
+  static constexpr std::array<std::uint8_t, 3> kSelectorLoad = {0x48, 0x63,
+                                                                0x86};
+  static constexpr std::array<std::uint8_t, 5> kHeadScaleLoad = {
+      0xf3, 0x41, 0x0f, 0x10, 0x86};
+  if (std::memcmp(code + 0x24, kSelectorLoad.data(), kSelectorLoad.size()) !=
+          0 ||
+      std::memcmp(code + 0x13d, kHeadScaleLoad.data(),
+                  kHeadScaleLoad.size()) != 0) {
+    return false;
+  }
+  std::uint32_t camera_slot, selector, head_scale;
   std::memcpy(&camera_slot, code + 0x6f, sizeof(camera_slot));
+  std::memcpy(&selector, code + 0x27, sizeof(selector));
+  std::memcpy(&head_scale, code + 0x142, sizeof(head_scale));
   return RelativeTarget(code + 0x5a, contract.pointer_frame_rva + 0x5e) ==
              contract.workspace_getter_rva &&
-         camera_slot == contract.camera_vtable_offset;
+         camera_slot == contract.camera_vtable_offset &&
+         selector == contract.pointer_hand_selector_offset &&
+         head_scale == contract.camera_head_scale_offset;
 }
 
 EyeResourceState InspectEyeResources(const void *object) {
@@ -676,6 +695,24 @@ std::string DescribeSupportedVrBuilds() {
 
 namespace internal {
 
+int ReadPointerHandIndex(const void* service, const VrBuildContract& contract) {
+  int index = 0;
+  std::memcpy(&index,
+              static_cast<const unsigned char*>(service) +
+                  contract.pointer_hand_selector_offset,
+              sizeof(index));
+  return index;
+}
+
+float ReadCameraHeadScale(const void* camera, const VrBuildContract& contract) {
+  float scale = 0.f;
+  std::memcpy(&scale,
+              static_cast<const unsigned char*>(camera) +
+                  contract.camera_head_scale_offset,
+              sizeof(scale));
+  return scale;
+}
+
 float GetHandPitchOffsetDeg() {
   static const float offset = [] {
     if (const char* env = std::getenv("MOCKTAIL_VR_HAND_PITCH_OFFSET")) {
@@ -805,8 +842,7 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   if (!backend) return;
   const auto current = backend->PublishedHeadPose();
   if (!current.valid) return;
-  int index = 0;
-  std::memcpy(&index, static_cast<unsigned char*>(service) + 0x118, 4);
+  const int index = internal::ReadPointerHandIndex(service, *contract_);
   if (index != 1 && index != 2) return;
   if (!current.hands[index - 1].aim_valid) return;
   const auto& hand = native_pose.hands[index - 1];
@@ -821,9 +857,8 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   void* camera = reinterpret_cast<void* (*)(void*)>(
       vtable[contract_->camera_vtable_offset / sizeof(void*)])(workspace);
   if (!camera) return;
-  float scale = 0;
+  const float scale = internal::ReadCameraHeadScale(camera, *contract_);
   int degrees = 0;
-  std::memcpy(&scale, static_cast<unsigned char*>(camera) + 0x140, 4);
   std::memcpy(&degrees,
               reinterpret_cast<void*>(base + contract_->hand_pitch_storage_rva),
               4);

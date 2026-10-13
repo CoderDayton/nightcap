@@ -317,6 +317,15 @@ TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
                          "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"}) {
     const auto& contract = *internal::FindVrBuildContract(id);
     std::array<std::uint8_t, 0x1b2> code{};
+    // movsxd rax,[rsi+selector] and movss xmm0,[r14+HeadScale].
+    const std::uint8_t selector_load[] = {0x48, 0x63, 0x86};
+    std::memcpy(code.data() + 0x24, selector_load, sizeof(selector_load));
+    const std::uint32_t selector = contract.pointer_hand_selector_offset;
+    std::memcpy(code.data() + 0x27, &selector, sizeof(selector));
+    const std::uint8_t scale_load[] = {0xf3, 0x41, 0x0f, 0x10, 0x86};
+    std::memcpy(code.data() + 0x13d, scale_load, sizeof(scale_load));
+    const std::uint32_t head_scale = contract.camera_head_scale_offset;
+    std::memcpy(code.data() + 0x142, &head_scale, sizeof(head_scale));
     const std::uint8_t prologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41,
                                      0x57, 0x41, 0x56, 0x41, 0x54,
                                      0x53, 0x48, 0x83, 0xec, 0x70};
@@ -336,6 +345,14 @@ TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
     EXPECT_FALSE(internal::HasExpectedVrPointerContract(code.data(),
                                                         code.size(), contract));
     code[0x6f] ^= 8;
+    code[0x27] ^= 0x10;
+    EXPECT_FALSE(internal::HasExpectedVrPointerContract(code.data(),
+                                                        code.size(), contract));
+    code[0x27] ^= 0x10;
+    code[0x142] ^= 0x10;
+    EXPECT_FALSE(internal::HasExpectedVrPointerContract(code.data(),
+                                                        code.size(), contract));
+    code[0x142] ^= 0x10;
     code[0x5a] ^= 1;
     EXPECT_FALSE(internal::HasExpectedVrPointerContract(code.data(),
                                                         code.size(), contract));
@@ -936,6 +953,39 @@ TEST(VrHandOrientation, GripSourceKeepsTheGripRotation) {
                          Pitch(20.f + internal::GetHandPitchOffsetDeg())),
       1e-4f));
   unsetenv("MOCKTAIL_VR_HAND_POSE_SOURCE");
+}
+
+}  // namespace
+}  // namespace mocktail::vr
+
+namespace mocktail::vr {
+namespace {
+
+TEST(VrPointerLayout, ReadsHandIndexAndHeadScaleAtTheBuildsOwnOffsets) {
+  // Roblox moves these fields between builds; a fixed offset reads garbage.
+  internal::VrBuildContract contract{};
+  contract.pointer_hand_selector_offset = 0x108;
+  contract.camera_head_scale_offset = 0x130;
+  std::array<unsigned char, 0x200> service{}, camera{};
+  const int hand = 2, stale_hand = 7;
+  const float scale = 1.5f, stale_scale = 9.f;
+  std::memcpy(service.data() + 0x108, &hand, 4);
+  std::memcpy(service.data() + 0x118, &stale_hand, 4);
+  std::memcpy(camera.data() + 0x130, &scale, 4);
+  std::memcpy(camera.data() + 0x140, &stale_scale, 4);
+  EXPECT_EQ(internal::ReadPointerHandIndex(service.data(), contract), 2);
+  EXPECT_FLOAT_EQ(internal::ReadCameraHeadScale(camera.data(), contract),
+                  1.5f);
+}
+
+TEST(VrPointerLayout, VerifiedBuildsKeepTheirOffsets) {
+  for (const char* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
+                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"}) {
+    const auto* contract = internal::FindVrBuildContract(id);
+    ASSERT_NE(contract, nullptr);
+    EXPECT_EQ(contract->pointer_hand_selector_offset, 0x118u) << id;
+    EXPECT_EQ(contract->camera_head_scale_offset, 0x140u) << id;
+  }
 }
 
 }  // namespace

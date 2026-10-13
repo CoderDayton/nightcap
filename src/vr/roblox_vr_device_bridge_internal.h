@@ -20,11 +20,19 @@ struct VrBuildContract {
   std::uintptr_t camera_vtable_offset;
   std::uintptr_t hand_pitch_storage_rva;
   std::uintptr_t haptic_sink_rva;
+  // Field offsets the pointer hook reads: the hand index in the pointer
+  // service and HeadScale in the workspace camera.
+  std::uintptr_t pointer_hand_selector_offset;
+  std::uintptr_t camera_head_scale_offset;
   // Roblox version code and name, for messages that list supported builds.
   std::string_view version;
 };
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id);
+
+// The hand the pointer service asks about: 1 left, 2 right.
+int ReadPointerHandIndex(const void* service, const VrBuildContract& contract);
+float ReadCameraHeadScale(const void* camera, const VrBuildContract& contract);
 
 // Computes the record orientation for a hand pose: the aim pose (or, with
 // MOCKTAIL_VR_HAND_POSE_SOURCE=grip, the grip pose) pitched by the engine's
