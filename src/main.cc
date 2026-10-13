@@ -815,12 +815,29 @@ int main(int argc, char* argv[]) {
         compatibility.profile.vr_debug_device_bridge = *vr_profile;
       }
     }
-    vr_active = runtime_config.config.vr_enabled() &&
-        (vr_requested ||
-         compatibility.profile.vr_debug_device_bridge.has_value());
+    const bool vr_build_supported =
+        compatibility.profile.vr_debug_device_bridge.has_value();
+    if (runtime_config.config.vr_enabled() && vr_requested &&
+        !vr_build_supported) {
+      // An explicit --vr on a build without VR support is a user error, not
+      // something to silently ignore; say which builds work and how to pick.
+      std::cerr << "[FATAL] VR is not available for Roblox "
+                << compatibility.profile.version_name << " (version "
+                << compatibility.profile.version_code << ", Build ID "
+                << compatibility.build_id << ").\n"
+                << "  VR supports builds "
+                << mocktail::vr::DescribeSupportedVrBuilds()
+                << ". Point --roblox-lib at one of those payloads'\n"
+                << "  libroblox.so, or launch without --vr.\n";
+      return EXIT_FAILURE;
+    }
+    vr_active = runtime_config.config.vr_enabled() && vr_build_supported;
     if (runtime_config.config.vr_enabled() && !vr_active) {
-      std::cerr << "  [vr] DebugDeviceVR bridge is not profiled for Build ID "
-                << compatibility.build_id << "; continuing without VR\n";
+      std::cerr << "  [vr] Roblox " << compatibility.profile.version_name
+                << " (Build ID " << compatibility.build_id
+                << ") has no VR support (supported: "
+                << mocktail::vr::DescribeSupportedVrBuilds()
+                << "); continuing without VR\n";
       if (setenv("MOCKTAIL_VR_ENABLED", "0", 1) != 0) {
         std::cerr << "[FATAL] Cannot disable VR for this Roblox build\n";
         return EXIT_FAILURE;

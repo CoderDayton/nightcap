@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <string_view>
 
 #include "compat/build_profile.h"
@@ -17,6 +18,10 @@ struct VrBuildContract;
 
 const compat::VrDebugDeviceBridgeProfile* FindRobloxVrDeviceProfile(
     std::string_view build_id);
+
+// Human-readable list of the Roblox builds VR supports, e.g.
+// "2998 (2.736.1408) and 3092 (2.738.1397)", for error messages.
+std::string DescribeSupportedVrBuilds();
 
 // Experimental native stereo bring-up for the exact Build-ID-scoped
 // RBX::Graphics::DebugDeviceVR object of the guest client.

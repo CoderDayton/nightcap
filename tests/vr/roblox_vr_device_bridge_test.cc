@@ -864,3 +864,27 @@ TEST(VrAimPointer, InvalidAimOrScaleKeepsOriginalFrame) {
   EXPECT_EQ(frame, original);
 }
 }
+
+namespace mocktail::vr {
+namespace {
+
+TEST(VrSupportedBuilds, NamesEveryVerifiedBuild) {
+  EXPECT_EQ(DescribeSupportedVrBuilds(),
+            "2998 (2.736.1408) and 3092 (2.738.1397)");
+}
+
+TEST(VrSupportedBuilds, InstallNamesTheBuildAndTheSupportedOnes) {
+  compat::BuildProfile profile;
+  profile.elf_build_id = "a67a91ef96c700c0730acd36a250c2f93cfafbc1";  // 3222
+  profile.vr_debug_device_bridge = *FindRobloxVrDeviceProfile(
+      "ade08266c67aee88ec9c1d00902150e1684dad3a");
+  RobloxVrDeviceBridge bridge;
+  const Status status = bridge.Install(profile);
+  ASSERT_FALSE(status.ok());
+  EXPECT_NE(status.message().find(profile.elf_build_id), std::string::npos);
+  EXPECT_NE(status.message().find(DescribeSupportedVrBuilds()),
+            std::string::npos);
+}
+
+}  // namespace
+}  // namespace mocktail::vr

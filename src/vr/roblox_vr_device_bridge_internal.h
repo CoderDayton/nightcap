@@ -20,6 +20,8 @@ struct VrBuildContract {
   std::uintptr_t camera_vtable_offset;
   std::uintptr_t hand_pitch_storage_rva;
   std::uintptr_t haptic_sink_rva;
+  // Roblox version code and name, for messages that list supported builds.
+  std::string_view version;
 };
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id);

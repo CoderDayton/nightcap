@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <iterator>
 #include <string>
 
 #include "vr/roblox_vr_device_bridge_internal.h"
@@ -377,27 +378,30 @@ void RestoreIsVrAppBuildHook() {
 
 namespace internal {
 
+constexpr VrBuildContract kContracts[] = {
+    {"ade08266c67aee88ec9c1d00902150e1684dad3a",
+     {0x6c87b38, 0x3810614, 0x38109f6, 0x38109e6, 0x3810a18, 0x7369920,
+      0x180},
+     0x6b7bfe0,
+     0x4d573ee,
+     0x263778c,
+     0x3a8,
+     0x73677a8,
+     0x1d48b70,
+     "2998 (2.736.1408)"},
+    {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
+     {0x6d08108, 0x37f9fe4, 0x37fa3c6, 0x37fa3b6, 0x37fa3e8, 0x73f4690,
+      0x188},
+     0x6bfb180,
+     0x4d97b98,
+     0x265cebc,
+     0x3a0,
+     0x73f24c8,
+     0x1d8f8c0,
+     "3092 (2.738.1397)"},
+};
+
 const VrBuildContract* FindVrBuildContract(std::string_view build_id) {
-  static constexpr VrBuildContract kContracts[] = {
-      {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-       {0x6c87b38, 0x3810614, 0x38109f6, 0x38109e6, 0x3810a18, 0x7369920,
-        0x180},
-       0x6b7bfe0,
-       0x4d573ee,
-       0x263778c,
-       0x3a8,
-       0x73677a8,
-       0x1d48b70},
-      {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
-       {0x6d08108, 0x37f9fe4, 0x37fa3c6, 0x37fa3b6, 0x37fa3e8, 0x73f4690,
-        0x188},
-       0x6bfb180,
-       0x4d97b98,
-       0x265cebc,
-       0x3a0,
-       0x73f24c8,
-       0x1d8f8c0},
-  };
   for (const auto& contract : kContracts) {
     if (contract.build_id == build_id) return &contract;
   }
@@ -638,6 +642,16 @@ const compat::VrDebugDeviceBridgeProfile* FindRobloxVrDeviceProfile(
   return contract == nullptr ? nullptr : &contract->device;
 }
 
+std::string DescribeSupportedVrBuilds() {
+  std::string description;
+  const std::size_t count = std::size(internal::kContracts);
+  for (std::size_t index = 0; index < count; ++index) {
+    if (index > 0) description += index + 1 == count ? " and " : ", ";
+    description += internal::kContracts[index].version;
+  }
+  return description;
+}
+
 namespace internal {
 
 float GetHandPitchOffsetDeg() {
@@ -823,8 +837,9 @@ Status RobloxVrDeviceBridge::Install(const compat::BuildProfile &profile) {
   }
   const auto* contract = internal::FindVrBuildContract(profile.elf_build_id);
   if (contract == nullptr) {
-    return FailedPrecondition(
-        "VR contracts are not verified for this Build ID");
+    return FailedPrecondition("VR is not verified for Roblox Build ID " +
+                              profile.elf_build_id + "; VR supports builds " +
+                              DescribeSupportedVrBuilds());
   }
   const auto& actual = *profile.vr_debug_device_bridge;
   const auto& expected_profile = contract->device;
