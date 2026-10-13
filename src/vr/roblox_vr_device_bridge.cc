@@ -284,6 +284,95 @@ void Log(const char *format, ...) {
   std::fflush(stderr);
 }
 
+std::uintptr_t* g_is_vr_app_build_slot = nullptr;
+std::uintptr_t g_is_vr_app_build_original = 0;
+
+extern "C" bool mocktail_vr_is_vr_app_build(const void*) {
+  auto* bridge = g_active_bridge.load(std::memory_order_acquire);
+  return bridge != nullptr && bridge->active();
+}
+
+void InstallIsVrAppBuildHook(std::uintptr_t image_base) {
+  if (g_is_vr_app_build_slot != nullptr || !IsValidElfImage(image_base)) {
+    return;
+  }
+  const std::uintptr_t image_size = ImageSize(image_base);
+  const auto* header = reinterpret_cast<const Elf64_Ehdr*>(image_base);
+  const auto* program_headers = reinterpret_cast<const Elf64_Phdr*>(
+      image_base + static_cast<std::uintptr_t>(header->e_phoff));
+  static constexpr std::uint8_t kLeaRdxRip[3] = {0x48, 0x8d, 0x15};
+  static constexpr char kMethodName[] = "IsVRAppBuild";
+  for (std::size_t index = 0; index < header->e_phnum; ++index) {
+    const Elf64_Phdr& segment = program_headers[index];
+    if (segment.p_type != PT_LOAD ||
+        (segment.p_flags & (PF_R | PF_X)) != (PF_R | PF_X) ||
+        segment.p_memsz < 21) {
+      continue;
+    }
+    const auto* seg_begin =
+        reinterpret_cast<const std::uint8_t*>(image_base + segment.p_vaddr);
+    const std::size_t seg_size = static_cast<std::size_t>(segment.p_memsz);
+    std::size_t offset = 14;
+    while (offset + 7 <= seg_size) {
+      const void* match =
+          memmem(seg_begin + offset, seg_size - offset - 4, kLeaRdxRip,
+                 sizeof(kLeaRdxRip));
+      if (match == nullptr) {
+        break;
+      }
+      const std::size_t idx =
+          static_cast<const std::uint8_t*>(match) - seg_begin;
+      offset = idx + 1;
+      if (idx < 14 || seg_begin[idx - 7] != 0x48 ||
+          seg_begin[idx - 6] != 0x8d || seg_begin[idx - 5] != 0x35 ||
+          seg_begin[idx - 14] != 0x48 || seg_begin[idx - 13] != 0x8d ||
+          seg_begin[idx - 12] != 0x3d) {
+        continue;
+      }
+      const std::uintptr_t rdx_rva = segment.p_vaddr + idx;
+      const std::uintptr_t str_rva =
+          RelativeTarget(seg_begin + idx + 3, rdx_rva + 7);
+      if (str_rva >= image_size || image_size - str_rva < sizeof(kMethodName) ||
+          std::memcmp(reinterpret_cast<const void*>(image_base + str_rva),
+                      kMethodName, sizeof(kMethodName)) != 0) {
+        continue;
+      }
+      const std::uintptr_t desc_rva =
+          RelativeTarget(seg_begin + idx - 11, rdx_rva - 7);
+      const std::uintptr_t fn_rva =
+          RelativeTarget(seg_begin + idx - 4, rdx_rva);
+      if (!IsWritableDataImageRange(image_base, desc_rva, 0x98) ||
+          !IsExecutableImageRange(image_base, fn_rva, 3)) {
+        continue;
+      }
+      const std::uintptr_t expected_fn = image_base + fn_rva;
+      for (std::size_t slot_off : {std::size_t{0x80}, std::size_t{0x88}}) {
+        auto* slot =
+            reinterpret_cast<std::uintptr_t*>(image_base + desc_rva + slot_off);
+        if (*slot == expected_fn) {
+          g_is_vr_app_build_original = expected_fn;
+          g_is_vr_app_build_slot = slot;
+          __atomic_store_n(slot, FunctionAddress(&mocktail_vr_is_vr_app_build),
+                           __ATOMIC_RELEASE);
+          Log("  [vr-device] interposed VRService::IsVRAppBuild descriptor "
+              "at +0x%" PRIxPTR "\n",
+              desc_rva + slot_off);
+          return;
+        }
+      }
+    }
+  }
+}
+
+void RestoreIsVrAppBuildHook() {
+  if (g_is_vr_app_build_slot != nullptr) {
+    __atomic_store_n(g_is_vr_app_build_slot, g_is_vr_app_build_original,
+                     __ATOMIC_RELEASE);
+    g_is_vr_app_build_slot = nullptr;
+    g_is_vr_app_build_original = 0;
+  }
+}
+
 } // namespace
 
 namespace internal {
@@ -590,8 +679,22 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   std::memcpy(&degrees,
               reinterpret_cast<void*>(base + contract_->hand_pitch_storage_rva),
               4);
-  if (internal::ApplyAimToWorldFrame(static_cast<float*>(result), hand, scale,
-                                     -static_cast<float>(degrees))) {
+  VrHandPose pointer_hand = hand;
+  pose::Quat aim{};
+  if (pose::QuatNormalize({hand.aim_orientation[0], hand.aim_orientation[1],
+                           hand.aim_orientation[2], hand.aim_orientation[3]},
+                          &aim)) {
+    constexpr float kNativeHandPitchHalfAngle = 20.f * pose::kPi / 360.f;
+    const pose::Quat pitched = pose::QuatMultiply(
+        aim, {std::sin(kNativeHandPitchHalfAngle), 0.f, 0.f,
+              std::cos(kNativeHandPitchHalfAngle)});
+    pointer_hand.grip_orientation[0] = pitched.x;
+    pointer_hand.grip_orientation[1] = pitched.y;
+    pointer_hand.grip_orientation[2] = pitched.z;
+    pointer_hand.grip_orientation[3] = pitched.w;
+  }
+  if (internal::ApplyAimToWorldFrame(static_cast<float*>(result), pointer_hand,
+                                     scale, -static_cast<float>(degrees))) {
     static std::atomic<bool> logged[2]{};
     if (!logged[index - 1].exchange(true))
       std::fprintf(
@@ -796,6 +899,7 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
     (void)RestoreVtableLocked();
     return FailedPrecondition("could not install verified VR aim pointer hook");
   }
+  InstallIsVrAppBuildHook(image_base);
   {
     std::lock_guard<std::mutex> pose_lock(g_native_pose_mutex);
     g_native_pose = {};
@@ -836,6 +940,7 @@ void RobloxVrDeviceBridge::Shutdown() {
 }
 
 bool RobloxVrDeviceBridge::RestoreVtableLocked() {
+  RestoreIsVrAppBuildHook();
   if (!RestorePointerHook()) return false;
   if (vtable_ == nullptr) {
     return false;
@@ -1058,12 +1163,44 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
     }
     if (!finite || hand_norm < 0.99f || hand_norm > 1.01f)
       continue;
+    float orientation[4] = {
+        source.grip_orientation[0], source.grip_orientation[1],
+        source.grip_orientation[2], source.grip_orientation[3]};
+    if (source.aim_valid) {
+      float aim_norm = 0.f;
+      bool aim_finite = true;
+      for (float v : source.aim_orientation) {
+        aim_finite = aim_finite && std::isfinite(v);
+        aim_norm += v * v;
+      }
+      pose::Quat aim{};
+      if (aim_finite && aim_norm >= 0.99f && aim_norm <= 1.01f &&
+          pose::QuatNormalize(
+              {source.aim_orientation[0], source.aim_orientation[1],
+               source.aim_orientation[2], source.aim_orientation[3]},
+              &aim)) {
+        // The guest's VRService consumer (0x28a6242) pitches each hand record
+        // by -NewVRSystemHandPitch (-20 deg) to form UserCFrame[hand], which
+        // Luau's LaserPointer uses directly as lookVector and TouchController
+        // pitches back by +20 deg (0.34906585 rad). Pre-applying +20 deg to
+        // the OpenXR aim orientation makes UserCFrame[hand] match the OpenXR
+        // aim/handmodel orientation while keeping the grip palm position.
+        constexpr float kNativeHandPitchHalfAngle = 20.f * pose::kPi / 360.f;
+        const pose::Quat pitched = pose::QuatMultiply(
+            aim, {std::sin(kNativeHandPitchHalfAngle), 0.f, 0.f,
+                  std::cos(kNativeHandPitchHalfAngle)});
+        orientation[0] = pitched.x;
+        orientation[1] = pitched.y;
+        orientation[2] = pitched.z;
+        orientation[3] = pitched.w;
+      }
+    }
     const std::size_t record =
         hand == 0 ? kLeftHandRecordOffset : kRightHandRecordOffset;
     std::memcpy(bytes + record + kRecordPositionOffset, source.grip_position,
                 sizeof(source.grip_position));
-    std::memcpy(bytes + record + kRecordOrientationOffset,
-                source.grip_orientation, sizeof(source.grip_orientation));
+    std::memcpy(bytes + record + kRecordOrientationOffset, orientation,
+                sizeof(orientation));
     bytes[record + kRecordValidOffset] = 1;
   }
   for (int eye = 0; eye < 2; ++eye) {

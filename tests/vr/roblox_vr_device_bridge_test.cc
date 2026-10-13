@@ -697,6 +697,45 @@ TEST(VrHandPoseBridge, ValidGripPosesFillBothHandRecordsInMetres) {
   EXPECT_FLOAT_EQ(right_pos[0], 0.25f);
 }
 
+TEST(VrHandPoseBridge, ValidAimPosePreAppliesHandPitchWhileKeepingGripOrigin) {
+  std::array<std::uint8_t, internal::kStateCopySize> state{};
+  ScriptedPoseSample pose;
+  pose.valid = true;
+  pose.orientation[3] = 1.f;
+  pose.hands[1].grip_valid = true;
+  pose.hands[1].grip_position[0] = 0.25f;
+  pose.hands[1].grip_position[1] = 1.1f;
+  pose.hands[1].grip_position[2] = -0.4f;
+  pose.hands[1].grip_orientation[0] = std::sin(0.18f);
+  pose.hands[1].grip_orientation[3] = std::cos(0.18f);
+  pose.hands[1].aim_valid = true;
+  pose.hands[1].aim_position[2] = -0.5f;
+  pose.hands[1].aim_orientation[0] = std::sin(-0.34f);
+  pose.hands[1].aim_orientation[3] = std::cos(-0.34f);
+  ASSERT_TRUE(internal::ApplyXrPose(state.data(), pose));
+
+  float right_pos[3], right_ori[4];
+  std::memcpy(right_pos, state.data() + internal::kRightHandRecordOffset +
+                             internal::kRecordPositionOffset, 12);
+  std::memcpy(right_ori, state.data() + internal::kRightHandRecordOffset +
+                             internal::kRecordOrientationOffset, 16);
+  EXPECT_FLOAT_EQ(right_pos[0], 0.25f);
+  EXPECT_FLOAT_EQ(right_pos[1], 1.1f);
+  EXPECT_FLOAT_EQ(right_pos[2], -0.4f);
+
+  // Applying Roblox's native -20 deg pitch offset to the stored record
+  // orientation must recover the exact OpenXR aim orientation.
+  constexpr float kMinus20HalfAngle = -20.f * pose::kPi / 360.f;
+  const pose::Quat stored{right_ori[0], right_ori[1], right_ori[2], right_ori[3]};
+  const pose::Quat after_guest_pitch = pose::QuatMultiply(
+      stored, {std::sin(kMinus20HalfAngle), 0.f, 0.f,
+               std::cos(kMinus20HalfAngle)});
+  EXPECT_NEAR(after_guest_pitch.x, pose.hands[1].aim_orientation[0], 1e-5f);
+  EXPECT_NEAR(after_guest_pitch.y, 0.f, 1e-5f);
+  EXPECT_NEAR(after_guest_pitch.z, 0.f, 1e-5f);
+  EXPECT_NEAR(after_guest_pitch.w, pose.hands[1].aim_orientation[3], 1e-5f);
+}
+
 TEST(VrFloorPoseBridge, PublishesStagePoseInMetresAndClearsTrackingLoss) {
   std::array<std::uint8_t, internal::kStateCopySize> state{};
   state[internal::kStateReadyOffsetInCopy] = 1;

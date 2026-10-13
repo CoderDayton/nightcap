@@ -402,6 +402,9 @@ bool MergeVrClientSettingsOverrides(bool enabled, std::string_view base_json,
     // The eye textures already use the OpenXR extent; render their contents
     // at full resolution as well, without Roblox's dynamic downscaling.
     overrides["FFlagDebugDisableDRS"] = "True";
+    // Place the Avatar Editor character 6 studs in front of the VR camera
+    // instead of at the origin when IsVRAppBuild() is active.
+    overrides["FFlagFixVRAvatarPlacement"] = "True";
   }
   *merged_json = overrides.dump();
   return true;

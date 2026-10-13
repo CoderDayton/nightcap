@@ -356,6 +356,7 @@ TEST(PerformancePolicyTest,
   auto json = nlohmann::json::parse(merged);
   EXPECT_EQ(json["FFlagDebugEnableVREmulator"], "True");
   EXPECT_EQ(json["FFlagSlowDownRendering"], "False");
+  EXPECT_EQ(json["FFlagFixVRAvatarPlacement"], "True");
   EXPECT_EQ(json["FIntUnrelated"], "42");
   ASSERT_TRUE(MergeVrClientSettingsOverrides(false, merged, &merged, &error));
   EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugEnableVREmulator"],

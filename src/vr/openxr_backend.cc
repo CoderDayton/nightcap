@@ -145,7 +145,16 @@ bool IsColorFormat(VkFormat format) {
 }
 
 bool FormatIsCopyCompatible(VkFormat a, VkFormat b) {
-  return a == b;
+  if (a == b) return true;
+  if ((a == VK_FORMAT_R8G8B8A8_UNORM && b == VK_FORMAT_R8G8B8A8_SRGB) ||
+      (a == VK_FORMAT_R8G8B8A8_SRGB && b == VK_FORMAT_R8G8B8A8_UNORM)) {
+    return true;
+  }
+  if ((a == VK_FORMAT_B8G8R8A8_UNORM && b == VK_FORMAT_B8G8R8A8_SRGB) ||
+      (a == VK_FORMAT_B8G8R8A8_SRGB && b == VK_FORMAT_B8G8R8A8_UNORM)) {
+    return true;
+  }
+  return false;
 }
 
 OpenXrBackend* g_backend = nullptr;
@@ -1075,10 +1084,10 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
     std::int64_t chosen = 0;
     const std::vector<std::int64_t> candidates =
         graphics_api_ == VrGraphicsApi::kVulkan
-            ? std::vector<std::int64_t>{VK_FORMAT_B8G8R8A8_UNORM,
-                                        VK_FORMAT_R8G8B8A8_UNORM,
-                                        VK_FORMAT_B8G8R8A8_SRGB,
-                                        VK_FORMAT_R8G8B8A8_SRGB}
+            ? std::vector<std::int64_t>{VK_FORMAT_R8G8B8A8_UNORM,
+                                        VK_FORMAT_B8G8R8A8_UNORM,
+                                        VK_FORMAT_R8G8B8A8_SRGB,
+                                        VK_FORMAT_B8G8R8A8_SRGB}
             : std::vector<std::int64_t>{GL_RGBA8, GL_SRGB8_ALPHA8};
     for (const auto candidate : candidates) {
       if (std::find(formats.begin(), formats.end(),
