@@ -27,6 +27,7 @@
 #include "mocktail/vr/openxr_backend.h"
 #include "mocktail/vr/openxr_probe.h"
 #include "mocktail/vr/roblox_vr_device_bridge.h"
+#include "mocktail/vr/virtual_keyboard.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
 #include "runtime/crash_report_policy.h"
@@ -45,6 +46,7 @@
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
+#include "runtime/roblox_text_editor.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_file.h"
 #include "runtime/runtime_paths.h"
@@ -1031,6 +1033,38 @@ int main(int argc, char* argv[]) {
                  "native-stereo diagnostic mode without a runtime.\n";
           return EXIT_FAILURE;
         }
+        // The in-headset keyboard follows Roblox's TextBox keyboard requests
+        // and types through the same events as the desktop keyboard.
+        mocktail::vr::VirtualKeyboardHost keyboard_host;
+        keyboard_host.input_requested = [](void*) {
+          return mocktail::window::TextInputRequested();
+        };
+        keyboard_host.commit_text = [](void*, const char* utf8) {
+          mocktail::window::QueueVirtualTextInput(utf8);
+        };
+        keyboard_host.press_key = [](void*, std::uint32_t scancode) {
+          mocktail::window::QueueVirtualKeyPress(scancode);
+        };
+        mocktail::vr::SetVirtualKeyboardHost(&keyboard_host);
+        // TextBox text is drawn as a desktop window overlay that never reaches
+        // the eye images; mirror it into the keyboard's text field.
+        mocktail::runtime::SetRobloxTextDisplayMirror(
+            {nullptr, [](void*,
+                         const mocktail::runtime::RobloxTextDisplayUpdate&
+                             update) {
+               if (update.event ==
+                   mocktail::runtime::RobloxTextDisplayEvent::kHide) {
+                 mocktail::vr::ClearVirtualKeyboardText();
+                 return;
+               }
+               // RbxKeyboard password input types (see the SDL mapping).
+               const bool password = update.text_input_type == 5 ||
+                                     update.text_input_type == 9 ||
+                                     update.text_input_type == 10;
+               mocktail::vr::SetVirtualKeyboardText(
+                   update.utf8, update.utf8_size, update.cursor_utf16,
+                   password);
+             }});
       }
     }
   }

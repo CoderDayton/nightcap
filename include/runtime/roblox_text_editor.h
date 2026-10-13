@@ -89,6 +89,12 @@ struct RobloxTextDisplaySink {
   UpdateFn update = nullptr;
 };
 
+// Process-wide second observer of the focused TextBox display, called
+// synchronously after the surface overlay with the same sensitivity contract.
+// The VR keyboard uses it to show the text being typed in the headset, where
+// the desktop overlay is not visible. Passing an empty sink clears it.
+void SetRobloxTextDisplayMirror(RobloxTextDisplaySink sink);
+
 struct RobloxTextSink {
   using SyncFn = Status (*)(void* context, const char* utf8, std::size_t size,
                             int32_t cursor_utf16);

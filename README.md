@@ -264,6 +264,16 @@ MOCKTAIL_VR_RUNTIME=alvr MOCKTAIL_GRAPHICS_BACKEND=direct-vulkan ./build/mocktai
 If you previously set `XR_RUNTIME_JSON`, unset it before switching runtimes.
 Use `--no-vr` for desktop mode.
 
+### Typing in VR
+
+When a text box takes focus (chat, search), a keyboard opens in front of you,
+below eye level. It is a full US layout without the function row or
+Ctrl/Alt. Point at a key and pull the trigger. While you point at the keyboard,
+the trigger types and does not click the game behind it. Hold Backspace to
+delete repeatedly. Shift applies to the next key and selects its upper symbol;
+Caps Lock stays on until you tap it again. Close dismisses the keyboard and
+leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
+
 ## Known limitations
 
 Nightcap does not currently work with `hardened_malloc`. Using

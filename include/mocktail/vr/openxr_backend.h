@@ -10,7 +10,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include <memory>
+
 #include "mocktail/status.h"
+#include "mocktail/vr/virtual_keyboard.h"
 #include "mocktail/vr/vr_mirror.h"
 #include "mocktail/vr/xr_actions.h"
 #include "mocktail/vr/xr_controller.h"
@@ -308,6 +311,14 @@ class OpenXrBackend final {
   // readbacks) into one command buffer, submits once and waits on one fence.
   // Replaces the previous per-eye submit+fence pair.
   bool CopyEyesIntoSwapchains(VkQueue queue);
+  // In-headset keyboard: show/hide from the host's TextBox request, pointer
+  // input, and trigger masking. Runs inside the controller sync.
+  void UpdateVirtualKeyboardLocked();
+  // Rasterizes and uploads the panel when it changed. Returns true when the
+  // keyboard swapchain holds a released image ready for a quad layer.
+  bool PrepareVirtualKeyboardLayerLocked(VkQueue queue);
+  bool UploadVirtualKeyboardVulkan(VkQueue queue, VkImage image);
+  void DestroyVirtualKeyboardResources();
   bool CaptureEyeEvidence(VkQueue queue, int eye);
   ScriptedPoseSample ComputeScriptedPose(std::uint64_t frame) const;
   void EnsureMirrorForExtent(std::uint32_t width, std::uint32_t height);
@@ -337,6 +348,21 @@ class OpenXrBackend final {
   std::uint32_t xr_eye_width_[2] = {};
   std::uint32_t xr_eye_height_[2] = {};
   EyeSwapchain eye_swapchains_[2];
+  VirtualKeyboard keyboard_;
+  std::unique_ptr<VirtualKeyboardRasterizer> keyboard_raster_;
+  EyeSwapchain keyboard_swapchain_;
+  bool keyboard_swapchain_failed_ = false;
+  bool keyboard_image_ready_ = false;
+  std::uint64_t keyboard_uploaded_revision_ = 0;
+  // A new showKeyboard request may open the panel; Close disarms it until
+  // Roblox drops that request.
+  bool keyboard_armed_ = true;
+  pose::Pose keyboard_head_{};
+  bool keyboard_head_valid_ = false;
+  std::vector<std::uint8_t> keyboard_pixels_;
+  VkBuffer keyboard_staging_ = VK_NULL_HANDLE;
+  VkDeviceMemory keyboard_staging_memory_ = VK_NULL_HANDLE;
+  void* keyboard_staging_mapped_ = nullptr;
   int xr_blend_mode_ = 0;
   // Runtime name captured at xrCreateInstance so the bind-time diagnostics line
   // can report it without re-entering runtime_name() under the held mutex.

@@ -174,6 +174,7 @@ struct OpenXrBackend::VkProcs {
   PFN_vkMapMemory MapMemory = nullptr;
   PFN_vkUnmapMemory UnmapMemory = nullptr;
   PFN_vkCmdCopyImageToBuffer CmdCopyImageToBuffer = nullptr;
+  PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage = nullptr;
   PFN_vkCreateImageView CreateImageView = nullptr;
   PFN_vkDestroyImageView DestroyImageView = nullptr;
   PFN_vkCreateCommandPool CreateCommandPool = nullptr;
@@ -698,6 +699,7 @@ void OpenXrBackend::SetupDeviceAfterCreationLocked(
   MOCKTAIL_BACKEND_VK_FN(MapMemory)
   MOCKTAIL_BACKEND_VK_FN(UnmapMemory)
   MOCKTAIL_BACKEND_VK_FN(CmdCopyImageToBuffer)
+  MOCKTAIL_BACKEND_VK_FN(CmdCopyBufferToImage)
   MOCKTAIL_BACKEND_VK_FN(CreateImageView)
   MOCKTAIL_BACKEND_VK_FN(DestroyImageView)
   MOCKTAIL_BACKEND_VK_FN(CreateCommandPool)
@@ -1238,6 +1240,7 @@ void OpenXrBackend::TeardownSessionLocked(const char* reason, bool preserve_devi
       mirror_.DestroyStaging(MirrorProcs());
     }
     mirror_.Close();
+    DestroyVirtualKeyboardResources();
     DestroyCopyResources();
     DestroySwapchains();
     // Action pose spaces belong to this session; detach before the session and
@@ -2115,8 +2118,12 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
         XrInfo<XrCompositionLayerProjection>(
             XR_TYPE_COMPOSITION_LAYER_PROJECTION);
     std::array<XrCompositionLayerProjectionView, 2> views{};
-    const XrCompositionLayerBaseHeader *layers[1] = {
-        reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projection)};
+    XrCompositionLayerQuad keyboard_layer =
+        XrInfo<XrCompositionLayerQuad>(XR_TYPE_COMPOSITION_LAYER_QUAD);
+    const XrCompositionLayerBaseHeader *layers[2] = {
+        reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projection),
+        reinterpret_cast<const XrCompositionLayerBaseHeader *>(
+            &keyboard_layer)};
     const bool eyes_usable = eyes_bound_.load(std::memory_order_acquire) &&
                              eyes_[0].valid && eyes_[1].valid;
     const bool pose_ready = frame_views_valid_ && published_pose_.valid;
@@ -2224,6 +2231,24 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
         projection.views = views.data();
         end.layerCount = 1;
         end.layers = layers;
+        if (PrepareVirtualKeyboardLayerLocked(queue)) {
+          // World-locked panel in LOCAL space, composited over the eyes.
+          const Pose &panel = keyboard_.panel_pose();
+          keyboard_layer.space = static_cast<XrSpace>(xr_local_space_);
+          keyboard_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+          keyboard_layer.subImage.swapchain =
+              static_cast<XrSwapchain>(keyboard_swapchain_.swapchain);
+          keyboard_layer.subImage.imageRect.extent = {
+              VirtualKeyboard::kTextureWidth, VirtualKeyboard::kTextureHeight};
+          keyboard_layer.pose.position = {panel.position.x, panel.position.y,
+                                          panel.position.z};
+          keyboard_layer.pose.orientation = {
+              panel.orientation.x, panel.orientation.y, panel.orientation.z,
+              panel.orientation.w};
+          keyboard_layer.size = {VirtualKeyboard::kPanelWidthMetres,
+                                 VirtualKeyboard::kPanelHeightMetres};
+          end.layerCount = 2;
+        }
       }
     }
     CheckXr(instance, xrEndFrame(session, &end), "xrEndFrame");
@@ -2327,6 +2352,12 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
         const std::string pose_source =
             EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime");
         Pose head_pose = head_valid ? XrToPose(head.pose) : Pose{};
+        if (head_valid) {
+          // Tracked LOCAL head pose, independent of the scripted test source;
+          // the keyboard panel opens in front of it.
+          keyboard_head_ = head_pose;
+          keyboard_head_valid_ = true;
+        }
         if (pose_source == "script") {
           const ScriptedPoseSample scripted =
               ComputeScriptedPose(++xr_frame_counter_);
@@ -2494,7 +2525,308 @@ void OpenXrBackend::SyncControllersLocked(std::uint64_t predicted_display_time) 
     published_pose_.hands[0] = VrHandPose{};
     published_pose_.hands[1] = VrHandPose{};
   }
+  UpdateVirtualKeyboardLocked();
   perf::ProcessCollector().Count(perf::Counter::kControllerSyncs);
+}
+
+void OpenXrBackend::UpdateVirtualKeyboardLocked() {
+  static const bool enabled = EnvString("MOCKTAIL_VR_KEYBOARD", "1") != "0";
+  if (!enabled) {
+    return;
+  }
+  const VirtualKeyboardHost host = CurrentVirtualKeyboardHost();
+  const bool requested =
+      host.input_requested != nullptr && host.input_requested(host.context);
+  if (!requested) {
+    keyboard_.Hide();
+    keyboard_armed_ = true;
+  } else if (keyboard_armed_ && keyboard_head_valid_) {
+    keyboard_.Show(keyboard_head_);
+    keyboard_armed_ = false;
+    Log("  [vr-keyboard] shown for focused TextBox\n");
+  }
+  if (!keyboard_.visible()) {
+    return;
+  }
+  {
+    VirtualKeyboardText text = CurrentVirtualKeyboardText();
+    keyboard_.SetText(text);
+    std::fill(text.utf8.begin(), text.utf8.end(), '\0');
+  }
+
+  VirtualKeyboardPointer pointers[2];
+  const ControllerSnapshot& snapshot = actions_.snapshot();
+  for (int hand = 0; hand < 2; ++hand) {
+    const VrHandPose& pose = actions_.hand(hand);
+    const ControllerHandState& state = snapshot.hands[hand];
+    pointers[hand].valid = state.connected && pose.aim_valid;
+    pointers[hand].aim.position =
+        Vec3{pose.aim_position[0], pose.aim_position[1], pose.aim_position[2]};
+    pointers[hand].aim.orientation =
+        Quat{pose.aim_orientation[0], pose.aim_orientation[1],
+             pose.aim_orientation[2], pose.aim_orientation[3]};
+    pointers[hand].trigger =
+        state.axes[static_cast<std::size_t>(ControllerAxis::kTrigger)];
+  }
+  const VirtualKeyboardOutput output =
+      keyboard_.Update(perf::NowNs(), pointers);
+  for (const std::string& text : output.text) {
+    if (host.commit_text != nullptr) host.commit_text(host.context, text.c_str());
+  }
+  for (const std::uint32_t scancode : output.scancodes) {
+    if (host.press_key != nullptr) host.press_key(host.context, scancode);
+  }
+  // A trigger aimed at the panel types; withhold it from Roblox so it is not
+  // also a click on whatever UI sits behind the keyboard.
+  for (int hand = 0; hand < 2; ++hand) {
+    if (keyboard_.CapturesTrigger(hand)) {
+      published_pose_.controller_channels[hand * 9 + 3] = 0.f;
+    }
+  }
+}
+
+bool OpenXrBackend::PrepareVirtualKeyboardLayerLocked(VkQueue queue) {
+  if (!keyboard_.visible() || keyboard_swapchain_failed_) {
+    return false;
+  }
+  const auto instance = static_cast<XrInstance>(xr_instance_);
+  try {
+    EyeSwapchain& slot = keyboard_swapchain_;
+    if (slot.swapchain == nullptr) {
+      auto create_info =
+          XrInfo<XrSwapchainCreateInfo>(XR_TYPE_SWAPCHAIN_CREATE_INFO);
+      create_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                               XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+      // Same format as the eyes, so the panel's sRGB-encoded bytes are
+      // interpreted exactly like the guest's eye pixels.
+      create_info.format =
+          static_cast<std::int64_t>(eye_swapchains_[0].format);
+      create_info.sampleCount = 1;
+      create_info.width = VirtualKeyboard::kTextureWidth;
+      create_info.height = VirtualKeyboard::kTextureHeight;
+      create_info.faceCount = 1;
+      create_info.arraySize = 1;
+      create_info.mipCount = 1;
+      XrSwapchain swapchain = XR_NULL_HANDLE;
+      CheckXr(instance,
+              xrCreateSwapchain(static_cast<XrSession>(xr_session_),
+                                &create_info, &swapchain),
+              "xrCreateSwapchain keyboard");
+      slot.swapchain = swapchain;
+      std::uint32_t count = 0;
+      CheckXr(instance,
+              xrEnumerateSwapchainImages(swapchain, 0, &count, nullptr),
+              "xrEnumerateSwapchainImages keyboard count");
+      Require(count > 0 && count <= 16, "empty keyboard swapchain");
+      if (graphics_api_ == VrGraphicsApi::kVulkan) {
+        std::vector<XrSwapchainImageVulkanKHR> images(count);
+        for (auto& image : images) image.type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
+        CheckXr(instance,
+                xrEnumerateSwapchainImages(
+                    swapchain, count, &count,
+                    reinterpret_cast<XrSwapchainImageBaseHeader*>(
+                        images.data())),
+                "xrEnumerateSwapchainImages keyboard");
+        for (const auto& image : images) slot.images.push_back(image.image);
+      } else {
+        std::vector<XrSwapchainImageOpenGLESKHR> images(count);
+        for (auto& image : images)
+          image.type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+        CheckXr(instance,
+                xrEnumerateSwapchainImages(
+                    swapchain, count, &count,
+                    reinterpret_cast<XrSwapchainImageBaseHeader*>(
+                        images.data())),
+                "xrEnumerateSwapchainImages keyboard GLES");
+        for (const auto& image : images) slot.gl_images.push_back(image.image);
+      }
+      slot.width = VirtualKeyboard::kTextureWidth;
+      slot.height = VirtualKeyboard::kTextureHeight;
+      slot.format = eye_swapchains_[0].format;
+      keyboard_image_ready_ = false;
+      Log("  [vr-keyboard] panel swapchain %ux%u images=%u\n", slot.width,
+          slot.height, count);
+    }
+    if (keyboard_image_ready_ &&
+        keyboard_uploaded_revision_ == keyboard_.revision()) {
+      return true;
+    }
+    if (!keyboard_raster_) {
+      keyboard_raster_ = std::make_unique<VirtualKeyboardRasterizer>();
+    }
+    (void)keyboard_raster_->Draw(keyboard_, &keyboard_pixels_);
+
+    std::uint32_t index = 0;
+    auto acquire = XrInfo<XrSwapchainImageAcquireInfo>(
+        XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO);
+    CheckXr(instance,
+            xrAcquireSwapchainImage(static_cast<XrSwapchain>(slot.swapchain),
+                                    &acquire, &index),
+            "xrAcquireSwapchainImage keyboard");
+    auto wait =
+        XrInfo<XrSwapchainImageWaitInfo>(XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO);
+    wait.timeout = 100'000'000;
+    const XrResult wait_result =
+        xrWaitSwapchainImage(static_cast<XrSwapchain>(slot.swapchain), &wait);
+    bool uploaded = false;
+    if (XR_SUCCEEDED(wait_result) && wait_result != XR_TIMEOUT_EXPIRED) {
+      if (graphics_api_ == VrGraphicsApi::kVulkan) {
+        uploaded = index < slot.images.size() &&
+                   UploadVirtualKeyboardVulkan(queue, slot.images[index]);
+      } else {
+        uploaded = gles_ != nullptr && index < slot.gl_images.size() &&
+                   gles_->Upload(slot.gl_images[index],
+                                 VirtualKeyboard::kTextureWidth,
+                                 VirtualKeyboard::kTextureHeight,
+                                 keyboard_pixels_.data());
+      }
+    }
+    auto release = XrInfo<XrSwapchainImageReleaseInfo>(
+        XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO);
+    (void)xrReleaseSwapchainImage(static_cast<XrSwapchain>(slot.swapchain),
+                                  &release);
+    // A released image is what the quad shows, even if this upload failed
+    // after an earlier one succeeded.
+    if (uploaded) {
+      keyboard_image_ready_ = true;
+      keyboard_uploaded_revision_ = keyboard_.revision();
+    }
+    return keyboard_image_ready_;
+  } catch (const std::exception& exception) {
+    Log("  [vr-keyboard] disabled: %s\n", exception.what());
+    keyboard_swapchain_failed_ = true;
+    return false;
+  }
+}
+
+bool OpenXrBackend::UploadVirtualKeyboardVulkan(VkQueue queue, VkImage image) {
+  std::string error;
+  if (vk_ == nullptr ||
+      !EnsureCopyResources(vk_device_, vk_queue_family_, &error)) {
+    return false;
+  }
+  const VkDeviceSize size = static_cast<VkDeviceSize>(keyboard_pixels_.size());
+  if (keyboard_staging_ == VK_NULL_HANDLE) {
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = size;
+    info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (vk_->CreateBuffer(vk_device_, &info, nullptr, &keyboard_staging_) !=
+        VK_SUCCESS) {
+      keyboard_staging_ = VK_NULL_HANDLE;
+      return false;
+    }
+    VkMemoryRequirements requirements{};
+    vk_->GetBufferMemoryRequirements(vk_device_, keyboard_staging_,
+                                     &requirements);
+    VkPhysicalDeviceMemoryProperties properties{};
+    vk_->GetPhysicalDeviceMemoryProperties(vk_physical_device_, &properties);
+    const auto flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    std::uint32_t type = UINT32_MAX;
+    for (std::uint32_t t = 0; t < properties.memoryTypeCount; ++t) {
+      if ((requirements.memoryTypeBits & (1u << t)) &&
+          (properties.memoryTypes[t].propertyFlags & flags) == flags) {
+        type = t;
+        break;
+      }
+    }
+    VkMemoryAllocateInfo allocation{};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = type;
+    if (type == UINT32_MAX ||
+        vk_->AllocateMemory(vk_device_, &allocation, nullptr,
+                            &keyboard_staging_memory_) != VK_SUCCESS ||
+        vk_->BindBufferMemory(vk_device_, keyboard_staging_,
+                              keyboard_staging_memory_, 0) != VK_SUCCESS ||
+        vk_->MapMemory(vk_device_, keyboard_staging_memory_, 0, size, 0,
+                       &keyboard_staging_mapped_) != VK_SUCCESS) {
+      DestroyVirtualKeyboardResources();
+      return false;
+    }
+  }
+  std::memcpy(keyboard_staging_mapped_, keyboard_pixels_.data(),
+              keyboard_pixels_.size());
+
+  if (vk_->ResetCommandBuffer(copy_command_, 0) != VK_SUCCESS) return false;
+  VkCommandBufferBeginInfo begin{};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (vk_->BeginCommandBuffer(copy_command_, &begin) != VK_SUCCESS) {
+    return false;
+  }
+  VkImageMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.srcAccessMask = 0;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                          nullptr, 1, &barrier);
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {VirtualKeyboard::kTextureWidth,
+                        VirtualKeyboard::kTextureHeight, 1};
+  vk_->CmdCopyBufferToImage(copy_command_, keyboard_staging_, image,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+                          nullptr, 1, &barrier);
+  if (vk_->EndCommandBuffer(copy_command_) != VK_SUCCESS ||
+      vk_->ResetFences(vk_device_, 1, &copy_fence_) != VK_SUCCESS) {
+    return false;
+  }
+  VkSubmitInfo submit{};
+  submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &copy_command_;
+  if (SubmitHostQueue(vk_->QueueSubmit, vk_device_, queue, 1, &submit,
+                      copy_fence_) != VK_SUCCESS) {
+    return false;
+  }
+  if (vk_->WaitForFences(vk_device_, 1, &copy_fence_, VK_TRUE,
+                         2'000'000'000ULL) != VK_SUCCESS) {
+    (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
+    throw std::runtime_error("keyboard upload fence wait failed");
+  }
+  return true;
+}
+
+void OpenXrBackend::DestroyVirtualKeyboardResources() {
+  if (vk_ != nullptr && vk_device_ != VK_NULL_HANDLE) {
+    if (keyboard_staging_mapped_ != nullptr) {
+      vk_->UnmapMemory(vk_device_, keyboard_staging_memory_);
+    }
+    if (keyboard_staging_ != VK_NULL_HANDLE) {
+      vk_->DestroyBuffer(vk_device_, keyboard_staging_, nullptr);
+    }
+    if (keyboard_staging_memory_ != VK_NULL_HANDLE) {
+      vk_->FreeMemory(vk_device_, keyboard_staging_memory_, nullptr);
+    }
+  }
+  keyboard_staging_mapped_ = nullptr;
+  keyboard_staging_ = VK_NULL_HANDLE;
+  keyboard_staging_memory_ = VK_NULL_HANDLE;
+  EyeSwapchain& slot = keyboard_swapchain_;
+  slot.images.clear();
+  slot.gl_images.clear();
+  if (slot.swapchain != nullptr) {
+    (void)xrDestroySwapchain(static_cast<XrSwapchain>(slot.swapchain));
+    slot.swapchain = nullptr;
+  }
+  keyboard_image_ready_ = false;
+  keyboard_uploaded_revision_ = 0;
+  keyboard_swapchain_failed_ = false;
 }
 
 bool OpenXrBackend::EnsureCopyResources(VkDevice device,

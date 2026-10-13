@@ -38,7 +38,13 @@ namespace {
                                         PFNGLDELETERENDERBUFFERSPROC)          \
                                           X(BlitFramebuffer,                   \
                                             PFNGLBLITFRAMEBUFFERPROC)          \
-                                              X(Flush, PFNGLFLUSHPROC)
+                                              X(Flush, PFNGLFLUSHPROC)         \
+                                                  X(BindTexture,               \
+                                                    PFNGLBINDTEXTUREPROC)      \
+                                                      X(TexSubImage2D,         \
+                                                        PFNGLTEXSUBIMAGE2DPROC)\
+                                                          X(PixelStorei,       \
+                                                            PFNGLPIXELSTOREIPROC)
 struct Procs {
 #define DECLARE(name, type) type name = nullptr;
   GL_PROCS(DECLARE)
@@ -390,5 +396,29 @@ bool GlesTransport::Copy(const unsigned textures[2], unsigned width,
   // OpenXR's GL binding synchronizes the flushed work at image release.
   gl.Flush();
   return copied;
+}
+
+bool GlesTransport::Upload(unsigned texture, int width, int height,
+                           const void *rgba) {
+  if (!IsCurrent() || texture == 0 || rgba == nullptr)
+    return false;
+  // Restore the guest's bindings and unpack state around the upload.
+  GLint bound = 0, alignment = 4, row_length = 0, unpack_buffer = 0;
+  gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+  gl.GetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+  gl.GetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+  gl.GetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpack_buffer);
+  if (unpack_buffer != 0)
+    return false;  // a bound PBO would reinterpret the pointer as an offset
+  gl.PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  gl.PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  gl.BindTexture(GL_TEXTURE_2D, texture);
+  gl.TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA,
+                   GL_UNSIGNED_BYTE, rgba);
+  gl.BindTexture(GL_TEXTURE_2D, static_cast<GLuint>(bound));
+  gl.PixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+  gl.PixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+  gl.Flush();
+  return true;
 }
 } // namespace mocktail::vr

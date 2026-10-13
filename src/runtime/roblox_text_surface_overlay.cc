@@ -325,6 +325,16 @@ Status RobloxTextSurfaceOverlay::UpdateViewport(
   return Status::Ok();
 }
 
+namespace {
+std::mutex g_display_mirror_mutex;
+RobloxTextDisplaySink g_display_mirror;
+}  // namespace
+
+void SetRobloxTextDisplayMirror(RobloxTextDisplaySink sink) {
+  std::lock_guard<std::mutex> lock(g_display_mirror_mutex);
+  g_display_mirror = sink;
+}
+
 RobloxTextDisplaySink RobloxTextSurfaceOverlay::sink() {
   return {this, &RobloxTextSurfaceOverlay::UpdateCallback};
 }
@@ -333,6 +343,10 @@ void RobloxTextSurfaceOverlay::UpdateCallback(
     void* context, const RobloxTextDisplayUpdate& update) {
   if (context != nullptr) {
     static_cast<RobloxTextSurfaceOverlay*>(context)->ApplyUpdate(update);
+  }
+  std::lock_guard<std::mutex> lock(g_display_mirror_mutex);
+  if (g_display_mirror.update != nullptr) {
+    g_display_mirror.update(g_display_mirror.context, update);
   }
 }
 

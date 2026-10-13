@@ -29,6 +29,8 @@ public:
   static void *Wrap(const char *name, void *raw);
   void ResetEyes();
   bool Copy(const unsigned textures[2], unsigned width, unsigned height);
+  // Uploads tightly packed RGBA8 pixels into a runtime swapchain texture.
+  bool Upload(unsigned texture, int width, int height, const void *rgba);
   const Eye &eye(int index) const { return eyes_[index]; }
   void *display() const { return display_; }
   void *config() const { return config_; }

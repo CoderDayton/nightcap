@@ -11,8 +11,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -168,6 +170,15 @@ static WindowFullscreenStateSync g_fullscreen_state_sync;
 static std::unique_ptr<WindowResizeReadinessGate> g_resize_readiness_gate;
 static std::unique_ptr<SdlTextInputBackend> g_text_input_backend;
 static std::unique_ptr<WindowTextInputOwner> g_text_input_owner;
+// Generation of the showKeyboard request still awaiting its hideKeyboard;
+// 0 when Roblox wants no keyboard.
+static std::atomic<uint64_t> g_text_input_requested_generation{0};
+struct VirtualInput {
+  std::string text;      // committed text when non-empty
+  uint32_t scancode = 0; // otherwise one key press
+};
+static std::mutex g_virtual_input_mutex;
+static std::deque<VirtualInput> g_virtual_input;
 static std::unique_ptr<SdlPointerCaptureBackend> g_pointer_capture_backend;
 // The owner is created and destroyed on the SDL thread, but the experience
 // composition reaches it from its own thread. The mutex guards the pointer
@@ -1650,18 +1661,51 @@ bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
 }
 void ClearPreTextInputPumpCallback() { g_pre_text_input_pump_gate.Clear(); }
 void SetWindowTextInputOwnerEnabled(bool enabled) {
+  if (!enabled) {
+    g_text_input_requested_generation.store(0, std::memory_order_release);
+  }
   if (g_text_input_owner != nullptr) {
     g_text_input_owner->SetEnabled(enabled);
   }
 }
 bool RequestShowTextInput(uint64_t generation, const TextInputArea& area,
                           const TextInputOptions& options) {
-  return g_text_input_owner != nullptr &&
-         g_text_input_owner->RequestShowTextInput(generation, area, options);
+  const bool accepted =
+      g_text_input_owner != nullptr &&
+      g_text_input_owner->RequestShowTextInput(generation, area, options);
+  if (accepted) {
+    g_text_input_requested_generation.store(generation,
+                                            std::memory_order_release);
+  }
+  return accepted;
 }
 bool RequestHideTextInput(uint64_t generation) {
-  return g_text_input_owner != nullptr &&
-         g_text_input_owner->RequestHideTextInput(generation);
+  const bool accepted = g_text_input_owner != nullptr &&
+                        g_text_input_owner->RequestHideTextInput(generation);
+  if (accepted) {
+    uint64_t expected = generation;
+    g_text_input_requested_generation.compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
+  }
+  return accepted;
+}
+bool TextInputRequested() {
+  return g_text_input_requested_generation.load(std::memory_order_acquire) !=
+         0;
+}
+void QueueVirtualTextInput(const char* utf8) {
+  if (utf8 == nullptr || utf8[0] == '\0') {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
+  g_virtual_input.push_back(VirtualInput{utf8, 0});
+}
+void QueueVirtualKeyPress(uint32_t scancode) {
+  if (scancode == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
+  g_virtual_input.push_back(VirtualInput{{}, scancode});
 }
 void* GetGLProcAddress(const char* name) {
   if (!g_state.initialised || name == nullptr || name[0] == '\0') {
@@ -2275,6 +2319,31 @@ bool PumpEvents() {
       !g_pointer_capture_owner->Pump(g_text_input_owner != nullptr &&
                                      g_text_input_owner->active())) {
     fprintf(stderr, "  [input] SDL pointer capture state update failed\n");
+  }
+  {
+    std::deque<VirtualInput> virtual_input;
+    {
+      std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
+      virtual_input.swap(g_virtual_input);
+    }
+    for (const VirtualInput& input : virtual_input) {
+      platform::PlatformEvent event{};
+      event.timestamp_ns = SDL_GetTicksNS();
+      if (!input.text.empty()) {
+        event.payload = platform::TextInputEvent{input.text};
+        g_platform_event_observer.Notify(event);
+        continue;
+      }
+      const auto scancode = static_cast<SDL_Scancode>(input.scancode);
+      const auto keycode = static_cast<uint32_t>(
+          SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, false));
+      event.payload = platform::KeyEvent{true, false, input.scancode, keycode,
+                                         0};
+      g_platform_event_observer.Notify(event);
+      event.payload = platform::KeyEvent{false, false, input.scancode, keycode,
+                                         0};
+      g_platform_event_observer.Notify(event);
+    }
   }
   platform::PlatformEvent pending_motion{};
   bool has_pending_motion = false;
