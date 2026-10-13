@@ -2059,6 +2059,27 @@ void OpenXrBackend::HandleReferenceSpaceChange(std::int64_t change_time) {
   }
 }
 
+bool OpenXrBackend::RuntimeUsesGuestGpuLocked() {
+  // A runtime that cannot answer for this VkInstance is not proof of a
+  // mismatch; xrCreateSession then decides.
+  if (vk_instance_ == VK_NULL_HANDLE) return true;
+  PFN_xrVoidFunction function = nullptr;
+  if (XR_FAILED(xrGetInstanceProcAddr(static_cast<XrInstance>(xr_instance_),
+                                      "xrGetVulkanGraphicsDevice2KHR",
+                                      &function)) ||
+      function == nullptr)
+    return true;
+  auto info = XrInfo<XrVulkanGraphicsDeviceGetInfoKHR>(
+      XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR);
+  info.systemId = xr_system_;
+  info.vulkanInstance = vk_instance_;
+  VkPhysicalDevice runtime_device = VK_NULL_HANDLE;
+  if (XR_FAILED(reinterpret_cast<PFN_xrGetVulkanGraphicsDevice2KHR>(function)(
+          static_cast<XrInstance>(xr_instance_), &info, &runtime_device)))
+    return true;
+  return runtime_device == vk_physical_device_;
+}
+
 bool OpenXrBackend::RecoverSessionLocked(std::uint64_t now_ns) {
   if (!session_recovery_pending_ ||
       (graphics_api_ == VrGraphicsApi::kVulkan
@@ -2084,6 +2105,15 @@ bool OpenXrBackend::RecoverSessionLocked(std::uint64_t now_ns) {
     }
     xr_instance_stale_ = false;
     Log("  [vr-backend] OpenXR instance recreated for session recovery\n");
+    if (graphics_api_ == VrGraphicsApi::kVulkan &&
+        !RuntimeUsesGuestGpuLocked()) {
+      // The guest device cannot move to another GPU, so no later retry can
+      // succeed: stop recovering and keep playing without headset output.
+      session_recovery_pending_ = false;
+      Log("  [vr-backend] XR OUTPUT UNAVAILABLE: the restarted OpenXR runtime "
+          "uses a different GPU than Roblox. Restart Nightcap to use VR.\n");
+      return false;
+    }
   }
   // nullptr means reuse the verified queue family of this existing VkDevice.
   if (!(graphics_api_ == VrGraphicsApi::kVulkan

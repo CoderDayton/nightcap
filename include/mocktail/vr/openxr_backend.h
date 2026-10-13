@@ -305,6 +305,8 @@ class OpenXrBackend final {
   void HandleSessionState(int state);
   void HandleReferenceSpaceChange(std::int64_t change_time);
   bool RecoverSessionLocked(std::uint64_t now_ns);
+  // False only when the runtime names a GPU other than the guest device's.
+  bool RuntimeUsesGuestGpuLocked();
   void PollSessionEvents();
   bool SupportsPresentQueueLocked(VkQueue queue) const;
   VkQueue GraphicsQueueForPresentLocked(VkQueue present) const;
