@@ -339,6 +339,9 @@ void SaveFFlags(FFlagsEditor* editor) {
   g_free(characters);
   std::string error;
   if (editor->window->fflags.Save(text, &error)) {
+    // Undo cannot take back a save of fflags.json.
+    editor->window->document.ForgetUndo();
+    gtk_widget_set_visible(editor->window->undo, FALSE);
     gtk_revealer_set_reveal_child(editor->window->notice, TRUE);
     adw_dialog_force_close(editor->dialog);
     return;

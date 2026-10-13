@@ -362,6 +362,19 @@ TEST_F(SettingsModelTest, OnlyAChangeThatReachesTheFileCountsAsSaved) {
   EXPECT_EQ(document.saved_changes(), 1u);
 }
 
+TEST_F(SettingsModelTest, AForgottenChangeCannotBeUndone) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Set("input.raw_mouse", "true", &error)) << error;
+  const std::string saved = Read();
+
+  document.ForgetUndo();
+  EXPECT_FALSE(document.CanUndo());
+  EXPECT_TRUE(document.Undo(&error)) << error;
+  EXPECT_EQ(Read(), saved);
+}
+
 TEST_F(SettingsModelTest, UndoLeavesAHandEditMadeMeanwhileAlone) {
   SettingsDocument document(file_);
   std::string error;

@@ -147,6 +147,9 @@ class SettingsDocument {
   // file edited by hand since then is left alone, and that is an error.
   bool Undo(std::string* error);
 
+  // Drops the change Undo would take back. The file is left as it is.
+  void ForgetUndo() { undo_.reset(); }
+
   // How many times this document has changed the file. Setting a value the
   // file already holds does not count.
   std::size_t saved_changes() const { return saved_changes_; }
