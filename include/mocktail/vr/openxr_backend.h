@@ -443,7 +443,6 @@ class OpenXrBackend final {
   // A running session is hidden in SYNCHRONIZED; shouldRender still governs rendering.
   bool visibility_lost_ = false;
   bool session_recovery_pending_ = false;
-  bool test_session_loss_injected_ = false;
   std::uint64_t next_session_retry_ns_ = 0;
   // Consecutive failed session recoveries, for backoff and for deciding when
   // the XrInstance itself must be recreated (e.g. after a runtime restart).

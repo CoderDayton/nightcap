@@ -108,6 +108,22 @@ std::string EnvString(const char* name, const char* fallback) {
                                               : std::string(fallback);
 }
 
+#ifndef MOCKTAIL_VR_DIAGNOSTICS
+#define MOCKTAIL_VR_DIAGNOSTICS 0
+#endif
+// Desktop/acceptance diagnostics (scripted head pose, eye evidence dumps)
+// exist only in builds configured with -DMOCKTAIL_VR_DIAGNOSTICS=ON; in
+// normal builds their environment variables have no effect.
+std::string EvidenceDirectory() {
+  return MOCKTAIL_VR_DIAGNOSTICS ? EnvString("MOCKTAIL_VR_XR_EVIDENCE_DIR", "")
+                                 : std::string();
+}
+std::string PoseSource() {
+  return MOCKTAIL_VR_DIAGNOSTICS
+             ? EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime")
+             : std::string("runtime");
+}
+
 // Coordinate and pose math is shared with the unit tests through
 // vr_pose_math.h, which documents every space and unit in the camera path, so
 // the audited conventions cannot silently diverge from the backend.
@@ -796,7 +812,7 @@ void OpenXrBackend::SetupDeviceAfterCreationLocked(
     Log("  [vr-backend] XR session bound to guest VkDevice: gpu=%s runtime=%s "
         "pose_source=%s\n",
         device_properties.deviceName, runtime_name_.c_str(),
-        EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime").c_str());
+        PoseSource().c_str());
 }
 
 bool OpenXrBackend::InitializeSessionLocked(
@@ -902,7 +918,7 @@ Status OpenXrBackend::AttachGlesContext(void *display, void *config,
     Require(InitializeGlesSessionLocked(&error), error);
     Log("  [vr-backend] bound OpenGL ES context to OpenXR; GPU eye copies "
         "enabled, pose_source=%s\n",
-        EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime").c_str());
+        PoseSource().c_str());
     return Status::Ok();
   } catch (const std::exception &error) {
     TeardownSessionLocked("EGL binding failed");
@@ -1211,7 +1227,7 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
           XrInfo<XrSwapchainCreateInfo>(XR_TYPE_SWAPCHAIN_CREATE_INFO);
       create_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
                                XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
-      if (!EnvString("MOCKTAIL_VR_XR_EVIDENCE_DIR", "").empty())
+      if (!EvidenceDirectory().empty())
         create_info.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
       create_info.format = static_cast<std::int64_t>(chosen);
       create_info.sampleCount = 1;
@@ -2231,18 +2247,6 @@ bool OpenXrBackend::NoteHostPresentLocked(VkQueue queue, VkDevice device) {
     }
     perf::ProcessCollector().Count(perf::Counter::kPresents);
     RunFrameCycle(queue, device);
-    // Explicit, one-shot fault injection for the isolated correctness canary.
-    // Never active in a normal authenticated/headset launch.
-    const auto loss_frame =
-        EnvUnsigned("MOCKTAIL_VR_TEST_SESSION_LOSS_AFTER", 0);
-    if (!test_session_loss_injected_ && loss_frame > 0 &&
-        EnvString("MOCKTAIL_ISOLATED_CANARY", "") == "1" &&
-        submitted_frames_.load() >= loss_frame) {
-      test_session_loss_injected_ = true;
-      Log("  [vr-backend][test] injecting session loss on existing guest "
-          "device\n");
-      HandleSessionState(XR_SESSION_STATE_LOSS_PENDING);
-    }
     perf::ProcessCollector().EmitIfDue(perf::NowNs(), "xr-frame-cycle");
     return false;
   } catch (const XrCallError &error) {
@@ -2431,7 +2435,7 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
       const std::uint64_t submitted =
           submitted_frames_.fetch_add(1, std::memory_order_relaxed) + 1;
       if (submitted == 1 || submitted % 120 == 0 ||
-          (!EnvString("MOCKTAIL_VR_XR_EVIDENCE_DIR", "").empty() &&
+          (!EvidenceDirectory().empty() &&
            published_pose_.frame %
                    std::max<std::uint64_t>(
                        1,
@@ -2536,7 +2540,7 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
             XR_SUCCEEDED(head_result) &&
             (head.locationFlags & required_location) == required_location;
         const std::string pose_source =
-            EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime");
+            PoseSource();
         Pose head_pose = head_valid ? XrToPose(head.pose) : Pose{};
         if (head_valid) {
           // Tracked LOCAL head pose, independent of the scripted test source;
@@ -3459,7 +3463,7 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
 // Diagnostic only: read BOTH images on the guest queue while the XR image is
 // still acquired. Never read a released image owned by the compositor.
 bool OpenXrBackend::CaptureEyeEvidence(VkQueue queue, int eye) {
-  const std::string directory = EnvString("MOCKTAIL_VR_XR_EVIDENCE_DIR", "");
+  const std::string directory = EvidenceDirectory();
   const auto interval = std::max<std::uint64_t>(
       1, EnvUnsigned("MOCKTAIL_VR_XR_EVIDENCE_INTERVAL", 20));
   if (directory.empty() || published_pose_.frame % interval != 0)

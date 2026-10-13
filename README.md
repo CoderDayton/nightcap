@@ -272,6 +272,9 @@ MOCKTAIL_VR_RUNTIME=alvr MOCKTAIL_GRAPHICS_BACKEND=direct-vulkan ./build/mocktai
 If you previously set `XR_RUNTIME_JSON`, unset it before switching runtimes.
 Use `--no-vr` for desktop mode.
 
+Every VR environment variable, from frame-rate limits to hand pitch, is listed
+in [docs/VR.md](docs/VR.md).
+
 ### Typing in VR
 
 When a text box takes focus (chat, search), a keyboard opens in front of you,

@@ -82,6 +82,11 @@ if(MOCKTAIL_ENABLE_VR)
     src/vr/xr_actions.cc
     PROPERTIES COMPILE_OPTIONS -fexceptions)
   target_compile_definitions(mocktail_vr PRIVATE XR_USE_GRAPHICS_API_VULKAN)
+  option(MOCKTAIL_VR_DIAGNOSTICS
+    "Compile VR diagnostics: scripted head pose, eye evidence dumps" OFF)
+  if(MOCKTAIL_VR_DIAGNOSTICS)
+    target_compile_definitions(mocktail_vr PRIVATE MOCKTAIL_VR_DIAGNOSTICS=1)
+  endif()
   set_source_files_properties(src/vr/openxr_backend.cc PROPERTIES COMPILE_DEFINITIONS "XR_USE_GRAPHICS_API_OPENGL_ES;XR_USE_PLATFORM_EGL")
   target_include_directories(mocktail_vr PRIVATE ${MOCKTAIL_EGL_INCLUDE_DIR} ${MOCKTAIL_GLES3_INCLUDE_DIR})
   target_link_libraries(mocktail_vr PRIVATE OpenXR::openxr_loader Vulkan::Headers ${CMAKE_DL_LIBS})
