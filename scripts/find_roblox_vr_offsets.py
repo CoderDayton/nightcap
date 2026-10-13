@@ -1224,6 +1224,12 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                 raise AnalyzerError(
                     f"ambiguous {label} contract matches: {listed}")
         state_slot, state_getter = state_matches[0]
+        # is_state_getter accepts exactly one direct call: the memcpy.
+        state_memcpy = next(
+            instruction.operands[0].imm
+            for instruction in disasm.function(*table.bounds(state_getter))
+            if instruction.mnemonic == "call" and instruction.operands and
+            instruction.operands[0].type == capstone_x86.X86_OP_IMM)
         eye_slot, eye_getter = eye_matches[0]
         initializer_slot, eye_initializer = initializer_matches[0]
         for label, slot, expected in (
@@ -1430,6 +1436,8 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
             "vr_bridge_supplement": {
                 "state_getter_vtable_slot_offset":
                     f"0x{state_slot:x}",
+                "state_getter_memcpy_rva":
+                    f"0x{state_memcpy:x}",
                 "eye_getter_vtable_slot_offset":
                     f"0x{eye_slot:x}",
                 "eye_initializer_vtable_slot_offset":

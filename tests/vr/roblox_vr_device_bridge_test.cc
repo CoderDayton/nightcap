@@ -10,9 +10,12 @@
 #include <limits>
 #include "mocktail/vr/openxr_backend.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "compat/build_profile.h"
@@ -314,7 +317,8 @@ TEST(VrConstructorContract, VerifiesRelocatedVtableFor3092) {
 
 TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
   for (const auto* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"}) {
+                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
+                         "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}) {
     const auto& contract = *internal::FindVrBuildContract(id);
     std::array<std::uint8_t, 0x1b2> code{};
     // movsxd rax,[rsi+selector] and movss xmm0,[r14+HeadScale].
@@ -887,12 +891,12 @@ namespace {
 
 TEST(VrSupportedBuilds, NamesEveryVerifiedBuild) {
   EXPECT_EQ(DescribeSupportedVrBuilds(),
-            "2998 (2.736.1408) and 3092 (2.738.1397)");
+            "2998 (2.736.1408), 3092 (2.738.1397) and 3222 (2.742.1059)");
 }
 
 TEST(VrSupportedBuilds, InstallNamesTheBuildAndTheSupportedOnes) {
   compat::BuildProfile profile;
-  profile.elf_build_id = "a67a91ef96c700c0730acd36a250c2f93cfafbc1";  // 3222
+  profile.elf_build_id = "00112233445566778899aabbccddeeff00112233";
   profile.vr_debug_device_bridge = *FindRobloxVrDeviceProfile(
       "ade08266c67aee88ec9c1d00902150e1684dad3a");
   RobloxVrDeviceBridge bridge;
@@ -986,6 +990,87 @@ TEST(VrPointerLayout, VerifiedBuildsKeepTheirOffsets) {
     EXPECT_EQ(contract->pointer_hand_selector_offset, 0x118u) << id;
     EXPECT_EQ(contract->camera_head_scale_offset, 0x140u) << id;
   }
+}
+
+}  // namespace
+}  // namespace mocktail::vr
+
+namespace mocktail::vr {
+namespace {
+
+TEST(VrSupportedBuilds, Build3222CarriesTheOffsetFindersValues) {
+  // scripts/find_roblox_vr_offsets.py on the 2.742.1059 x86-64 libroblox.so.
+  const auto* contract = internal::FindVrBuildContract(
+      "a67a91ef96c700c0730acd36a250c2f93cfafbc1");
+  ASSERT_NE(contract, nullptr);
+  EXPECT_EQ(contract->device.vtable_rva, 0x7083a48u);
+  EXPECT_EQ(contract->device.constructor_rva, 0x549c884u);
+  EXPECT_EQ(contract->device.state_getter_rva, 0x549cc66u);
+  EXPECT_EQ(contract->device.eye_getter_rva, 0x549cc56u);
+  EXPECT_EQ(contract->device.eye_initializer_rva, 0x549cc88u);
+  EXPECT_EQ(contract->device.emulator_flag_storage_rva, 0x74d1640u);
+  EXPECT_EQ(contract->device.device_create_framebuffer_vtable_offset, 0x190u);
+  EXPECT_EQ(contract->state_memcpy_rva, 0x6daad30u);
+  EXPECT_EQ(contract->pointer_frame_rva, 0x4fd8cb0u);
+  EXPECT_EQ(contract->workspace_getter_rva, 0x264bb76u);
+  EXPECT_EQ(contract->camera_vtable_offset, 0x3a0u);
+  EXPECT_EQ(contract->hand_pitch_storage_rva, 0x74cf430u);
+  EXPECT_EQ(contract->haptic_sink_rva, 0x1e2fcf0u);
+  EXPECT_EQ(contract->pointer_hand_selector_offset, 0x108u);
+  EXPECT_EQ(contract->camera_head_scale_offset, 0x130u);
+}
+
+// MOCKTAIL_TEST_VR_PAYLOADS names a payload store: <code>-<build id>/libroblox.so.
+TEST(VrSupportedBuilds, ContractsMatchTheRealLibraries) {
+  const char* root = std::getenv("MOCKTAIL_TEST_VR_PAYLOADS");
+  if (root == nullptr || root[0] == '\0') {
+    GTEST_SKIP() << "MOCKTAIL_TEST_VR_PAYLOADS is not set";
+  }
+  int checked = 0;
+  for (const auto& [code_name, id] :
+       {std::pair<const char*, const char*>{
+            "2998", "ade08266c67aee88ec9c1d00902150e1684dad3a"},
+        {"3092", "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"},
+        {"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}}) {
+    const std::string path =
+        std::string(root) + "/" + code_name + "-" + id + "/libroblox.so";
+    std::ifstream file(path, std::ios::binary);
+    if (!file) continue;
+    const std::vector<char> bytes((std::istreambuf_iterator<char>(file)),
+                                  std::istreambuf_iterator<char>());
+    const auto* contract = internal::FindVrBuildContract(id);
+    ASSERT_NE(contract, nullptr) << id;
+    // The first load segment maps file offset 0 at address 0, so a code RVA
+    // is also its file offset.
+    const auto code_at = [&](std::uintptr_t rva) {
+      return reinterpret_cast<const std::uint8_t*>(bytes.data()) + rva;
+    };
+    const auto size_at = [&](std::uintptr_t rva) {
+      return rva < bytes.size() ? bytes.size() - rva : 0;
+    };
+    const auto& device = contract->device;
+    EXPECT_TRUE(internal::HasExpectedVrStateGetterContract(
+        code_at(device.state_getter_rva), size_at(device.state_getter_rva),
+        *contract))
+        << code_name;
+    EXPECT_TRUE(internal::HasExpectedVrEyeGetterContract(
+        code_at(device.eye_getter_rva), size_at(device.eye_getter_rva)))
+        << code_name;
+    EXPECT_TRUE(internal::HasExpectedVrConstructorContract(
+        code_at(device.constructor_rva), size_at(device.constructor_rva),
+        device))
+        << code_name;
+    EXPECT_TRUE(internal::HasExpectedVrEyeInitializerContract(
+        code_at(device.eye_initializer_rva),
+        size_at(device.eye_initializer_rva), device))
+        << code_name;
+    EXPECT_TRUE(internal::HasExpectedVrPointerContract(
+        code_at(contract->pointer_frame_rva),
+        size_at(contract->pointer_frame_rva), *contract))
+        << code_name;
+    ++checked;
+  }
+  if (checked == 0) GTEST_SKIP() << "no payload found under " << root;
 }
 
 }  // namespace

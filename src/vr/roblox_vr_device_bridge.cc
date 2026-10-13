@@ -418,6 +418,18 @@ constexpr VrBuildContract kContracts[] = {
      0x118,
      0x140,
      "3092 (2.738.1397)"},
+    {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+     {0x7083a48, 0x549c884, 0x549cc66, 0x549cc56, 0x549cc88, 0x74d1640,
+      0x190},
+     0x6daad30,
+     0x4fd8cb0,
+     0x264bb76,
+     0x3a0,
+     0x74cf430,
+     0x1e2fcf0,
+     0x108,
+     0x130,
+     "3222 (2.742.1059)"},
 };
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id) {
