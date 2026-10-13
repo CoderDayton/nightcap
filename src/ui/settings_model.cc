@@ -497,6 +497,17 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "",
                  {}},
             }},
+           {"Updates",
+            {
+                {"updates.automatic",
+                 "Update Roblox automatically",
+                 "Off keeps the Roblox build you have. Roblox stops old "
+                 "builds from joining after a while.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
+            }},
            {"Files",
             {
                 {"config_folder",

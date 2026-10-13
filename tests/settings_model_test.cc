@@ -125,6 +125,32 @@ TEST_F(SettingsModelTest, TheAdvancedPageOpensTheConfigFolder) {
   EXPECT_EQ(&advanced.groups.back().settings.back(), &folder);
 }
 
+TEST_F(SettingsModelTest, AutomaticUpdatesIsASwitchThatIsOnUntilTurnedOff) {
+  const Setting& updates = Find("updates.automatic");
+  EXPECT_EQ(updates.kind, SettingKind::kToggle);
+
+  // The first-run file, then a file from before the updates section.
+  for (const std::string_view file : {"", "graphics:\n  backend: opengl\n"}) {
+    SCOPED_TRACE(std::string(file));
+    std::filesystem::remove(file_);
+    if (!file.empty()) {
+      Write(file);
+    }
+    SettingsDocument document(file_);
+    std::string error;
+    ASSERT_TRUE(document.Load(&error)) << error;
+    EXPECT_TRUE(ToggleState(updates, document.Value(updates.key)));
+
+    ASSERT_TRUE(document.Set(updates.key, "false", &error)) << error;
+    EXPECT_FALSE(ToggleState(updates, document.Value(updates.key)));
+    EXPECT_NE(Read().find("updates:\n"), std::string::npos) << Read();
+    EXPECT_NE(Read().find("\n  automatic: false\n"), std::string::npos)
+        << Read();
+    const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+    EXPECT_TRUE(loaded) << loaded.error;
+  }
+}
+
 TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
   SettingsDocument document(file_);
   std::string error;
