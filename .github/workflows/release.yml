@@ -336,3 +336,15 @@ jobs:
             --title "Nightcap $tag" --notes-file release/notes.md
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
             "${uploads[@]}"
+
+  # nightcap-bin downloads the pacman package from the release page, so this
+  # waits for the upload.
+  aur:
+    name: Publish AUR packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    uses: ./.github/workflows/aur-publish.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

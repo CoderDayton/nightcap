@@ -84,8 +84,17 @@ sudo pacman -U nightcap-<version>-1-x86_64.pkg.tar.zst
 ```
 
 They install `/usr/bin/mocktail`, so they conflict with upstream's `mocktail`
-package. Nightcap is not in any distribution repository or the AUR; the
-recipes under `packaging/aur` are kept for local builds only.
+package.
+
+On Arch Linux, [`nightcap-git`](https://aur.archlinux.org/packages/nightcap-git)
+is on the AUR. It builds the current `main` branch and is maintained by
+[@dim-ghub](https://github.com/dim-ghub):
+
+```bash
+yay -S nightcap-git
+```
+
+Nightcap is in no other distribution repository.
 
 Or build and install from source using the steps under
 [Building](#building).

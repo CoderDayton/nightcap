@@ -1,0 +1,118 @@
+name: Publish AUR packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, such as v0.3.4
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish nightcap and nightcap-bin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Render the recipes
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]]
+          version="${TAG#v}"
+          archive="nightcap-${version}-1-x86_64.pkg.tar.zst"
+          # nightcap-bin installs the pacman package from the release page, so
+          # its checksum is the one published beside that asset.
+          checksum="$(curl -fsSL \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${archive}.sha256" |
+            awk '{print $1}')"
+          [[ "$checksum" =~ ^[0-9a-f]{64}$ ]]
+
+          sed -i "s/^pkgver=.*/pkgver=${version}/" \
+            packaging/aur/nightcap/PKGBUILD packaging/aur/nightcap-bin/PKGBUILD
+          sed -i "s/^sha256sums=('SKIP')$/sha256sums=('${checksum}')/" \
+            packaging/aur/nightcap-bin/PKGBUILD
+          grep -Fqx "sha256sums=('${checksum}')" packaging/aur/nightcap-bin/PKGBUILD
+
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/packaging/aur:/aur" \
+            ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
+              useradd --create-home builder
+              for package in nightcap nightcap-bin; do
+                install -d -o builder -g builder "/tmp/${package}"
+                install -o builder -g builder -m 0644 \
+                  "/aur/${package}/PKGBUILD" "/tmp/${package}/PKGBUILD"
+                runuser -u builder -- bash -c \
+                  "cd /tmp/${package} && makepkg --printsrcinfo" \
+                  > "/aur/${package}/.SRCINFO"
+              done
+            '
+
+          for package in nightcap nightcap-bin; do
+            grep -Fqx "pkgver=${version}" "packaging/aur/${package}/PKGBUILD"
+            grep -Fqx $'\tpkgver = '"${version}" "packaging/aur/${package}/.SRCINFO"
+          done
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Push to the AUR
+        shell: bash
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${AUR_SSH_PRIVATE_KEY}" ]]; then
+            echo "::notice::AUR_SSH_PRIVATE_KEY is not set; nothing was pushed to the AUR"
+            exit 0
+          fi
+
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -rf "$ssh_dir"' EXIT
+          install -m 0600 /dev/null "$ssh_dir/key"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          # The AUR lists this key's fingerprint on its front page:
+          # SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4
+          printf '%s\n' \
+            'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
+
+          for package in nightcap nightcap-bin; do
+            checkout="$ssh_dir/$package"
+            git clone "ssh://aur@aur.archlinux.org/${package}.git" "$checkout"
+            cp "packaging/aur/${package}/PKGBUILD" "packaging/aur/${package}/.SRCINFO" \
+              "$checkout/"
+            git -C "$checkout" add PKGBUILD .SRCINFO
+            if git -C "$checkout" diff --cached --quiet; then
+              echo "::notice::${package} is already at ${VERSION}"
+              continue
+            fi
+            git -C "$checkout" \
+              -c user.name='Nightcap release' \
+              -c user.email='CoderDayton@users.noreply.github.com' \
+              commit --quiet -m "Update to ${VERSION}"
+            # The AUR only accepts the master branch.
+            git -C "$checkout" push origin HEAD:master
+          done

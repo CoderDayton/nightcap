@@ -388,7 +388,8 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   ResolvedAsset resolved = ResolveAssetPath(filename);
   if (resolved.path.empty()) {
     if (AssetTraceEnabled()) {
-      std::fprintf(stderr, "[asset] open failed for %s\n", filename);
+      std::fprintf(stderr, "[asset] miss %s\n",
+                   filename != nullptr ? filename : "(null)");
     }
     return nullptr;
   }

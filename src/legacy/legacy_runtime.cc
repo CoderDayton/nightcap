@@ -70,6 +70,7 @@
 #include "runtime/jnivm_platform_web_callbacks.h"
 #include "runtime/owned_pthread.h"
 #include "runtime/platform_cache_migration.h"
+#include "runtime/asset_overlay_names.h"
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
@@ -1964,6 +1965,48 @@ extern "C" void MocktailConstructorWrapper() {
   MaybePrintLibRobloxConstructorSummary(idx);
 }
 
+// Unmaps the rbxasset:// names that have a file in the asset overlay folder, so
+// Roblox opens those files instead of downloading the stock asset. Must run
+// before any libroblox code does: the segment loses PROT_EXEC while it is
+// written.
+void DisableOverlaidAssetMappings(uintptr_t base) {
+  const std::vector<std::string> names = mocktail::runtime::OverlayRbxAssetNames(
+      CurrentRuntimePaths().asset_overlay_dir());
+  const long page_size = sysconf(_SC_PAGESIZE);
+  if (names.empty() || page_size <= 0) {
+    return;
+  }
+  const auto* header = reinterpret_cast<const Elf64_Ehdr*>(base);
+  const auto* segments =
+      reinterpret_cast<const Elf64_Phdr*>(base + header->e_phoff);
+  std::size_t changed = 0;
+  for (std::size_t index = 0; index < header->e_phnum; ++index) {
+    const Elf64_Phdr& segment = segments[index];
+    if (segment.p_type != PT_LOAD || (segment.p_flags & PF_W) != 0 ||
+        segment.p_filesz == 0) {
+      continue;
+    }
+    const uintptr_t begin = base + segment.p_vaddr;
+    const uintptr_t page_mask = static_cast<uintptr_t>(page_size) - 1;
+    const uintptr_t page_begin = begin & ~page_mask;
+    const std::size_t span =
+        ((begin + segment.p_filesz + page_mask) & ~page_mask) - page_begin;
+    const int original =
+        PROT_READ | ((segment.p_flags & PF_X) != 0 ? PROT_EXEC : 0);
+    if (mprotect(reinterpret_cast<void*>(page_begin), span,
+                 PROT_READ | PROT_WRITE) != 0) {
+      continue;
+    }
+    changed += mocktail::runtime::DisableAssetNameMappings(
+        reinterpret_cast<std::uint8_t*>(begin), segment.p_filesz, names);
+    mprotect(reinterpret_cast<void*>(page_begin), span, original);
+  }
+  std::cout << "  [asset] overlay holds " << names.size()
+            << " rbxasset file(s); unmapped " << changed
+            << " download name(s)\n"
+            << std::flush;
+}
+
 extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
                                                     uintptr_t base) {
   if (realpath == nullptr || std::strstr(realpath, "libroblox.so") == nullptr ||
@@ -1972,6 +2015,7 @@ extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
   }
 
   g_libroblox_base = base;
+  DisableOverlaidAssetMappings(base);
   g_mocktail_abort_libroblox_base = base;
   g_libroblox_base_static = base;
 
