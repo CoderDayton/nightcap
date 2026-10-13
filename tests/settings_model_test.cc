@@ -266,14 +266,27 @@ TEST_F(SettingsModelTest, ADeviceNightcapCouldNotPickByNameIsLeftOut) {
 
 TEST_F(SettingsModelTest, ADeviceTheFileNamesStaysListedWhenItIsNotFound) {
   const Setting& input = Find("audio.input_device");
-  for (const std::string value : {"Old Mic", "id:7"}) {
-    const std::vector<DeviceChoice> choices =
-        DeviceChoices(input, {"USB Mic"}, value);
-    ASSERT_EQ(Values(choices),
-              (std::vector<std::string>{"default", "disabled", "USB Mic",
-                                        value}));
-    EXPECT_EQ(choices.back().label, value + " (not found)");
+  const std::vector<DeviceChoice> missing =
+      DeviceChoices(input, {"USB Mic"}, "Old Mic");
+  ASSERT_EQ(Values(missing),
+            (std::vector<std::string>{"default", "disabled", "USB Mic",
+                                      "Old Mic"}));
+  EXPECT_EQ(missing.back().label, "Old Mic (not found)");
+  // The input device can be given by its number, which names no device.
+  const std::vector<DeviceChoice> numbered =
+      DeviceChoices(input, {"USB Mic"}, "id:7");
+  ASSERT_EQ(Values(numbered),
+            (std::vector<std::string>{"default", "disabled", "USB Mic",
+                                      "id:7"}));
+  EXPECT_EQ(numbered.back().label, "Device number 7");
+  for (const std::string value : {"id:", "id:7a", "id: 7"}) {
+    EXPECT_EQ(DeviceChoices(input, {}, value).back().label,
+              value + " (not found)");
   }
+  EXPECT_EQ(DeviceChoices(Find("audio.output_device"), {}, "id:7")
+                .back()
+                .label,
+            "id:7 (not found)");
   // Two devices share the name the file holds, so neither can be picked.
   const std::vector<DeviceChoice> shared =
       DeviceChoices(input, {"Webcam", "Webcam"}, "Webcam");

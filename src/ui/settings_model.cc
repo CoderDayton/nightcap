@@ -567,13 +567,26 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
   if (value.empty()) {
     value = setting.default_value;
   }
-  if (!listed(value)) {
-    const bool shared =
-        std::find(devices.begin(), devices.end(), value) != devices.end();
-    choices.push_back(
-        {std::string(value), std::string(value) +
-                                 (shared ? " (name not unique)" : " (not found)")});
+  if (listed(value)) {
+    return choices;
   }
+  // The input device can be given as "id:" and SDL's number for it.
+  constexpr std::string_view kNumberPrefix = "id:";
+  const std::string_view number =
+      value.substr(std::min(kNumberPrefix.size(), value.size()));
+  if (setting.key == "audio.input_device" &&
+      value.substr(0, kNumberPrefix.size()) == kNumberPrefix &&
+      !number.empty() &&
+      number.find_first_not_of("0123456789") == std::string_view::npos) {
+    choices.push_back(
+        {std::string(value), "Device number " + std::string(number)});
+    return choices;
+  }
+  const bool shared =
+      std::find(devices.begin(), devices.end(), value) != devices.end();
+  choices.push_back(
+      {std::string(value),
+       std::string(value) + (shared ? " (name not unique)" : " (not found)")});
   return choices;
 }
 
