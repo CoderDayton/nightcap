@@ -48,8 +48,21 @@ button:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
 
 .top a:hover { color: var(--ink); }
 
-.hero h1 {
+.eyebrow {
+  display: inline-block;
   margin: clamp(48px, 12vh, 130px) 0 0;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+  color: var(--link);
+  font-size: .85rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  margin: 18px 0 0;
   font-size: clamp(3.6rem, 15vw, 9.5rem);
   font-weight: 800;
   line-height: .95;
@@ -66,7 +79,7 @@ button:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
 }
 
 .lede {
-  max-width: 30ch;
+  max-width: 34ch;
   margin: 22px 0 0;
   color: var(--ink);
   font-size: 1.25rem;

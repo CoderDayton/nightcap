@@ -11,10 +11,12 @@
   </h1>
 </div>
 
-Nightcap is Mocktail, tuned for playing on a real PC. It runs the Android
-`x86_64` Roblox client on Linux, including a Linux userspace hosted by
-FreeBSD's Linuxulator. It provides the Android ABI and JNI pieces the client
-expects, then connects them to SDL3 and Vulkan or OpenGL on the Linux side.
+Nightcap is Roblox on Linux, tuned for desktop play. It is a Mocktail fork
+that keeps up with Roblox updates, with extra bug fixes, custom assets and
+more. It runs the Android `x86_64` Roblox client on Linux, including a Linux
+userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI
+pieces the client expects, then connects them to SDL3 and Vulkan or OpenGL on
+the Linux side.
 
 Nightcap is an independent community project. It is not affiliated with Roblox
 Corporation or VinegarHQ and does not distribute the Roblox client.
@@ -27,27 +29,25 @@ with extra fixes for playing on a PC. The program and config paths keep the
 `io.github.CoderDayton.nightcap`, so Nightcap and upstream can be installed
 side by side.
 
-- **Lower input lag.** Frames are shown as soon as they are ready instead of
-  waiting in a queue.
-- **Sharper textures.** Small textures are upscaled 4x by default, and you
-  can replace any texture with your own PNG in `~/.config/mocktail/textures`.
-  A ready-made crosshair is in [`textures/`](textures/README.md). Set
-  `MOCKTAIL_SMALL_TEXTURE_UPSCALE=1` to turn the upscale off.
-- **Replace bundled files.** Put your own cursors, fonts or sky textures in
-  `~/.local/share/mocktail/asset_overlay`, under the same path Roblox uses,
-  and Nightcap loads them instead. The layout matches Sober's `asset_overlay`
-  folder. See [`textures/`](textures/README.md) for which folder to use.
-- **ETC2 textures on any GPU.** Games that use compressed mobile textures now
-  render correctly on desktop GPUs, without stutter.
-- **No more error 319 kicks.** Servers no longer drop you shortly after
-  joining.
-- **Correct device info.** Roblox sees your real RAM and screen size.
-- **Better desktop launcher.** Runs on Wayland and always finds the installed
-  binary.
+- **Keeps up with Roblox.** New Roblox versions work soon after they come out.
+- **Plays more games.** Nightcap answers a server check that some experiences
+  use, so you can join and stay in those too.
+- **Voice chat that keeps working.** Your microphone still works after a
+  Roblox update.
+- **Logging in works.** Verification checks and captchas finish instead of
+  hanging.
+- **The current Roblox look.** The new home screen and side menu, like on
+  Windows.
+- **Your own cursors, fonts and skies.** Drop files in
+  `~/.local/share/mocktail/asset_overlay` and Nightcap uses them. The layout
+  matches Sober's `asset_overlay` folder.
+- **Smoother mouse and a cooler PC.** Optional raw mouse input, and less CPU
+  use while idle.
 
-Everything else works the same as upstream. See the
-[roadmap](docs/ROADMAP.md) for what is coming next, the
-[changelog](CHANGELOG.md) for what each release changed,
+Everything else works the same as upstream. See
+[`textures/`](textures/README.md) for custom textures, a ready-made crosshair
+and the asset overlay folder, the [roadmap](docs/ROADMAP.md) for what is
+coming next, the [changelog](CHANGELOG.md) for what each release changed,
 [performance](docs/PERFORMANCE.md) for CPU load, heat and the knobs that change
 them, and the [FAQ](FAQ.md) for Discord RPC, logs, and VR.
 
@@ -121,8 +121,6 @@ removing the marker.
 ![Roblox home in Nightcap](assets/screenshots/flatpak-home.png)
 
 ![Roblox gameplay in Nightcap](assets/screenshots/flatpak-gameplay-tower.png)
-
-![Roblox experience in Nightcap](assets/screenshots/flatpak-gameplay-lobby.png)
 
 </details>
 
