@@ -3211,5 +3211,164 @@ TEST_F(JniVmTest, DeletedHighIndexStringHandleReadsAsEmpty) {
   EXPECT_EQ(env->GetStringLength(high), 0);
 }
 
+std::size_t CountOccurrences(const std::string &text,
+                             const std::string &needle) {
+  std::size_t count = 0;
+  for (std::size_t at = text.find(needle); at != std::string::npos;
+       at = text.find(needle, at + needle.size())) {
+    ++count;
+  }
+  return count;
+}
+
+TEST_F(JniVmTest, UnhandledCallIsReportedOncePerClassAndMethod) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass first = env->FindClass("example/UnhandledFirst");
+  jclass second = env->FindClass("example/UnhandledSecond");
+  const jmethodID constructor = env->GetMethodID(first, "<init>", "()V");
+  jobject first_object = env->NewObject(first, constructor);
+  jobject second_object = env->NewObject(second, constructor);
+  const jmethodID method = env->GetMethodID(first, "zzReportedVoid", "(I)V");
+
+  ::testing::internal::CaptureStderr();
+  env->CallVoidMethod(first_object, method, 1);
+  env->CallVoidMethod(first_object, method, 2);
+  CallVoidMethodVForTest(env, first_object, method, 3);
+  env->CallVoidMethod(second_object, method, 4);
+  const std::string output = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(CountOccurrences(output, "  [JNI] no handler for "
+                                     "example/UnhandledFirst.zzReportedVoid(I)V\n"),
+            1u);
+  EXPECT_EQ(CountOccurrences(output, "  [JNI] no handler for "
+                                     "example/UnhandledSecond.zzReportedVoid(I)V\n"),
+            1u);
+}
+
+TEST_F(JniVmTest, UnhandledCallsAreReportedForEveryResultType) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass cls = env->FindClass("example/UnhandledResults");
+  jobject object =
+      env->NewObject(cls, env->GetMethodID(cls, "<init>", "()V"));
+  const auto id = [&](const char *name, const char *sig) {
+    return env->GetMethodID(cls, name, sig);
+  };
+  const auto static_id = [&](const char *name, const char *sig) {
+    return env->GetStaticMethodID(cls, name, sig);
+  };
+
+  ::testing::internal::CaptureStderr();
+  EXPECT_EQ(env->CallObjectMethod(object, id("zzObject", "()Ljava/lang/Object;")),
+            nullptr);
+  EXPECT_EQ(env->CallBooleanMethod(object, id("zzBoolean", "()Z")), JNI_FALSE);
+  EXPECT_EQ(env->CallIntMethod(object, id("zzInt", "()I")), 0);
+  EXPECT_EQ(env->CallLongMethod(object, id("zzLong", "()J")), 0);
+  EXPECT_EQ(env->CallFloatMethod(object, id("zzFloat", "()F")), 0.0f);
+  EXPECT_EQ(env->CallDoubleMethod(object, id("zzDouble", "()D")), 0.0);
+  EXPECT_EQ(env->CallByteMethod(object, id("zzByte", "()B")), 0);
+  env->CallStaticVoidMethod(cls, static_id("zzStaticVoid", "()V"));
+  EXPECT_EQ(env->CallStaticObjectMethod(
+                cls, static_id("zzStaticObject", "()Ljava/lang/Object;")),
+            nullptr);
+  EXPECT_EQ(
+      env->CallStaticBooleanMethod(cls, static_id("zzStaticBoolean", "()Z")),
+      JNI_FALSE);
+  EXPECT_EQ(env->CallStaticIntMethod(cls, static_id("zzStaticInt", "()I")), 0);
+  EXPECT_EQ(env->CallStaticLongMethod(cls, static_id("zzStaticLong", "()J")),
+            0);
+  EXPECT_EQ(env->CallStaticFloatMethod(cls, static_id("zzStaticFloat", "()F")),
+            0.0f);
+  const std::string output = ::testing::internal::GetCapturedStderr();
+
+  const std::string prefix = "  [JNI] no handler for example/UnhandledResults.";
+  const std::string static_prefix =
+      "  [JNI] no handler for static example/UnhandledResults.";
+  for (const char *method :
+       {"zzObject()Ljava/lang/Object;", "zzBoolean()Z", "zzInt()I", "zzLong()J",
+        "zzFloat()F", "zzDouble()D", "zzByte()B"}) {
+    EXPECT_EQ(CountOccurrences(output, prefix + method + "\n"), 1u) << method;
+  }
+  for (const char *method :
+       {"zzStaticVoid()V", "zzStaticObject()Ljava/lang/Object;",
+        "zzStaticBoolean()Z", "zzStaticInt()I", "zzStaticLong()J",
+        "zzStaticFloat()F"}) {
+    EXPECT_EQ(CountOccurrences(output, static_prefix + method + "\n"), 1u)
+        << method;
+  }
+}
+
+TEST_F(JniVmTest, HandledAndDeliberatelyIgnoredCallsAreNotReported) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass cls = env->FindClass("example/HandledProbe");
+  jobject object =
+      env->NewObject(cls, env->GetMethodID(cls, "<init>", "()V"));
+  env->SetIntField(object, env->GetFieldID(cls, "zzCount", "I"), 7);
+  jclass callback_class =
+      env->FindClass("com/roblox/engine/jni/EngineJavaCallback2");
+  jobject callback = env->NewObject(
+      callback_class, env->GetMethodID(callback_class, "<init>", "()V"));
+  jclass helper_class = env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->NewObject(
+      helper_class, env->GetMethodID(helper_class, "<init>", "()V"));
+  jvalue no_args[1] = {};
+
+  ::testing::internal::CaptureStderr();
+  (void)env->CallIntMethod(object, env->GetMethodID(cls, "getScreenWidth", "()I"));
+  EXPECT_EQ(env->CallIntMethod(object, env->GetMethodID(cls, "getZzCount", "()I")),
+            7);
+  env->CallVoidMethod(callback,
+                      env->GetMethodID(callback_class, "c", "()V"));
+  env->CallVoidMethodA(
+      helper, env->GetMethodID(helper_class, "gameActivity_zzLater", "()V"),
+      no_args);
+  const std::string output = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(output.find("no handler for"), std::string::npos) << output;
+}
+
+TEST_F(JniVmTest, UnmatchedRunAAndFVoidCallsAreReported) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass cls = env->FindClass("example/UnmatchedShortNames");
+  jobject object =
+      env->NewObject(cls, env->GetMethodID(cls, "<init>", "()V"));
+  jvalue no_args[1] = {};
+
+  ::testing::internal::CaptureStderr();
+  env->CallVoidMethod(object, env->GetMethodID(cls, "run", "()V"));
+  env->CallVoidMethod(object, env->GetMethodID(cls, "f", "()V"));
+  env->CallVoidMethodA(object, env->GetMethodID(cls, "a", "()V"), no_args);
+  const std::string output = ::testing::internal::GetCapturedStderr();
+
+  const std::string prefix =
+      "  [JNI] no handler for example/UnmatchedShortNames.";
+  for (const char *method : {"run()V", "f()V", "a()V"}) {
+    EXPECT_EQ(CountOccurrences(output, prefix + method + "\n"), 1u) << method;
+  }
+}
+
+TEST_F(JniVmTest, UnknownGameActivityCallbackIsRecordedOnEveryVoidPath) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass helper_class = env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->NewObject(
+      helper_class, env->GetMethodID(helper_class, "<init>", "()V"));
+  jvalue no_args[1] = {};
+
+  ::testing::internal::CaptureStderr();
+  env->CallVoidMethod(
+      helper, env->GetMethodID(helper_class, "gameActivity_zzViaV", "()V"));
+  env->CallVoidMethodA(
+      helper, env->GetMethodID(helper_class, "gameActivity_zzViaA", "()V"),
+      no_args);
+  const std::string output = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(output.find("no handler for"), std::string::npos) << output;
+  for (const char *name : {"gameActivity_zzViaV", "gameActivity_zzViaA"}) {
+    EXPECT_EQ(env->GetBooleanField(helper,
+                                   env->GetFieldID(helper_class, name, "Z")),
+              JNI_TRUE)
+        << name;
+  }
+}
+
 } // namespace
 } // namespace jnivm

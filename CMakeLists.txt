@@ -252,6 +252,7 @@ add_library(mocktail_legacy_jnivm STATIC
   src/jnivm/jni_references.cc
   src/jnivm/jni_fields.cc
   src/jnivm/jni_strings.cc
+  src/jnivm/jni_method_names.cc
 )
 add_library(Mocktail::LegacyJni ALIAS mocktail_legacy_jnivm)
 target_include_directories(mocktail_legacy_jnivm PUBLIC include)

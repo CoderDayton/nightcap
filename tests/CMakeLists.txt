@@ -11,6 +11,14 @@ target_link_libraries(jnivm_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(jnivm_fmod_write_allocation_test
+  jnivm_fmod_write_allocation_test.cc
+)
+target_link_libraries(jnivm_fmod_write_allocation_test PRIVATE
+  Mocktail::LegacyJni
+  GTest::gtest_main
+)
+
 add_executable(jnivm_fields_test jnivm_fields_test.cc)
 target_link_libraries(jnivm_fields_test PRIVATE
   Mocktail::LegacyJni
@@ -1026,6 +1034,7 @@ target_link_libraries(headless_graphics_test PRIVATE
 include(GoogleTest)
 gtest_discover_tests(jnivm_test)
 gtest_discover_tests(jnivm_fields_test)
+gtest_discover_tests(jnivm_fmod_write_allocation_test)
 gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
