@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1021,12 +1022,19 @@ TEST(VrSupportedBuilds, Build3222CarriesTheOffsetFindersValues) {
   EXPECT_EQ(contract->camera_head_scale_offset, 0x130u);
   EXPECT_EQ(contract->keep_haptics_flag_rva, 0x763fef8u);
   EXPECT_EQ(contract->vr_haptics_flag_rva, 0x74cf1e0u);
+}
 
-  const auto* contract_2998 = internal::FindVrBuildContract(
-      "ade08266c67aee88ec9c1d00902150e1684dad3a");
-  ASSERT_NE(contract_2998, nullptr);
-  EXPECT_EQ(contract_2998->keep_haptics_flag_rva, 0x72fcd18u);
-  EXPECT_EQ(contract_2998->vr_haptics_flag_rva, 0x7367588u);
+TEST(VrSupportedBuilds, EveryBuildCarriesBothHapticFlags) {
+  for (const auto& [id, keep, vr] :
+       {std::tuple<const char*, std::uintptr_t, std::uintptr_t>{
+            "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x72fcd18, 0x7367588},
+        {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03", 0x7387118, 0x73f2268},
+        {"a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x763fef8, 0x74cf1e0}}) {
+    const auto* contract = internal::FindVrBuildContract(id);
+    ASSERT_NE(contract, nullptr) << id;
+    EXPECT_EQ(contract->keep_haptics_flag_rva, keep) << id;
+    EXPECT_EQ(contract->vr_haptics_flag_rva, vr) << id;
+  }
 }
 
 // MOCKTAIL_TEST_VR_PAYLOADS names a payload store: <code>-<build id>/libroblox.so.

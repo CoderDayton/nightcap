@@ -86,6 +86,11 @@ DEVICE_OBJECT_NAME = b"DebugDevice"
 EYE_RESOURCE_LABEL = b"VR Eye"
 EMULATOR_FLAG_NAME = b"DebugEnableVREmulator"
 HAND_PITCH_FLAG_NAME = b"NewVRSystemHandPitch"
+# Boolean fast flags Nightcap turns on in VR, keyed by contract field.
+HAPTIC_FLAG_NAMES = {
+    "keep_haptics_flag_rva": b"KeepHapticsOnMobileWhenGamepadConnected",
+    "vr_haptics_flag_rva": b"VRHaptics",
+}
 
 OBJECT_TYPE_OFFSET = 0x10
 OBJECT_TYPE_DEBUG_DEVICE = 6
@@ -948,6 +953,69 @@ def extract_hand_pitch(instructions: Sequence[Any],
     return None
 
 
+def extract_bool_flag_storage(instructions: Sequence[Any],
+                              flag_name_rva: int) -> int | None:
+    """Value byte of a boolean flag: a byte or word store to it, then
+    lea reg, [name]; mov [storage+8], reg."""
+    for index, instruction in enumerate(instructions):
+        operands = instruction.operands
+        if (instruction.mnemonic != "lea" or len(operands) != 2 or
+                operands[0].type != capstone_x86.X86_OP_REG or
+                flag_name_rva not in rip_target(instruction) or
+                index + 1 >= len(instructions)):
+            continue
+        store = instructions[index + 1]
+        store_operands = store.operands
+        if (store.mnemonic != "mov" or len(store_operands) != 2 or
+                store_operands[0].type != capstone_x86.X86_OP_MEM or
+                store_operands[1].type != capstone_x86.X86_OP_REG or
+                store_operands[1].reg != operands[0].reg):
+            continue
+        name_slot = next(iter(rip_target(store)), None)
+        if name_slot is None:
+            continue
+        storage = name_slot - 8
+        for writer in instructions[max(0, index - 3):index]:
+            writer_operands = writer.operands
+            if (writer.mnemonic == "mov" and len(writer_operands) == 2 and
+                    writer_operands[0].type == capstone_x86.X86_OP_MEM and
+                    writer_operands[0].size in (1, 2) and
+                    storage in rip_target(writer)):
+                return storage
+    return None
+
+
+def find_bool_flags(image: ElfImage, table: FunctionTable,
+                    disasm: Disassembler, names: dict[str, bytes],
+                    evidence: list[str], warnings: list[str]) -> dict[str, int]:
+    """Value-byte RVA per field; 0 when the build lacks the flag."""
+    found: dict[str, int] = {}
+    for field, name in names.items():
+        label = name.decode("ascii")
+        try:
+            name_rva = image.find_alloc_string(name)
+        except AnalyzerError as error:
+            warnings.append(f"{label}: {error}; {field} left at 0")
+            found[field] = 0
+            continue
+        matches: set[int] = set()
+        for refs in find_text_refs(image, table, disasm, {name_rva}).values():
+            for _address, start, end in refs:
+                storage = extract_bool_flag_storage(disasm.function(start, end),
+                                                    name_rva)
+                if storage is not None:
+                    matches.add(storage)
+        if len(matches) != 1:
+            listed = ", ".join(f"0x{rva:x}" for rva in sorted(matches))
+            raise AnalyzerError(f"{label} flag storage is not unique: [{listed}]")
+        storage = matches.pop()
+        image.require_writable_rva(storage, 16)
+        evidence.append(f"{label}: value byte with name pointer at storage+8"
+                        f" -> 0x{storage:x}")
+        found[field] = storage
+    return found
+
+
 def match_pointer_getter(instructions: Sequence[Any], selector_offset: int,
                          base_offset: int) -> int | None:
     """World-space pointer getter: UserCFrame copy + workspace/camera path.
@@ -1374,6 +1442,9 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
             f"hand pitch: dword default {hand_pitch_default} degrees with name"
             f" pointer at storage+8 -> 0x{hand_pitch_storage:x}")
 
+        haptic_flags = find_bool_flags(image, table, disasm, HAPTIC_FLAG_NAMES,
+                                       evidence, warnings)
+
         getter_candidates: dict[int, tuple[int, int]] = {}
         for hit, selector, base in scan_pointer_getter_sites(image):
             try:
@@ -1462,6 +1533,7 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                     f"0x{hand_pitch_storage:x}",
                 "new_vr_system_hand_pitch_default_degrees":
                     hand_pitch_default,
+                **{field: f"0x{rva:x}" for field, rva in haptic_flags.items()},
             },
             "evidence": evidence,
             "warnings": warnings,
