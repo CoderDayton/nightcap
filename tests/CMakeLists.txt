@@ -109,6 +109,9 @@ if(MOCKTAIL_ENABLE_VR)
       "$<TARGET_FILE:mocktail_vr_probe>" "$<TARGET_FILE:mocktail_test_openxr_runtime>"
       "$<TARGET_FILE:mocktail>")
   set_tests_properties(OpenXrPreviewContract PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+  target_compile_definitions(openxr_backend_test PRIVATE
+    "MOCKTAIL_TEST_OPENXR_RUNTIME=\"$<TARGET_FILE:mocktail_test_openxr_runtime>\"")
+  add_dependencies(openxr_backend_test mocktail_test_openxr_runtime)
 else()
   add_test(NAME OpenXrProbeDisabled
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/probe_contract_test.py"

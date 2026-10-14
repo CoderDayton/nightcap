@@ -10,6 +10,7 @@
 #include <openxr/openxr_platform.h>
 
 #include <dlfcn.h>
+#include <link.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -300,6 +301,36 @@ OpenXrBackend* ActiveVrBackend() {
   return g_backend;
 }
 
+std::vector<std::string> LoadedSharedObjects() {
+  std::vector<std::string> paths;
+  dl_iterate_phdr(
+      [](dl_phdr_info* info, std::size_t, void* data) {
+        if (info->dlpi_name != nullptr && info->dlpi_name[0] != '\0') {
+          static_cast<std::vector<std::string>*>(data)->emplace_back(
+              info->dlpi_name);
+        }
+        return 0;
+      },
+      &paths);
+  return paths;
+}
+
+std::vector<std::string> PinSharedObjectsLoadedSince(
+    const std::vector<std::string>& before) {
+  std::vector<std::string> pinned;
+  for (const auto& path : LoadedSharedObjects()) {
+    if (std::find(before.begin(), before.end(), path) != before.end()) {
+      continue;
+    }
+    // RTLD_NOLOAD only adds a reference; RTLD_NODELETE makes it permanent.
+    if (dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE) !=
+        nullptr) {
+      pinned.push_back(path);
+    }
+  }
+  return pinned;
+}
+
 void OpenXrBackend::DestroyXrInstanceLocked() {
   {
     std::lock_guard<std::mutex> lock(controller_mutex_);
@@ -320,6 +351,7 @@ bool OpenXrBackend::EnsureXrInstanceLocked(std::string* error) {
     return true;
   }
   try {
+    const auto libraries_before_runtime = LoadedSharedObjects();
     const char *vk_extensions[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME};
     const char *gl_extensions[] = {XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
                                    XR_MNDX_EGL_ENABLE_EXTENSION_NAME};
@@ -378,6 +410,15 @@ bool OpenXrBackend::EnsureXrInstanceLocked(std::string* error) {
     }
     CheckXr(XR_NULL_HANDLE, instance_result, "xrCreateInstance");
     xr_instance_ = instance;
+    // The loader unloads the runtime with each instance. Loaded again after
+    // the Vulkan adapter (RTLD_GLOBAL), the runtime would call Vulkan through
+    // the adapter's hooks, which re-enter this backend under mutex_.
+    const auto pinned = PinSharedObjectsLoadedSince(libraries_before_runtime);
+    if (!pinned.empty()) {
+      Log("  [vr-backend] kept %zu runtime libraries loaded for later "
+          "sessions\n",
+          pinned.size());
+    }
 
     XrInstanceProperties properties =
         XrInfo<XrInstanceProperties>(XR_TYPE_INSTANCE_PROPERTIES);

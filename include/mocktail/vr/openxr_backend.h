@@ -490,6 +490,13 @@ class OpenXrBackend final {
 // exported C symbols; they are inert while no backend is armed.
 OpenXrBackend* ActiveVrBackend();
 
+// Paths of the shared objects mapped into the process.
+std::vector<std::string> LoadedSharedObjects();
+// Keeps every shared object loaded since `before` mapped until exit and
+// returns the paths it pinned.
+std::vector<std::string> PinSharedObjectsLoadedSince(
+    const std::vector<std::string>& before);
+
 }  // namespace mocktail::vr
 
 #endif  // MOCKTAIL_VR_OPENXR_BACKEND_H_
