@@ -1,6 +1,7 @@
 // Contract tests for the experimental DebugDeviceVR bridge. They pin the
 // machine-code contracts of the exact 2998 payload ABI and the fail-closed
 // bridge lifecycle; they do not execute any guest code.
+#include <elf.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1095,6 +1096,69 @@ TEST(VrIsVrAppBuildHook, HasAnEvenAddress) {
   bool (*volatile hook)(const void*) = &mocktail_vr_is_vr_app_build;
   const auto address = reinterpret_cast<std::uintptr_t>(hook);
   EXPECT_EQ(address % 2, 0u) << std::hex << address;
+}
+
+}  // namespace
+}  // namespace mocktail::vr
+
+namespace mocktail::vr {
+namespace {
+
+// A fake image with a read-only segment for names and a writable one for
+// flags. A Roblox fast flag keeps its value byte at +0 and its name at +8.
+class VrNamedFastFlag : public testing::Test {
+ protected:
+  void SetUp() override {
+    image_.fill(0);
+    auto* header = reinterpret_cast<Elf64_Ehdr*>(image_.data());
+    std::memcpy(header->e_ident, ELFMAG, SELFMAG);
+    header->e_ident[EI_CLASS] = ELFCLASS64;
+    header->e_phoff = sizeof(Elf64_Ehdr);
+    header->e_phnum = 2;
+    auto* segments =
+        reinterpret_cast<Elf64_Phdr*>(image_.data() + sizeof(Elf64_Ehdr));
+    segments[0] = Elf64_Phdr{PT_LOAD, PF_R, 0, 0, 0, 0x1000, 0x1000, 0x1000};
+    segments[1] =
+        Elf64_Phdr{PT_LOAD, PF_R | PF_W, 0, 0x1000, 0, 0x1000, 0x1000, 0x1000};
+    std::memcpy(image_.data() + 0x800, "VRHaptics", 10);
+    std::memcpy(image_.data() + 0x820, "OtherFlag", 10);
+  }
+
+  std::uintptr_t base() const {
+    return reinterpret_cast<std::uintptr_t>(image_.data());
+  }
+
+  void SetName(std::uintptr_t rva, const void* name) {
+    const auto address = reinterpret_cast<std::uintptr_t>(name);
+    std::memcpy(image_.data() + rva + 8, &address, sizeof(address));
+  }
+
+  alignas(64) std::array<std::uint8_t, 0x2000> image_{};
+};
+
+TEST_F(VrNamedFastFlag, SetsTheFlagWhenItsNameMatches) {
+  SetName(0x1000, image_.data() + 0x800);
+  EXPECT_TRUE(internal::EnableNamedFastFlag(base(), 0x1000, "VRHaptics"));
+  EXPECT_EQ(image_[0x1000], 1);
+}
+
+TEST_F(VrNamedFastFlag, LeavesAFlagWithAnotherNameAlone) {
+  SetName(0x1100, image_.data() + 0x820);
+  EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x1100, "VRHaptics"));
+  EXPECT_EQ(image_[0x1100], 0);
+  SetName(0x1200, image_.data() + 0x800);
+  EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x1200, "VRHaptic"));
+  EXPECT_EQ(image_[0x1200], 0);
+}
+
+TEST_F(VrNamedFastFlag, RejectsNamesAndFlagsOutsideTheImage) {
+  static const char outside[] = "VRHaptics";
+  SetName(0x1300, outside);
+  EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x1300, "VRHaptics"));
+  EXPECT_EQ(image_[0x1300], 0);
+  EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0, "VRHaptics"));
+  EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x900, "VRHaptics"));
+  EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x1ff8, "VRHaptics"));
 }
 
 }  // namespace

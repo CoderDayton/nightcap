@@ -6411,10 +6411,13 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
             "Java_com_roblox_engine_jni_NativeGLInterface_"
             "nativeAppBridgeV2SendAppEventOnGameLoaded"));
     auto* native_update_mobile_haptics_state =
-        reinterpret_cast<NativeUpdateMobileHapticsStateFn>(linker::ResolveSymbol(
-            roblox_handle,
-            "Java_com_roblox_engine_jni_NativeGLInterface_"
-            "nativeUpdateMobileHapticsState"));
+        mocktail::runtime::RobloxHapticProtocolBridge::EnabledForThisSession()
+            ? reinterpret_cast<NativeUpdateMobileHapticsStateFn>(
+                  linker::ResolveSymbol(
+                      roblox_handle,
+                      "Java_com_roblox_engine_jni_NativeGLInterface_"
+                      "nativeUpdateMobileHapticsState"))
+            : nullptr;
     auto* native_set_asset_path =
         reinterpret_cast<NativeSetStringParamFn>(linker::ResolveSymbol(
             roblox_handle,
@@ -6837,13 +6840,16 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       eager_call_protocol_bridge =
           std::make_unique<mocktail::runtime::RobloxCallProtocolBridge>(
               environment, symbols.permissions, objects);
-      eager_haptic_protocol_bridge =
-          std::make_unique<mocktail::runtime::RobloxHapticProtocolBridge>(
-              environment, symbols.permissions, objects);
+      if (mocktail::runtime::RobloxHapticProtocolBridge::
+              EnabledForThisSession()) {
+        eager_haptic_protocol_bridge =
+            std::make_unique<mocktail::runtime::RobloxHapticProtocolBridge>(
+                environment, symbols.permissions, objects);
+      }
       status = eager_permissions_bridge->Initialize();
       if (status.ok())
         status = eager_call_protocol_bridge->Initialize();
-      if (status.ok())
+      if (status.ok() && eager_haptic_protocol_bridge != nullptr)
         status = eager_haptic_protocol_bridge->Initialize();
       env->DeleteLocalRef(bus);
       if (!status.ok()) {
@@ -6851,8 +6857,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   << status.message() << '\n';
         return EXIT_FAILURE;
       }
-      std::cout << "  [platform] direct GAME PermissionsProtocol, "
-                   "CallProtocol and HapticProtocol ready\n"
+      std::cout << "  [platform] direct GAME PermissionsProtocol and "
+                   "CallProtocol ready\n"
                 << std::flush;
     }
 

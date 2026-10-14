@@ -36,6 +36,11 @@ const VrBuildContract* FindVrBuildContract(std::string_view build_id);
 int ReadPointerHandIndex(const void* service, const VrBuildContract& contract);
 float ReadCameraHeadScale(const void* camera, const VrBuildContract& contract);
 
+// Sets the fast flag at `rva` to true only when its name pointer (+8) points
+// at `name` inside the image. Returns whether it wrote.
+bool EnableNamedFastFlag(std::uintptr_t image_base, std::uintptr_t rva,
+                         std::string_view name);
+
 // Computes the record orientation for a hand pose: the aim pose (or, with
 // MOCKTAIL_VR_HAND_POSE_SOURCE=grip, the grip pose) pitched by the engine's
 // own hand pitch plus the configurable offset.

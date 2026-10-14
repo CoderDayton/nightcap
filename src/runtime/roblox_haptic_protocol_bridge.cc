@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
+#include <cstdlib>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <string_view>
 
 extern "C" {
 void mocktail_vr_controller_request_haptics(int32_t hand, float amplitude,
@@ -95,11 +97,6 @@ void DispatchHapticForMotor(const std::string& motor_name, float amplitude,
   } else {
     amplitude = std::clamp(amplitude, 0.0f, 1.0f);
     duration_ns = std::clamp(duration_ns, kMinimumDurationNs, kMaximumDurationNs);
-    std::fprintf(stderr,
-                 "  [haptic] dispatch: hand=%d motor='%s' amp=%.3f "
-                 "dur_ms=%.1f\n",
-                 hand, motor_name.c_str(), amplitude,
-                 duration_ns / 1000000.0);
     if (sink) {
       if (hand == -1) {
         sink(0, amplitude, duration_ns, frequency_hz);
@@ -198,6 +195,12 @@ RobloxMessageBusReply Answer(JNIEnv* env, jstring message, std::size_t method,
 
 }  // namespace
 
+bool RobloxHapticProtocolBridge::EnabledForThisSession() {
+  const char* value = std::getenv("MOCKTAIL_VR_ENABLED");
+  const std::string_view vr = value != nullptr ? value : "";
+  return vr == "1" || vr == "true" || vr == "on";
+}
+
 std::string RobloxHapticProtocolBridge::GetMotorsJson() {
   const nlohmann::json motors = {
       {"leftHand", {{"x", -0.2}, {"y", 0.0}, {"z", 0.0}}},
@@ -247,29 +250,6 @@ RobloxHapticProtocolBridge::RobloxHapticProtocolBridge(
       }
     };
   }
-  if (!haptic_state_sync) {
-    using NativeUpdateMobileHapticsStateFn =
-        void (*)(JNIEnv*, jclass, jboolean, jstring);
-    auto fn = reinterpret_cast<NativeUpdateMobileHapticsStateFn>(
-        dlsym(RTLD_DEFAULT,
-              "Java_com_roblox_engine_jni_NativeGLInterface_"
-              "nativeUpdateMobileHapticsState"));
-    if (fn != nullptr) {
-      haptic_state_sync = [fn](JNIEnv* env) {
-        if (!env) return;
-        jclass clazz = env->FindClass("com/roblox/engine/jni/NativeGLInterface");
-        if (!clazz) return;
-        const std::string motors = RobloxHapticProtocolBridge::GetMotorsJson();
-        jstring str = env->NewStringUTF(motors.c_str());
-        if (str) {
-          fn(env, clazz, JNI_TRUE, str);
-          env->DeleteLocalRef(str);
-        }
-        env->DeleteLocalRef(clazz);
-      };
-    }
-  }
-
   bridge_ = std::make_unique<RobloxMessageBusRequestBridge>(
       environment, symbols, objects, "HapticProtocol",
       std::vector<std::string>{"SupportsHaptics", "GetMotors", "SetMotorState",

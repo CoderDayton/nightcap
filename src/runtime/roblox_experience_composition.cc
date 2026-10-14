@@ -466,16 +466,19 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     (void)ReleaseGlobalObjects();
     return status;
   }
-  auto haptic_protocol_bridge = std::make_unique<RobloxHapticProtocolBridge>(
-      environment_, permissions_symbols_, permissions_objects);
-  status = haptic_protocol_bridge->Initialize();
-  if (!status.ok()) {
-    (void)call_protocol_bridge->Shutdown();
-    (void)permissions_bridge->Shutdown();
-    (void)browser_service_bridge->Shutdown();
-    (void)web_view_bridge->Shutdown();
-    (void)ReleaseGlobalObjects();
-    return status;
+  std::unique_ptr<RobloxHapticProtocolBridge> haptic_protocol_bridge;
+  if (RobloxHapticProtocolBridge::EnabledForThisSession()) {
+    haptic_protocol_bridge = std::make_unique<RobloxHapticProtocolBridge>(
+        environment_, permissions_symbols_, permissions_objects);
+    status = haptic_protocol_bridge->Initialize();
+    if (!status.ok()) {
+      (void)call_protocol_bridge->Shutdown();
+      (void)permissions_bridge->Shutdown();
+      (void)browser_service_bridge->Shutdown();
+      (void)web_view_bridge->Shutdown();
+      (void)ReleaseGlobalObjects();
+      return status;
+    }
   }
   // AccountProtocol only shortens a device-integrity login challenge that
   // cannot succeed here, so its absence or failure never blocks startup.
@@ -509,8 +512,8 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     platform_protocols_initialized_ = true;
   }
   std::fprintf(stderr,
-               "  [platform] Android WebViewProtocol, BrowserService, "
-               "PermissionsProtocol, CallProtocol and HapticProtocol "
+               "  [platform] Android WebViewProtocol, BrowserService and "
+               "PermissionsProtocol and CallProtocol "
                "bridges ready\n");
   return Status::Ok();
 }

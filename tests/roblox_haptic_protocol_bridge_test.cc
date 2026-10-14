@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -337,6 +338,29 @@ TEST_F(RobloxHapticProtocolBridgeTest, RejectsMalformedJsonDefensively) {
   const auto reply = Legacy("SetMotorState", "{not valid json");
   EXPECT_EQ(reply.code, 13);
   EXPECT_TRUE(probe.recorded_sinks.empty());
+}
+
+// The shared MessageBus bridge logs one line per call; the haptic bridge adds
+// none of its own.
+TEST_F(RobloxHapticProtocolBridgeTest, RumbleMessagesAddNoHapticLogLines) {
+  ASSERT_TRUE(Initialize().ok());
+
+  testing::internal::CaptureStderr();
+  Legacy("SetMotorState", R"({"leftHand": {"intensities": [0.5]}})");
+  Legacy("UpdateSingletonVibration", R"({"intensity": 0.5})");
+  EXPECT_EQ(testing::internal::GetCapturedStderr().find("[haptic]"),
+            std::string::npos);
+  EXPECT_EQ(probe.recorded_sinks.size(), 3u);
+}
+
+TEST(RobloxHapticProtocolBridgeSession, RunsOnlyDuringAVrSession) {
+  unsetenv("MOCKTAIL_VR_ENABLED");
+  EXPECT_FALSE(RobloxHapticProtocolBridge::EnabledForThisSession());
+  ASSERT_EQ(setenv("MOCKTAIL_VR_ENABLED", "0", 1), 0);
+  EXPECT_FALSE(RobloxHapticProtocolBridge::EnabledForThisSession());
+  ASSERT_EQ(setenv("MOCKTAIL_VR_ENABLED", "1", 1), 0);
+  EXPECT_TRUE(RobloxHapticProtocolBridge::EnabledForThisSession());
+  unsetenv("MOCKTAIL_VR_ENABLED");
 }
 
 }  // namespace

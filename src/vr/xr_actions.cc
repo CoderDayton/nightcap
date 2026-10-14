@@ -908,11 +908,16 @@ bool XrActions::Sync(void *xr_session, std::uint64_t predicted_display_time,
         const XrResult result = xrApplyHapticFeedback(
             session, &haptic_info,
             reinterpret_cast<const XrHapticBaseHeader *>(&vibration));
+        // Rumble requests repeat every few frames, so each outcome is logged
+        // once per hand.
+        static std::atomic<bool> logged_failure[2]{};
+        static std::atomic<bool> logged[2]{};
         if (XR_FAILED(result)) {
-          Log("  [vr-input] xrApplyHapticFeedback failed for hand %d: %d\n",
-              hand, static_cast<int>(result));
+          if (!logged_failure[hand].exchange(true)) {
+            Log("  [vr-input] xrApplyHapticFeedback failed for hand %d: %d\n",
+                hand, static_cast<int>(result));
+          }
         } else {
-          static std::atomic<bool> logged[2]{};
           if (!logged[hand].exchange(true)) {
             Log("  [vr-input] xrApplyHapticFeedback active for hand %d: amp=%.2f dur_ns=%" PRIu64 "\n",
                 hand, request.amplitude,

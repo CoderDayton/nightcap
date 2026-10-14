@@ -31,6 +31,9 @@ class RobloxHapticProtocolBridge final {
   Status Shutdown();
 
   static std::string GetMotorsJson();
+  // True during a VR session; main() sets MOCKTAIL_VR_ENABLED to 0 when VR
+  // cannot start, so the bridge stays off for desktop play.
+  static bool EnabledForThisSession();
 
  private:
   std::unique_ptr<RobloxMessageBusRequestBridge> bridge_;

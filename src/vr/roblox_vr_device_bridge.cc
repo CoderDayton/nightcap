@@ -734,6 +734,33 @@ float ReadCameraHeadScale(const void* camera, const VrBuildContract& contract) {
   return scale;
 }
 
+bool EnableNamedFastFlag(std::uintptr_t image_base, std::uintptr_t rva,
+                         std::string_view name) {
+  constexpr std::size_t kNamePointerOffset = 8;
+  if (rva == 0 || !IsWritableDataImageRange(
+                      image_base, rva, kNamePointerOffset + sizeof(void*))) {
+    return false;
+  }
+  std::uintptr_t name_address = 0;
+  std::memcpy(&name_address,
+              reinterpret_cast<const void*>(image_base + rva +
+                                            kNamePointerOffset),
+              sizeof(name_address));
+  // The stored name is NUL-terminated, so a longer flag name never matches.
+  if (name_address < image_base ||
+      !IsProgramHeaderRange(image_base, name_address - image_base,
+                            name.size() + 1, PT_LOAD, PF_R)) {
+    return false;
+  }
+  const auto* stored = reinterpret_cast<const char*>(name_address);
+  if (std::memcmp(stored, name.data(), name.size()) != 0 ||
+      stored[name.size()] != '\0') {
+    return false;
+  }
+  *reinterpret_cast<std::uint8_t*>(image_base + rva) = 1;
+  return true;
+}
+
 float GetHandPitchOffsetDeg() {
   static const float offset = [] {
     if (const char* env = std::getenv("MOCKTAIL_VR_HAND_PITCH_OFFSET")) {
@@ -1134,18 +1161,14 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
     return FailedPrecondition("could not install verified VR aim pointer hook");
   }
   InstallIsVrAppBuildHook(image_base);
-  if (contract_->keep_haptics_flag_rva != 0 &&
-      IsWritableDataImageRange(image_base, contract_->keep_haptics_flag_rva,
-                               1)) {
-    *reinterpret_cast<uint8_t*>(image_base +
-                                contract_->keep_haptics_flag_rva) = 1;
+  if (internal::EnableNamedFastFlag(image_base,
+                                    contract_->keep_haptics_flag_rva,
+                                    "KeepHapticsOnMobileWhenGamepadConnected")) {
     Log("  [vr-device] enabled KeepHapticsOnMobileWhenGamepadConnected at +0x%" PRIxPTR "\n",
         contract_->keep_haptics_flag_rva);
   }
-  if (contract_->vr_haptics_flag_rva != 0 &&
-      IsWritableDataImageRange(image_base, contract_->vr_haptics_flag_rva, 1)) {
-    *reinterpret_cast<uint8_t*>(image_base + contract_->vr_haptics_flag_rva) =
-        1;
+  if (internal::EnableNamedFastFlag(image_base, contract_->vr_haptics_flag_rva,
+                                    "VRHaptics")) {
     Log("  [vr-device] enabled VRHaptics at +0x%" PRIxPTR "\n",
         contract_->vr_haptics_flag_rva);
   }
