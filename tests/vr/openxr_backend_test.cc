@@ -1,5 +1,9 @@
+#include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <openxr/openxr.h>
+
+#include <algorithm>
+#include <string>
 #include "mocktail/vr/openxr_backend.h"
 #include "mocktail/vr/roblox_vr_device_bridge.h"
 
@@ -601,6 +605,25 @@ TEST(OpenXrEyeSwapchainFormat, KeepsGuestEyeBytesWithoutGammaConversion) {
   EXPECT_EQ(PreferredEyeSwapchainFormat(VK_FORMAT_R16G16B16A16_SFLOAT,
                                         formats({VK_FORMAT_R8G8B8A8_SRGB})),
             VK_FORMAT_UNDEFINED);
+}
+
+// The OpenXR loader unloads the runtime with its instance. A reload would
+// bind the runtime's Vulkan calls to the adapter loaded since, so the
+// libraries from the first instance stay mapped.
+TEST(OpenXrRuntimeLibraries, PinnedLibrariesSurviveTheLoadersClose) {
+  const char* runtime = MOCKTAIL_TEST_OPENXR_RUNTIME;
+  ASSERT_EQ(dlopen(runtime, RTLD_NOW | RTLD_NOLOAD), nullptr);
+  const auto before = LoadedSharedObjects();
+  void* handle = dlopen(runtime, RTLD_NOW | RTLD_LOCAL);
+  ASSERT_NE(handle, nullptr) << dlerror();
+  const auto pinned = PinSharedObjectsLoadedSince(before);
+  EXPECT_NE(std::find(pinned.begin(), pinned.end(), std::string(runtime)),
+            pinned.end());
+  EXPECT_EQ(PinSharedObjectsLoadedSince(LoadedSharedObjects()).size(), 0u);
+  ASSERT_EQ(dlclose(handle), 0);
+  void* still_loaded = dlopen(runtime, RTLD_NOW | RTLD_NOLOAD);
+  EXPECT_NE(still_loaded, nullptr);
+  if (still_loaded != nullptr) dlclose(still_loaded);
 }
 
 }  // namespace
