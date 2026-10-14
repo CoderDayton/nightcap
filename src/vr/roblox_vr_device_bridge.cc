@@ -408,6 +408,8 @@ constexpr VrBuildContract kContracts[] = {
      0x1d48b70,
      0x118,
      0x140,
+     0x72fcd18,
+     0x7367588,
      "2998 (2.736.1408)"},
     {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
      {0x6d08108, 0x37f9fe4, 0x37fa3c6, 0x37fa3b6, 0x37fa3e8, 0x73f4690,
@@ -420,6 +422,8 @@ constexpr VrBuildContract kContracts[] = {
      0x1d8f8c0,
      0x118,
      0x140,
+     0,
+     0,
      "3092 (2.738.1397)"},
     {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
      {0x7083a48, 0x549c884, 0x549cc66, 0x549cc56, 0x549cc88, 0x74d1640,
@@ -432,6 +436,8 @@ constexpr VrBuildContract kContracts[] = {
      0x1e2fcf0,
      0x108,
      0x130,
+     0x763fef8,
+     0x74cf1e0,
      "3222 (2.742.1059)"},
 };
 
@@ -998,7 +1004,9 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
        contract_->pointer_frame_rva + 0x1b2,
        contract_->workspace_getter_rva + 1,
        contract_->hand_pitch_storage_rva + sizeof(int),
-       contract_->haptic_sink_rva + 1});
+       contract_->haptic_sink_rva + 1,
+       contract_->keep_haptics_flag_rva + 1,
+       contract_->vr_haptics_flag_rva + 1});
   if (image_base > std::numeric_limits<std::uintptr_t>::max() - largest_rva) {
     return InvalidArgument("VR device profile address overflows");
   }
@@ -1126,6 +1134,21 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
     return FailedPrecondition("could not install verified VR aim pointer hook");
   }
   InstallIsVrAppBuildHook(image_base);
+  if (contract_->keep_haptics_flag_rva != 0 &&
+      IsWritableDataImageRange(image_base, contract_->keep_haptics_flag_rva,
+                               1)) {
+    *reinterpret_cast<uint8_t*>(image_base +
+                                contract_->keep_haptics_flag_rva) = 1;
+    Log("  [vr-device] enabled KeepHapticsOnMobileWhenGamepadConnected at +0x%" PRIxPTR "\n",
+        contract_->keep_haptics_flag_rva);
+  }
+  if (contract_->vr_haptics_flag_rva != 0 &&
+      IsWritableDataImageRange(image_base, contract_->vr_haptics_flag_rva, 1)) {
+    *reinterpret_cast<uint8_t*>(image_base + contract_->vr_haptics_flag_rva) =
+        1;
+    Log("  [vr-device] enabled VRHaptics at +0x%" PRIxPTR "\n",
+        contract_->vr_haptics_flag_rva);
+  }
   {
     std::lock_guard<std::mutex> pose_lock(g_native_pose_mutex);
     g_native_pose = {};

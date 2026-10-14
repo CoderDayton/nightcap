@@ -1018,6 +1018,14 @@ TEST(VrSupportedBuilds, Build3222CarriesTheOffsetFindersValues) {
   EXPECT_EQ(contract->haptic_sink_rva, 0x1e2fcf0u);
   EXPECT_EQ(contract->pointer_hand_selector_offset, 0x108u);
   EXPECT_EQ(contract->camera_head_scale_offset, 0x130u);
+  EXPECT_EQ(contract->keep_haptics_flag_rva, 0x763fef8u);
+  EXPECT_EQ(contract->vr_haptics_flag_rva, 0x74cf1e0u);
+
+  const auto* contract_2998 = internal::FindVrBuildContract(
+      "ade08266c67aee88ec9c1d00902150e1684dad3a");
+  ASSERT_NE(contract_2998, nullptr);
+  EXPECT_EQ(contract_2998->keep_haptics_flag_rva, 0x72fcd18u);
+  EXPECT_EQ(contract_2998->vr_haptics_flag_rva, 0x7367588u);
 }
 
 // MOCKTAIL_TEST_VR_PAYLOADS names a payload store: <code>-<build id>/libroblox.so.

@@ -407,6 +407,10 @@ bool MergeVrClientSettingsOverrides(bool enabled, std::string_view base_json,
     // Place the Avatar Editor character 6 studs in front of the VR camera
     // instead of at the origin when IsVRAppBuild() is active.
     overrides["FFlagFixVRAvatarPlacement"] = "True";
+    // Mobile suppresses vibration when a gamepad connects unless KeepHaptics
+    // is enabled; VR controllers connect as Gamepad1.
+    overrides["FFlagKeepHapticsOnMobileWhenGamepadConnected"] = "True";
+    overrides["FFlagVRHaptics"] = "True";
   }
   *merged_json = overrides.dump();
   return true;

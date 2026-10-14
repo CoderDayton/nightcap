@@ -16,6 +16,7 @@
 #include "runtime/owned_pthread.h"
 #include "runtime/roblox_browser_service_bridge.h"
 #include "runtime/roblox_call_protocol_bridge.h"
+#include "runtime/roblox_haptic_protocol_bridge.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_experience_presence.h"
 #include "runtime/roblox_fresh_game_launch_controller.h"
@@ -260,6 +261,7 @@ class RobloxExperienceComposition final {
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge_;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge_;
   std::unique_ptr<RobloxCallProtocolBridge> call_protocol_bridge_;
+  std::unique_ptr<RobloxHapticProtocolBridge> haptic_protocol_bridge_;
   // Optional: a payload without the AccountProtocol entrypoints still starts.
   std::unique_ptr<RobloxAccountBridge> account_bridge_;
   std::shared_ptr<WebViewHelperProcess> web_surface_process_;

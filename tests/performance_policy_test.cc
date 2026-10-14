@@ -357,6 +357,8 @@ TEST(PerformancePolicyTest,
   EXPECT_EQ(json["FFlagDebugEnableVREmulator"], "True");
   EXPECT_EQ(json["FFlagSlowDownRendering"], "False");
   EXPECT_EQ(json["FFlagFixVRAvatarPlacement"], "True");
+  EXPECT_EQ(json["FFlagKeepHapticsOnMobileWhenGamepadConnected"], "True");
+  EXPECT_EQ(json["FFlagVRHaptics"], "True");
   EXPECT_EQ(json["FIntUnrelated"], "42");
   // Without VR the user's own value is kept, and nothing is added.
   std::string kept;

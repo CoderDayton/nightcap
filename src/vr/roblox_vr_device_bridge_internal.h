@@ -24,6 +24,8 @@ struct VrBuildContract {
   // service and HeadScale in the workspace camera.
   std::uintptr_t pointer_hand_selector_offset;
   std::uintptr_t camera_head_scale_offset;
+  std::uintptr_t keep_haptics_flag_rva;
+  std::uintptr_t vr_haptics_flag_rva;
   // Roblox version code and name, for messages that list supported builds.
   std::string_view version;
 };

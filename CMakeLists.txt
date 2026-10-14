@@ -297,6 +297,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_account_bridge.cc
   src/runtime/roblox_message_bus_request_bridge.cc
   src/runtime/roblox_call_protocol_bridge.cc
+  src/runtime/roblox_haptic_protocol_bridge.cc
   src/runtime/payload_update_preflight.cc
   src/runtime/process_launch_policy.cc
   src/runtime/process_diagnostics.cc

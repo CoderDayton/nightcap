@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cinttypes>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -903,9 +905,20 @@ bool XrActions::Sync(void *xr_session, std::uint64_t predicted_display_time,
         // 0 lets the runtime choose its resonant frequency; the runtime
         // clamps unsupported frequencies itself.
         vibration.frequency = request.frequency_hz;
-        (void)xrApplyHapticFeedback(
+        const XrResult result = xrApplyHapticFeedback(
             session, &haptic_info,
             reinterpret_cast<const XrHapticBaseHeader *>(&vibration));
+        if (XR_FAILED(result)) {
+          Log("  [vr-input] xrApplyHapticFeedback failed for hand %d: %d\n",
+              hand, static_cast<int>(result));
+        } else {
+          static std::atomic<bool> logged[2]{};
+          if (!logged[hand].exchange(true)) {
+            Log("  [vr-input] xrApplyHapticFeedback active for hand %d: amp=%.2f dur_ns=%" PRIu64 "\n",
+                hand, request.amplitude,
+                static_cast<uint64_t>(vibration.duration));
+          }
+        }
       }
     }
     return true;

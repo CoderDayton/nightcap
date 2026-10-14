@@ -75,6 +75,7 @@
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
 #include "runtime/roblox_experience_composition.h"
+#include "runtime/roblox_haptic_protocol_bridge.h"
 #include "runtime/roblox_game_session_native_adapter.h"
 #include "runtime/roblox_window_input_runtime.h"
 #include "runtime/roblox_text_input_jni_bridge.h"
@@ -214,6 +215,7 @@ using NativeSendGameLoadedFn = void (*)(JNIEnv*, jclass, jstring, jstring,
 using NativePassSupportedRefreshRatesFn = void (*)(JNIEnv*, jclass,
                                                    jfloatArray);
 using NativePassCurrentDisplayRefreshRateFn = void (*)(JNIEnv*, jclass, jfloat);
+using NativeUpdateMobileHapticsStateFn = void (*)(JNIEnv*, jclass, jboolean, jstring);
 using NativeSetStringParamFn = void (*)(JNIEnv*, jclass, jstring);
 using NativeSetBaseUrlFn = void (*)(JNIEnv*, jclass, jstring, jstring);
 using NativeSetTaskSchedulerBackgroundModeFn = void (*)(JNIEnv*, jclass,
@@ -381,6 +383,7 @@ struct EngineStartupContext {
   NativePassSupportedRefreshRatesFn native_pass_supported_refresh_rates;
   NativePassCurrentDisplayRefreshRateFn native_pass_current_display_refresh_rate;
   NativeNoArgFn native_start_lua_app_dm;
+  NativeUpdateMobileHapticsStateFn native_update_mobile_haptics_state;
 };
 
 
@@ -4314,6 +4317,23 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
     std::cout << "  [engine] updateAppUISizes returned\n" << std::flush;
   }
 
+  if (context->native_update_mobile_haptics_state) {
+    env = ensure_env();
+    std::cout << "  [engine] NativeGLInterface.nativeUpdateMobileHapticsState\n"
+              << std::flush;
+    const std::string motors_json =
+        mocktail::runtime::RobloxHapticProtocolBridge::GetMotorsJson();
+    jstring motors_str = env->NewStringUTF(motors_json.c_str());
+    if (motors_str != nullptr) {
+      context->native_update_mobile_haptics_state(env, native_gl_class,
+                                                  JNI_TRUE, motors_str);
+      env->DeleteLocalRef(motors_str);
+    }
+    std::cout
+        << "  [engine] NativeGLInterface.nativeUpdateMobileHapticsState returned\n"
+        << std::flush;
+  }
+
   int init_delay_ms = GetEnvInt("MOCKTAIL_APPBRIDGE_INIT_DELAY_MS", 0);
   if (init_delay_ms > 0) {
     std::cout << "  [engine] wait after AppBridge init: " << init_delay_ms
@@ -4594,6 +4614,16 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
       std::cout
           << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
           << std::flush;
+      if (context->native_update_mobile_haptics_state) {
+        const std::string motors_json =
+            mocktail::runtime::RobloxHapticProtocolBridge::GetMotorsJson();
+        jstring motors_str = env->NewStringUTF(motors_json.c_str());
+        if (motors_str != nullptr) {
+          context->native_update_mobile_haptics_state(env, native_gl_class,
+                                                      JNI_TRUE, motors_str);
+          env->DeleteLocalRef(motors_str);
+        }
+      }
     }
   }
 
@@ -6082,6 +6112,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       eager_permissions_bridge;
   std::unique_ptr<mocktail::runtime::RobloxCallProtocolBridge>
       eager_call_protocol_bridge;
+  std::unique_ptr<mocktail::runtime::RobloxHapticProtocolBridge>
+      eager_haptic_protocol_bridge;
   std::shared_ptr<ExperienceLifecycleTarget> experience_lifecycle_target;
   std::shared_ptr<mocktail::runtime::RobloxWindowInputRuntime>
       window_input_runtime;
@@ -6378,6 +6410,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
             roblox_handle,
             "Java_com_roblox_engine_jni_NativeGLInterface_"
             "nativeAppBridgeV2SendAppEventOnGameLoaded"));
+    auto* native_update_mobile_haptics_state =
+        reinterpret_cast<NativeUpdateMobileHapticsStateFn>(linker::ResolveSymbol(
+            roblox_handle,
+            "Java_com_roblox_engine_jni_NativeGLInterface_"
+            "nativeUpdateMobileHapticsState"));
     auto* native_set_asset_path =
         reinterpret_cast<NativeSetStringParamFn>(linker::ResolveSymbol(
             roblox_handle,
@@ -6456,6 +6493,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               << reinterpret_cast<const void*>(native_send_app_ready) << '\n'
               << "    native_send_game_loaded="
               << reinterpret_cast<const void*>(native_send_game_loaded) << '\n'
+              << "    native_update_mobile_haptics_state="
+              << reinterpret_cast<const void*>(
+                     native_update_mobile_haptics_state)
+              << '\n'
               << "    native_start_lua_app_dm="
               << reinterpret_cast<const void*>(native_start_lua_app_dm) << '\n'
               << "    native_call_messages_from_main_thread="
@@ -6796,17 +6837,22 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       eager_call_protocol_bridge =
           std::make_unique<mocktail::runtime::RobloxCallProtocolBridge>(
               environment, symbols.permissions, objects);
+      eager_haptic_protocol_bridge =
+          std::make_unique<mocktail::runtime::RobloxHapticProtocolBridge>(
+              environment, symbols.permissions, objects);
       status = eager_permissions_bridge->Initialize();
       if (status.ok())
         status = eager_call_protocol_bridge->Initialize();
+      if (status.ok())
+        status = eager_haptic_protocol_bridge->Initialize();
       env->DeleteLocalRef(bus);
       if (!status.ok()) {
         std::cerr << "[FATAL] GAME platform protocols did not initialize: "
                   << status.message() << '\n';
         return EXIT_FAILURE;
       }
-      std::cout << "  [platform] direct GAME PermissionsProtocol and "
-                   "CallProtocol ready\n"
+      std::cout << "  [platform] direct GAME PermissionsProtocol, "
+                   "CallProtocol and HapticProtocol ready\n"
                 << std::flush;
     }
 
@@ -6960,7 +7006,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         native_on_fragment_start,
         native_pass_supported_refresh_rates,
         native_pass_current_display_refresh_rate,
-        native_start_lua_app_dm};
+        native_start_lua_app_dm,
+        native_update_mobile_haptics_state};
     if (game_session_runtime != nullptr) {
       if (!game_present_observer.Register(
               &mocktail::runtime::RobloxGameSessionRuntime::
@@ -7306,6 +7353,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (window_input_runtime != nullptr) {
       input_shutdown_completed = window_input_runtime->Shutdown().ok() &&
                                  input_shutdown_completed;
+    }
+    if (eager_haptic_protocol_bridge != nullptr) {
+      (void)eager_haptic_protocol_bridge->Shutdown();
+      eager_haptic_protocol_bridge.reset();
     }
     if (eager_call_protocol_bridge != nullptr) {
       (void)eager_call_protocol_bridge->Shutdown();

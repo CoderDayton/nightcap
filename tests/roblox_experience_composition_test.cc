@@ -954,9 +954,13 @@ TEST(RobloxExperienceCompositionTest,
 
   ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
   EXPECT_FALSE(composition.subscribed());
-  EXPECT_EQ(probe.permission_subscriptions, 6);
-  EXPECT_EQ(probe.permission_handlers.size(), 6u);
+  EXPECT_EQ(probe.permission_subscriptions, 10);
+  EXPECT_EQ(probe.permission_handlers.size(), 10u);
   EXPECT_EQ(probe.permission_handlers.count("getCallState"), 1u);
+  EXPECT_EQ(probe.permission_handlers.count("SupportsHaptics"), 1u);
+  EXPECT_EQ(probe.permission_handlers.count("GetMotors"), 1u);
+  EXPECT_EQ(probe.permission_handlers.count("SetMotorState"), 1u);
+  EXPECT_EQ(probe.permission_handlers.count("UpdateSingletonVibration"), 1u);
   EXPECT_EQ(QueryMicrophone(&probe).at("status"), "DENIED");
   EXPECT_EQ(probe.web_view_initializations, 1);
   EXPECT_EQ(probe.browser_bindings, 4);
@@ -965,8 +969,8 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_EQ(probe.browser_releases, 0);
   EXPECT_EQ(probe.browser_callbacks_cleared, 0);
   EXPECT_TRUE(composition.Shutdown().ok());
-  EXPECT_EQ(probe.permission_disconnects, 6);
-  EXPECT_EQ(probe.permission_handlers_cleared, 6);
+  EXPECT_EQ(probe.permission_disconnects, 10);
+  EXPECT_EQ(probe.permission_handlers_cleared, 10);
   EXPECT_EQ(probe.disconnects, 3);
   EXPECT_EQ(probe.browser_disconnects, 4);
   EXPECT_EQ(probe.browser_releases, 4);
