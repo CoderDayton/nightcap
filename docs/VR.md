@@ -1,8 +1,23 @@
-# VR settings
+# VR
 
 Experimental OpenXR VR is opt-in: launch with `--vr`, or set `vr.enabled: true`
-in `config.yaml`. These environment variables tune it. Everything here only
-applies while VR is active.
+in `config.yaml`. Everything here only applies while VR is active. The
+[README](../README.md#experimental-vr) covers building and running.
+
+## Menus and typing
+
+The home menu uses Roblox's `More` button. The desktop side panel is turned
+off in VR, because the VR pointer cannot click it.
+
+When a text box takes focus (chat, search), a keyboard opens in front of you,
+below eye level. It is a full US layout without the function row or
+Ctrl/Alt. Point at a key and pull the trigger. While you point at the keyboard,
+the trigger types and does not click the game behind it. Hold Backspace to
+delete repeatedly. Shift applies to the next key and selects its upper symbol;
+Caps Lock stays on until you tap it again. Close dismisses the keyboard and
+leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
+
+## Environment variables
 
 ## Runtime and display
 
@@ -47,3 +62,49 @@ Release builds ignore them.
 | `MOCKTAIL_VR_POSE_PERIOD_POSITION`, `_ROTATION` | `240`, `360` | Scripted motion period, in frames. |
 | `MOCKTAIL_VR_XR_EVIDENCE_DIR` | unset | Writes submitted eye images to this directory. |
 | `MOCKTAIL_VR_XR_EVIDENCE_INTERVAL` | `20` | Frames between evidence images. |
+
+## Adding a Roblox build
+
+VR needs addresses that are specific to each Roblox build. To use a supported
+build that is not the active one, point `--roblox-lib` at its `libroblox.so`.
+
+To add a build, run the offset finder on its library:
+
+```bash
+python3 scripts/find_roblox_vr_offsets.py --elf <libroblox.so> --output offsets.json
+```
+
+It needs the `capstone` Python package. Add its values to `kContracts` in
+`src/vr/roblox_vr_device_bridge.cc`. Nightcap checks those addresses against
+Roblox's code before it hooks anything, and leaves VR off if they do not
+match. To run the same checks on real libraries, set
+`MOCKTAIL_TEST_VR_PAYLOADS` to a folder of `<build>-<build id>/libroblox.so`
+payloads and run `ctest -R VrSupportedBuilds`.
+
+## Testing without a headset
+
+[Monado](https://monado.freedesktop.org) can stand in for a headset. Its
+`qwerty` driver gives a head and two controllers that you move with the
+keyboard and mouse:
+
+```bash
+QWERTY_ENABLE=1 XRT_DEBUG_GUI=1 monado-service
+```
+
+Then, in another terminal:
+
+```bash
+XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json ./build/mocktail --vr
+```
+
+The keys work while Monado's debug window has focus. The simulated display is
+small, so text in the headset view looks coarse.
+
+Two tests need an OpenXR runtime and skip without one. To run them, start
+Monado with no window and opt in:
+
+```bash
+XRT_COMPOSITOR_NULL=1 monado-service &
+XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json MOCKTAIL_TEST_XR_GLES=1 \
+  ctest --test-dir build -R GlesVrTransportTest.OpenXr
+```

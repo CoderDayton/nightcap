@@ -56,15 +56,14 @@ after Roblox added measures against running multiple clients.
 
 ## Can I play in VR?
 
-VR is experimental and lives on upstream's `vr` branch, which does not
-include the Nightcap changes. Install the
+Yes, as an experiment. VR lives on Nightcap's `vr` branch and is not in the
+releases yet. It works on Roblox builds 2998, 3092 and 3222. Install the
 [build dependencies](README.md#building), then switch to that branch and
 build:
 
 ```bash
-git remote add upstream https://github.com/komaruworld/mocktail.git
-git fetch upstream
-git switch -c vr upstream/vr
+git fetch origin
+git switch vr
 git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMOCKTAIL_ENABLE_VR=ON
 cmake --build build -j4
@@ -73,5 +72,8 @@ cmake --build build -j4
 Start WiVRn or SteamVR/ALVR, connect your headset, then run:
 
 ```bash
-./build/mocktail -vr
+./build/mocktail --vr
 ```
+
+The [README](README.md#experimental-vr) and [docs/VR.md](docs/VR.md) have the
+details, including how to try it without a headset.

@@ -238,6 +238,15 @@ lefthook install
 
 Experimental OpenXR VR support on Linux `x86_64` using WiVRn or SteamVR/ALVR.
 
+VR works on these Roblox builds. On any other build, `--vr` stops at start-up
+and names them:
+
+| Build | Roblox version |
+| --- | --- |
+| 2998 | 2.736.1408 |
+| 3092 | 2.738.1397 |
+| 3222 | 2.742.1059 |
+
 ### Build with VR
 
 VR support is compiled in when the OpenXR SDK submodule is checked out
@@ -272,18 +281,9 @@ MOCKTAIL_VR_RUNTIME=alvr MOCKTAIL_GRAPHICS_BACKEND=direct-vulkan ./build/mocktai
 If you previously set `XR_RUNTIME_JSON`, unset it before switching runtimes.
 Use `--no-vr` for desktop mode.
 
-Every VR environment variable, from frame-rate limits to hand pitch, is listed
-in [docs/VR.md](docs/VR.md).
-
-### Typing in VR
-
-When a text box takes focus (chat, search), a keyboard opens in front of you,
-below eye level. It is a full US layout without the function row or
-Ctrl/Alt. Point at a key and pull the trigger. While you point at the keyboard,
-the trigger types and does not click the game behind it. Hold Backspace to
-delete repeatedly. Shift applies to the next key and selects its upper symbol;
-Caps Lock stays on until you tap it again. Close dismisses the keyboard and
-leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
+A keyboard opens in the headset when a text box takes focus. The rest is in
+[docs/VR.md](docs/VR.md): menus and typing, every VR environment variable,
+adding a Roblox build, and testing without a headset.
 
 ## Known limitations
 
