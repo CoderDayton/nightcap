@@ -22,6 +22,8 @@ namespace {
 
 constexpr std::uintmax_t kMaximumJsonBytes = 16U * 1024U * 1024U;
 constexpr std::string_view kAppPolicySuffix = ":app-policy";
+constexpr const char* kFlyoutVariantFlag = "FIntFlyoutTestVariantRollout12";
+constexpr const char* kDesktopFlyoutVariant = "2";
 constexpr std::string_view kDesktopAppPolicyOverride =
     "FStringAppConfigurationOverrideAppPolicy";
 std::atomic<std::uint64_t> g_temporary_sequence{0};
@@ -364,7 +366,7 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
   // Roblox enrolls desktop clients in the flyout side panel through a
   // server-side experiment that does not reach this client. Variant 2 is the
   // desktop side panel; an explicit user override is preserved.
-  overrides.emplace("FIntFlyoutTestVariantRollout12", "2");
+  overrides.emplace(kFlyoutVariantFlag, kDesktopFlyoutVariant);
   *merged_json = overrides.dump();
   return true;
 }
@@ -417,6 +419,12 @@ bool MergeVrAppPolicyClientSettingsOverrides(
     }
   }
   policy["ThrottleFramerate"] = false;
+  // The desktop side panel cannot be reached with the VR pointer. fflags.json
+  // is the later channel, so a user's own value there still decides.
+  const auto flyout = client_settings.find(kFlyoutVariantFlag);
+  if (flyout != client_settings.end() && *flyout == kDesktopFlyoutVariant) {
+    *flyout = "0";
+  }
   const std::string encoded_policy = policy.dump();
   client_settings[std::string(kDesktopAppPolicyOverride)] = encoded_policy;
   fast_flags[std::string(kDesktopAppPolicyOverride)] = encoded_policy;

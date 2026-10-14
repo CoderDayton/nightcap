@@ -391,6 +391,34 @@ TEST(RobloxDesktopAppPolicyTest, VrRejectsMalformedOverridesWithoutErasingThem) 
   }
 }
 
+TEST(RobloxDesktopAppPolicyTest, VrTurnsOffTheDesktopFlyoutSidePanel) {
+  std::string desktop, client, fast, error;
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride("{}", "{}", &desktop,
+                                                          &error))
+      << error;
+  ASSERT_EQ(nlohmann::json::parse(desktop)["FIntFlyoutTestVariantRollout12"],
+            "2");
+
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(false, desktop, "{}",
+                                                      &client, &fast, &error));
+  EXPECT_EQ(nlohmann::json::parse(client)["FIntFlyoutTestVariantRollout12"],
+            "2");
+
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(true, desktop, "{}",
+                                                      &client, &fast, &error));
+  EXPECT_EQ(nlohmann::json::parse(client)["FIntFlyoutTestVariantRollout12"],
+            "0");
+  EXPECT_FALSE(
+      nlohmann::json::parse(fast).contains("FIntFlyoutTestVariantRollout12"));
+
+  // fflags.json is the later channel, so a user's own value still decides.
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, desktop, R"({"FIntFlyoutTestVariantRollout12":"2"})", &client,
+      &fast, &error));
+  EXPECT_EQ(nlohmann::json::parse(fast)["FIntFlyoutTestVariantRollout12"],
+            "2");
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail
