@@ -302,7 +302,10 @@ void Log(const char *format, ...) {
 std::uintptr_t* g_is_vr_app_build_slot = nullptr;
 std::uintptr_t g_is_vr_app_build_original = 0;
 
-extern "C" bool mocktail_vr_is_vr_app_build(const void*) {
+// Aligned: Roblox calls this through a C++ member function pointer, which
+// reads an odd address as a vtable offset. Unoptimized builds do not align.
+extern "C" __attribute__((aligned(16))) bool mocktail_vr_is_vr_app_build(
+    const void*) {
   HookCall in_flight;
   auto* bridge = g_active_bridge.load(std::memory_order_seq_cst);
   return bridge != nullptr && bridge->active();

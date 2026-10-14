@@ -1075,3 +1075,19 @@ TEST(VrSupportedBuilds, ContractsMatchTheRealLibraries) {
 
 }  // namespace
 }  // namespace mocktail::vr
+
+extern "C" bool mocktail_vr_is_vr_app_build(const void*);
+
+namespace mocktail::vr {
+namespace {
+
+// In a C++ member function pointer an odd address means a virtual call.
+TEST(VrIsVrAppBuildHook, HasAnEvenAddress) {
+  // volatile: the compiler otherwise assumes the low bit is clear.
+  bool (*volatile hook)(const void*) = &mocktail_vr_is_vr_app_build;
+  const auto address = reinterpret_cast<std::uintptr_t>(hook);
+  EXPECT_EQ(address % 2, 0u) << std::hex << address;
+}
+
+}  // namespace
+}  // namespace mocktail::vr
