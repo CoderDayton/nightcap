@@ -24,6 +24,14 @@ struct OpenXrBackendTestAccess {
   static void LoseSession(OpenXrBackend &b) {
     b.HandleSessionState(XR_SESSION_STATE_LOSS_PENDING);
   }
+  static bool KeyboardVisible(OpenXrBackend &b) { return b.keyboard_.visible(); }
+  static bool KeyboardFailed(OpenXrBackend &b) {
+    return b.keyboard_swapchain_failed_;
+  }
+  static bool KeyboardUploaded(OpenXrBackend &b) {
+    return b.keyboard_uploaded_revision_ != 0 &&
+           b.keyboard_uploaded_revision_ == b.keyboard_.revision();
+  }
 };
 namespace {
 #define GL(name)                                                               \
@@ -255,6 +263,50 @@ TEST_F(GlesVrTransportTest, OpenXrEglSessionSubmitsAndRecovers) {
               0u);
     backend.DetachGlesContext(context);
   }
+}
+TEST_F(GlesVrTransportTest, OpenXrKeyboardUploadsWhileRobloxWantsInput) {
+  if (!std::getenv("MOCKTAIL_TEST_XR_GLES"))
+    GTEST_SKIP() << "Opt-in: requires a connected or simulated OpenXR runtime";
+  static bool wants_input = true;
+  VirtualKeyboardHost host;
+  host.input_requested = [](void *) { return wants_input; };
+  SetVirtualKeyboardHost(&host);
+  OpenXrBackend backend;
+  auto status = backend.Arm(VrGraphicsApi::kOpenGles);
+  ASSERT_TRUE(status.ok()) << status.message();
+  status = backend.AttachGlesContext(
+      SDL_EGL_GetCurrentDisplay(), SDL_EGL_GetCurrentConfig(), context,
+      reinterpret_cast<void *>(SDL_EGL_GetProcAddress("eglGetProcAddress")),
+      Resolve);
+  ASSERT_TRUE(status.ok()) << status.message();
+  auto &t = OpenXrBackendTestAccess::Transport(backend);
+  const GLuint red = Texture(&t, 1, 0, 0), green = Texture(&t, 0, 1, 0);
+  auto *owner = reinterpret_cast<void *>(123);
+  const GLuint fbs[2] = {Eye(t, 0, red), Eye(t, 1, green)};
+  const auto run_frames = [&](std::uint64_t until) {
+    for (int i = 0; i < 300 && backend.submitted_frames() < until; ++i) {
+      backend.NoteGlesPresent();
+      auto pose = backend.PublishedHeadPose();
+      if (!pose.valid) {
+        SDL_Delay(10);
+        continue;
+      }
+      backend.NotePoseApplied(owner, pose.frame);
+      BindEye(t, 0, fbs[0], pose.frame, owner);
+      BindEye(t, 1, fbs[1], pose.frame, owner);
+    }
+  };
+  run_frames(10);
+  EXPECT_GE(backend.submitted_frames(), 10u);
+  EXPECT_TRUE(OpenXrBackendTestAccess::KeyboardVisible(backend));
+  EXPECT_TRUE(OpenXrBackendTestAccess::KeyboardUploaded(backend));
+  EXPECT_FALSE(OpenXrBackendTestAccess::KeyboardFailed(backend));
+  wants_input = false;
+  run_frames(backend.submitted_frames() + 5);
+  EXPECT_FALSE(OpenXrBackendTestAccess::KeyboardVisible(backend));
+  EXPECT_EQ(GL(GetError)(), GL_NO_ERROR);
+  SetVirtualKeyboardHost(nullptr);
+  backend.DetachGlesContext(context);
 }
 } // namespace
 } // namespace mocktail::vr
