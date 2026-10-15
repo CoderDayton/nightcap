@@ -315,20 +315,31 @@ std::vector<std::string> LoadedSharedObjects() {
   return paths;
 }
 
-std::vector<std::string> PinSharedObjectsLoadedSince(
+std::vector<std::string> SharedObjectsLoadedSince(
     const std::vector<std::string>& before) {
-  std::vector<std::string> pinned;
+  std::vector<std::string> added;
   for (const auto& path : LoadedSharedObjects()) {
-    if (std::find(before.begin(), before.end(), path) != before.end()) {
-      continue;
-    }
-    // RTLD_NOLOAD only adds a reference; RTLD_NODELETE makes it permanent.
-    if (dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE) !=
-        nullptr) {
-      pinned.push_back(path);
+    if (std::find(before.begin(), before.end(), path) == before.end()) {
+      added.push_back(path);
     }
   }
-  return pinned;
+  return added;
+}
+
+DeepBoundLibraries::DeepBoundLibraries(
+    const std::vector<std::string>& paths) {
+  for (const auto& path : paths) {
+    if (void* handle =
+            dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND)) {
+      handles_.push_back(handle);
+    }
+  }
+}
+
+DeepBoundLibraries::~DeepBoundLibraries() {
+  for (auto it = handles_.rbegin(); it != handles_.rend(); ++it) {
+    dlclose(*it);
+  }
 }
 
 void OpenXrBackend::DestroyXrInstanceLocked() {
@@ -352,6 +363,7 @@ bool OpenXrBackend::EnsureXrInstanceLocked(std::string* error) {
   }
   try {
     const auto libraries_before_runtime = LoadedSharedObjects();
+    const DeepBoundLibraries runtime_libraries(runtime_libraries_);
     const char *vk_extensions[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME};
     const char *gl_extensions[] = {XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
                                    XR_MNDX_EGL_ENABLE_EXTENSION_NAME};
@@ -410,14 +422,8 @@ bool OpenXrBackend::EnsureXrInstanceLocked(std::string* error) {
     }
     CheckXr(XR_NULL_HANDLE, instance_result, "xrCreateInstance");
     xr_instance_ = instance;
-    // The loader unloads the runtime with each instance. Loaded again after
-    // the Vulkan adapter (RTLD_GLOBAL), the runtime would call Vulkan through
-    // the adapter's hooks, which re-enter this backend under mutex_.
-    const auto pinned = PinSharedObjectsLoadedSince(libraries_before_runtime);
-    if (!pinned.empty()) {
-      Log("  [vr-backend] kept %zu runtime libraries loaded for later "
-          "sessions\n",
-          pinned.size());
+    if (runtime_libraries_.empty()) {
+      runtime_libraries_ = SharedObjectsLoadedSince(libraries_before_runtime);
     }
 
     XrInstanceProperties properties =

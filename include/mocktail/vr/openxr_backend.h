@@ -395,6 +395,9 @@ class OpenXrBackend final {
   // can report it without re-entering runtime_name() under the held mutex.
   std::string runtime_name_;
   bool xr_instance_used_ = false;
+  // Libraries the runtime's first instance loaded; later instances load them
+  // with RTLD_DEEPBIND (see EnsureXrInstanceLocked).
+  std::vector<std::string> runtime_libraries_;
   std::string user_manifest_;
   std::string runtime_manifest_;
 
@@ -492,10 +495,25 @@ OpenXrBackend* ActiveVrBackend();
 
 // Paths of the shared objects mapped into the process.
 std::vector<std::string> LoadedSharedObjects();
-// Keeps every shared object loaded since `before` mapped until exit and
-// returns the paths it pinned.
-std::vector<std::string> PinSharedObjectsLoadedSince(
+// Paths mapped now that were not in `before`.
+std::vector<std::string> SharedObjectsLoadedSince(
     const std::vector<std::string>& before);
+
+// Holds the runtime's libraries open with RTLD_DEEPBIND while the OpenXR
+// loader loads the runtime, so its Vulkan calls bind to its own libvulkan
+// dependency instead of the Vulkan adapter's exported hooks. Released after
+// the loader holds its own reference, so the runtime still unloads with its
+// instance.
+class DeepBoundLibraries {
+ public:
+  explicit DeepBoundLibraries(const std::vector<std::string>& paths);
+  ~DeepBoundLibraries();
+  DeepBoundLibraries(const DeepBoundLibraries&) = delete;
+  DeepBoundLibraries& operator=(const DeepBoundLibraries&) = delete;
+
+ private:
+  std::vector<void*> handles_;
+};
 
 }  // namespace mocktail::vr
 
