@@ -1033,7 +1033,7 @@ TEST(VrSupportedBuilds, EveryBuildCarriesAllHapticFlags) {
             "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x72fcd18, 0x7367588,
             0x73677d0, 0x7367da0},
         {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03", 0x7387118, 0x73f2268,
-         0x73f24f0, 0x73f2aa8},
+         0x73f24f0, 0x73f2ac0},
         {"a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x763fef8, 0x74cf1e0,
          0x74cf458, 0x74cfa10}}) {
     const auto* contract = internal::FindVrBuildContract(id);

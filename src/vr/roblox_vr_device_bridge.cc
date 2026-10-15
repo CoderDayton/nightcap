@@ -579,7 +579,7 @@ constexpr VrBuildContract kContracts[] = {
      0x7387118,
      0x73f2268,
      0x73f24f0,
-     0x73f2aa8,
+     0x73f2ac0,
      "3092 (2.738.1397)"},
     {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
      {0x7083a48, 0x549c884, 0x549cc66, 0x549cc56, 0x549cc88, 0x74d1640,
