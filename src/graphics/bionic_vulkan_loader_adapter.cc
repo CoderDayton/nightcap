@@ -1477,22 +1477,24 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   const VrXrNotePresentFn vr_note_present =
       state.vr_note_present.load(std::memory_order_acquire);
   VkPresentInfoKHR synchronized{};
+  VkSemaphore ready = VK_NULL_HANDLE;
   if (vr_note_present != nullptr) {
     static const auto prepare = ResolveProcessFunction<VkResult (*)(
-        VkQueue, VkDevice, const VkPresentInfoKHR *)>(
+        VkQueue, VkDevice, const VkPresentInfoKHR *, VkSemaphore *)>(
         "mocktail_vr_xr_prepare_present");
-    // Mirror/overlay may have consumed waits; use the final dependency list.
+    // Mirror/overlay may have replaced waits; use the final dependency list.
     const VkResult prepared =
-        prepare
-            ? prepare(queue, HostDispatchForQueue(queue).device, present_info)
-            : VK_NOT_READY;
+        prepare ? prepare(queue, HostDispatchForQueue(queue).device,
+                          present_info, &ready)
+                : VK_NOT_READY;
     if (prepared < 0)
       return prepared;
     if (prepared == VK_SUCCESS) {
       vr_note_present(queue, HostDispatchForQueue(queue).device);
+      // The waits went to the GPU; present after the semaphore they signal.
       synchronized = *present_info;
-      synchronized.waitSemaphoreCount = 0;
-      synchronized.pWaitSemaphores = nullptr;
+      synchronized.waitSemaphoreCount = ready != VK_NULL_HANDLE ? 1 : 0;
+      synchronized.pWaitSemaphores = ready != VK_NULL_HANDLE ? &ready : nullptr;
       present_info = &synchronized;
     }
   }
@@ -3026,16 +3028,19 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
   if (trace != nullptr) {
     RecordProfiledFrame(trace, mocktail::graphics::TraceClockNanos());
   }
-  static const auto mirror = ResolveProcessFunction<VkResult (*)(VkQueue, const VkPresentInfoKHR*)>(
+  static const auto mirror = ResolveProcessFunction<VkResult (*)(
+      VkQueue, const VkPresentInfoKHR*, VkSemaphore*)>(
       "mocktail_vr_desktop_present");
   VkPresentInfoKHR mirrored{};
+  VkSemaphore mirror_ready = VK_NULL_HANDLE;
   if (mirror && present_info) {
-    const VkResult mirror_result = mirror(queue, present_info);
+    const VkResult mirror_result = mirror(queue, present_info, &mirror_ready);
     if (mirror_result < 0) return mirror_result;
     if (mirror_result == VK_SUCCESS) {
+      // The blit consumed the guest's waits and signals mirror_ready.
       mirrored = *present_info;
-      mirrored.waitSemaphoreCount = 0;
-      mirrored.pWaitSemaphores = nullptr;
+      mirrored.waitSemaphoreCount = 1;
+      mirrored.pWaitSemaphores = &mirror_ready;
       present_info = &mirrored;
     }
   }

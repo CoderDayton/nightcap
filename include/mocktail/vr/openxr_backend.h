@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -196,16 +197,20 @@ class OpenXrBackend final {
   // Render-thread frame cycle at host present begin.
   void NoteHostPresent(VkQueue queue, VkDevice device);
   // VK_NOT_READY leaves the present untouched until eye submission provenance
-  // is known. VK_SUCCESS means its waits were consumed on the graphics queue.
+  // is known. VK_SUCCESS means its waits were consumed on the graphics queue,
+  // so the eye copies that follow there are ordered after them. The present
+  // must then wait on *ready instead (none when it is VK_NULL_HANDLE).
   VkResult PrepareHostPresent(VkQueue queue, VkDevice device,
-                              const VkPresentInfoKHR* info);
+                              const VkPresentInfoKHR* info, VkSemaphore* ready);
   void RecordDesktopSwapchain(VkDevice device, VkSwapchainKHR swapchain,
                               const VkSwapchainCreateInfoKHR* info,
                               const VkImage* images, unsigned count,
                               bool converted_to_concurrent = false);
-  // On success the original present semaphores have been consumed and the
-  // copy has completed. The caller must present with no wait semaphores.
-  VkResult MirrorDesktop(VkQueue queue, const VkPresentInfoKHR* info);
+  // On success the original present semaphores have been consumed by the
+  // mirror blit on the GPU. The caller must present waiting only on *ready,
+  // which the blit signals. The CPU never waits for the guest's frame here.
+  VkResult MirrorDesktop(VkQueue queue, const VkPresentInfoKHR* info,
+                         VkSemaphore* ready);
 
   // Pose published for the frame that is about to render. The device bridge
   // reads it once per frame on the render thread and injects it into the
@@ -328,9 +333,32 @@ class OpenXrBackend final {
                            std::string* error);
   void DestroyCopyResources();
   // Records both eye copies (and, when the mirror is enabled, both staging
-  // readbacks) into one command buffer, submits once and waits on one fence.
-  // Replaces the previous per-eye submit+fence pair.
+  // readbacks) into one command buffer and submits it once. Only the shared
+  // memory mirror waits for it; the headset path leaves it to the GPU.
   bool CopyEyesIntoSwapchains(VkQueue queue);
+  // Per-frame GPU work (desktop mirror, eye copies) is submitted without a CPU
+  // wait. A slot is reused only after its fence signalled; its images let a
+  // guest destroy wait for the submissions that still read them.
+  struct AsyncSubmission {
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    bool pending = false;
+    std::vector<VkImage> images;
+  };
+  // The next slot, recorded-ready, or nullptr when its previous submission
+  // did not finish in time (the device is hung or lost).
+  AsyncSubmission* NextAsyncSubmissionLocked();
+  VkResult SubmitAsyncLocked(VkQueue queue, AsyncSubmission* slot,
+                             const VkSubmitInfo& submit);
+  // Waits for pending submissions reading `image`, or all of them for
+  // VK_NULL_HANDLE.
+  void WaitAsyncSubmissionsLocked(VkImage image);
+  // Semaphore the present of `image_index` waits on, created on first use.
+  enum class PresentStep { kMirror, kPrepare };
+  VkSemaphore PresentReadySemaphoreLocked(VkSwapchainKHR swapchain,
+                                          std::uint32_t image_index,
+                                          PresentStep step);
+  void DestroyRetiredSemaphoresLocked();
   // In-headset keyboard: show/hide from the host's TextBox request, pointer
   // input, and trigger masking. Runs inside the controller sync.
   void UpdateVirtualKeyboardLocked();
@@ -412,8 +440,19 @@ class OpenXrBackend final {
   VkProcs* vk_ = nullptr;
 
   VkCommandPool copy_pool_ = VK_NULL_HANDLE;
+  // Synchronous one-off work: keyboard uploads, evidence, present fallback.
   VkCommandBuffer copy_command_ = VK_NULL_HANDLE;
   VkFence copy_fence_ = VK_NULL_HANDLE;
+  // Two submissions per frame, so three frames may be in flight.
+  static constexpr std::size_t kAsyncSubmissions = 6;
+  std::array<AsyncSubmission, kAsyncSubmissions> async_{};
+  std::size_t next_async_ = 0;
+  // The mirror's signal for this present, which PrepareHostPresent passes on.
+  VkSemaphore mirror_ready_ = VK_NULL_HANDLE;
+  // Semaphores of destroyed desktop swapchains. A present may still wait on
+  // one, so they are destroyed only once the device is idle.
+  std::vector<VkSemaphore> retired_semaphores_;
+  std::unordered_map<VkFormat, VkFormatFeatureFlags> blit_features_;
 
   // Optional desktop two-eye mirror (MOCKTAIL_VR_MIRROR_SHM). Publishes the
   // latest complete pair through shared memory; inert when unset.
@@ -427,6 +466,8 @@ class OpenXrBackend final {
     VkSharingMode sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
     std::vector<std::uint32_t> families;
     bool converted_to_concurrent = false;
+    // Two per image, see PresentReadySemaphoreLocked.
+    std::vector<VkSemaphore> ready;
   };
   std::unordered_map<VkSwapchainKHR, DesktopSwapchain> desktop_swapchains_;
   std::unordered_map<VkImageView, VkImage> image_views_;

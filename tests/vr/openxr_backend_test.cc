@@ -251,7 +251,9 @@ TEST(OpenXrDesktopMirror, RequiresTransferUsageAndDropsDestroyedSwapchain) {
   EXPECT_EQ(OpenXrBackendTestAccess::DesktopCount(b), 0u);
   b.RecordDesktopSwapchain(OpenXrBackendTestAccess::Handle<VkDevice>(3), chain, &info, &image, 1);
   EXPECT_EQ(OpenXrBackendTestAccess::DesktopCount(b), 0u);
-  EXPECT_EQ(b.MirrorDesktop(VK_NULL_HANDLE, nullptr), VK_NOT_READY);
+  VkSemaphore ready = VK_NULL_HANDLE;
+  EXPECT_EQ(b.MirrorDesktop(VK_NULL_HANDLE, nullptr, &ready), VK_NOT_READY);
+  EXPECT_EQ(ready, VK_NULL_HANDLE);
 }
 }
 
@@ -349,6 +351,7 @@ TEST_F(OpenXrPresentDependencies, InvalidDependenciesDoNotSubmit) {
   EXPECT_LT(Run(), VK_SUCCESS);
   EXPECT_EQ(resets + submits + waits, 0);
 }
+
 TEST(OpenXrPresentQueue, RoutesSameAndSplitFamilyPresentationToGraphicsQueue) {
   OpenXrBackend backend;
   Access::Configure(backend);

@@ -230,6 +230,8 @@ struct OpenXrBackend::VkProcs {
   PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties = nullptr;
   PFN_vkCreateFence CreateFence = nullptr;
   PFN_vkDestroyFence DestroyFence = nullptr;
+  PFN_vkCreateSemaphore CreateSemaphore = nullptr;
+  PFN_vkDestroySemaphore DestroySemaphore = nullptr;
   PFN_vkResetFences ResetFences = nullptr;
   PFN_vkWaitForFences WaitForFences = nullptr;
   PFN_vkQueueSubmit QueueSubmit = nullptr;
@@ -829,6 +831,8 @@ void OpenXrBackend::SetupDeviceAfterCreationLocked(
   MOCKTAIL_BACKEND_VK_FN(CmdClearColorImage)
   MOCKTAIL_BACKEND_VK_FN(CreateFence)
   MOCKTAIL_BACKEND_VK_FN(DestroyFence)
+  MOCKTAIL_BACKEND_VK_FN(CreateSemaphore)
+  MOCKTAIL_BACKEND_VK_FN(DestroySemaphore)
   MOCKTAIL_BACKEND_VK_FN(ResetFences)
   MOCKTAIL_BACKEND_VK_FN(WaitForFences)
   MOCKTAIL_BACKEND_VK_FN(QueueSubmit)
@@ -1363,6 +1367,7 @@ void OpenXrBackend::MatchSwapchainFormatToEyesLocked() {
     return;  // already a raw copy
   }
   eye_swapchain_format_ = preferred;
+  WaitAsyncSubmissionsLocked(VK_NULL_HANDLE);
   DestroySwapchains();
   std::string error;
   Require(CreateSwapchains(&error), error);
@@ -1405,6 +1410,7 @@ void OpenXrBackend::TeardownSessionLocked(const char* reason, bool preserve_devi
     DestroyVirtualKeyboardResources();
     DestroyCopyResources();
     DestroySwapchains();
+    DestroyRetiredSemaphoresLocked();
     // Action pose spaces belong to this session; detach before the session and
     // its spaces go away so a recreated session attaches cleanly.
     {
@@ -1450,7 +1456,18 @@ void OpenXrBackend::TeardownSessionLocked(const char* reason, bool preserve_devi
   session_recovery_pending_ = false;
   next_session_retry_ns_ = 0;
   images_.clear();
+  if (copy_pool_ != VK_NULL_HANDLE && vk_ && vk_device_) {
+    // Mirror blits can outlive the session while it recovers.
+    (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
+    DestroyCopyResources();
+  }
+  for (const auto &entry : desktop_swapchains_)
+    for (const VkSemaphore semaphore : entry.second.ready)
+      if (semaphore != VK_NULL_HANDLE)
+        retired_semaphores_.push_back(semaphore);
+  DestroyRetiredSemaphoresLocked();
   desktop_swapchains_.clear();
+  blit_features_.clear();
   image_views_.clear();
   framebuffer_views_.clear();
   framebuffer_render_pass_.clear();
@@ -1695,6 +1712,8 @@ void OpenXrBackend::NoteDestroyImage(VkImage image) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  // A frame copy or mirror blit may still read it on the GPU.
+  WaitAsyncSubmissionsLocked(image);
   images_.erase(image);
   eye_render_queues_.erase(image);
   eye_render_frames_.erase(image);
@@ -2251,9 +2270,15 @@ VkQueue OpenXrBackend::GraphicsQueueForPresentLocked(VkQueue present) const {
 }
 
 VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
-                                           const VkPresentInfoKHR *info) {
+                                           const VkPresentInfoKHR *info,
+                                           VkSemaphore *ready) {
   const ScopedStageTimer prepare_timer(perf::Stage::kPresentPrepare);
   std::lock_guard<std::mutex> lock(mutex_);
+  // Only valid for the present it was signalled for.
+  const VkSemaphore mirrored = std::exchange(mirror_ready_, VK_NULL_HANDLE);
+  if (!ready)
+    return VK_NOT_READY;
+  *ready = VK_NULL_HANDLE;
   if (!armed_ || graphics_api_ != VrGraphicsApi::kVulkan || !vk_ ||
       device != vk_device_ || !info)
     return VK_NOT_READY;
@@ -2267,6 +2292,44 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
   }
   if (info->waitSemaphoreCount == 0)
     return VK_SUCCESS;
+  if (!info->pWaitSemaphores)
+    return VK_NOT_READY;
+  // The mirror already waited on the guest's semaphores on the graphics queue.
+  if (mirrored != VK_NULL_HANDLE && info->waitSemaphoreCount == 1 &&
+      info->pWaitSemaphores[0] == mirrored) {
+    *ready = mirrored;
+    return VK_SUCCESS;
+  }
+  const VkQueue graphics = GraphicsQueueForPresentLocked(queue);
+  const VkSemaphore signal =
+      info->swapchainCount == 1 && info->pSwapchains && info->pImageIndices
+          ? PresentReadySemaphoreLocked(info->pSwapchains[0],
+                                        info->pImageIndices[0],
+                                        PresentStep::kPrepare)
+          : VK_NULL_HANDLE;
+  if (signal != VK_NULL_HANDLE) {
+    // Hand the waits to the GPU: an empty batch on the graphics queue waits
+    // on them, which orders the eye copies submitted after it, and signals
+    // the one semaphore the present waits on instead.
+    std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount,
+                                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.waitSemaphoreCount = info->waitSemaphoreCount;
+    submit.pWaitSemaphores = info->pWaitSemaphores;
+    submit.pWaitDstStageMask = stages.data();
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &signal;
+    const VkResult result = SubmitHostQueue(vk_->QueueSubmit, vk_device_,
+                                            graphics, 1, &submit,
+                                            VK_NULL_HANDLE);
+    // A failed submit consumed nothing, so the guest's present stays valid.
+    if (result != VK_SUCCESS)
+      return result == VK_ERROR_DEVICE_LOST ? result : VK_NOT_READY;
+    *ready = signal;
+    return VK_SUCCESS;
+  }
+  // An unregistered swapchain has no semaphores of ours: wait on the CPU.
   std::string error;
   if (!EnsureCopyResources(device, vk_queue_family_, &error)) {
     // Nothing consumed yet: present normally and skip VR for this frame.
@@ -2279,8 +2342,8 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
     return VK_NOT_READY;
   }
   return internal::WaitForPresentDependencies(
-      device, GraphicsQueueForPresentLocked(queue), *info, copy_fence_,
-      vk_->ResetFences, vk_->QueueSubmit, vk_->WaitForFences);
+      device, graphics, *info, copy_fence_, vk_->ResetFences, vk_->QueueSubmit,
+      vk_->WaitForFences);
 }
 
 void OpenXrBackend::NoteHostPresent(VkQueue queue, VkDevice device) {
@@ -3124,7 +3187,8 @@ bool OpenXrBackend::EnsureCopyResources(VkDevice device,
                                         std::string* error) {
   try {
     if (copy_pool_ != VK_NULL_HANDLE && copy_command_ != VK_NULL_HANDLE &&
-        copy_fence_ != VK_NULL_HANDLE) {
+        copy_fence_ != VK_NULL_HANDLE &&
+        async_.back().fence != VK_NULL_HANDLE) {
       return true;
     }
     if (copy_pool_ == VK_NULL_HANDLE) {
@@ -3153,6 +3217,25 @@ bool OpenXrBackend::EnsureCopyResources(VkDevice device,
                 VK_SUCCESS,
               "vkCreateFence failed for XR copies");
     }
+    for (auto &slot : async_) {
+      if (slot.command == VK_NULL_HANDLE) {
+        VkCommandBufferAllocateInfo allocate_info{};
+        allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocate_info.commandPool = copy_pool_;
+        allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate_info.commandBufferCount = 1;
+        Require(vk_->AllocateCommandBuffers(device, &allocate_info,
+                                            &slot.command) == VK_SUCCESS,
+                "vkAllocateCommandBuffers failed for XR frame copies");
+      }
+      if (slot.fence == VK_NULL_HANDLE) {
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        Require(vk_->CreateFence(device, &fence_info, nullptr, &slot.fence) ==
+                    VK_SUCCESS,
+                "vkCreateFence failed for XR frame copies");
+      }
+    }
     return true;
   } catch (const std::exception& exception) {
     *error = exception.what();
@@ -3161,11 +3244,20 @@ bool OpenXrBackend::EnsureCopyResources(VkDevice device,
 }
 
 void OpenXrBackend::DestroyCopyResources() {
+  mirror_ready_ = VK_NULL_HANDLE;
+  next_async_ = 0;
   if (vk_ == nullptr || vk_device_ == VK_NULL_HANDLE) {
     copy_pool_ = VK_NULL_HANDLE;
     copy_command_ = VK_NULL_HANDLE;
     copy_fence_ = VK_NULL_HANDLE;
+    async_ = {};
     return;
+  }
+  // Callers idle the device first, so no slot is still pending.
+  for (auto &slot : async_) {
+    if (slot.fence != VK_NULL_HANDLE)
+      vk_->DestroyFence(vk_device_, slot.fence, nullptr);
+    slot = {};  // command buffers are freed with the pool
   }
   if (copy_fence_ != VK_NULL_HANDLE) {
     vk_->DestroyFence(vk_device_, copy_fence_, nullptr);
@@ -3177,6 +3269,95 @@ void OpenXrBackend::DestroyCopyResources() {
     copy_pool_ = VK_NULL_HANDLE;
     copy_command_ = VK_NULL_HANDLE;
   }
+}
+
+OpenXrBackend::AsyncSubmission *OpenXrBackend::NextAsyncSubmissionLocked() {
+  AsyncSubmission &slot = async_[next_async_];
+  if (slot.fence == VK_NULL_HANDLE || slot.command == VK_NULL_HANDLE)
+    return nullptr;
+  if (slot.pending) {
+    // Normally signalled frames ago; only a GPU running three frames behind
+    // waits here, which is the backpressure it needs.
+    const ScopedStageTimer fence_timer(perf::Stage::kCopyFenceWait);
+    perf::ProcessCollector().Count(perf::Counter::kFenceWaits);
+    if (vk_->WaitForFences(vk_device_, 1, &slot.fence, VK_TRUE,
+                           2'000'000'000ULL) != VK_SUCCESS)
+      return nullptr;
+    slot.pending = false;
+  }
+  slot.images.clear();
+  if (vk_->ResetFences(vk_device_, 1, &slot.fence) != VK_SUCCESS ||
+      vk_->ResetCommandBuffer(slot.command, 0) != VK_SUCCESS)
+    return nullptr;
+  next_async_ = (next_async_ + 1) % async_.size();
+  return &slot;
+}
+
+VkResult OpenXrBackend::SubmitAsyncLocked(VkQueue queue, AsyncSubmission *slot,
+                                          const VkSubmitInfo &submit) {
+  VkResult result = VK_SUCCESS;
+  {
+    const ScopedStageTimer submit_timer(perf::Stage::kCopySubmit);
+    result = SubmitHostQueue(vk_->QueueSubmit, vk_device_, queue, 1, &submit,
+                             slot->fence);
+  }
+  perf::ProcessCollector().Count(perf::Counter::kSubmits);
+  slot->pending = result == VK_SUCCESS;
+  if (!slot->pending)
+    slot->images.clear();
+  return result;
+}
+
+void OpenXrBackend::WaitAsyncSubmissionsLocked(VkImage image) {
+  if (vk_ == nullptr || vk_device_ == VK_NULL_HANDLE)
+    return;
+  for (auto &slot : async_) {
+    if (!slot.pending ||
+        (image != VK_NULL_HANDLE &&
+         std::find(slot.images.begin(), slot.images.end(), image) ==
+             slot.images.end()))
+      continue;
+    if (vk_->WaitForFences(vk_device_, 1, &slot.fence, VK_TRUE,
+                           2'000'000'000ULL) != VK_SUCCESS)
+      (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
+    slot.pending = false;
+    slot.images.clear();
+  }
+}
+
+VkSemaphore OpenXrBackend::PresentReadySemaphoreLocked(
+    VkSwapchainKHR swapchain, std::uint32_t image_index, PresentStep step) {
+  const auto found = desktop_swapchains_.find(swapchain);
+  if (found == desktop_swapchains_.end() ||
+      image_index >= found->second.images.size())
+    return VK_NULL_HANDLE;
+  // One per image and step: when the guest acquires an image again, the
+  // present that waited on its semaphore has finished with it. The mirror and
+  // the prepare step never share one, because the overlay between them may
+  // wait on the mirror's from another queue.
+  auto &ready = found->second.ready;
+  ready.resize(found->second.images.size() * 2, VK_NULL_HANDLE);
+  VkSemaphore &semaphore =
+      ready[image_index * 2 + (step == PresentStep::kPrepare ? 1 : 0)];
+  if (semaphore == VK_NULL_HANDLE) {
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (vk_->CreateSemaphore(vk_device_, &info, nullptr, &semaphore) !=
+        VK_SUCCESS)
+      semaphore = VK_NULL_HANDLE;
+  }
+  return semaphore;
+}
+
+void OpenXrBackend::DestroyRetiredSemaphoresLocked() {
+  if (retired_semaphores_.empty())
+    return;
+  if (vk_ != nullptr && vk_device_ != VK_NULL_HANDLE) {
+    (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
+    for (const VkSemaphore semaphore : retired_semaphores_)
+      vk_->DestroySemaphore(vk_device_, semaphore, nullptr);
+  }
+  retired_semaphores_.clear();
 }
 
 bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
@@ -3210,13 +3391,16 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
       eye_swapchains_[1].images[eye_swapchains_[1].acquired_index]};
   EnsureMirrorForExtent(eyes_[0].width, eyes_[0].height);
 
-  if (vk_->ResetCommandBuffer(copy_command_, 0) != VK_SUCCESS) {
-    return false;
+  AsyncSubmission *const slot = NextAsyncSubmissionLocked();
+  if (slot == nullptr) {
+    (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
+    throw std::runtime_error("XR copy fence wait failed");
   }
+  const VkCommandBuffer command = slot->command;
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (vk_->BeginCommandBuffer(copy_command_, &begin) != VK_SUCCESS) {
+  if (vk_->BeginCommandBuffer(command, &begin) != VK_SUCCESS) {
     return false;
   }
 
@@ -3248,7 +3432,7 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
     destination_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
                                             1};
   }
-  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+  vk_->CmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                           nullptr, static_cast<std::uint32_t>(prepare.size()),
                           prepare.data());
@@ -3265,7 +3449,7 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
       region.srcSubresource = subresource;
       region.dstSubresource = subresource;
       region.extent = {binding.width, binding.height, 1};
-      vk_->CmdCopyImage(copy_command_, source[eye],
+      vk_->CmdCopyImage(command, source[eye],
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination[eye],
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     } else {
@@ -3275,7 +3459,7 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
       region.srcOffsets[1] = {static_cast<std::int32_t>(binding.width),
                               static_cast<std::int32_t>(binding.height), 1};
       region.dstOffsets[1] = region.srcOffsets[1];
-      vk_->CmdBlitImage(copy_command_, source[eye],
+      vk_->CmdBlitImage(command, source[eye],
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination[eye],
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region,
                         VK_FILTER_NEAREST);
@@ -3283,7 +3467,7 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
     if (mirror_.enabled()) {
       // Reads the source while it is already TRANSFER_SRC; the restore
       // barrier below returns it to the guest's final layout afterwards.
-      mirror_.RecordEyeCopy(MirrorProcs(), copy_command_, eye, source[eye],
+      mirror_.RecordEyeCopy(MirrorProcs(), command, eye, source[eye],
                             binding.final_layout, binding.width,
                             binding.height);
     }
@@ -3317,47 +3501,41 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
     finish_destination.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
                                            1};
   }
-  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+  vk_->CmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                           nullptr, static_cast<std::uint32_t>(finish.size()),
                           finish.data());
 
-  if (vk_->EndCommandBuffer(copy_command_) != VK_SUCCESS) {
-    return false;
-  }
-  if (vk_->ResetFences(vk_device_, 1, &copy_fence_) != VK_SUCCESS) {
+  if (vk_->EndCommandBuffer(command) != VK_SUCCESS) {
     return false;
   }
   VkSubmitInfo submit{};
   submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &copy_command_;
-  // Present dependencies are complete; this fence protects reuse of the
-  // copy command buffer and mirror staging buffers.
-  VkResult submit_result = VK_SUCCESS;
-  {
-    const ScopedStageTimer submit_timer(perf::Stage::kCopySubmit);
-    submit_result = SubmitHostQueue(vk_->QueueSubmit, vk_device_, queue, 1,
-                                    &submit, copy_fence_);
-  }
-  perf::ProcessCollector().Count(perf::Counter::kSubmits);
-  if (submit_result != VK_SUCCESS) {
+  submit.pCommandBuffers = &command;
+  // The present dependencies were consumed earlier on this queue, so the
+  // copy runs after the guest's eye passes without the CPU waiting for them.
+  // xrReleaseSwapchainImage only needs the copy submitted to this queue.
+  // NoteDestroyImage waits for this slot before the guest frees a source.
+  slot->images = {source[0], source[1], destination[0], destination[1]};
+  if (SubmitAsyncLocked(queue, slot, submit) != VK_SUCCESS) {
     return false;
   }
-  VkResult fence_result = VK_SUCCESS;
-  {
-    // mutex_ stays held: the guest's vkDestroyImage waits on it in
-    // NoteDestroyImage, which keeps the eye image alive until the copy ends.
-    const ScopedStageTimer fence_timer(perf::Stage::kCopyFenceWait);
-    fence_result = vk_->WaitForFences(vk_device_, 1, &copy_fence_, VK_TRUE,
-                                      2'000'000'000ULL);
-  }
-  perf::ProcessCollector().Count(perf::Counter::kFenceWaits);
-  if (fence_result != VK_SUCCESS) {
-    (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
-    throw std::runtime_error("XR copy fence wait failed");
-  }
   if (mirror_.enabled()) {
+    // The shared-memory readback must land before it is published.
+    VkResult fence_result = VK_SUCCESS;
+    {
+      const ScopedStageTimer fence_timer(perf::Stage::kCopyFenceWait);
+      fence_result = vk_->WaitForFences(vk_device_, 1, &slot->fence, VK_TRUE,
+                                        2'000'000'000ULL);
+    }
+    perf::ProcessCollector().Count(perf::Counter::kFenceWaits);
+    if (fence_result != VK_SUCCESS) {
+      (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
+      throw std::runtime_error("XR copy fence wait failed");
+    }
+    slot->pending = false;
+    slot->images.clear();
     const ScopedStageTimer publish_timer(perf::Stage::kMirrorPublish);
     mirror_.Publish(published_pose_.frame, eyes_[0].format, eyes_[0].width,
                     eyes_[0].height, perf::NowNs());
@@ -3421,7 +3599,18 @@ void OpenXrBackend::RecordDesktopSwapchain(VkDevice device,
                                            unsigned count,
                                            bool converted_to_concurrent) {
   std::lock_guard<std::mutex> lock(mutex_);
-  desktop_swapchains_.erase(swapchain);
+  const auto previous = desktop_swapchains_.find(swapchain);
+  if (previous != desktop_swapchains_.end()) {
+    for (const VkImage image : previous->second.images)
+      WaitAsyncSubmissionsLocked(image);
+    for (const VkSemaphore semaphore : previous->second.ready)
+      if (semaphore != VK_NULL_HANDLE)
+        retired_semaphores_.push_back(semaphore);
+    desktop_swapchains_.erase(previous);
+    // Bounded: a resize retires a few; idle the device only rarely.
+    if (retired_semaphores_.size() > 64)
+      DestroyRetiredSemaphoresLocked();
+  }
   if (!device || device != vk_device_ || !info || !images || !count ||
       !(info->imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
       info->imageArrayLayers != 1)
@@ -3443,10 +3632,16 @@ void OpenXrBackend::RecordDesktopSwapchain(VkDevice device,
 }
 
 VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
-                                      const VkPresentInfoKHR *info) {
+                                      const VkPresentInfoKHR *info,
+                                      VkSemaphore *ready) {
   const ScopedStageTimer mirror_timer(perf::Stage::kDesktopMirror);
+  static const bool enabled =
+      EnvString("MOCKTAIL_VR_DESKTOP_MIRROR", "1") != "0";
+  if (ready)
+    *ready = VK_NULL_HANDLE;
   std::lock_guard<std::mutex> lock(mutex_);
-  if (EnvString("MOCKTAIL_VR_DESKTOP_MIRROR", "1") == "0" || !vk_ || !info ||
+  mirror_ready_ = VK_NULL_HANDLE;
+  if (!enabled || !ready || !vk_ || !info ||
       info->swapchainCount != 1 || !info->pSwapchains || !info->pImageIndices ||
       !eyes_[0].valid || !eyes_[0].image ||
       (info->waitSemaphoreCount && !info->pWaitSemaphores) ||
@@ -3469,25 +3664,33 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
     return VK_NOT_READY;
   }
   queue = GraphicsQueueForPresentLocked(queue);
-  VkFormatProperties source_properties{}, target_properties{};
-  vk_->GetPhysicalDeviceFormatProperties(vk_physical_device_, eyes_[0].format,
-                                         &source_properties);
-  vk_->GetPhysicalDeviceFormatProperties(vk_physical_device_, target.format,
-                                         &target_properties);
-  if (!(source_properties.optimalTilingFeatures &
-        VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
-      !(target_properties.optimalTilingFeatures &
-        VK_FORMAT_FEATURE_BLIT_DST_BIT))
+  const auto blit_features = [&](VkFormat format) {
+    const auto cached = blit_features_.find(format);
+    if (cached != blit_features_.end())
+      return cached->second;
+    VkFormatProperties properties{};
+    vk_->GetPhysicalDeviceFormatProperties(vk_physical_device_, format,
+                                           &properties);
+    return blit_features_[format] = properties.optimalTilingFeatures;
+  };
+  if (!(blit_features(eyes_[0].format) & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+      !(blit_features(target.format) & VK_FORMAT_FEATURE_BLIT_DST_BIT))
     return VK_NOT_READY;
   std::string error;
   if (!EnsureCopyResources(vk_device_, vk_queue_family_, &error))
     return VK_NOT_READY;
-  if (vk_->ResetCommandBuffer(copy_command_, 0) != VK_SUCCESS)
+  const VkSemaphore signal = PresentReadySemaphoreLocked(
+      info->pSwapchains[0], info->pImageIndices[0], PresentStep::kMirror);
+  if (signal == VK_NULL_HANDLE)
     return VK_NOT_READY;
+  AsyncSubmission *const slot = NextAsyncSubmissionLocked();
+  if (slot == nullptr)
+    return VK_NOT_READY;
+  const VkCommandBuffer command = slot->command;
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (vk_->BeginCommandBuffer(copy_command_, &begin) != VK_SUCCESS)
+  if (vk_->BeginCommandBuffer(command, &begin) != VK_SUCCESS)
     return VK_NOT_READY;
   VkImageMemoryBarrier barriers[2]{};
   for (auto &b : barriers) {
@@ -3504,18 +3707,18 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
   barriers[1].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+  vk_->CmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                           nullptr, 2, barriers);
   const VkClearColorValue black{{0.f, 0.f, 0.f, 1.f}};
-  vk_->CmdClearColorImage(copy_command_, barriers[1].image,
+  vk_->CmdClearColorImage(command, barriers[1].image,
                           barriers[1].newLayout, &black, 1,
                           &barriers[1].subresourceRange);
   VkMemoryBarrier clear_barrier{};
   clear_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
   clear_barrier.srcAccessMask = clear_barrier.dstAccessMask =
       VK_ACCESS_TRANSFER_WRITE_BIT;
-  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+  vk_->CmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &clear_barrier,
                           0, nullptr, 0, nullptr);
   const double scale = std::min(double(target.extent.width) / eyes_[0].width,
@@ -3531,7 +3734,7 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
                           static_cast<int>(eyes_[0].height), 1};
   region.dstOffsets[0] = {x, y, 0};
   region.dstOffsets[1] = {x + width, y + height, 1};
-  vk_->CmdBlitImage(copy_command_, barriers[0].image, barriers[0].newLayout,
+  vk_->CmdBlitImage(command, barriers[0].image, barriers[0].newLayout,
                     barriers[1].image, barriers[1].newLayout, 1, &region,
                     VK_FILTER_NEAREST);
   for (auto &b : barriers) {
@@ -3539,11 +3742,10 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
     b.srcAccessMask = b.dstAccessMask;
     b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
   }
-  vk_->CmdPipelineBarrier(copy_command_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+  vk_->CmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                           nullptr, 2, barriers);
-  if (vk_->EndCommandBuffer(copy_command_) != VK_SUCCESS ||
-      vk_->ResetFences(vk_device_, 1, &copy_fence_) != VK_SUCCESS)
+  if (vk_->EndCommandBuffer(command) != VK_SUCCESS)
     return VK_NOT_READY;
   std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount,
                                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
@@ -3553,14 +3755,18 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
   submit.pWaitSemaphores = info->pWaitSemaphores;
   submit.pWaitDstStageMask = stages.data();
   submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &copy_command_;
-  VkResult result = SubmitHostQueue(vk_->QueueSubmit, vk_device_, queue, 1,
-                                    &submit, copy_fence_);
+  submit.pCommandBuffers = &command;
+  // The present waits on `signal` instead of the guest's semaphores. Their
+  // wait also orders the eye copies submitted later on this queue.
+  submit.signalSemaphoreCount = 1;
+  submit.pSignalSemaphores = &signal;
+  slot->images = {eyes_[0].image, barriers[1].image};
+  const VkResult result = SubmitAsyncLocked(queue, slot, submit);
   if (result != VK_SUCCESS)
     return result;
-  // Once submitted, never fall back to waiting on the consumed semaphores.
-  result = vk_->WaitForFences(vk_device_, 1, &copy_fence_, VK_TRUE, UINT64_MAX);
-  return result;
+  mirror_ready_ = signal;
+  *ready = signal;
+  return VK_SUCCESS;
 }
 
 // Diagnostic only: read BOTH images on the guest queue while the XR image is
@@ -3913,9 +4119,10 @@ VkImageLayout mocktail_vr_xr_desktop_barrier(VkCommandBuffer command,
   return new_layout;
 }
 VkResult mocktail_vr_desktop_present(VkQueue queue,
-                                     const VkPresentInfoKHR *info) {
+                                     const VkPresentInfoKHR *info,
+                                     VkSemaphore *ready) {
   try {
-    if (auto* backend = mocktail::vr::ActiveVrBackend()) return backend->MirrorDesktop(queue, info);
+    if (auto* backend = mocktail::vr::ActiveVrBackend()) return backend->MirrorDesktop(queue, info, ready);
     return VK_NOT_READY;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "  [vr-backend] desktop mirror failed: %s\n", error.what());
@@ -3938,10 +4145,11 @@ bool mocktail_vr_xr_queue_sharing_requested() {
 }
 
 VkResult mocktail_vr_xr_prepare_present(VkQueue queue, VkDevice device,
-                                        const VkPresentInfoKHR *info) {
+                                        const VkPresentInfoKHR *info,
+                                        VkSemaphore *ready) {
   try {
     if (auto *backend = mocktail::vr::ActiveVrBackend())
-      return backend->PrepareHostPresent(queue, device, info);
+      return backend->PrepareHostPresent(queue, device, info, ready);
     return VK_NOT_READY;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "  [vr-backend] present synchronization failed: %s\n",
