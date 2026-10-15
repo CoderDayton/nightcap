@@ -81,6 +81,20 @@ match. To run the same checks on real libraries, set
 `MOCKTAIL_TEST_VR_PAYLOADS` to a folder of `<build>-<build id>/libroblox.so`
 payloads and run `ctest -R VrSupportedBuilds`.
 
+For a second opinion, solve the new build from the previous one and compare
+the two answers. It needs the previous build's HostAbi profile and
+compatibility manifest:
+
+```bash
+python3 scripts/roblox_abi_check.py --reference-lib <old libroblox.so> \
+  --reference-profile <old profile.json> \
+  --reference-compatibility config/roblox_compatibility.json \
+  --candidate-lib <new libroblox.so> --vr
+```
+
+It lists every field where the finder and the solver disagree and exits 0
+when they agree on all of them.
+
 ## Testing without a headset
 
 [Monado](https://monado.freedesktop.org) can stand in for a headset. Its
