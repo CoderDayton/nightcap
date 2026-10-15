@@ -38,6 +38,13 @@ VkResult WaitForPresentDependencies(VkDevice device, VkQueue queue,
                                     VkFence fence, PFN_vkResetFences reset,
                                     PFN_vkQueueSubmit submit,
                                     PFN_vkWaitForFences wait);
+// Hands binary present dependencies to the GPU instead: one empty batch on
+// `queue` waits on them and signals `signal`, which the present waits on
+// instead. Work submitted to `queue` afterwards is ordered after the waits.
+// The CPU never blocks. VK_NOT_READY means nothing was consumed.
+VkResult ChainPresentDependencies(VkDevice device, VkQueue queue,
+                                  const VkPresentInfoKHR& present,
+                                  VkSemaphore signal, PFN_vkQueueSubmit submit);
 // Makes the Vulkan adapter serialize queue calls for the rest of the process.
 // Called when a backend arms; the adapter library may load before or after.
 void RequestVulkanQueueSharing();

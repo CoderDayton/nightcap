@@ -2254,6 +2254,30 @@ VkResult internal::WaitForPresentDependencies(VkDevice device, VkQueue queue,
   return result == VK_SUCCESS || result < 0 ? result : VK_ERROR_DEVICE_LOST;
 }
 
+VkResult internal::ChainPresentDependencies(VkDevice device, VkQueue queue,
+                                            const VkPresentInfoKHR &present,
+                                            VkSemaphore signal,
+                                            PFN_vkQueueSubmit submit) {
+  if (present.waitSemaphoreCount == 0 || !present.pWaitSemaphores ||
+      signal == VK_NULL_HANDLE)
+    return VK_NOT_READY;
+  std::vector<VkPipelineStageFlags> stages(present.waitSemaphoreCount,
+                                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+  VkSubmitInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  info.waitSemaphoreCount = present.waitSemaphoreCount;
+  info.pWaitSemaphores = present.pWaitSemaphores;
+  info.pWaitDstStageMask = stages.data();
+  info.signalSemaphoreCount = 1;
+  info.pSignalSemaphores = &signal;
+  const VkResult result =
+      SubmitHostQueue(submit, device, queue, 1, &info, VK_NULL_HANDLE);
+  // A failed submit consumed nothing, so the guest's present stays valid.
+  if (result != VK_SUCCESS)
+    return result == VK_ERROR_DEVICE_LOST ? result : VK_NOT_READY;
+  return VK_SUCCESS;
+}
+
 bool OpenXrBackend::SupportsPresentQueueLocked(VkQueue queue) const {
   return GraphicsQueueForPresentLocked(queue) != VK_NULL_HANDLE;
 }
@@ -2319,26 +2343,13 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
                                         PresentStep::kPrepare)
           : VK_NULL_HANDLE;
   if (signal != VK_NULL_HANDLE) {
-    // Hand the waits to the GPU: an empty batch on the graphics queue waits
-    // on them, which orders the eye copies submitted after it, and signals
-    // the one semaphore the present waits on instead.
-    std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount,
-                                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.waitSemaphoreCount = info->waitSemaphoreCount;
-    submit.pWaitSemaphores = info->pWaitSemaphores;
-    submit.pWaitDstStageMask = stages.data();
-    submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &signal;
-    const VkResult result = SubmitHostQueue(vk_->QueueSubmit, vk_device_,
-                                            graphics, 1, &submit,
-                                            VK_NULL_HANDLE);
-    // A failed submit consumed nothing, so the guest's present stays valid.
-    if (result != VK_SUCCESS)
-      return result == VK_ERROR_DEVICE_LOST ? result : VK_NOT_READY;
-    *ready = signal;
-    return VK_SUCCESS;
+    // The eye copies submitted after this on the graphics queue are ordered
+    // after the guest's semaphores without the CPU waiting for them.
+    const VkResult result = internal::ChainPresentDependencies(
+        device, graphics, *info, signal, vk_->QueueSubmit);
+    if (result == VK_SUCCESS)
+      *ready = signal;
+    return result;
   }
   // An unregistered swapchain has no semaphores of ours: wait on the CPU.
   std::string error;

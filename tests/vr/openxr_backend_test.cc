@@ -352,6 +352,54 @@ TEST_F(OpenXrPresentDependencies, InvalidDependenciesDoNotSubmit) {
   EXPECT_EQ(resets + submits + waits, 0);
 }
 
+VkSemaphore chained_signal;
+VKAPI_ATTR VkResult VKAPI_CALL SubmitChainedPresent(VkQueue queue,
+                                                    uint32_t count,
+                                                    const VkSubmitInfo* info,
+                                                    VkFence fence) {
+  ++submits;
+  EXPECT_EQ(queue, expected_queue);
+  EXPECT_EQ(count, 1u);
+  EXPECT_EQ(fence, VK_NULL_HANDLE);
+  EXPECT_EQ(info->commandBufferCount, 0u);
+  EXPECT_EQ(info->waitSemaphoreCount, 2u);
+  for (unsigned i = 0; i < 2; ++i) {
+    EXPECT_EQ(info->pWaitSemaphores[i], expected_semaphores[i]);
+    EXPECT_EQ(info->pWaitDstStageMask[i], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+  }
+  EXPECT_EQ(info->signalSemaphoreCount, 1u);
+  EXPECT_EQ(info->pSignalSemaphores[0], chained_signal);
+  return submit_result;
+}
+class OpenXrChainedPresent : public OpenXrPresentDependencies {
+ protected:
+  VkResult Chain() {
+    chained_signal = Access::Handle<VkSemaphore>(34);
+    return internal::ChainPresentDependencies(Access::Handle<VkDevice>(2),
+                                              expected_queue, info,
+                                              chained_signal,
+                                              SubmitChainedPresent);
+  }
+};
+TEST_F(OpenXrChainedPresent, HandsDependenciesToTheGpuWithoutWaiting) {
+  EXPECT_EQ(Chain(), VK_SUCCESS);
+  EXPECT_EQ(submits, 1);
+  EXPECT_EQ(resets + waits, 0);
+}
+TEST_F(OpenXrChainedPresent, FailedSubmitLeavesThePresentToTheGuest) {
+  submit_result = VK_ERROR_OUT_OF_HOST_MEMORY;
+  EXPECT_EQ(Chain(), VK_NOT_READY);
+  submit_result = VK_ERROR_DEVICE_LOST;
+  EXPECT_EQ(Chain(), VK_ERROR_DEVICE_LOST);
+}
+TEST_F(OpenXrChainedPresent, NothingToChainDoesNotSubmit) {
+  info.waitSemaphoreCount = 0;
+  EXPECT_EQ(Chain(), VK_NOT_READY);
+  info.waitSemaphoreCount = 2;
+  info.pWaitSemaphores = nullptr;
+  EXPECT_EQ(Chain(), VK_NOT_READY);
+  EXPECT_EQ(submits, 0);
+}
 TEST(OpenXrPresentQueue, RoutesSameAndSplitFamilyPresentationToGraphicsQueue) {
   OpenXrBackend backend;
   Access::Configure(backend);
