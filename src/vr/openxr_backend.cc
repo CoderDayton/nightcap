@@ -3262,6 +3262,7 @@ bool OpenXrBackend::EnsureCopyResources(VkDevice device,
 
 void OpenXrBackend::DestroyCopyResources() {
   mirror_ready_ = VK_NULL_HANDLE;
+  mirror_readback_ = {};
   next_async_ = 0;
   if (vk_ == nullptr || vk_device_ == VK_NULL_HANDLE) {
     copy_pool_ = VK_NULL_HANDLE;
@@ -3319,6 +3320,7 @@ VkResult OpenXrBackend::SubmitAsyncLocked(VkQueue queue, AsyncSubmission *slot,
                              slot->fence);
   }
   perf::ProcessCollector().Count(perf::Counter::kSubmits);
+  ++slot->serial;
   slot->pending = result == VK_SUCCESS;
   if (!slot->pending)
     slot->images.clear();
@@ -3406,6 +3408,8 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
   const VkImage destination[2] = {
       eye_swapchains_[0].images[eye_swapchains_[0].acquired_index],
       eye_swapchains_[1].images[eye_swapchains_[1].acquired_index]};
+  // Publish the last readback before its staging is resized or overwritten.
+  PublishMirrorReadbackLocked();
   EnsureMirrorForExtent(eyes_[0].width, eyes_[0].height);
 
   AsyncSubmission *const slot = NextAsyncSubmissionLocked();
@@ -3538,27 +3542,30 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
   if (SubmitAsyncLocked(queue, slot, submit) != VK_SUCCESS) {
     return false;
   }
-  if (mirror_.enabled()) {
-    // The shared-memory readback must land before it is published.
-    VkResult fence_result = VK_SUCCESS;
-    {
-      const ScopedStageTimer fence_timer(perf::Stage::kCopyFenceWait);
-      fence_result = vk_->WaitForFences(vk_device_, 1, &slot->fence, VK_TRUE,
-                                        2'000'000'000ULL);
-    }
-    perf::ProcessCollector().Count(perf::Counter::kFenceWaits);
-    if (fence_result != VK_SUCCESS) {
-      (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
-      throw std::runtime_error("XR copy fence wait failed");
-    }
-    slot->pending = false;
-    slot->images.clear();
-    const ScopedStageTimer publish_timer(perf::Stage::kMirrorPublish);
-    mirror_.Publish(published_pose_.frame, eyes_[0].format, eyes_[0].width,
-                    eyes_[0].height, perf::NowNs());
-    perf::ProcessCollector().Count(perf::Counter::kMirrorPairs);
-  }
+  if (mirror_.enabled())
+    mirror_readback_ = {slot,           slot->serial,    published_pose_.frame,
+                        eyes_[0].format, eyes_[0].width, eyes_[0].height};
   return true;
+}
+
+void OpenXrBackend::PublishMirrorReadbackLocked() {
+  const MirrorReadback readback = std::exchange(mirror_readback_, {});
+  if (readback.slot == nullptr || !mirror_.enabled())
+    return;
+  // A reused slot was waited for before reuse, so its readback landed.
+  if (readback.slot->serial == readback.serial && readback.slot->pending) {
+    const ScopedStageTimer fence_timer(perf::Stage::kCopyFenceWait);
+    perf::ProcessCollector().Count(perf::Counter::kFenceWaits);
+    if (vk_->WaitForFences(vk_device_, 1, &readback.slot->fence, VK_TRUE,
+                           2'000'000'000ULL) != VK_SUCCESS) {
+      perf::ProcessCollector().Count(perf::Counter::kMirrorDrops);
+      return;
+    }
+  }
+  const ScopedStageTimer publish_timer(perf::Stage::kMirrorPublish);
+  mirror_.Publish(readback.frame, readback.format, readback.width,
+                  readback.height, perf::NowNs());
+  perf::ProcessCollector().Count(perf::Counter::kMirrorPairs);
 }
 
 void OpenXrBackend::EnsureMirrorForExtent(std::uint32_t width,

@@ -350,8 +350,21 @@ class OpenXrBackend final {
     VkCommandBuffer command = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     bool pending = false;
+    std::uint64_t serial = 0;  // bumped per submission
     std::vector<VkImage> images;
   };
+  // The shared-memory mirror's readback from the previous frame copy. It is
+  // published at the next copy, when the GPU has long finished it, so neither
+  // the headset nor the mirror makes the CPU wait for the frame.
+  struct MirrorReadback {
+    AsyncSubmission* slot = nullptr;
+    std::uint64_t serial = 0;
+    std::uint64_t frame = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+  };
+  void PublishMirrorReadbackLocked();
   // The next slot, recorded-ready, or nullptr when its previous submission
   // did not finish in time (the device is hung or lost).
   AsyncSubmission* NextAsyncSubmissionLocked();
@@ -454,6 +467,7 @@ class OpenXrBackend final {
   static constexpr std::size_t kAsyncSubmissions = 6;
   std::array<AsyncSubmission, kAsyncSubmissions> async_{};
   std::size_t next_async_ = 0;
+  MirrorReadback mirror_readback_{};
   // The mirror's signal for this present, which PrepareHostPresent passes on.
   VkSemaphore mirror_ready_ = VK_NULL_HANDLE;
   // Semaphores of destroyed desktop swapchains. A present may still wait on
