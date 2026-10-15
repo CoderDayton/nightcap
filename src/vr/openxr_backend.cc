@@ -111,15 +111,24 @@ std::string EnvString(const char* name, const char* fallback) {
 #endif
 // Desktop/acceptance diagnostics (scripted head pose, eye evidence dumps)
 // exist only in builds configured with -DMOCKTAIL_VR_DIAGNOSTICS=ON; in
-// normal builds their environment variables have no effect.
-std::string EvidenceDirectory() {
-  return MOCKTAIL_VR_DIAGNOSTICS ? EnvString("MOCKTAIL_VR_XR_EVIDENCE_DIR", "")
-                                 : std::string();
+// normal builds their environment variables have no effect. Read once: the
+// frame cycle consults them every frame.
+const std::string& EvidenceDirectory() {
+  static const std::string directory =
+      MOCKTAIL_VR_DIAGNOSTICS ? EnvString("MOCKTAIL_VR_XR_EVIDENCE_DIR", "")
+                              : std::string();
+  return directory;
 }
-std::string PoseSource() {
-  return MOCKTAIL_VR_DIAGNOSTICS
-             ? EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime")
-             : std::string("runtime");
+std::uint64_t EvidenceInterval() {
+  static const std::uint64_t interval = std::max<std::uint64_t>(
+      1, EnvUnsigned("MOCKTAIL_VR_XR_EVIDENCE_INTERVAL", 20));
+  return interval;
+}
+const std::string& PoseSource() {
+  static const std::string source =
+      MOCKTAIL_VR_DIAGNOSTICS ? EnvString("MOCKTAIL_VR_POSE_SOURCE", "runtime")
+                              : std::string("runtime");
+  return source;
 }
 
 // Coordinate and pose math is shared with the unit tests through
@@ -1765,7 +1774,8 @@ void OpenXrBackend::NoteRenderPassBegin(VkCommandBuffer command_buffer,
   if (!recording_.load(std::memory_order_acquire) || info == nullptr) {
     return;
   }
-  std::lock_guard<std::mutex> lock(mutex_);
+  // Thread-local eye request: most render passes are not eye passes and
+  // return here without contending for the backend lock.
   void* owner = nullptr;
   void* guest_framebuffer = nullptr;
   int eye_index = -1;
@@ -1773,6 +1783,7 @@ void OpenXrBackend::NoteRenderPassBegin(VkCommandBuffer command_buffer,
       eye_index < 0 || eye_index > 1) {
     return;
   }
+  std::lock_guard<std::mutex> lock(mutex_);
   const auto attachments = framebuffer_views_.find(info->framebuffer);
   if (attachments == framebuffer_views_.end()) {
     return;
@@ -2585,11 +2596,7 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
           submitted_frames_.fetch_add(1, std::memory_order_relaxed) + 1;
       if (submitted == 1 || submitted % 120 == 0 ||
           (!EvidenceDirectory().empty() &&
-           published_pose_.frame %
-                   std::max<std::uint64_t>(
-                       1,
-                       EnvUnsigned("MOCKTAIL_VR_XR_EVIDENCE_INTERVAL", 20)) ==
-               0)) {
+           published_pose_.frame % EvidenceInterval() == 0)) {
         if (graphics_api_ == VrGraphicsApi::kOpenGles) {
           Log("  [vr-backend][evidence] projection submitted=%llu frame=%llu "
               "graphics=GLES eye0_texture=%u eye1_texture=%u\n",
@@ -2688,8 +2695,7 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
         const bool head_valid =
             XR_SUCCEEDED(head_result) &&
             (head.locationFlags & required_location) == required_location;
-        const std::string pose_source =
-            PoseSource();
+        const std::string &pose_source = PoseSource();
         Pose head_pose = head_valid ? XrToPose(head.pose) : Pose{};
         if (head_valid) {
           // Tracked LOCAL head pose, independent of the scripted test source;
@@ -3546,7 +3552,7 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
 
 void OpenXrBackend::EnsureMirrorForExtent(std::uint32_t width,
                                           std::uint32_t height) {
-  const std::string name = EnvString("MOCKTAIL_VR_MIRROR_SHM", "");
+  static const std::string name = EnvString("MOCKTAIL_VR_MIRROR_SHM", "");
   if (name.empty()) {
     return;
   }
@@ -3772,10 +3778,8 @@ VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
 // Diagnostic only: read BOTH images on the guest queue while the XR image is
 // still acquired. Never read a released image owned by the compositor.
 bool OpenXrBackend::CaptureEyeEvidence(VkQueue queue, int eye) {
-  const std::string directory = EvidenceDirectory();
-  const auto interval = std::max<std::uint64_t>(
-      1, EnvUnsigned("MOCKTAIL_VR_XR_EVIDENCE_INTERVAL", 20));
-  if (directory.empty() || published_pose_.frame % interval != 0)
+  const std::string &directory = EvidenceDirectory();
+  if (directory.empty() || published_pose_.frame % EvidenceInterval() != 0)
     return true;
   VkBuffer buffers[2] = {};
   VkDeviceMemory memory[2] = {};
