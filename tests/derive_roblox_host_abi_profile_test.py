@@ -29,6 +29,13 @@ import types
 import unittest
 from unittest import mock
 
+from host_abi_regression import (
+    expected_runtime,
+    load_regression_build,
+    regression_library,
+    regression_manifest,
+    regression_sidecar,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_PATH = PROJECT_ROOT / "scripts" / "derive_roblox_host_abi_profile.py"
@@ -834,6 +841,56 @@ class FallbackRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
             derived = ANALYZER.derive_runtime_compatibility(
                 reference, candidate, self.MANIFESTS, reference)
         self.assertNotIn("fmod_output_device_bridge", derived)
+
+
+# Each pair derives the second build from the first.
+REGRESSION_PAIRS = (("2908", "2998"), ("2998", "3092"), ("3092", "3222"))
+
+
+def regression_reference_inputs(build: dict, directory: Path) -> tuple[Path, Path]:
+    sidecar_path = directory / "reference_profile.json"
+    manifest_path = directory / "reference_compatibility.json"
+    sidecar_path.write_text(json.dumps(regression_sidecar(build)), encoding="utf-8")
+    manifest_path.write_text(json.dumps(regression_manifest(build)), encoding="utf-8")
+    return sidecar_path, manifest_path
+
+
+@unittest.skipUnless(ANALYZER.capstone is not None, "Python capstone is unavailable")
+class KnownBuildRegressionTest(unittest.TestCase):
+    def test_fixtures_match_their_build_identity(self) -> None:
+        for name in {name for pair in REGRESSION_PAIRS for name in pair}:
+            build = load_regression_build(name)
+            self.assertEqual(build["payload_id"].split("-", 1), [name, build["elf_build_id"]])
+            self.assertEqual(build["profile"]["elf_build_id"], build["elf_build_id"])
+            self.assertNotEqual(build["reference"]["elf_build_id"], build["elf_build_id"])
+
+    def test_derives_each_build_from_its_predecessor(self) -> None:
+        for reference_name, candidate_name in REGRESSION_PAIRS:
+            with self.subTest(reference=reference_name, candidate=candidate_name):
+                self.derive_pair(reference_name, candidate_name)
+
+    def derive_pair(self, reference_name: str, candidate_name: str) -> None:
+        reference = load_regression_build(reference_name)
+        candidate = load_regression_build(candidate_name)
+        reference_library = regression_library(reference)
+        candidate_library = regression_library(candidate)
+        if reference_library is None or candidate_library is None:
+            self.skipTest(f"exact {reference_name} and {candidate_name} payloads are unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            sidecar_path, manifest_path = regression_reference_inputs(reference, Path(temporary))
+            sidecar = ANALYZER.validated_sidecar(sidecar_path)
+            with ANALYZER.ElfImage(reference_library) as reference_image, ANALYZER.ElfImage(
+                candidate_library
+            ) as candidate_image:
+                profile, anchors = ANALYZER.derive_profile(
+                    reference_image, candidate_image, sidecar
+                )
+                runtime = ANALYZER.derive_runtime_compatibility(
+                    reference_image, candidate_image, (manifest_path,)
+                )
+        self.assertEqual(profile, candidate["profile"])
+        self.assertEqual(anchors, candidate["derivation_anchors"])
+        self.assertEqual(runtime, expected_runtime(reference, candidate))
 
 
 if __name__ == "__main__":

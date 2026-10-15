@@ -38,6 +38,9 @@ jobs:
     name: Flatpak build
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    # The signing key lives in the release environment, which only main and
+    # v* tags may use. Builds that do not publish run without it.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'release' || '' }}
     env:
       # Publish on release tags and on manual runs from main. Pull requests
       # only verify that the manifest still builds.

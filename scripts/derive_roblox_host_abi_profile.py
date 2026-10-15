@@ -1356,6 +1356,35 @@ def has_fmod_device_lists_select_contract(image: ElfImage, rva: int) -> bool:
     )
 
 
+FMOD_OUTPUT_FIELDS = frozenset({
+    "vtable_rva",
+    "string_constructor_rva",
+    "count_method_rva",
+    "info_method_rva",
+    "current_method_rva",
+    "select_method_rva",
+})
+FMOD_INPUT_FIELDS = (
+    "input_count_method_rva",
+    "input_info_method_rva",
+    "input_current_method_rva",
+    "input_select_method_rva",
+)
+
+
+def fmod_vtable_slots(layout: int, with_input: bool) -> dict[str, int]:
+    """Vtable slot of each FMOD method field in vtable layout 1 or 2."""
+    slots = {
+        "count_method_rva": 5,
+        "info_method_rva": 6,
+        "current_method_rva": 8 if layout == 2 else 7,
+        "select_method_rva": 19 if layout == 2 else 17,
+    }
+    if with_input:
+        slots.update(zip(FMOD_INPUT_FIELDS, (9, 10, 12, 18) if layout == 2 else (8, 9, 10, 16)))
+    return slots
+
+
 def load_reference_runtime_profile(
     paths: Sequence[Path], reference_build_id: str
 ) -> dict[str, Any]:
@@ -1381,21 +1410,11 @@ def load_reference_runtime_profile(
                 )
             if "fmod_output_device_bridge" in profile:
                 bridge = profile["fmod_output_device_bridge"]
-                fields = {
-                    "vtable_rva",
-                    "string_constructor_rva",
-                    "count_method_rva",
-                    "info_method_rva",
-                    "current_method_rva",
-                    "select_method_rva",
-                }
                 if (
                     not isinstance(bridge, dict)
-                    or not fields <= set(bridge)
-                    or set(bridge) - fields - {"vtable_layout_version"} - {
-                        "input_count_method_rva", "input_info_method_rva",
-                        "input_current_method_rva", "input_select_method_rva",
-                    }
+                    or not FMOD_OUTPUT_FIELDS <= set(bridge)
+                    or set(bridge) - FMOD_OUTPUT_FIELDS - {"vtable_layout_version"}
+                    - set(FMOD_INPUT_FIELDS)
                     or profile.get("allow_host_abi_bridges") is not True
                 ):
                     raise AnalyzerError(
@@ -1415,10 +1434,7 @@ def load_reference_runtime_profile(
                 if field in result:
                     previous = result[field]
                     if field == "fmod_output_device_bridge":
-                        input_fields = {
-                            "input_count_method_rva", "input_info_method_rva",
-                            "input_current_method_rva", "input_select_method_rva",
-                        }
+                        input_fields = set(FMOD_INPUT_FIELDS)
                         compatible = ((set(previous) ^ set(value)) <= input_fields and
                             all(previous[key] == value[key]
                                 for key in previous.keys() & value.keys()))
@@ -1440,12 +1456,7 @@ def derive_fmod_output_device_bridge(
     source: dict[str, int],
 ) -> dict[str, Any]:
     source_layout = source.get("vtable_layout_version", 1)
-    indexes = {
-        "count_method_rva": 5,
-        "info_method_rva": 6,
-        "current_method_rva": 8 if source_layout == 2 else 7,
-        "select_method_rva": 19 if source_layout == 2 else 17,
-    }
+    indexes = fmod_vtable_slots(source_layout, False)
     source_vtable = source["vtable_rva"]
     reference.require_relro_rva(source_vtable, (max(indexes.values()) + 1) * 8)
     reference_relocations = relative_relocation_map(reference)
@@ -1530,7 +1541,10 @@ def derive_fmod_output_device_bridge(
             continue
         vtable = offset - indexes["info_method_rva"] * 8
         count_method = relocations.get(vtable + indexes["count_method_rva"] * 8)
-        for layout, current_index, select_index in ((1, 7, 17), (2, 8, 19)):
+        for layout in (1, 2):
+            layout_slots = fmod_vtable_slots(layout, False)
+            current_index = layout_slots["current_method_rva"]
+            select_index = layout_slots["select_method_rva"]
             current_method = relocations.get(vtable + current_index * 8)
             selected = relocations.get(vtable + select_index * 8)
             if (
@@ -1568,18 +1582,13 @@ def derive_fmod_output_device_bridge(
     }
     if layout != 1:
         result["vtable_layout_version"] = layout
-    input_fields = (
-        "input_count_method_rva", "input_info_method_rva",
-        "input_current_method_rva", "input_select_method_rva",
-    )
-    if any(field in source for field in input_fields):
-        if not all(field in source for field in input_fields):
+    if any(field in source for field in FMOD_INPUT_FIELDS):
+        if not all(field in source for field in FMOD_INPUT_FIELDS):
             raise AnalyzerError("reference FMOD input profile is incomplete")
-        source_slots = (9, 10, 12, 18) if source_layout == 2 else (8, 9, 10, 16)
-        target_slots = (9, 10, 12, 18) if layout == 2 else (8, 9, 10, 16)
-        for field, old_slot, new_slot, length in zip(
-            input_fields, source_slots, target_slots, (4, 16, 12, 16)
-        ):
+        source_slots = fmod_vtable_slots(source_layout, True)
+        target_slots = fmod_vtable_slots(layout, True)
+        for field, length in zip(FMOD_INPUT_FIELDS, (4, 16, 12, 16)):
+            old_slot, new_slot = source_slots[field], target_slots[field]
             if reference_relocations.get(source_vtable + old_slot * 8) != source[field]:
                 raise AnalyzerError("reference FMOD input slot changed")
             target = relocations.get(vtable + new_slot * 8)
@@ -2247,12 +2256,12 @@ def remapped_constructor_ranges(
     return validated_ranges(result, "derived constructor ranges", candidate_count)
 
 
-def derive_profile(
+def check_derivation_inputs(
     reference: ElfImage,
     candidate: ElfImage,
     reference_sidecar: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    require_capstone()
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Rejects inputs no derivation may use; returns both init-arrays."""
     if (
         reference.build_id != reference_sidecar["elf_build_id"]
         or reference.sha256 != reference_sidecar["payload_sha256"]
@@ -2270,17 +2279,28 @@ def derive_profile(
             "candidate is missing required JNI exports: "
             + ", ".join(sorted(missing_exports))
         )
-
-    reference_profile = reference_sidecar["profile"]
-    anchors = reference_sidecar["derivation_anchors"]
     reference_init = reference.init_array_relocations()
     candidate_init = candidate.init_array_relocations()
-    if len(reference_init) != reference_profile["init_array_count"]:
+    if len(reference_init) != reference_sidecar["profile"]["init_array_count"]:
         raise AnalyzerError(
             "reference sidecar init-array count differs from ELF metadata"
         )
     if len(candidate_init) < 8:
         raise AnalyzerError("candidate init-array is unexpectedly short")
+    return reference_init, candidate_init
+
+
+def derive_profile(
+    reference: ElfImage,
+    candidate: ElfImage,
+    reference_sidecar: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    require_capstone()
+    reference_init, candidate_init = check_derivation_inputs(
+        reference, candidate, reference_sidecar
+    )
+    reference_profile = reference_sidecar["profile"]
+    anchors = reference_sidecar["derivation_anchors"]
     matches = {}
     allocate_matches = ()
     for spec in create_signature_specs(reference_profile, anchors):

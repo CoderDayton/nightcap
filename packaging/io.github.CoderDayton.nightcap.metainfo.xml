@@ -28,16 +28,12 @@
   </description>
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/komaruworld/mocktail/88b7382577aa138a2d16619b091f69abcdf7da15/assets/screenshots/flatpak-home.png</image>
+      <image>https://raw.githubusercontent.com/CoderDayton/nightcap/main/assets/screenshots/flatpak-home.png</image>
       <caption>Browse Roblox experiences</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/komaruworld/mocktail/88b7382577aa138a2d16619b091f69abcdf7da15/assets/screenshots/flatpak-gameplay-tower.png</image>
-      <caption>Play Tower of Hell on Linux</caption>
-    </screenshot>
-    <screenshot>
-      <image>https://raw.githubusercontent.com/komaruworld/mocktail/88b7382577aa138a2d16619b091f69abcdf7da15/assets/screenshots/flatpak-gameplay-lobby.png</image>
-      <caption>Play DOORS on Linux</caption>
+      <image>https://raw.githubusercontent.com/CoderDayton/nightcap/main/assets/screenshots/flatpak-gameplay-tower.png</image>
+      <caption>Play Murder Mystery 2 on Linux</caption>
     </screenshot>
   </screenshots>
   <launchable type="desktop-id">io.github.CoderDayton.nightcap.desktop</launchable>

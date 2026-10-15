@@ -62,7 +62,7 @@ Branch=stable
 Url=${BASE_URL}/repo/
 RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
 Homepage=https://github.com/CoderDayton/nightcap
-Comment=Roblox on Linux, tuned for a real PC
+Comment=Roblox on Linux, tuned for desktop play
 Icon=${BASE_URL}/nightcap.svg
 GPGKey=${GPG_KEY}
 IsRuntime=false
@@ -72,3 +72,20 @@ install -m 0644 -- "${PROJECT_DIR}/site/index.html" "${OUTPUT}/index.html"
 install -m 0644 -- "${PROJECT_DIR}/site/styles.css" "${OUTPUT}/styles.css"
 install -m 0644 -- "${PROJECT_DIR}/site/terms.html" "${OUTPUT}/terms.html"
 install -m 0644 -- "${PROJECT_DIR}/site/privacy.html" "${OUTPUT}/privacy.html"
+install -m 0644 -- "${PROJECT_DIR}/site/preview.png" "${OUTPUT}/preview.png"
+
+cat >"${OUTPUT}/robots.txt" <<EOF
+User-agent: *
+Allow: /
+
+Sitemap: ${BASE_URL}/sitemap.xml
+EOF
+
+cat >"${OUTPUT}/sitemap.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${BASE_URL}/</loc></url>
+  <url><loc>${BASE_URL}/terms.html</loc></url>
+  <url><loc>${BASE_URL}/privacy.html</loc></url>
+</urlset>
+EOF
