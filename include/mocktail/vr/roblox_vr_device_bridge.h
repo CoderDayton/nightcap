@@ -64,6 +64,9 @@ public:
 
   // Guest-side hooks invoked by the interposed vtable stubs.
   void OnHapticsCall(void* device_object, int hand, float amplitude);
+  // HapticService:SetMotor on Gamepad1 LeftHand (0) / RightHand (1); the
+  // level holds until the game sets it again.
+  void OnSetMotorCall(int hand, float amplitude);
   void OnPointerFrameCall(void* result, void* service);
   void OnStateGetterCall(void *result_buffer, void *device_object);
   void OnEyeGetterCall(void *device_object, int eye_index, void *framebuffer);

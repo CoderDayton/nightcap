@@ -1022,18 +1022,26 @@ TEST(VrSupportedBuilds, Build3222CarriesTheOffsetFindersValues) {
   EXPECT_EQ(contract->camera_head_scale_offset, 0x130u);
   EXPECT_EQ(contract->keep_haptics_flag_rva, 0x763fef8u);
   EXPECT_EQ(contract->vr_haptics_flag_rva, 0x74cf1e0u);
+  EXPECT_EQ(contract->support_generic_haptics_flag_rva, 0x74cf458u);
+  EXPECT_EQ(contract->fix_register_motors_flag_rva, 0x74cfa10u);
 }
 
-TEST(VrSupportedBuilds, EveryBuildCarriesBothHapticFlags) {
-  for (const auto& [id, keep, vr] :
-       {std::tuple<const char*, std::uintptr_t, std::uintptr_t>{
-            "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x72fcd18, 0x7367588},
-        {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03", 0x7387118, 0x73f2268},
-        {"a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x763fef8, 0x74cf1e0}}) {
+TEST(VrSupportedBuilds, EveryBuildCarriesAllHapticFlags) {
+  for (const auto& [id, keep, vr, generic, motors] :
+       {std::tuple<const char*, std::uintptr_t, std::uintptr_t, std::uintptr_t,
+                   std::uintptr_t>{
+            "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x72fcd18, 0x7367588,
+            0x73677d0, 0x7367da0},
+        {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03", 0x7387118, 0x73f2268,
+         0x73f24f0, 0x73f2aa8},
+        {"a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x763fef8, 0x74cf1e0,
+         0x74cf458, 0x74cfa10}}) {
     const auto* contract = internal::FindVrBuildContract(id);
     ASSERT_NE(contract, nullptr) << id;
     EXPECT_EQ(contract->keep_haptics_flag_rva, keep) << id;
     EXPECT_EQ(contract->vr_haptics_flag_rva, vr) << id;
+    EXPECT_EQ(contract->support_generic_haptics_flag_rva, generic) << id;
+    EXPECT_EQ(contract->fix_register_motors_flag_rva, motors) << id;
   }
 }
 
@@ -1167,6 +1175,165 @@ TEST_F(VrNamedFastFlag, RejectsNamesAndFlagsOutsideTheImage) {
   EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0, "VRHaptics"));
   EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x900, "VRHaptics"));
   EXPECT_FALSE(internal::EnableNamedFastFlag(base(), 0x1ff8, "VRHaptics"));
+}
+
+}  // namespace
+}  // namespace mocktail::vr
+
+extern "C" void mocktail_vr_haptic_set_motor(void*, std::int32_t, std::int32_t,
+                                             const void*);
+
+namespace mocktail::vr {
+namespace {
+
+// The Android backend's motor slot as 3222 compiles it: the Gamepad1 and
+// Small/Large dispatch, a shared_ptr copy, the reader call, the Large store.
+std::vector<std::uint8_t> SharedTupleMotorSlot(std::int32_t reader_rel) {
+  std::vector<std::uint8_t> code = {
+      0x83, 0xfe, 0x0c, 0x0f, 0x85, 0x83, 0x00, 0x00, 0x00,  // cmp; jne
+      0x83, 0xfa, 0x01, 0x74, 0x2a, 0x85, 0xd2, 0x75, 0x7a,  // cmp; je; test; jne
+      0x48, 0x89, 0x45, 0xc8, 0x48, 0x89, 0x5d, 0xd0, 0x48, 0x85, 0xdb,
+      0x74, 0x05, 0xf0, 0x48, 0xff, 0x43, 0x08,  // copy the shared_ptr
+      0x4c, 0x8d, 0x7d, 0xc8, 0x4c, 0x89, 0xff, 0xe8};  // lea r15; mov rdi; call
+  for (int shift = 0; shift < 32; shift += 8)
+    code.push_back(static_cast<std::uint8_t>(reader_rel >> shift));
+  for (const std::uint8_t byte : {0xf3, 0x41, 0x0f, 0x11, 0x46, 0x54})
+    code.push_back(byte);
+  return code;
+}
+
+TEST(VrSetMotorHook, FindsTheMotorIntensityReaderAfterTheGamepadDispatch) {
+  std::vector<std::uint8_t> image(0x400, 0xcc);
+  const auto slot = SharedTupleMotorSlot(-0x100);
+  std::copy(slot.begin(), slot.end(), image.begin() + 0x200);
+  const auto reader =
+      internal::FindMotorIntensityReader(image.data(), image.size(), 0, image.size());
+  EXPECT_EQ(reader.abi, internal::MotorIntensityAbi::kSharedTuple);
+  // The call ends at 0x200 + 44 + 4; its target is 0x100 bytes before that.
+  EXPECT_EQ(reader.rva, 0x200u + 48 - 0x100);
+}
+
+TEST(VrSetMotorHook, RejectsAReaderWithoutTheLargeStoreOrSeenTwice) {
+  std::vector<std::uint8_t> image(0x400, 0xcc);
+  auto slot = SharedTupleMotorSlot(-0x100);
+  slot.back() = 0x50;  // the Small motor's field, not Large
+  std::copy(slot.begin(), slot.end(), image.begin() + 0x100);
+  EXPECT_EQ(internal::FindMotorIntensityReader(image.data(), image.size(), 0,
+                                               image.size())
+                .abi,
+            internal::MotorIntensityAbi::kNone);
+  slot = SharedTupleMotorSlot(-0x100);
+  std::copy(slot.begin(), slot.end(), image.begin() + 0x100);
+  std::copy(slot.begin(), slot.end(), image.begin() + 0x200);
+  EXPECT_EQ(internal::FindMotorIntensityReader(image.data(), image.size(), 0,
+                                               image.size())
+                .abi,
+            internal::MotorIntensityAbi::kNone);
+}
+
+TEST(VrSetMotorHook, FindsOnlyTheDescriptorRegisteredWithTheExactName) {
+  std::vector<std::uint8_t> image(0x400, 0xcc);
+  std::memcpy(image.data() + 0x300, "SetMotor", 9);
+  std::memcpy(image.data() + 0x320, "SetMotors", 10);
+  const auto registration = [&](std::size_t at, std::uintptr_t descriptor,
+                                std::uintptr_t name) {
+    const std::uint8_t lea_rdi[] = {0x48, 0x8d, 0x3d};
+    const std::uint8_t lea_rdx[] = {0x48, 0x8d, 0x15};
+    const auto descriptor_rel = static_cast<std::int32_t>(descriptor - (at + 7));
+    const auto name_rel = static_cast<std::int32_t>(name - (at + 14));
+    std::memcpy(image.data() + at, lea_rdi, 3);
+    std::memcpy(image.data() + at + 3, &descriptor_rel, 4);
+    std::memcpy(image.data() + at + 7, lea_rdx, 3);
+    std::memcpy(image.data() + at + 10, &name_rel, 4);
+  };
+  registration(0x40, 0x380, 0x320);  // SetMotors: a different method
+  EXPECT_EQ(internal::FindSetMotorDescriptor(image.data(), image.size(), 0, 0x300),
+            0u);
+  registration(0x80, 0x3a0, 0x300);
+  EXPECT_EQ(internal::FindSetMotorDescriptor(image.data(), image.size(), 0, 0x300),
+            0x3a0u);
+  registration(0xc0, 0x3c0, 0x300);  // ambiguous
+  EXPECT_EQ(internal::FindSetMotorDescriptor(image.data(), image.size(), 0, 0x300),
+            0u);
+}
+
+TEST(VrSetMotorHook, PicksTheMethodSlotWithACodeAddressAndNoAdjust) {
+  alignas(16) std::array<std::uint8_t, 0x200> image{};
+  const auto base = reinterpret_cast<std::uintptr_t>(image.data());
+  const auto put = [&](std::size_t offset, std::uintptr_t value) {
+    std::memcpy(image.data() + offset, &value, sizeof(value));
+  };
+  static bool (*const below_0x100)(std::uintptr_t, std::uintptr_t) =
+      [](std::uintptr_t, std::uintptr_t rva) { return rva < 0x100; };
+  // 3222: +0x80 is empty, the method is at +0x88.
+  put(0x88, base + 0x40);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0x88u);
+  // 2998: the method is at +0x80 and +0x88 holds its zero adjust.
+  image.fill(0);
+  put(0x80, base + 0x40);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0x80u);
+  // A virtual (odd) pointer, an adjust, or data is not a method.
+  image.fill(0);
+  put(0x88, base + 0x41);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0u);
+  put(0x88, base + 0x40);
+  put(0x90, 8);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0u);
+  put(0x90, 0);
+  put(0x88, base + 0x180);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0u);
+}
+
+TEST(VrSetMotorHook, ForwardsNothingWithoutAnInstalledOriginal) {
+  // Not installed: the hook must neither crash nor read the arguments.
+  mocktail_vr_haptic_set_motor(nullptr, internal::kUserInputTypeGamepad1,
+                               internal::kVibrationMotorLeftHand, nullptr);
+}
+
+// Pins what the scans find in the real libraries (see
+// ContractsMatchTheRealLibraries for MOCKTAIL_TEST_VR_PAYLOADS).
+TEST(VrSetMotorHook, FindsTheReaderAndDescriptorInTheRealLibraries) {
+  const char* root = std::getenv("MOCKTAIL_TEST_VR_PAYLOADS");
+  if (root == nullptr || root[0] == '\0') {
+    GTEST_SKIP() << "MOCKTAIL_TEST_VR_PAYLOADS is not set";
+  }
+  struct Expected {
+    const char* code_name;
+    const char* id;
+    std::uintptr_t reader;
+    internal::MotorIntensityAbi abi;
+    std::uintptr_t descriptor;
+  };
+  int checked = 0;
+  for (const Expected& expected :
+       {Expected{"2998", "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x30b2d2e,
+                 internal::MotorIntensityAbi::kTupleSpan, 0x7433fd0},
+        Expected{"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x61cd6f2,
+                 internal::MotorIntensityAbi::kSharedTuple, 0x759ac70}}) {
+    const std::string path = std::string(root) + "/" + expected.code_name +
+                             "-" + expected.id + "/libroblox.so";
+    std::ifstream file(path, std::ios::binary);
+    if (!file) continue;
+    const std::vector<char> bytes((std::istreambuf_iterator<char>(file)),
+                                  std::istreambuf_iterator<char>());
+    const auto* image = reinterpret_cast<const std::uint8_t*>(bytes.data());
+    // The first load segment maps file offset 0 at address 0.
+    const auto* header = reinterpret_cast<const Elf64_Ehdr*>(image);
+    const auto* text = reinterpret_cast<const Elf64_Phdr*>(image + header->e_phoff);
+    while (text->p_type != PT_LOAD) ++text;
+    ASSERT_EQ(text->p_vaddr, 0u);
+    ASSERT_NE(text->p_flags & PF_X, 0u);
+    const auto reader = internal::FindMotorIntensityReader(
+        image, bytes.size(), 0, text->p_filesz);
+    EXPECT_EQ(reader.rva, expected.reader) << expected.code_name;
+    EXPECT_EQ(reader.abi, expected.abi) << expected.code_name;
+    EXPECT_EQ(internal::FindSetMotorDescriptor(image, bytes.size(), 0,
+                                               text->p_filesz),
+              expected.descriptor)
+        << expected.code_name;
+    ++checked;
+  }
+  if (checked == 0) GTEST_SKIP() << "no payload found under " << root;
 }
 
 }  // namespace

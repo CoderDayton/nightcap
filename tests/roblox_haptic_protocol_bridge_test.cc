@@ -10,7 +10,9 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 #include <vector>
+#include <algorithm>
 
 #include "jnivm/jnivm.h"
 
@@ -268,51 +270,135 @@ TEST_F(RobloxHapticProtocolBridgeTest, GetMotorsReturnsValidPositions) {
   EXPECT_GT(reply.body["rightHand"]["x"].get<double>(), 0.0);
 }
 
-TEST_F(RobloxHapticProtocolBridgeTest, SetMotorStateRoutesHands) {
-  ASSERT_TRUE(Initialize().ok());
-
-  const char* payload_left = R"({
-    "leftHand": {
-      "millisecondsPerSample": 20.0,
-      "intensities": [0.2, 0.8, 0.5]
+// Waits for the waveform player thread; returns whether `done` became true.
+template <typename Predicate>
+bool WaitFor(Probe& probe, Predicate done) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(probe.mutex);
+      if (done())
+        return true;
     }
-  })";
-
-  const auto reply = Legacy("SetMotorState", payload_left);
-  EXPECT_EQ(reply.code, 0);
-  ASSERT_EQ(probe.recorded_sinks.size(), 1u);
-  EXPECT_EQ(probe.recorded_sinks[0].hand, 0);
-  EXPECT_FLOAT_EQ(probe.recorded_sinks[0].amplitude, 0.8f);
-  EXPECT_GE(probe.recorded_sinks[0].duration_ns, 50000000ULL);
-
-  const char* payload_right = R"({
-    "rightHand": {
-      "millisecondsPerSample": 10.0,
-      "intensities": [0.4]
-    }
-  })";
-
-  const auto reply_right = Legacy("SetMotorState", payload_right);
-  EXPECT_EQ(reply_right.code, 0);
-  ASSERT_EQ(probe.recorded_sinks.size(), 2u);
-  EXPECT_EQ(probe.recorded_sinks[1].hand, 1);
-  EXPECT_FLOAT_EQ(probe.recorded_sinks[1].amplitude, 0.4f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
 }
 
-TEST_F(RobloxHapticProtocolBridgeTest, SetMotorStateZeroStopsHaptics) {
+// SetMotorState is a look-ahead waveform. Each sample plays for its own slot
+// (a short lease, never the whole buffer), in order, then the hand stops.
+TEST_F(RobloxHapticProtocolBridgeTest, SetMotorStateStepsThroughTheSamples) {
   ASSERT_TRUE(Initialize().ok());
 
   const char* payload = R"({
-    "leftHand": {
-      "millisecondsPerSample": 20.0,
-      "intensities": [0.0]
-    }
+    "LeftHand": {"millisecondsPerSample": 20.0, "intensities": [0.0, 0.0]},
+    "RightHand": {"millisecondsPerSample": 20.0,
+                  "intensities": [0.2, 0.8, 0.5, 0.0, 0.0, 0.0]},
+    "Small": {"millisecondsPerSample": 20.0, "intensities": [0.0, 0.0, 0.0]}
   })";
 
-  const auto reply = Legacy("SetMotorState", payload);
-  EXPECT_EQ(reply.code, 0);
-  ASSERT_EQ(probe.recorded_stops.size(), 1u);
-  EXPECT_EQ(probe.recorded_stops[0], 0);
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_EQ(Legacy("SetMotorState", payload).code, 0);
+  ASSERT_TRUE(WaitFor(probe, [&] {
+    return std::count(probe.recorded_stops.begin(), probe.recorded_stops.end(),
+                      1) > 0;
+  }));
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  std::lock_guard<std::mutex> lock(probe.mutex);
+  // The silent left hand stops at once; the right hand plays its samples in
+  // order (a late wake may skip one) and nothing ever holds the peak.
+  EXPECT_EQ(probe.recorded_stops.front(), 0);
+  const std::vector<float> expected = {0.2f, 0.8f, 0.5f};
+  std::size_t next = 0;
+  for (const auto& sink : probe.recorded_sinks) {
+    EXPECT_EQ(sink.hand, 1);
+    EXPECT_EQ(sink.duration_ns, 50000000ULL);
+    while (next < expected.size() && expected[next] != sink.amplitude)
+      ++next;
+    EXPECT_LT(next, expected.size()) << sink.amplitude << " out of order";
+  }
+  ASSERT_FALSE(probe.recorded_sinks.empty());
+  EXPECT_FLOAT_EQ(probe.recorded_sinks.front().amplitude, 0.2f);
+  // Three 20 ms samples: the trailing silence is not played.
+  EXPECT_GE(elapsed, std::chrono::milliseconds(55));
+  EXPECT_LT(elapsed, std::chrono::milliseconds(1000));
+}
+
+// Roblox pads a short bump to 100 x 25 ms; it must end after the bump, not
+// after 2.5 s.
+TEST_F(RobloxHapticProtocolBridgeTest, SetMotorStateTrimsTrailingSilence) {
+  ASSERT_TRUE(Initialize().ok());
+
+  Json motor = {{"millisecondsPerSample", 25.0}};
+  std::vector<double> intensities(100, 0.0);
+  intensities[0] = 0.6;
+  motor["intensities"] = intensities;
+  const std::string payload = Json{{"RightHand", motor}}.dump();
+
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_EQ(Legacy("SetMotorState", payload.c_str()).code, 0);
+  ASSERT_TRUE(WaitFor(probe, [&] { return !probe.recorded_stops.empty(); }));
+  EXPECT_LT(std::chrono::steady_clock::now() - started,
+            std::chrono::milliseconds(500));
+
+  std::lock_guard<std::mutex> lock(probe.mutex);
+  ASSERT_EQ(probe.recorded_sinks.size(), 1u);
+  EXPECT_FLOAT_EQ(probe.recorded_sinks[0].amplitude, 0.6f);
+  EXPECT_EQ(probe.recorded_stops, std::vector<int>{1});
+}
+
+// A newer buffer replaces the one playing, and shutting down stops the hand.
+TEST_F(RobloxHapticProtocolBridgeTest, SetMotorStateFollowsTheLatestBuffer) {
+  ASSERT_TRUE(Initialize().ok());
+
+  const std::string longer =
+      Json{{"LeftHand",
+            {{"millisecondsPerSample", 25.0},
+             {"intensities", std::vector<double>(40, 0.3)}}}}
+          .dump();
+  EXPECT_EQ(Legacy("SetMotorState", longer.c_str()).code, 0);
+  ASSERT_TRUE(WaitFor(probe, [&] { return !probe.recorded_sinks.empty(); }));
+  EXPECT_EQ(Legacy("SetMotorState",
+                   R"({"LeftHand": {"millisecondsPerSample": 25.0,
+                                    "intensities": [0.9]}})")
+                .code,
+            0);
+  ASSERT_TRUE(WaitFor(probe, [&] {
+    return !probe.recorded_sinks.empty() &&
+           probe.recorded_sinks.back().amplitude == 0.9f;
+  }));
+  ASSERT_TRUE(WaitFor(probe, [&] { return !probe.recorded_stops.empty(); }));
+  {
+    std::lock_guard<std::mutex> lock(probe.mutex);
+    EXPECT_EQ(probe.recorded_sinks.back().amplitude, 0.9f);
+  }
+
+  EXPECT_EQ(Legacy("SetMotorState", longer.c_str()).code, 0);
+  ASSERT_TRUE(WaitFor(probe, [&] {
+    return probe.recorded_sinks.back().amplitude == 0.3f;
+  }));
+  std::size_t stops_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(probe.mutex);
+    stops_before = probe.recorded_stops.size();
+  }
+  ASSERT_TRUE(bridge->Shutdown().ok());
+  std::lock_guard<std::mutex> lock(probe.mutex);
+  EXPECT_EQ(probe.recorded_stops.size(), stops_before + 1);
+}
+
+// Positional effects aimed at a hand sit at x = +-1 with a 0.5 radius, so the
+// hand motors must be reported there.
+TEST_F(RobloxHapticProtocolBridgeTest, GetMotorsPlacesHandsAtUnitOffsets) {
+  ASSERT_TRUE(Initialize().ok());
+
+  const auto reply = Legacy("GetMotors");
+  for (const char* left : {"leftHand", "LeftHand"})
+    EXPECT_DOUBLE_EQ(reply.body[left]["x"].get<double>(), -1.0) << left;
+  for (const char* right : {"rightHand", "RightHand"})
+    EXPECT_DOUBLE_EQ(reply.body[right]["x"].get<double>(), 1.0) << right;
 }
 
 TEST_F(RobloxHapticProtocolBridgeTest, UpdateSingletonVibrationBroadcasts) {
@@ -348,9 +434,9 @@ TEST_F(RobloxHapticProtocolBridgeTest, RumbleMessagesAddNoHapticLogLines) {
   testing::internal::CaptureStderr();
   Legacy("SetMotorState", R"({"leftHand": {"intensities": [0.5]}})");
   Legacy("UpdateSingletonVibration", R"({"intensity": 0.5})");
+  ASSERT_TRUE(WaitFor(probe, [&] { return probe.recorded_sinks.size() >= 3; }));
   EXPECT_EQ(testing::internal::GetCapturedStderr().find("[haptic]"),
             std::string::npos);
-  EXPECT_EQ(probe.recorded_sinks.size(), 3u);
 }
 
 TEST(RobloxHapticProtocolBridgeSession, RunsOnlyDuringAVrSession) {

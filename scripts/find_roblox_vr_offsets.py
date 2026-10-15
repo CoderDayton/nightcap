@@ -90,6 +90,8 @@ HAND_PITCH_FLAG_NAME = b"NewVRSystemHandPitch"
 HAPTIC_FLAG_NAMES = {
     "keep_haptics_flag_rva": b"KeepHapticsOnMobileWhenGamepadConnected",
     "vr_haptics_flag_rva": b"VRHaptics",
+    "support_generic_haptics_flag_rva": b"SupportGenericHapticsOnVR",
+    "fix_register_motors_flag_rva": b"FixRegisterMotors",
 }
 
 OBJECT_TYPE_OFFSET = 0x10

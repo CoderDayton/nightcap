@@ -26,6 +26,8 @@ struct VrBuildContract {
   std::uintptr_t camera_head_scale_offset;
   std::uintptr_t keep_haptics_flag_rva;
   std::uintptr_t vr_haptics_flag_rva;
+  std::uintptr_t support_generic_haptics_flag_rva;
+  std::uintptr_t fix_register_motors_flag_rva;
   // Roblox version code and name, for messages that list supported builds.
   std::string_view version;
 };
@@ -40,6 +42,50 @@ float ReadCameraHeadScale(const void* camera, const VrBuildContract& contract);
 // at `name` inside the image. Returns whether it wrote.
 bool EnableNamedFastFlag(std::uintptr_t image_base, std::uintptr_t rva,
                          std::string_view name);
+
+// HapticService:SetMotor arguments the Android client drops: its haptics
+// backend only consumes Gamepad1 Large/Small, so LeftHand/RightHand need a
+// VR sink of their own.
+inline constexpr std::int32_t kUserInputTypeGamepad1 = 12;
+inline constexpr std::int32_t kVibrationMotorLeftHand = 4;
+inline constexpr std::int32_t kVibrationMotorRightHand = 5;
+
+// How the engine's SetMotor intensity reader takes the value tuple.
+enum class MotorIntensityAbi {
+  kNone,
+  // float(const shared_ptr<const Tuple>*), 3222.
+  kSharedTuple,
+  // float(const Variant* begin, const Variant* end), 2998.
+  kTupleSpan,
+};
+struct MotorIntensityReader {
+  std::uintptr_t rva = 0;
+  MotorIntensityAbi abi = MotorIntensityAbi::kNone;
+};
+
+// Both scan [scan_rva, scan_rva + scan_size) of a flat `image` view whose
+// offsets are RVAs, and succeed only on exactly one match.
+//
+// The reader is the call in the Android backend's motor slot:
+//   cmp esi,Gamepad1; jne; cmp edx,1; je; test edx,edx; jne; ...; call reader;
+//   movss [r14+0x54],xmm0
+MotorIntensityReader FindMotorIntensityReader(const std::uint8_t* image,
+                                              std::size_t image_size,
+                                              std::uintptr_t scan_rva,
+                                              std::size_t scan_size);
+// The descriptor is the one registered as lea rdi,[descriptor];
+// lea rdx,["SetMotor"]. Returns its RVA, or 0.
+std::uintptr_t FindSetMotorDescriptor(const std::uint8_t* image,
+                                      std::size_t image_size,
+                                      std::uintptr_t scan_rva,
+                                      std::size_t scan_size);
+// Offset of the member function pointer in that descriptor: the first of
+// +0x80/+0x88 holding an even code address followed by a zero this-adjust.
+// `is_code` says whether an RVA is executable. Returns 0 when neither fits.
+std::size_t SetMotorDescriptorSlot(std::uintptr_t image_base,
+                                   std::uintptr_t descriptor_rva,
+                                   bool (*is_code)(std::uintptr_t image_base,
+                                                   std::uintptr_t rva));
 
 // Computes the record orientation for a hand pose: the aim pose (or, with
 // MOCKTAIL_VR_HAND_POSE_SOURCE=grip, the grip pose) pitched by the engine's

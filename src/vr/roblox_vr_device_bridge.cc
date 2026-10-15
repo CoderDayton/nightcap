@@ -392,6 +392,158 @@ void RestoreIsVrAppBuildHook() {
   }
 }
 
+// HapticService:SetMotor on the hand motors: a level the game holds until it
+// sets another. (HapticEffect output plays from SetMotorState instead.)
+constexpr std::uint64_t kHapticLeaseNs = 50000000;
+std::atomic<float> g_set_motor_level[2] = {};
+
+void ApplyHandHaptics(int hand) {
+  auto* backend = ActiveVrBackend();
+  if (backend == nullptr) return;
+  const float level = g_set_motor_level[hand].load(std::memory_order_relaxed);
+  // A short lease, refreshed every engine frame, so a stalled or
+  // disconnected engine never leaves a controller vibrating.
+  if (level > 0)
+    backend->RequestControllerHaptics(hand, level, kHapticLeaseNs, 0);
+  else
+    backend->StopControllerHaptics(hand);
+}
+
+void ResetHandHaptics() {
+  for (int hand = 0; hand < 2; ++hand)
+    g_set_motor_level[hand].store(0, std::memory_order_relaxed);
+}
+
+using SetMotorFn = void (*)(void* service, std::int32_t input_type,
+                            std::int32_t motor, const void* values);
+std::uintptr_t* g_set_motor_slot = nullptr;
+// Kept for the process lifetime, like the getters: a call already past the
+// slot load still forwards after the slot is restored.
+std::atomic<SetMotorFn> g_set_motor_original{nullptr};
+std::atomic<std::uintptr_t> g_motor_intensity_reader{0};
+std::atomic<internal::MotorIntensityAbi> g_motor_intensity_abi{
+    internal::MotorIntensityAbi::kNone};
+
+// `values` is the guest's shared_ptr<const Tuple>; a Tuple starts with its
+// std::vector<Variant>.
+std::optional<float> ReadMotorIntensity(const void* values) {
+  const auto reader = g_motor_intensity_reader.load(std::memory_order_acquire);
+  if (reader == 0 || values == nullptr) return std::nullopt;
+  const void* tuple = nullptr;
+  std::memcpy(&tuple, values, sizeof(tuple));
+  if (tuple == nullptr) return std::nullopt;
+  const void* span[2] = {};
+  std::memcpy(span, tuple, sizeof(span));
+  // SetMotor rejects an empty tuple; the reader would read past it.
+  if (span[0] == nullptr || span[0] == span[1]) return std::nullopt;
+  float intensity = 0;
+  switch (g_motor_intensity_abi.load(std::memory_order_acquire)) {
+  case internal::MotorIntensityAbi::kSharedTuple:
+    intensity = reinterpret_cast<float (*)(const void*)>(reader)(values);
+    break;
+  case internal::MotorIntensityAbi::kTupleSpan:
+    intensity = reinterpret_cast<float (*)(const void*, const void*)>(reader)(
+        span[0], span[1]);
+    break;
+  case internal::MotorIntensityAbi::kNone:
+    return std::nullopt;
+  }
+  if (!std::isfinite(intensity)) return 0.f;
+  return std::clamp(intensity, 0.f, 1.f);
+}
+
+// Aligned for the same member function pointer reason as IsVRAppBuild.
+extern "C" __attribute__((aligned(16))) void mocktail_vr_haptic_set_motor(
+    void* service, std::int32_t input_type, std::int32_t motor,
+    const void* values) {
+  HookCall in_flight;
+  if (const auto original =
+          g_set_motor_original.load(std::memory_order_acquire)) {
+    original(service, input_type, motor, values);
+  }
+  if (input_type != internal::kUserInputTypeGamepad1 ||
+      (motor != internal::kVibrationMotorLeftHand &&
+       motor != internal::kVibrationMotorRightHand)) {
+    return;
+  }
+  auto* bridge = g_active_bridge.load(std::memory_order_seq_cst);
+  if (bridge == nullptr || !bridge->active()) return;
+  if (const auto intensity = ReadMotorIntensity(values)) {
+    bridge->OnSetMotorCall(motor - internal::kVibrationMotorLeftHand,
+                           *intensity);
+  }
+}
+
+bool IsExecutableRva(std::uintptr_t image_base, std::uintptr_t rva) {
+  return IsExecutableImageRange(image_base, rva, 1);
+}
+
+void InstallSetMotorHook(std::uintptr_t image_base) {
+  if (g_set_motor_slot != nullptr || !IsValidElfImage(image_base)) return;
+  const auto* image = reinterpret_cast<const std::uint8_t*>(image_base);
+  const std::size_t image_size = ImageSize(image_base);
+  const auto* header = reinterpret_cast<const Elf64_Ehdr*>(image_base);
+  const auto* program_headers = reinterpret_cast<const Elf64_Phdr*>(
+      image_base + static_cast<std::uintptr_t>(header->e_phoff));
+  internal::MotorIntensityReader reader;
+  std::uintptr_t descriptor = 0;
+  for (std::size_t index = 0; index < header->e_phnum; ++index) {
+    const Elf64_Phdr& segment = program_headers[index];
+    if (segment.p_type != PT_LOAD ||
+        (segment.p_flags & (PF_R | PF_X)) != (PF_R | PF_X)) {
+      continue;
+    }
+    if (reader.abi == internal::MotorIntensityAbi::kNone) {
+      reader = internal::FindMotorIntensityReader(
+          image, image_size, segment.p_vaddr, segment.p_memsz);
+    }
+    if (descriptor == 0) {
+      descriptor = internal::FindSetMotorDescriptor(
+          image, image_size, segment.p_vaddr, segment.p_memsz);
+    }
+  }
+  if (reader.abi == internal::MotorIntensityAbi::kNone ||
+      !IsExecutableImageRange(image_base, reader.rva, 1) || descriptor == 0 ||
+      !IsWritableDataImageRange(image_base, descriptor, 0x98)) {
+    Log("  [vr-device] SetMotor hand haptics unavailable: reader=+0x%" PRIxPTR
+        " descriptor=+0x%" PRIxPTR "\n",
+        reader.rva, descriptor);
+    return;
+  }
+  const std::size_t slot_offset =
+      internal::SetMotorDescriptorSlot(image_base, descriptor, &IsExecutableRva);
+  if (slot_offset == 0) {
+    Log("  [vr-device] SetMotor hand haptics unavailable: no method slot in "
+        "descriptor +0x%" PRIxPTR "\n",
+        descriptor);
+    return;
+  }
+  auto* slot =
+      reinterpret_cast<std::uintptr_t*>(image_base + descriptor + slot_offset);
+  g_motor_intensity_reader.store(image_base + reader.rva,
+                                 std::memory_order_release);
+  g_motor_intensity_abi.store(reader.abi, std::memory_order_release);
+  g_set_motor_original.store(reinterpret_cast<SetMotorFn>(*slot),
+                             std::memory_order_release);
+  g_set_motor_slot = slot;
+  __atomic_store_n(slot, FunctionAddress(&mocktail_vr_haptic_set_motor),
+                   __ATOMIC_RELEASE);
+  Log("  [vr-device] interposed HapticService::SetMotor descriptor at +0x%" PRIxPTR
+      " (hand motors -> OpenXR, reader +0x%" PRIxPTR ")\n",
+      descriptor + slot_offset, reader.rva);
+}
+
+void RestoreSetMotorHook() {
+  if (g_set_motor_slot != nullptr) {
+    __atomic_store_n(
+        g_set_motor_slot,
+        reinterpret_cast<std::uintptr_t>(
+            g_set_motor_original.load(std::memory_order_acquire)),
+        __ATOMIC_RELEASE);
+    g_set_motor_slot = nullptr;
+  }
+}
+
 } // namespace
 
 namespace internal {
@@ -410,6 +562,8 @@ constexpr VrBuildContract kContracts[] = {
      0x140,
      0x72fcd18,
      0x7367588,
+     0x73677d0,
+     0x7367da0,
      "2998 (2.736.1408)"},
     {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
      {0x6d08108, 0x37f9fe4, 0x37fa3c6, 0x37fa3b6, 0x37fa3e8, 0x73f4690,
@@ -424,6 +578,8 @@ constexpr VrBuildContract kContracts[] = {
      0x140,
      0x7387118,
      0x73f2268,
+     0x73f24f0,
+     0x73f2aa8,
      "3092 (2.738.1397)"},
     {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
      {0x7083a48, 0x549c884, 0x549cc66, 0x549cc56, 0x549cc88, 0x74d1640,
@@ -438,6 +594,8 @@ constexpr VrBuildContract kContracts[] = {
      0x130,
      0x763fef8,
      0x74cf1e0,
+     0x74cf458,
+     0x74cfa10,
      "3222 (2.742.1059)"},
 };
 
@@ -761,6 +919,114 @@ bool EnableNamedFastFlag(std::uintptr_t image_base, std::uintptr_t rva,
   return true;
 }
 
+MotorIntensityReader FindMotorIntensityReader(const std::uint8_t* image,
+                                              std::size_t image_size,
+                                              std::uintptr_t scan_rva,
+                                              std::size_t scan_size) {
+  // cmp esi,0xc; jne rel32; cmp edx,1; je rel8; test edx,edx; jne rel8
+  static constexpr std::uint8_t kDispatch[] = {0x83, 0xfe, 0x0c, 0x0f, 0x85};
+  static constexpr std::size_t kDispatchSize = 18;
+  // 3222: lea r15,[rbp+disp8]; mov rdi,r15 (a copy of the shared_ptr).
+  static constexpr std::uint8_t kSharedTuple[] = {0x4c, 0x89, 0xff, 0xe8};
+  // 2998: mov rdi,[rax]; mov rsi,[rax+8] (the tuple's begin and end).
+  static constexpr std::uint8_t kTupleSpan[] = {0x48, 0x8b, 0x38, 0x48,
+                                                0x8b, 0x70, 0x08, 0xe8};
+  // movss [r14+0x54],xmm0: the Large motor store after the call.
+  static constexpr std::uint8_t kLargeStore[] = {0xf3, 0x41, 0x0f, 0x11,
+                                                 0x46, 0x54};
+  static constexpr std::size_t kCallWindow = 48;
+  // Longest read past a window offset: the span setup, rel32 and the store.
+  static constexpr std::size_t kWindowTail =
+      sizeof(kTupleSpan) + 4 + sizeof(kLargeStore);
+  if (scan_rva > image_size || scan_size > image_size - scan_rva) return {};
+  MotorIntensityReader found;
+  int matches = 0;
+  for (std::size_t at = scan_rva;
+       at + kDispatchSize + kCallWindow + kWindowTail <= scan_rva + scan_size;
+       ++at) {
+    const std::uint8_t* code = image + at;
+    if (std::memcmp(code, kDispatch, sizeof(kDispatch)) != 0 ||
+        code[9] != 0x83 || code[10] != 0xfa || code[11] != 0x01 ||
+        code[12] != 0x74 || code[14] != 0x85 || code[15] != 0xd2 ||
+        code[16] != 0x75) {
+      continue;
+    }
+    for (std::size_t offset = kDispatchSize; offset < kDispatchSize + kCallWindow;
+         ++offset) {
+      MotorIntensityAbi abi = MotorIntensityAbi::kNone;
+      std::size_t call = 0;
+      if (std::memcmp(code + offset, kSharedTuple, sizeof(kSharedTuple)) == 0) {
+        abi = MotorIntensityAbi::kSharedTuple;
+        call = offset + sizeof(kSharedTuple) - 1;
+      } else if (std::memcmp(code + offset, kTupleSpan, sizeof(kTupleSpan)) ==
+                 0) {
+        abi = MotorIntensityAbi::kTupleSpan;
+        call = offset + sizeof(kTupleSpan) - 1;
+      } else {
+        continue;
+      }
+      if (std::memcmp(code + call + 5, kLargeStore, sizeof(kLargeStore)) != 0) {
+        break;
+      }
+      found = {RelativeTarget(code + call + 1, at + call + 5), abi};
+      ++matches;
+      break;
+    }
+  }
+  if (matches != 1 || found.rva >= image_size) return {};
+  return found;
+}
+
+std::uintptr_t FindSetMotorDescriptor(const std::uint8_t* image,
+                                      std::size_t image_size,
+                                      std::uintptr_t scan_rva,
+                                      std::size_t scan_size) {
+  static constexpr char kName[] = "SetMotor";
+  if (scan_rva > image_size || scan_size > image_size - scan_rva) return 0;
+  std::uintptr_t found = 0;
+  int matches = 0;
+  // lea rdi,[rip+descriptor]; lea rdx,[rip+"SetMotor"]
+  for (std::size_t at = scan_rva; at + 14 <= scan_rva + scan_size; ++at) {
+    const std::uint8_t* code = image + at;
+    if (code[0] != 0x48 || code[1] != 0x8d || code[2] != 0x3d ||
+        code[7] != 0x48 || code[8] != 0x8d || code[9] != 0x15) {
+      continue;
+    }
+    const std::uintptr_t name = RelativeTarget(code + 10, at + 14);
+    if (name >= image_size || image_size - name < sizeof(kName) ||
+        std::memcmp(image + name, kName, sizeof(kName)) != 0) {
+      continue;
+    }
+    found = RelativeTarget(code + 3, at + 7);
+    ++matches;
+  }
+  return matches == 1 ? found : 0;
+}
+
+std::size_t SetMotorDescriptorSlot(std::uintptr_t image_base,
+                                   std::uintptr_t descriptor_rva,
+                                   bool (*is_code)(std::uintptr_t image_base,
+                                                   std::uintptr_t rva)) {
+  for (const std::size_t slot : {std::size_t{0x80}, std::size_t{0x88}}) {
+    std::uintptr_t function = 0;
+    std::uintptr_t adjust = 0;
+    std::memcpy(&function,
+                reinterpret_cast<const void*>(image_base + descriptor_rva +
+                                              slot),
+                sizeof(function));
+    std::memcpy(&adjust,
+                reinterpret_cast<const void*>(image_base + descriptor_rva +
+                                              slot + sizeof(function)),
+                sizeof(adjust));
+    // An odd pointer is a virtual-call offset, not code.
+    if (function > image_base && function % 2 == 0 && adjust == 0 &&
+        is_code(image_base, function - image_base)) {
+      return slot;
+    }
+  }
+  return 0;
+}
+
 float GetHandPitchOffsetDeg() {
   static const float offset = [] {
     if (const char* env = std::getenv("MOCKTAIL_VR_HAND_PITCH_OFFSET")) {
@@ -1033,7 +1299,9 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
        contract_->hand_pitch_storage_rva + sizeof(int),
        contract_->haptic_sink_rva + 1,
        contract_->keep_haptics_flag_rva + 1,
-       contract_->vr_haptics_flag_rva + 1});
+       contract_->vr_haptics_flag_rva + 1,
+       contract_->support_generic_haptics_flag_rva + 1,
+       contract_->fix_register_motors_flag_rva + 1});
   if (image_base > std::numeric_limits<std::uintptr_t>::max() - largest_rva) {
     return InvalidArgument("VR device profile address overflows");
   }
@@ -1161,6 +1429,8 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
     return FailedPrecondition("could not install verified VR aim pointer hook");
   }
   InstallIsVrAppBuildHook(image_base);
+  ResetHandHaptics();
+  InstallSetMotorHook(image_base);
   if (internal::EnableNamedFastFlag(image_base,
                                     contract_->keep_haptics_flag_rva,
                                     "KeepHapticsOnMobileWhenGamepadConnected")) {
@@ -1171,6 +1441,18 @@ Status RobloxVrDeviceBridge::Activate(std::uintptr_t image_base) {
                                     "VRHaptics")) {
     Log("  [vr-device] enabled VRHaptics at +0x%" PRIxPTR "\n",
         contract_->vr_haptics_flag_rva);
+  }
+  if (internal::EnableNamedFastFlag(image_base,
+                                    contract_->support_generic_haptics_flag_rva,
+                                    "SupportGenericHapticsOnVR")) {
+    Log("  [vr-device] enabled SupportGenericHapticsOnVR at +0x%" PRIxPTR "\n",
+        contract_->support_generic_haptics_flag_rva);
+  }
+  if (internal::EnableNamedFastFlag(image_base,
+                                    contract_->fix_register_motors_flag_rva,
+                                    "FixRegisterMotors")) {
+    Log("  [vr-device] enabled FixRegisterMotors at +0x%" PRIxPTR "\n",
+        contract_->fix_register_motors_flag_rva);
   }
   {
     std::lock_guard<std::mutex> pose_lock(g_native_pose_mutex);
@@ -1228,6 +1510,8 @@ void RobloxVrDeviceBridge::Shutdown() {
 
 bool RobloxVrDeviceBridge::RestoreVtableLocked() {
   RestoreIsVrAppBuildHook();
+  RestoreSetMotorHook();
+  ResetHandHaptics();
   (void)RestorePointerHook();
   if (vtable_ == nullptr) {
     return false;
@@ -1263,6 +1547,11 @@ void RobloxVrDeviceBridge::NoteHostPresent() {
         thread_id);
   }
   g_thread_presented = true;
+  // SetMotor is a held level with no engine-side refresh; renew its lease.
+  for (int hand = 0; hand < 2; ++hand) {
+    if (g_set_motor_level[hand].load(std::memory_order_relaxed) > 0)
+      ApplyHandHaptics(hand);
+  }
   mocktail_vr_consume_eye();
 }
 
@@ -1506,19 +1795,25 @@ void RobloxVrDeviceBridge::OnHapticsCall(void *device_object, int hand,
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active() || !ValidateObjectHeader(device_object) || hand < 0 || hand > 1)
     return;
-  if (auto *backend = ActiveVrBackend()) {
-    static std::atomic<bool> logged[2]{};
-    if (!logged[hand].exchange(true))
-      Log("  [vr-input] native haptic callback observed: hand=%d "
-          "amplitude=%.3f\n",
-          hand, amplitude);
-    if (!std::isfinite(amplitude) || amplitude <= 0)
-      backend->StopControllerHaptics(hand);
-    // Native pull refreshes once per engine frame. A short lease prevents a
-    // stalled or disconnected engine from leaving the controller vibrating.
-    else
-      backend->RequestControllerHaptics(hand, amplitude, 50000000, 0);
-  }
+  // Observed only. The engine pulls this every frame but with each mix
+  // buffer's first sample, which it holds until the next buffer (~1 s): a
+  // 50 ms click arrives as a 1 s buzz. The same HapticEffect output plays
+  // sample by sample from SetMotorState in the HapticProtocol bridge.
+  static std::atomic<bool> logged[2]{};
+  if (amplitude > 0 && !logged[hand].exchange(true))
+    Log("  [vr-input] native haptic callback observed: hand=%d "
+        "amplitude=%.3f (played from SetMotorState instead)\n",
+        hand, amplitude);
+}
+
+void RobloxVrDeviceBridge::OnSetMotorCall(int hand, float amplitude) {
+  if (!active() || hand < 0 || hand > 1) return;
+  static std::atomic<bool> logged[2]{};
+  if (amplitude > 0 && !logged[hand].exchange(true))
+    Log("  [vr-input] SetMotor hand haptics observed: hand=%d amplitude=%.3f\n",
+        hand, amplitude);
+  g_set_motor_level[hand].store(amplitude, std::memory_order_relaxed);
+  ApplyHandHaptics(hand);
 }
 
 void RobloxVrDeviceBridge::OnStateGetterCall(void *result_buffer,

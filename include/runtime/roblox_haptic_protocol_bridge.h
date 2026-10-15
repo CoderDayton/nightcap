@@ -16,6 +16,8 @@ using HapticSinkFn = std::function<void(int hand, float amplitude,
 using HapticStopFn = std::function<void(int hand)>;
 using HapticStateSyncFn = std::function<void(JNIEnv* env)>;
 
+class HapticWaveformPlayer;
+
 class RobloxHapticProtocolBridge final {
  public:
   RobloxHapticProtocolBridge(
@@ -36,6 +38,7 @@ class RobloxHapticProtocolBridge final {
   static bool EnabledForThisSession();
 
  private:
+  std::shared_ptr<HapticWaveformPlayer> player_;
   std::unique_ptr<RobloxMessageBusRequestBridge> bridge_;
 };
 
