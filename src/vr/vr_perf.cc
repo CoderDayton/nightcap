@@ -57,6 +57,9 @@ const char* StageName(Stage stage) {
     case Stage::kMirrorPublish: return "mirror_publish";
     case Stage::kEvidence: return "evidence";
     case Stage::kControllerSync: return "controller_sync";
+    case Stage::kDesktopMirror: return "desktop_mirror";
+    case Stage::kPresentPrepare: return "present_prepare";
+    case Stage::kPresentInterval: return "present_interval";
     case Stage::kStageCount: break;
   }
   return "unknown";

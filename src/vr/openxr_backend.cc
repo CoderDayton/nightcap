@@ -2252,6 +2252,7 @@ VkQueue OpenXrBackend::GraphicsQueueForPresentLocked(VkQueue present) const {
 
 VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
                                            const VkPresentInfoKHR *info) {
+  const ScopedStageTimer prepare_timer(perf::Stage::kPresentPrepare);
   std::lock_guard<std::mutex> lock(mutex_);
   if (!armed_ || graphics_api_ != VrGraphicsApi::kVulkan || !vk_ ||
       device != vk_device_ || !info)
@@ -2283,6 +2284,14 @@ VkResult OpenXrBackend::PrepareHostPresent(VkQueue queue, VkDevice device,
 }
 
 void OpenXrBackend::NoteHostPresent(VkQueue queue, VkDevice device) {
+  if (perf::Enabled()) {
+    static thread_local std::uint64_t previous_ns = 0;
+    const std::uint64_t now_ns = perf::NowNs();
+    if (previous_ns != 0 && now_ns > previous_ns)
+      perf::ProcessCollector().Record(perf::Stage::kPresentInterval,
+                                      now_ns - previous_ns);
+    previous_ns = now_ns;
+  }
   bool idle = false;
   {
     // frame_mutex_ keeps the session alive for the whole frame cycle, so
@@ -3435,6 +3444,7 @@ void OpenXrBackend::RecordDesktopSwapchain(VkDevice device,
 
 VkResult OpenXrBackend::MirrorDesktop(VkQueue queue,
                                       const VkPresentInfoKHR *info) {
+  const ScopedStageTimer mirror_timer(perf::Stage::kDesktopMirror);
   std::lock_guard<std::mutex> lock(mutex_);
   if (EnvString("MOCKTAIL_VR_DESKTOP_MIRROR", "1") == "0" || !vk_ || !info ||
       info->swapchainCount != 1 || !info->pSwapchains || !info->pImageIndices ||

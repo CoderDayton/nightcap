@@ -25,6 +25,9 @@ enum class Stage {
   kMirrorPublish,
   kEvidence,
   kControllerSync,
+  kDesktopMirror,
+  kPresentPrepare,
+  kPresentInterval,
   kStageCount,
 };
 
