@@ -46,7 +46,7 @@ leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `MOCKTAIL_VR_PERF` | unset | `1` logs per-stage frame timings and counters once a second. |
+| `MOCKTAIL_VR_PERF` | unset | `1` logs per-stage frame timings and counters once a second. `present_interval` is the frame time; `desktop_mirror`, `copy_record` and `copy_fence_wait` show time the CPU spent on VR copies. |
 | `MOCKTAIL_VR_MEASURE_START_NS`, `MOCKTAIL_VR_MEASURE_END_NS` | unset | Limit `MOCKTAIL_VR_PERF` to a `CLOCK_MONOTONIC` window. |
 | `MOCKTAIL_VR_POSE_LOG_INTERVAL` | `240` | Frames between head-pose log lines. |
 
