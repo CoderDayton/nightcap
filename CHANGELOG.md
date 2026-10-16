@@ -26,6 +26,9 @@ Release notes on GitHub are taken from the matching section here.
 
 - Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
   memory for each block of sound it plays.
+- The home screen and avatar editor have fewer long frames. PC profiles compile the app's menu scripts to
+  native code and turn this off while you are in a game, so games run as before. Set
+  `FFlagDebugLuauCodegenAll` in `fflags.json` to choose it yourself.
 
 ## [0.3.4] - 2026-10-11
 

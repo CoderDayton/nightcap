@@ -33,6 +33,7 @@
 #include "runtime/fleasion.h"
 #include "runtime/game_mode.h"
 #include "runtime/graphics_launch_policy.h"
+#include "runtime/luau_codegen_switch.h"
 #include "runtime/memory_limit.h"
 #include "runtime/payload_update_preflight.h"
 #include "runtime/performance_policy.h"
@@ -1012,6 +1013,7 @@ int main(int argc, char* argv[]) {
       std::cout
           << "  [auth] explicit guest identity selected for production VM\n";
     }
+    unsetenv("MOCKTAIL_LUAU_CODEGEN_MENU_SWITCH");
     if (runtime_config.config.desktop_playability()) {
       std::filesystem::path assets = paths.DefaultAssetPath();
       if (environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
@@ -1034,10 +1036,13 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
       }
       std::string desktop_client_settings;
+      const std::string user_client_settings =
+          environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}");
+      const bool user_set_luau_codegen =
+          mocktail::runtime::ClientSettingsSetLuauCodegenAll(
+              user_client_settings);
       if (!mocktail::runtime::MergeDesktopAppPolicyClientSettingsOverride(
-              desktop_policy.policy_json,
-              environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
-                                "{}"),
+              desktop_policy.policy_json, user_client_settings,
               &desktop_client_settings, &command_line_error)) {
         std::cerr << "[FATAL] Cannot activate desktop Roblox app-policy: "
                   << command_line_error << '\n';
@@ -1048,6 +1053,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "[FATAL] Cannot export desktop Roblox app-policy\n";
         return EXIT_FAILURE;
       }
+      setenv("MOCKTAIL_LUAU_CODEGEN_MENU_SWITCH",
+             user_set_luau_codegen ? "0" : "1", 1);
       std::cout << "  [runtime] desktop app-policy ready: normalized="
                 << desktop_policy.normalized_policy_count
                 << " updated=" << (desktop_policy.updated ? 1 : 0)
