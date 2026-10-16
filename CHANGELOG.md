@@ -30,9 +30,6 @@ Release notes on GitHub are taken from the matching section here.
 
 - Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
   memory for each block of sound it plays.
-
-### Changed
-
 - VR on Vulkan no longer makes the CPU wait for the GPU each frame. The eye copies, the desktop mirror and
   the `MOCKTAIL_VR_MIRROR_SHM` readback are ordered on the GPU, so Roblox prepares the next frame while the
   last one renders. On a simulated 120 Hz headset this removed 2 to 5 ms of waiting per frame and steadied
