@@ -90,10 +90,10 @@ HeadsetDetection DetectSteamVrHeadset(const std::string& self_executable,
   if (code == ProbeExitCode(ProbeStatus::kHeadsetUnavailable)) {
     return {false, "SteamVR is running without a connected headset"};
   }
-  if (code == ProbeExitCode(ProbeStatus::kRuntimeUnavailable)) {
-    return {false, "SteamVR's OpenXR runtime is unavailable"};
-  }
-  return {false, "SteamVR's OpenXR runtime failed the headset check"};
+  // Without a headset SteamVR refuses the OpenXR client outright
+  // (VRInitError_Driver_*HmdNotConnected) rather than reporting no system.
+  return {false, "SteamVR refused the headset check, which usually means no "
+                 "headset is connected"};
 }
 
 int RunHeadsetProbeChild() { return ProbeExitCode(ProbeOpenXr().status); }

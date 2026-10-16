@@ -258,7 +258,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ```
 
-VR stays off at runtime until you pass `--vr` or set `vr.enabled: true`.
+VR stays off at runtime until you pass `--vr` or set `vr.mode: on` in
+`config.yaml`. `vr.mode: auto` starts in VR only when SteamVR is running with a
+headset connected.
 
 ### Run
 

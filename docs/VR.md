@@ -1,8 +1,18 @@
 # VR
 
-Experimental OpenXR VR is opt-in: launch with `--vr`, or set `vr.enabled: true`
-in `config.yaml`. Everything here only applies while VR is active. The
-[README](../README.md#experimental-vr) covers building and running.
+Experimental OpenXR VR is opt-in: launch with `--vr`, or set `vr.mode` in
+`config.yaml`:
+
+- `off` (default) always starts on the desktop.
+- `on` always starts in VR.
+- `auto` starts in VR when SteamVR is already running with a connected
+  headset, ALVR included, and on the desktop otherwise. It never starts
+  SteamVR, so start SteamVR and connect the headset first.
+
+`--vr` and `--no-vr` override `vr.mode` for one launch. The older
+`vr.enabled: true`/`false` still works as `on`/`off`. Everything here only
+applies while VR is active. The [README](../README.md#experimental-vr) covers
+building and running.
 
 ## Menus and typing
 

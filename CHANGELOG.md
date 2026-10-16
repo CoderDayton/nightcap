@@ -17,6 +17,9 @@ Release notes on GitHub are taken from the matching section here.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 - Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
   maintains it.
+- `vr.mode` in `config.yaml`: `off` starts on the desktop, `on` starts in VR, and `auto` starts in VR only
+  when SteamVR is already running with a connected headset. `auto` never starts SteamVR. `vr.enabled` still
+  works.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
 
