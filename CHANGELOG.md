@@ -19,6 +19,8 @@ Release notes on GitHub are taken from the matching section here.
   maintains it.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
+- `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
+  and `compressed texture (MB)` counters. `scripts/summarize_profile_trace.py` prints the peak of each.
 
 ### Changed
 

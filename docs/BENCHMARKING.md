@@ -68,6 +68,12 @@ the CPU time of every thread together, so dividing it by the frame interval
 gives the number of cores busy. A long frame with little present-thread CPU
 was spent waiting.
 
+`emulated texture (MB)` is the VRAM held by the decoded images that stand in
+for live ETC2/EAC textures, over every mip level and layer, upscaled where
+small-texture upscale applies. `compressed texture (MB)` is the size the same
+textures would take as ETC2/EAC. Both change only when such an image is
+created or destroyed. `summarize_profile_trace.py` prints each one's peak.
+
 ## The benchmark runs
 
 Run every scenario before and after the change, on the same build type

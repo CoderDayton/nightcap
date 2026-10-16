@@ -89,6 +89,20 @@ class SummarizeTest(unittest.TestCase):
         self.assertIn("| frame interval p50 (ms) | 20.00 | 10.00 |", lines)
         self.assertIn("| a mean (ms) | 1.00 | 0.50 |", lines)
 
+    def test_texture_counters_report_their_peak(self) -> None:
+        events = [
+            {"name": "emulated texture (MB)", "ph": "C", "ts": ts, "pid": 1,
+             "tid": 1, "args": {"value": value}}
+            for ts, value in ((1, 10.0), (2, 300.0), (3, 120.0))
+        ]
+        with_textures = summary.summarize(events)
+        without = summary.summarize([])
+
+        self.assertEqual(with_textures.peaks["emulated texture (MB)"], 300.0)
+        table = summary.to_markdown([("one", with_textures), ("two", without)])
+        self.assertIn("| emulated texture (MB) peak | 300.00 | - |",
+                      table.splitlines())
+
     def test_markdown_marks_missing_values(self) -> None:
         with_slice = summary.summarize([slice_event("a", 1_000)])
         without = summary.summarize([])

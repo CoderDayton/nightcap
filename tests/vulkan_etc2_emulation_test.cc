@@ -102,6 +102,37 @@ TEST(VulkanEtc2EmulationTest, CountsUploadBytesPerRegion) {
   EXPECT_EQ(decoded, 2U);
 }
 
+TEST(VulkanEtc2EmulationTest, CountsWholeImageBytesAcrossMipsAndLayers) {
+  VkDeviceSize compressed = 0;
+  VkDeviceSize decoded = 0;
+  // 64x64 with a full chain: 64, 32, 16, 8, 4, 2, 1.
+  ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgb8, {64, 64, 1}, 7, 1, 1,
+                                  &compressed, &decoded));
+  EXPECT_EQ(compressed, 343U * 8U);
+  EXPECT_EQ(decoded, 5461U * 4U);
+
+  // Two layers of EAC R11, 2 bytes per decoded texel.
+  ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEacR11, {8, 4, 1}, 1, 2, 1,
+                                  &compressed, &decoded));
+  EXPECT_EQ(compressed, 2U * 2U * 8U);
+  EXPECT_EQ(decoded, 2U * 32U * 2U);
+}
+
+TEST(VulkanEtc2EmulationTest, CountsDecodedBytesAtTheUpscaledExtent) {
+  VkDeviceSize compressed = 0;
+  VkDeviceSize decoded = 0;
+  // The host image is 256x256 with the same 7 levels: 256 down to 4.
+  ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, {64, 64, 1}, 7, 1, 4,
+                                  &compressed, &decoded));
+  EXPECT_EQ(compressed, 343U * 16U);
+  EXPECT_EQ(decoded, 87376U * 4U);
+
+  EXPECT_FALSE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgb8, {0, 4, 1}, 1, 1, 1,
+                                   &compressed, &decoded));
+  EXPECT_FALSE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgb8, {4, 4, 1}, 0, 1, 1,
+                                   &compressed, &decoded));
+}
+
 TEST(VulkanEtc2EmulationTest, RejectsUnsupportedRegions) {
   VkDeviceSize compressed = 0;
   VkDeviceSize decoded = 0;
@@ -146,6 +177,9 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeCreateImage(VkDevice,
   *image = FakeHandle<VkImage>(g_next_image++);
   return VK_SUCCESS;
 }
+
+VKAPI_ATTR void VKAPI_CALL FakeDestroyImage(VkDevice, VkImage,
+                                            const VkAllocationCallbacks*) {}
 
 VKAPI_ATTR void VKAPI_CALL FakeCopyImage(VkCommandBuffer, VkImage,
                                          VkImageLayout, VkImage, VkImageLayout,
@@ -295,6 +329,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakeGetDeviceProcAddr(
   if (is("vkDestroySemaphore"))
     return reinterpret_cast<PFN_vkVoidFunction>(FakeDestroySemaphore);
   if (is("vkCreateImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateImage);
+  if (is("vkDestroyImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeDestroyImage);
   if (is("vkCreateBuffer")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateBuffer);
   if (is("vkGetBufferMemoryRequirements"))
     return reinterpret_cast<PFN_vkVoidFunction>(FakeBufferRequirements);
@@ -311,6 +346,47 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakeGetDeviceProcAddr(
   if (is("vkCmdCopyImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyImage);
   if (is("vkCmdBlitImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeBlitImage);
   return nullptr;
+}
+
+TEST(VulkanEtc2EmulationTest, TotalsTheBytesOfLiveEmulatedImages) {
+  const VkDevice device = FakeHandle<VkDevice>(0x12);
+  VkPhysicalDeviceMemoryProperties memory{};
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x20), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.imageType = VK_IMAGE_TYPE_3D;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.extent = {8, 8, 1};
+  image_info.mipLevels = 1;
+  image_info.arrayLayers = 1;
+  VkImage first = VK_NULL_HANDLE;
+  VkImage second = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &first),
+            VK_SUCCESS);
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &second),
+            VK_SUCCESS);
+  image_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+  VkImage plain = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &plain),
+            VK_SUCCESS);
+
+  EmulatedTextureBytes totals = emulation.TextureBytes();
+  EXPECT_EQ(totals.compressed, 2U * 4U * 8U);
+  EXPECT_EQ(totals.decoded, 2U * 64U * 4U);
+
+  emulation.DestroyImage(device, first, nullptr);
+  emulation.DestroyImage(device, plain, nullptr);
+  totals = emulation.TextureBytes();
+  EXPECT_EQ(totals.compressed, 4U * 8U);
+  EXPECT_EQ(totals.decoded, 64U * 4U);
+
+  emulation.DestroyDevice(device);
+  totals = emulation.TextureBytes();
+  EXPECT_EQ(totals.compressed, 0U);
+  EXPECT_EQ(totals.decoded, 0U);
 }
 
 TEST(VulkanEtc2EmulationTest, SkipsUploadOutsideTheMappedWindow) {

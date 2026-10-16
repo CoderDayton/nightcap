@@ -129,14 +129,23 @@ runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
-`MOCKTAIL_SMALL_TEXTURE_UPSCALE` (default `4`) redraws ETC2 textures of 64px or
+`MOCKTAIL_SMALL_TEXTURE_UPSCALE` (default `4`) stores ETC2 textures of 64px or
 smaller at N times their width and height. At the default that is 16 times the
 pixels per affected texture.
+
+Upscaling alone adds no detail. Each original pixel becomes an N×N block of the
+same colour, and the GPU's filtering already blends a small texture that much
+when it draws it. The extra size only shows when a replacement PNG in
+`~/.config/mocktail/textures` has more detail than the original.
 
 The cost lands in two places. Decoding and resampling is CPU work on up to 8
 threads while textures load, which shows up as a burst rather than a steady
 load. The enlarged textures then stay in GPU memory for the session and cost
-extra sampling bandwidth on every frame that uses them.
+extra sampling bandwidth on every frame that uses them. In Blade Ball the
+memory share is small: decoded textures came to 5.1 times their ETC2 size both
+with the default and with upscaling off. The `emulated texture (MB)` and
+`compressed texture (MB)` counters in a `--profile` trace give the figures for
+any game.
 
 That decode does not run on the thread that submits the frame. On a device
 with a timeline semaphore, uploads decode on a background dispatcher and the
