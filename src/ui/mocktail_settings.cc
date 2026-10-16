@@ -33,17 +33,6 @@ constexpr char kApplicationId[] = "io.github.CoderDayton.nightcap";
 
 constexpr char kWindowStyle[] = R"(
 .navigation-sidebar > row { min-height: 44px; margin: 1px 6px; padding: 0 14px; }
-.row-reset { opacity: 0; transition: opacity 150ms ease-in-out; }
-row:hover .row-reset, row:focus-within .row-reset { opacity: 1; }
-.count-badge {
-  min-width: 18px; min-height: 18px; padding: 0 6px; border-radius: 9px;
-  font-size: 0.75em; font-weight: 700;
-  background-color: alpha(@accent_bg_color, 0.25); color: @accent_color;
-}
-.changed-chip {
-  min-height: 26px; padding: 0 10px; border-radius: 13px; font-weight: 700;
-  background-color: alpha(@accent_bg_color, 0.2); color: @accent_color;
-}
 .notice-bar {
   min-height: 54px; padding-right: 6px; background-color: @window_bg_color;
   box-shadow: inset 0 1px alpha(@window_fg_color, 0.1);
@@ -65,8 +54,6 @@ struct Row {
   GtkWidget* pick = nullptr;
   // Whether `widget` is an expander row whose own switch is this toggle.
   bool expander_switch = false;
-  // The row's page, in SettingsPages() order.
-  std::size_t page = 0;
   // A value the file holds that the row does not list. It is shown as one
   // more choice so opening the window never changes it.
   std::string unlisted;
@@ -113,11 +100,6 @@ struct SettingsWindow {
   // Set while rows are filled from the file, so that filling one is not
   // taken for a change by the user.
   bool refreshing = false;
-  // Each page's count of changed rows in the sidebar, in SettingsPages()
-  // order.
-  std::vector<GtkWidget*> badges;
-  GtkWidget* changed_chip = nullptr;
-  GtkListBox* sidebar = nullptr;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -263,34 +245,16 @@ void RefreshRow(Row* row, bool keep_edit) {
   }
 }
 
-// Shows the reset button of each row that differs from its default, and the
-// counts of those rows. Rows a switched-off block leaves without effect are
-// greyed out.
+// Shows the reset button of each row that differs from its default. Rows a
+// switched-off block leaves without effect are greyed out.
 void ShowChanged(SettingsWindow* window) {
-  std::vector<std::size_t> counts(window->badges.size(), 0);
   for (Row& row : window->rows) {
     gtk_widget_set_sensitive(row.widget,
                              window->document.IsActive(row.setting->key));
-    const bool changed = window->document.IsChanged(*row.setting);
-    if (changed && row.page < counts.size()) {
-      ++counts[row.page];
-    }
     if (row.reset != nullptr) {
-      gtk_widget_set_visible(row.reset, changed);
+      gtk_widget_set_visible(row.reset,
+                             window->document.IsChanged(*row.setting));
     }
-  }
-  std::size_t total = 0;
-  for (std::size_t index = 0; index < window->badges.size(); ++index) {
-    const std::size_t count = counts[index];
-    total += count;
-    gtk_label_set_text(GTK_LABEL(window->badges[index]),
-                       std::to_string(count).c_str());
-    gtk_widget_set_visible(window->badges[index], count > 0);
-  }
-  if (window->changed_chip != nullptr) {
-    gtk_button_set_label(GTK_BUTTON(window->changed_chip),
-                         (std::to_string(total) + " changed").c_str());
-    gtk_widget_set_visible(window->changed_chip, total > 0);
   }
 }
 
@@ -832,7 +796,6 @@ GtkWidget* NewResetButton(Row* row) {
   gtk_widget_set_tooltip_text(button, "Reset to default");
   gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
   gtk_widget_add_css_class(button, "flat");
-  gtk_widget_add_css_class(button, "row-reset");
   gtk_widget_set_visible(button, FALSE);
   g_signal_connect(button, "clicked", G_CALLBACK(OnReset), row);
   return button;
@@ -1009,12 +972,9 @@ GtkWidget* BuildSidebarTitle() {
   return box;
 }
 
-void OnChangedChipClicked(GtkButton*, gpointer user_data);
-
 GtkWidget* BuildSidebar(SettingsWindow* window) {
   GtkWidget* list = gtk_list_box_new();
   gtk_widget_add_css_class(list, "navigation-sidebar");
-  window->sidebar = GTK_LIST_BOX(list);
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_BROWSE);
   gtk_list_box_set_header_func(GTK_LIST_BOX(list), SetSidebarHeader, nullptr,
                                nullptr);
@@ -1026,13 +986,6 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
     gtk_label_set_xalign(GTK_LABEL(label), 0);
     gtk_widget_set_hexpand(label, TRUE);
     gtk_box_append(GTK_BOX(box), label);
-    GtkWidget* badge = gtk_label_new("");
-    gtk_widget_add_css_class(badge, "count-badge");
-    gtk_widget_set_valign(badge, GTK_ALIGN_CENTER);
-    gtk_widget_set_tooltip_text(badge, "Settings changed from the default");
-    gtk_widget_set_visible(badge, FALSE);
-    gtk_box_append(GTK_BOX(box), badge);
-    window->badges.push_back(badge);
     gtk_list_box_append(GTK_LIST_BOX(list), box);
   }
   g_signal_connect(list, "row-selected", G_CALLBACK(OnPageSelected), window);
@@ -1050,15 +1003,6 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
   GtkWidget* title = BuildSidebarTitle();
   gtk_widget_set_margin_start(title, 4);
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), title);
-  window->changed_chip = gtk_button_new();
-  gtk_widget_add_css_class(window->changed_chip, "changed-chip");
-  gtk_widget_set_valign(window->changed_chip, GTK_ALIGN_CENTER);
-  gtk_widget_set_tooltip_text(window->changed_chip,
-                              "Go to the first changed setting");
-  gtk_widget_set_visible(window->changed_chip, FALSE);
-  g_signal_connect(window->changed_chip, "clicked",
-                   G_CALLBACK(OnChangedChipClicked), window);
-  adw_header_bar_pack_end(ADW_HEADER_BAR(header), window->changed_chip);
   GtkWidget* toolbar = adw_toolbar_view_new();
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
   adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), scrolled);
@@ -1112,10 +1056,7 @@ GtkWidget* BuildNotice(SettingsWindow* window) {
 GtkWidget* BuildPages(SettingsWindow* window) {
   GtkWidget* stack = gtk_stack_new();
   window->stack = GTK_STACK(stack);
-  const auto& pages = mocktail::ui::SettingsPages();
-  for (std::size_t page_index = 0; page_index < pages.size(); ++page_index) {
-    const SettingsPage& page = pages[page_index];
-    const std::size_t first_row = window->rows.size();
+  for (const SettingsPage& page : mocktail::ui::SettingsPages()) {
     // A clamp of our own instead of AdwPreferencesPage, whose fixed 600 px
     // clamp leaves wide empty gutters.
     GtkWidget* groups = gtk_box_new(GTK_ORIENTATION_VERTICAL, 24);
@@ -1161,44 +1102,10 @@ GtkWidget* BuildPages(SettingsWindow* window) {
       }
       gtk_box_append(GTK_BOX(groups), group_widget);
     }
-    for (std::size_t index = first_row; index < window->rows.size(); ++index) {
-      window->rows[index].page = page_index;
-    }
     gtk_stack_add_named(GTK_STACK(stack), page_widget,
                         Text(page.name).c_str());
   }
   return stack;
-}
-
-void OnChangedChipClicked(GtkButton*, gpointer user_data) {
-  auto* window = static_cast<SettingsWindow*>(user_data);
-  for (Row& row : window->rows) {
-    if (!window->document.IsChanged(*row.setting)) {
-      continue;
-    }
-    gtk_list_box_select_row(
-        window->sidebar,
-        gtk_list_box_get_row_at_index(window->sidebar,
-                                      static_cast<int>(row.page)));
-    adw_navigation_split_view_set_show_content(window->split, TRUE);
-    // A row inside a closed expander cannot take focus. One whose switch is
-    // off cannot open, so its own row takes the focus.
-    GtkWidget* target = row.widget;
-    for (GtkWidget* parent = gtk_widget_get_parent(row.widget);
-         parent != nullptr; parent = gtk_widget_get_parent(parent)) {
-      if (!ADW_IS_EXPANDER_ROW(parent)) {
-        continue;
-      }
-      AdwExpanderRow* expander = ADW_EXPANDER_ROW(parent);
-      if (adw_expander_row_get_enable_expansion(expander)) {
-        adw_expander_row_set_expanded(expander, TRUE);
-      } else {
-        target = parent;
-      }
-    }
-    gtk_widget_grab_focus(target);
-    return;
-  }
 }
 
 // The sidebar of pages beside the settings of the chosen one.

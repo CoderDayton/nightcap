@@ -1035,11 +1035,22 @@ TEST_F(SettingsModelTest, ANewFileHasNoChangedRows) {
             << setting.key << " = " << document.Value(setting.key);
       }
     }
-    EXPECT_EQ(ChangedCount(page, document), 0u) << page.name;
   }
 }
 
-TEST_F(SettingsModelTest, AChangedRowIsCountedAndResetPutsItBack) {
+std::size_t ChangedCount(const SettingsDocument& document) {
+  std::size_t count = 0;
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        count += document.IsChanged(setting) ? 1 : 0;
+      }
+    }
+  }
+  return count;
+}
+
+TEST_F(SettingsModelTest, AChangedRowIsTheOnlyOneAndResetPutsItBack) {
   SettingsDocument document(file_);
   std::string error;
   ASSERT_TRUE(document.Load(&error)) << error;
@@ -1057,11 +1068,11 @@ TEST_F(SettingsModelTest, AChangedRowIsCountedAndResetPutsItBack) {
                          : document.Set(setting.key, *value, &error))
             << error;
         EXPECT_TRUE(document.IsChanged(setting));
-        EXPECT_EQ(ChangedCount(page, document), 1u);
+        EXPECT_EQ(ChangedCount(document), 1u);
 
         ASSERT_TRUE(document.Reset(setting, &error)) << error;
         EXPECT_FALSE(document.IsChanged(setting)) << document.Value(setting.key);
-        EXPECT_EQ(ChangedCount(page, document), 0u);
+        EXPECT_EQ(ChangedCount(document), 0u);
         const runtime::RuntimeConfigLoadResult loaded = LoadFile();
         ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
       }
@@ -1109,6 +1120,22 @@ TEST_F(SettingsModelTest, ResetTakesTheKeyOutOfTheFile) {
     ASSERT_TRUE(document.Reset(setting, &error)) << error;
     EXPECT_FALSE(document.IsSet(key)) << Read();
   }
+}
+
+TEST_F(SettingsModelTest, ResetCanTakeOutTheLastKey) {
+  Write("graphics:\n  vsync: off\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Reset(Find("graphics.vsync"), &error)) << error;
+  EXPECT_FALSE(document.IsChanged(Find("graphics.vsync"))) << Read();
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  EXPECT_TRUE(loaded) << loaded.error << "\n" << Read();
+
+  ASSERT_TRUE(document.Set("graphics.vsync", "off", &error)) << error;
+  EXPECT_TRUE(document.IsChanged(Find("graphics.vsync"))) << Read();
+  const runtime::RuntimeConfigLoadResult reloaded = LoadFile();
+  EXPECT_TRUE(reloaded) << reloaded.error << "\n" << Read();
 }
 
 TEST_F(SettingsModelTest, ResetTakesADeviceInputSwitchOut) {

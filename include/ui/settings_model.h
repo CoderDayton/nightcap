@@ -198,9 +198,6 @@ class SettingsDocument {
   std::size_t saved_changes_ = 0;
 };
 
-std::size_t ChangedCount(const SettingsPage& page,
-                         const SettingsDocument& document);
-
 // A place in a text. Both numbers start at 1, and the column counts
 // characters, not bytes.
 struct TextPosition {

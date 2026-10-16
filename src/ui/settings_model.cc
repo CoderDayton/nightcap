@@ -59,6 +59,41 @@ std::string DevicePreset(std::string_view text) {
 }
 
 // What the file's device turns on for the input `key`.
+bool HasYamlContent(std::string_view text) {
+  std::size_t start = 0;
+  while (start < text.size()) {
+    const std::size_t end = std::min(text.find('\n', start), text.size());
+    const std::size_t first = text.find_first_not_of(" \t\r", start);
+    if (first < end && text[first] != '#') {
+      return true;
+    }
+    start = end + 1;
+  }
+  return false;
+}
+
+// Keys cannot be added next to the `{}` that Save writes into an empty file.
+std::string WithoutEmptyMapping(std::string_view text) {
+  std::string kept;
+  bool dropped = false;
+  std::size_t start = 0;
+  while (start < text.size()) {
+    const std::size_t end = std::min(text.find('\n', start), text.size());
+    std::string_view line = text.substr(start, end - start);
+    const std::size_t first = line.find_first_not_of(" \t\r");
+    const std::size_t last = line.find_last_not_of(" \t\r");
+    if (first == std::string_view::npos || line[first] == '#') {
+      kept.append(text.substr(start, std::min(end + 1, text.size()) - start));
+    } else if (!dropped && line.substr(first, last - first + 1) == "{}") {
+      dropped = true;
+    } else {
+      return std::string(text);
+    }
+    start = end + 1;
+  }
+  return kept;
+}
+
 bool PresetInput(std::string_view text, std::string_view key) {
   const std::string preset = DevicePreset(text);
   const runtime::DeviceProfile* profile = runtime::FindDeviceProfile(
@@ -1056,7 +1091,8 @@ bool SettingsDocument::Reset(const Setting& setting, std::string* error) {
   // The device's own inputs come back once the switch is out of the file.
   if (setting.key == kTouchKey || setting.key == kMouseKey ||
       setting.key == kKeyboardKey) {
-    runtime::RuntimeConfigEdit edit = UnsetIfSet(text_, setting.key);
+    runtime::RuntimeConfigEdit edit =
+        UnsetIfSet(WithoutEmptyMapping(text_), setting.key);
     if (setting.key == kTouchKey) {
       edit = Then(std::move(edit), [](std::string_view current) {
         return UnsetIfSet(current, kTouchKeyWithoutDevice);
@@ -1072,38 +1108,28 @@ bool SettingsDocument::Reset(const Setting& setting, std::string* error) {
   return Set(setting.key, "", error);
 }
 
-std::size_t ChangedCount(const SettingsPage& page,
-                         const SettingsDocument& document) {
-  std::size_t count = 0;
-  for (const SettingsGroup& group : page.groups) {
-    for (const Setting& setting : group.settings) {
-      count += document.IsChanged(setting) ? 1 : 0;
-    }
-  }
-  return count;
-}
-
 runtime::RuntimeConfigEdit SettingsDocument::Edit(std::string_view key,
                                                   std::string_view value,
                                                   bool empty_unsets) const {
+  const std::string text = WithoutEmptyMapping(text_);
   if (key == kTouchKey) {
-    return SetTouchInput(text_, value);
+    return SetTouchInput(text, value);
   }
   if (key == kDeviceKey) {
-    return SetDevicePreset(text_, value);
+    return SetDevicePreset(text, value);
   }
   if (key == kProxyKey) {
-    return SetProxy(text_, value);
+    return SetProxy(text, value);
   }
   if (value.empty() && empty_unsets) {
-    return runtime::UnsetRuntimeConfigValue(text_, key);
+    return runtime::UnsetRuntimeConfigValue(text, key);
   }
   if (IsDeviceDetail(key)) {
-    return Then(ToDeviceBlock(text_), [key, value](std::string_view block) {
+    return Then(ToDeviceBlock(text), [key, value](std::string_view block) {
       return runtime::SetRuntimeConfigString(block, key, value);
     });
   }
-  return runtime::SetRuntimeConfigString(text_, key, value);
+  return runtime::SetRuntimeConfigString(text, key, value);
 }
 
 bool SettingsDocument::Undo(std::string* error) {
@@ -1123,6 +1149,14 @@ bool SettingsDocument::Save(runtime::RuntimeConfigEdit edit,
     return false;
   }
   std::string edited = std::move(edit.text);
+  // Nightcap refuses a file without keys, which taking out the last one
+  // leaves. An empty mapping stands for every default.
+  if (!HasYamlContent(edited)) {
+    if (!edited.empty() && edited.back() != '\n') {
+      edited += '\n';
+    }
+    edited += "{}\n";
+  }
   if (edited == text_) {
     return true;
   }
