@@ -24,6 +24,7 @@
 #include "mocktail/audio/fmod_jni_audio_bridge.h"
 #include "mocktail/audio/webrtc_jni_audio_bridge.h"
 #include "mocktail/audio/roblox_output_device_bridge.h"
+#include "mocktail/vr/headset_detection.h"
 #include "mocktail/vr/openxr_backend.h"
 #include "mocktail/vr/openxr_probe.h"
 #include "mocktail/vr/roblox_vr_device_bridge.h"
@@ -251,6 +252,11 @@ void ConfigureHostDriverEnvironment() {
 
 int main(int argc, char* argv[]) {
   ConfigureHostDriverEnvironment();
+  // vr.mode: auto asks SteamVR for a headset from a copy of this process.
+  if (const char* probe = std::getenv(mocktail::vr::kHeadsetProbeEnvironment);
+      probe != nullptr && std::string_view(probe) == "1") {
+    return mocktail::vr::RunHeadsetProbeChild();
+  }
   const auto process_started_at = std::chrono::system_clock::now();
   mocktail::runtime::CommandLineParseResult command_line =
       mocktail::runtime::ParseCommandLine(argc, argv);
@@ -409,10 +415,38 @@ int main(int argc, char* argv[]) {
     }
     return EXIT_FAILURE;
   }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      runtime_config.config.vr_mode() == mocktail::runtime::VrMode::kAuto) {
+    std::error_code self_error;
+    const std::filesystem::path self =
+        std::filesystem::read_symlink("/proc/self/exe", self_error);
+    const mocktail::vr::HeadsetDetection detection =
+        mocktail::vr::DetectSteamVrHeadset(self_error ? std::string()
+                                                      : self.string());
+    std::cerr << "  [vr] vr.mode is auto: " << detection.reason
+              << (detection.headset ? "; starting in VR\n"
+                                    : "; starting on the desktop\n");
+    if (detection.headset) {
+      // A detected headset is not an explicit --vr: a Roblox build without
+      // VR support still starts on the desktop.
+      if (setenv("MOCKTAIL_VR_ENABLED", "1", 1) != 0) {
+        std::cerr << "[FATAL] Cannot enable VR for the detected headset\n";
+        return EXIT_FAILURE;
+      }
+      runtime_config = mocktail::runtime::LoadRuntimeConfig(
+          environment, paths.config_file());
+      if (!runtime_config) {
+        std::cerr << "[FATAL] Cannot load " << paths.config_file() << ": "
+                  << runtime_config.error << '\n';
+        return EXIT_FAILURE;
+      }
+    }
+  }
   if (runtime_config.config.vr_enabled() &&
       !mocktail::vr::IsOpenXrSupportCompiled()) {
     std::cerr << "  [vr] This build does not include OpenXR support, but "
-                 "vr.enabled is set; disable it in " << paths.config_file()
+                 "VR is on; set vr.mode to off or auto in "
+              << paths.config_file()
               << ".\n";
     return EXIT_FAILURE;
   }

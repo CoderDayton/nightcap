@@ -20,6 +20,11 @@ namespace runtime {
 // must not try to reach an OpenXR runtime on a normal desktop launch.
 inline constexpr bool kDefaultVrEnabled = false;
 
+// vr.mode: on and off force VR or the desktop. auto starts in VR only when
+// SteamVR is running with a headset, which main() checks before launch.
+enum class VrMode { kOff, kOn, kAuto };
+const char* VrModeName(VrMode mode);
+
 enum class GraphicsBackend {
   kAuto,
   kSystem,
@@ -101,6 +106,8 @@ class RuntimeConfig {
 
   bool headless() const { return headless_; }
   bool vr_enabled() const { return vr_enabled_; }
+  // MOCKTAIL_VR_ENABLED (--vr, --no-vr) wins over MOCKTAIL_VR_MODE.
+  VrMode vr_mode() const { return vr_mode_; }
   bool vr_valid() const { return vr_valid_; }
   const std::filesystem::path& roblox_library_path() const {
     return roblox_library_path_;
@@ -174,6 +181,7 @@ class RuntimeConfig {
  private:
   bool headless_ = false;
   bool vr_enabled_ = kDefaultVrEnabled;
+  VrMode vr_mode_ = kDefaultVrEnabled ? VrMode::kOn : VrMode::kOff;
   bool vr_valid_ = true;
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;

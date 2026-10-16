@@ -106,6 +106,26 @@ TEST(RuntimeConfigTest, RejectsMalformedVrEnvironmentInsteadOfEnablingIt) {
   EXPECT_EQ(config.vr_enabled(), kDefaultVrEnabled);
 }
 
+TEST(RuntimeConfigTest, ReadsVrModeAndLetsVrEnabledWin) {
+  EXPECT_EQ(RuntimeConfig::FromEnvironment(MapEnvironment()).vr_mode(),
+            kDefaultVrEnabled ? VrMode::kOn : VrMode::kOff);
+  const auto automatic = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_VR_MODE", "auto"}}));
+  EXPECT_TRUE(automatic.vr_valid());
+  EXPECT_EQ(automatic.vr_mode(), VrMode::kAuto);
+  EXPECT_FALSE(automatic.vr_enabled());
+  EXPECT_TRUE(RuntimeConfig::FromEnvironment(
+                  MapEnvironment({{"MOCKTAIL_VR_MODE", "on"}}))
+                  .vr_enabled());
+  const auto overridden = RuntimeConfig::FromEnvironment(MapEnvironment(
+      {{"MOCKTAIL_VR_MODE", "auto"}, {"MOCKTAIL_VR_ENABLED", "0"}}));
+  EXPECT_EQ(overridden.vr_mode(), VrMode::kOff);
+  EXPECT_FALSE(RuntimeConfig::FromEnvironment(
+                   MapEnvironment({{"MOCKTAIL_VR_MODE", "sometimes"}}))
+                   .vr_valid());
+  EXPECT_STREQ(VrModeName(VrMode::kAuto), "auto");
+}
+
 TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
   const MapEnvironment environment({
       {"MOCKTAIL_HEADLESS", "1"},

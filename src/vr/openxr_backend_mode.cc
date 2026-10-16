@@ -82,6 +82,55 @@ std::vector<std::string> VrRuntimeManifestCandidates(
   return candidates;
 }
 
+namespace {
+// Restrict process discovery to this user. In particular, never select a
+// root server for a desktop client or another user's SteamVR installation.
+std::vector<std::pair<std::string, std::filesystem::path>>
+UserVrServers(const std::string &proc_root) {
+  std::vector<std::pair<std::string, std::filesystem::path>> servers;
+  std::error_code error;
+  std::filesystem::directory_iterator processes(proc_root, error);
+  for (; !error && processes != std::filesystem::directory_iterator();
+       processes.increment(error)) {
+    const auto name = processes->path().filename().string();
+    if (name.empty() || !std::all_of(name.begin(), name.end(), [](char c) {
+          return c >= '0' && c <= '9';
+        }))
+      continue;
+    struct stat metadata{};
+    if (stat(processes->path().c_str(), &metadata) != 0 ||
+        metadata.st_uid != getuid())
+      continue;
+    std::ifstream comm_file(processes->path() / "comm");
+    std::string comm;
+    std::getline(comm_file, comm);
+    if (comm != "vrserver" && comm != "wivrn-server")
+      continue;
+    std::error_code exe_error;
+    const auto executable =
+        std::filesystem::read_symlink(processes->path() / "exe", exe_error);
+    if (exe_error || !executable.is_absolute() || executable.filename() != comm)
+      continue;
+    servers.emplace_back(comm, executable);
+  }
+  return servers;
+}
+
+// vrserver lives in <SteamVR>/bin/linux64/.
+std::string SteamVrManifestForServer(const std::filesystem::path &vrserver) {
+  return (vrserver.parent_path().parent_path().parent_path() /
+          "steamxr_linux64.json")
+      .string();
+}
+}  // namespace
+
+std::string RunningSteamVrManifest(const std::string &proc_root) {
+  for (const auto &[comm, executable] : UserVrServers(proc_root))
+    if (comm == "vrserver")
+      return SteamVrManifestForServer(executable);
+  return {};
+}
+
 VrRuntimeDiscovery DiscoverVrRuntime(const std::string &preference,
                                      const std::string &home,
                                      const std::string &config_home,
@@ -118,37 +167,10 @@ VrRuntimeDiscovery DiscoverVrRuntime(const std::string &preference,
       }
     }
   }
-  // Restrict process discovery to this user. In particular, never select a
-  // root server for a desktop client or another user's SteamVR installation.
-  std::error_code error;
-  std::filesystem::directory_iterator processes(proc_root, error);
-  for (; !error && processes != std::filesystem::directory_iterator();
-       processes.increment(error)) {
-    const auto name = processes->path().filename().string();
-    if (name.empty() || !std::all_of(name.begin(), name.end(), [](char c) {
-          return c >= '0' && c <= '9';
-        }))
-      continue;
-    struct stat metadata{};
-    if (stat(processes->path().c_str(), &metadata) != 0 ||
-        metadata.st_uid != getuid())
-      continue;
-    std::ifstream comm_file(processes->path() / "comm");
-    std::string comm;
-    std::getline(comm_file, comm);
-    if (comm != "vrserver" && comm != "wivrn-server")
-      continue;
-    std::error_code exe_error;
-    const auto executable =
-        std::filesystem::read_symlink(processes->path() / "exe", exe_error);
-    if (exe_error || !executable.is_absolute() || executable.filename() != comm)
-      continue;
+  for (const auto &[comm, executable] : UserVrServers(proc_root)) {
     if (comm == "vrserver") {
       steam_running = true;
-      steam.insert(steam.begin(),
-                   (executable.parent_path().parent_path().parent_path() /
-                    "steamxr_linux64.json")
-                       .string());
+      steam.insert(steam.begin(), SteamVrManifestForServer(executable));
     } else {
       // Native developer builds keep this manifest at their build root.
       auto directory = executable.parent_path();

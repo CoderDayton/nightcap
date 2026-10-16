@@ -1,4 +1,6 @@
+#include "mocktail/vr/headset_detection.h"
 #include "mocktail/vr/openxr_backend.h"
+#include "mocktail/vr/openxr_probe.h"
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -136,6 +138,70 @@ TEST_F(VrRuntimeDetectionTest,
             candidates.end());
   File(root / "config/openvr/openvrpaths.vrpath", "invalid json");
   EXPECT_NE(Selected("alvr"), (install / "steamxr_linux64.json").string());
+}
+TEST_F(VrRuntimeDetectionTest, RunningSteamVrManifestNeedsThisUsersServer) {
+  EXPECT_EQ(RunningSteamVrManifest((root / "proc").string()), "");
+  const auto manifest = Steam();
+  EXPECT_EQ(RunningSteamVrManifest((root / "proc").string()), manifest);
+}
+
+class VrHeadsetDetectionTest : public VrRuntimeDetectionTest {
+protected:
+  // Stands in for the probe child: a script that sees the same environment.
+  std::string Probe(const std::string &body) {
+    const auto path = root / "probe.sh";
+    File(path, "#!/bin/sh\n" + body + "\n");
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    return path.string();
+  }
+  HeadsetDetection Detect(const std::string &probe,
+                          std::chrono::milliseconds timeout =
+                              std::chrono::seconds(5)) {
+    return DetectSteamVrHeadset(probe, timeout, (root / "proc").string());
+  }
+};
+TEST_F(VrHeadsetDetectionTest, NoSteamVrMeansDesktopWithoutStartingIt) {
+  if (!IsOpenXrSupportCompiled())
+    GTEST_SKIP() << "built without OpenXR";
+  const auto marker = root / "started";
+  const auto result = Detect(Probe("touch " + marker.string() + "; exit 0"));
+  EXPECT_FALSE(result.headset);
+  EXPECT_NE(result.reason.find("not running"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(marker));
+}
+TEST_F(VrHeadsetDetectionTest, AsksSteamVrsRuntimeInAProbeChild) {
+  if (!IsOpenXrSupportCompiled())
+    GTEST_SKIP() << "built without OpenXR";
+  const auto manifest = Steam();
+  const auto result = Detect(Probe(
+      "[ \"$XR_RUNTIME_JSON\" = \"" + manifest + "\" ] && [ \"$" +
+      kHeadsetProbeEnvironment + "\" = 1 ] && exit 0; exit 9"));
+  EXPECT_TRUE(result.headset) << result.reason;
+}
+TEST_F(VrHeadsetDetectionTest, MapsProbeOutcomesToDesktop) {
+  if (!IsOpenXrSupportCompiled())
+    GTEST_SKIP() << "built without OpenXR";
+  Steam();
+  const auto missing =
+      Detect(Probe("exit " + std::to_string(ProbeExitCode(
+                                 ProbeStatus::kHeadsetUnavailable))));
+  EXPECT_FALSE(missing.headset);
+  EXPECT_NE(missing.reason.find("without a connected headset"),
+            std::string::npos);
+  EXPECT_FALSE(Detect(Probe("exit 1")).headset);
+  EXPECT_FALSE(Detect(Probe("kill -9 $$")).headset);
+  EXPECT_FALSE(Detect(root / "no-such-probe").headset);
+}
+TEST_F(VrHeadsetDetectionTest, GivesUpOnASteamVrThatDoesNotAnswer) {
+  if (!IsOpenXrSupportCompiled())
+    GTEST_SKIP() << "built without OpenXR";
+  Steam();
+  const auto started = std::chrono::steady_clock::now();
+  const auto result =
+      Detect(Probe("exec sleep 30"), std::chrono::milliseconds(200));
+  EXPECT_FALSE(result.headset);
+  EXPECT_NE(result.reason.find("in time"), std::string::npos);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5));
 }
 } // namespace
 } // namespace mocktail::vr

@@ -169,6 +169,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "runtime.headless",
       "runtime.roblox_library",
       "vr.enabled",
+      "vr.mode",
       "vr.frame_rate_limit",
       "appearance.theme",
       "graphics.backend",
@@ -320,13 +321,28 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_THEME"] = *theme;
   }
-  if (const auto enabled = value("vr.enabled"); enabled.has_value()) {
+  // The file only sets MOCKTAIL_VR_MODE, so --vr and --no-vr
+  // (MOCKTAIL_VR_ENABLED) always win over it.
+  const auto enabled = value("vr.enabled");
+  const auto mode = value("vr.mode");
+  if (enabled.has_value() && mode.has_value()) {
+    *error = "set either vr.mode or vr.enabled, not both";
+    return false;
+  }
+  if (enabled.has_value()) {
     bool parsed = false;
     if (!ParseBoolean(*enabled, &parsed)) {
       *error = "vr.enabled must be true or false";
       return false;
     }
-    (*environment)["MOCKTAIL_VR_ENABLED"] = parsed ? "1" : "0";
+    (*environment)["MOCKTAIL_VR_MODE"] = parsed ? "on" : "off";
+  }
+  if (mode.has_value()) {
+    if (*mode != "on" && *mode != "off" && *mode != "auto") {
+      *error = "vr.mode must be on, off, or auto";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_MODE"] = *mode;
   }
   if (const auto frame_rate = value("vr.frame_rate_limit");
       frame_rate.has_value()) {
@@ -803,7 +819,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "VR frame-rate policy is invalid";
   } else if (!result.config.vr_valid()) {
     result.error = "VR configuration is invalid: MOCKTAIL_VR_ENABLED must be "
-                   "1/0, true/false, or on/off";
+                   "1/0, true/false, or on/off, and MOCKTAIL_VR_MODE on, off, "
+                   "or auto";
   } else if (!result.config.device_profile_valid()) {
     result.error = "device profile is invalid";
   } else if (!result.config.input_capabilities().touch_enabled &&

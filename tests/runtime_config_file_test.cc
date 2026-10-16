@@ -134,6 +134,48 @@ TEST(RuntimeConfigFileTest,
   EXPECT_NE(invalid.error.find("VR configuration"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, VrModeSelectsOnOffOrAuto) {
+  TemporaryDirectory temporary;
+  const auto load = [&](const std::string& vr, MapEnvironment environment =
+                                                   MapEnvironment()) {
+    return LoadRuntimeConfig(environment,
+                             temporary.Write("version: 1\nvr:\n" + vr));
+  };
+  const auto on = load("  mode: on\n");
+  ASSERT_TRUE(on) << on.error;
+  EXPECT_EQ(on.config.vr_mode(), VrMode::kOn);
+  EXPECT_TRUE(on.config.vr_enabled());
+  const auto off = load("  mode: off\n");
+  ASSERT_TRUE(off) << off.error;
+  EXPECT_EQ(off.config.vr_mode(), VrMode::kOff);
+  EXPECT_FALSE(off.config.vr_enabled());
+  // auto stays on the desktop until main() finds a headset.
+  const auto automatic = load("  mode: auto\n");
+  ASSERT_TRUE(automatic) << automatic.error;
+  EXPECT_EQ(automatic.config.vr_mode(), VrMode::kAuto);
+  EXPECT_FALSE(automatic.config.vr_enabled());
+  // The older key still means on/off.
+  EXPECT_EQ(load("  enabled: true\n").config.vr_mode(), VrMode::kOn);
+  EXPECT_EQ(load("  enabled: false\n").config.vr_mode(), VrMode::kOff);
+  // --vr / --no-vr (and a detected headset) win over the file.
+  const auto forced = load("  mode: auto\n",
+                           MapEnvironment({{"MOCKTAIL_VR_ENABLED", "1"}}));
+  ASSERT_TRUE(forced) << forced.error;
+  EXPECT_EQ(forced.config.vr_mode(), VrMode::kOn);
+  EXPECT_TRUE(forced.config.vr_enabled());
+  const auto desktop = load("  mode: on\n",
+                            MapEnvironment({{"MOCKTAIL_VR_ENABLED", "0"}}));
+  ASSERT_TRUE(desktop) << desktop.error;
+  EXPECT_FALSE(desktop.config.vr_enabled());
+
+  const auto both = load("  mode: auto\n  enabled: true\n");
+  EXPECT_FALSE(both);
+  EXPECT_NE(both.error.find("vr.mode"), std::string::npos);
+  const auto invalid = load("  mode: sometimes\n");
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.mode"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
   TemporaryDirectory temporary;
   const auto defaults = LoadRuntimeConfig(

@@ -76,6 +76,8 @@ VrRuntimeDiscovery DiscoverVrRuntime(
     const std::string& config_home, const std::string& config_dirs,
     const std::string& runtime_dir, const std::string& proc_root = "/proc");
 std::string VrRuntimeUnavailableHint(bool user_selected, const std::string& manifest);
+// SteamVR's OpenXR manifest when this user's vrserver is running, else empty.
+std::string RunningSteamVrManifest(const std::string& proc_root = "/proc");
 VrBackendMode ResolveVrBackendMode(bool vr_enabled);
 const char* VrBackendModeName(VrBackendMode mode);
 

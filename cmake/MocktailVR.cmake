@@ -27,6 +27,7 @@ endif()
 
 add_library(mocktail_vr STATIC
   src/vr/diagnostics.cc
+  src/vr/headset_detection.cc
   src/vr/openxr_backend_mode.cc
   src/vr/vr_perf.cc
   src/vr/vr_mirror.cc
