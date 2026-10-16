@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate src/vr/vr_shaders_spirv.h from shaders/vr with glslc.
 
-The header is checked in so a build never needs a shader compiler. Run this
+The header is checked in so a build never needs a shader compiler. The SMAA
+passes include SMAA.hlsl from the third_party/smaa submodule. Run this
 after editing a shader; VrShaders.SpirvMatchesSources checks it when glslc is
 installed.
 """
@@ -17,7 +18,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SHADERS = [
     ("kFullscreenVertexSpirv", "shaders/vr/fullscreen.vert"),
     ("kFxaaFragmentSpirv", "shaders/vr/fxaa.frag"),
+    ("kSmaaEdgesVertexSpirv", "shaders/vr/smaa_edges.vert"),
+    ("kSmaaEdgesFragmentSpirv", "shaders/vr/smaa_edges.frag"),
+    ("kSmaaWeightsVertexSpirv", "shaders/vr/smaa_weights.vert"),
+    ("kSmaaWeightsFragmentSpirv", "shaders/vr/smaa_weights.frag"),
+    ("kSmaaBlendVertexSpirv", "shaders/vr/smaa_blend.vert"),
+    ("kSmaaBlendFragmentSpirv", "shaders/vr/smaa_blend.frag"),
 ]
+# SMAA.hlsl comes from the third_party/smaa submodule.
+INCLUDES = [ROOT / "third_party/smaa"]
 OUTPUT = ROOT / "src/vr/vr_shaders_spirv.h"
 
 
@@ -25,8 +34,9 @@ def compile_words(glslc, source):
     with tempfile.TemporaryDirectory() as directory:
         output = pathlib.Path(directory) / "shader.spv"
         subprocess.run(
-            [glslc, "-O", "--target-env=vulkan1.0", str(ROOT / source), "-o",
-             str(output)],
+            [glslc, "-O", "--target-env=vulkan1.0"] +
+            ["-I" + str(path) for path in INCLUDES] +
+            [str(ROOT / source), "-o", str(output)],
             check=True)
         data = output.read_bytes()
     return struct.unpack("<%dI" % (len(data) // 4), data)

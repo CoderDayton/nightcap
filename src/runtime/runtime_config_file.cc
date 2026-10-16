@@ -347,8 +347,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   }
   if (const auto anti_aliasing = value("vr.anti_aliasing");
       anti_aliasing.has_value()) {
-    if (*anti_aliasing != "fxaa" && *anti_aliasing != "off") {
-      *error = "vr.anti_aliasing must be fxaa or off";
+    if (*anti_aliasing != "fxaa" && *anti_aliasing != "smaa" &&
+        *anti_aliasing != "off") {
+      *error = "vr.anti_aliasing must be fxaa, smaa, or off";
       return false;
     }
     (*environment)["MOCKTAIL_VR_ANTI_ALIASING"] = *anti_aliasing;
@@ -983,6 +984,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                           FrameRateValue(config.frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VR_FRAME_RATE_LIMIT",
                           FrameRateValue(config.vr_frame_rate()), error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_ANTI_ALIASING",
+                          config.vr_anti_aliasing(), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

@@ -137,6 +137,9 @@ class RuntimeConfig {
   // Replaces frame_rate() while VR is enabled. Defaults to unlimited so the
   // OpenXR runtime's xrWaitFrame paces Roblox at the headset refresh rate.
   const FrameRatePolicy& vr_frame_rate() const { return vr_frame_rate_; }
+  // vr.anti_aliasing: fxaa, smaa or off. The VR backend reads it from the
+  // exported MOCKTAIL_VR_ANTI_ALIASING.
+  const std::string& vr_anti_aliasing() const { return vr_anti_aliasing_; }
   const FrameRatePolicy& active_frame_rate() const {
     return vr_enabled_ ? vr_frame_rate_ : frame_rate_;
   }
@@ -194,6 +197,7 @@ class RuntimeConfig {
   std::optional<std::string> roblox_http_user_agent_;
   FrameRatePolicy frame_rate_;
   FrameRatePolicy vr_frame_rate_{FrameRateLimitMode::kUnlimited, 0};
+  std::string vr_anti_aliasing_ = "fxaa";
   std::string vsync_mode_ = "auto";
   PerformancePolicy performance_;
   std::string audio_output_device_ = "default";

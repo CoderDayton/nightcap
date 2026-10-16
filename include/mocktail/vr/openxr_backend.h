@@ -347,7 +347,7 @@ class OpenXrBackend final {
   bool CopyEyesIntoSwapchains(VkQueue queue);
   void RecordEyeCopiesLocked(VkCommandBuffer command, const VkImage source[2],
                              const VkImage destination[2]);
-  void RecordFxaaEyesLocked(VkCommandBuffer command);
+  void RecordFilteredEyesLocked(VkCommandBuffer command, bool smaa);
   // Per-frame GPU work (desktop mirror, eye copies) is submitted without a CPU
   // wait. A slot is reused only after its fence signalled; its images let a
   // guest destroy wait for the submissions that still read them.
@@ -392,13 +392,60 @@ class OpenXrBackend final {
     std::vector<VkFramebuffer> framebuffers[2];
     bool failed = false;
   };
-  bool FxaaEnabled() const;
+  // vr.anti_aliasing. SMAA shares FXAA's final pass, targets and eye views.
+  enum class AntiAliasing { kOff, kFxaa, kSmaa };
+  AntiAliasing AntiAliasingMode() const;
   // Pipeline, targets and eye bindings for this frame; false means copy.
   bool PrepareFxaaLocked();
   bool CreateFxaaPipelineLocked(VkFormat target_format);
+  bool CreateFullscreenPipelineLocked(VkShaderModule vertex,
+                                      VkShaderModule fragment,
+                                      VkPipelineLayout layout,
+                                      VkRenderPass render_pass,
+                                      VkPipeline* pipeline);
   void DestroyFxaaTargetsLocked();
   void ForgetFxaaSourceLocked(VkImage image);
   void DestroyFxaaLocked();
+  // SMAA: edge detection and blending weights into per-eye images, then
+  // neighborhood blending into FXAA's swapchain targets.
+  struct SmaaPass {
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDescriptorSet sets[2] = {};
+  };
+  struct SmaaImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+  };
+  struct SmaaState {
+    std::vector<VkShaderModule> modules;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    SmaaPass edges, weights, blend;
+    SmaaImage area, search;
+    // Per eye, at the eye's extent.
+    SmaaImage edge_images[2], weight_images[2];
+    VkFramebuffer edge_framebuffers[2] = {};
+    VkFramebuffer weight_framebuffers[2] = {};
+    std::uint32_t width = 0, height = 0;
+    VkFormat target_format = VK_FORMAT_UNDEFINED;
+    // The eye views the edge and blend sets were written with.
+    VkImageView bound_sources[2] = {};
+    bool failed = false;
+  };
+  bool PrepareSmaaLocked();
+  bool CreateSmaaPipelinesLocked();
+  bool CreateSmaaImageLocked(VkFormat format, std::uint32_t width,
+                             std::uint32_t height, VkImageUsageFlags usage,
+                             SmaaImage* out);
+  bool UploadSmaaLookupLocked(SmaaImage* image, std::uint32_t width,
+                              std::uint32_t height, const void* bytes,
+                              std::size_t size);
+  void DestroySmaaImageLocked(SmaaImage* image);
+  void DestroySmaaTargetsLocked();
+  void DestroySmaaLocked();
   // The next slot, recorded-ready, or nullptr when its previous submission
   // did not finish in time (the device is hung or lost).
   AsyncSubmission* NextAsyncSubmissionLocked();
@@ -503,6 +550,7 @@ class OpenXrBackend final {
   std::size_t next_async_ = 0;
   MirrorReadback mirror_readback_{};
   FxaaState fxaa_{};
+  SmaaState smaa_{};
   // The mirror's signal for this present, which PrepareHostPresent passes on.
   VkSemaphore mirror_ready_ = VK_NULL_HANDLE;
   // Semaphores of destroyed desktop swapchains. A present may still wait on

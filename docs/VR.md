@@ -37,7 +37,7 @@ leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
 | `MOCKTAIL_VR_RUNTIME` | `auto` | OpenXR runtime: `auto`, `system`, `wivrn`, `steamvr` or `alvr`. `XR_RUNTIME_JSON` overrides it. |
 | `MOCKTAIL_VR_BACKEND` | `xr` | `native` keeps Roblox's stereo rendering without an OpenXR runtime, for debugging. |
 | `MOCKTAIL_VR_FRAME_RATE_LIMIT` | `unlimited` | Frame-rate cap in VR, same values as `graphics.frame_rate_limit` (also `vr.frame_rate_limit`). With `unlimited` the headset's refresh rate paces frames. |
-| `MOCKTAIL_VR_ANTI_ALIASING` | `fxaa` | Same as `vr.anti_aliasing`. Roblox draws the VR eyes without anti-aliasing; `fxaa` smooths each eye on its way to the headset (Vulkan only), `off` sends them as rendered. |
+| `MOCKTAIL_VR_ANTI_ALIASING` | `fxaa` | Same as `vr.anti_aliasing`. Roblox draws the VR eyes without anti-aliasing, so each eye is filtered on its way to the headset (Vulkan only). `fxaa` is the cheapest; `smaa` finds edges more precisely and keeps text sharper; `off` sends them as rendered. |
 | `MOCKTAIL_VR_RENDER_SCALE` | `1.0` | Scales each axis of the runtime's recommended eye size, `0.25` to `2.0`. |
 | `MOCKTAIL_VR_UNPACED` | `0` | `1` stops waiting for the headset between frames, to measure the maximum frame rate. Frames past the headset refresh are not shown. Not for playing. |
 | `MOCKTAIL_VR_DESKTOP_MIRROR` | `1` | `0` stops copying the left eye to the desktop window. |

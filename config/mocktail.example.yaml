@@ -62,9 +62,10 @@ graphics:
   # Standalone OpenXR test scene: mocktail-vr-probe --scene.
   # mode: off
   # String (default: fxaa): smooth jagged edges in the headset. Roblox draws
-  # the VR eyes without anti-aliasing; fxaa filters each eye on its way to the
-  # headset, which costs well under a millisecond. off sends the eyes as
-  # rendered.
+  # the VR eyes without anti-aliasing, so each eye is filtered on its way to
+  # the headset. fxaa is the cheapest. smaa finds edges more precisely and
+  # keeps text and fine detail sharper, at a little more GPU time. off sends
+  # the eyes as rendered.
   # anti_aliasing: fxaa
   # Optional string or integer: frame-rate limit used instead of
   # graphics.frame_rate_limit while VR is active. Same values: -1 (Roblox's

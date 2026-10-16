@@ -176,15 +176,32 @@ TEST(RuntimeConfigFileTest, VrModeSelectsOnOffOrAuto) {
   EXPECT_NE(invalid.error.find("vr.mode"), std::string::npos);
 }
 
-TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaOrOff) {
+TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaSmaaOrOff) {
   TemporaryDirectory temporary;
-  for (const char* value : {"fxaa", "off"}) {
+  for (const char* value : {"fxaa", "smaa", "off"}) {
     const auto loaded = LoadRuntimeConfig(
         MapEnvironment(),
         temporary.Write(std::string("version: 1\nvr:\n  anti_aliasing: ") +
                         value + "\n"));
     EXPECT_TRUE(loaded) << value << ": " << loaded.error;
   }
+  // The VR backend reads the exported variable, not the file.
+  const char* previous = std::getenv("MOCKTAIL_VR_ANTI_ALIASING");
+  const std::optional<std::string> saved =
+      previous ? std::optional<std::string>(previous) : std::nullopt;
+  const auto smaa = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  anti_aliasing: smaa\n"));
+  ASSERT_TRUE(smaa) << smaa.error;
+  EXPECT_EQ(smaa.config.vr_anti_aliasing(), "smaa");
+  std::string error;
+  EXPECT_TRUE(ExportRuntimeConfigEnvironment(smaa.config, &error)) << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ANTI_ALIASING"), "smaa");
+  if (saved)
+    setenv("MOCKTAIL_VR_ANTI_ALIASING", saved->c_str(), 1);
+  else
+    unsetenv("MOCKTAIL_VR_ANTI_ALIASING");
+
   const auto invalid = LoadRuntimeConfig(
       MapEnvironment(),
       temporary.Write("version: 1\nvr:\n  anti_aliasing: msaa\n"));

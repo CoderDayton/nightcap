@@ -93,6 +93,12 @@ if(MOCKTAIL_ENABLE_VR)
   endif()
   set_source_files_properties(src/vr/openxr_backend.cc PROPERTIES COMPILE_DEFINITIONS "XR_USE_GRAPHICS_API_OPENGL_ES;XR_USE_PLATFORM_EGL")
   target_include_directories(mocktail_vr PRIVATE ${MOCKTAIL_EGL_INCLUDE_DIR} ${MOCKTAIL_GLES3_INCLUDE_DIR})
+  # SMAA's area and search lookup textures for vr.anti_aliasing: smaa.
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/smaa/Textures/AreaTex.h")
+    message(FATAL_ERROR
+      "Initialize SMAA: git submodule update --init third_party/smaa")
+  endif()
+  target_include_directories(mocktail_vr PRIVATE "${CMAKE_SOURCE_DIR}/third_party/smaa")
   target_link_libraries(mocktail_vr PRIVATE OpenXR::openxr_loader Vulkan::Headers ${CMAKE_DL_LIBS})
 else()
   target_sources(mocktail_vr PRIVATE src/vr/openxr_disabled.cc
