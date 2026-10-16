@@ -122,6 +122,20 @@ struct SettingsWindow {
 
 std::string Text(std::string_view text) { return std::string(text); }
 
+bool HideDescendant(GtkWidget* parent, const char* name) {
+  for (GtkWidget* child = gtk_widget_get_first_child(parent); child != nullptr;
+       child = gtk_widget_get_next_sibling(child)) {
+    if (gtk_widget_has_css_class(child, name)) {
+      gtk_widget_set_visible(child, FALSE);
+      return true;
+    }
+    if (HideDescendant(child, name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void SetChoices(Row* row) {
   GtkStringList* labels = gtk_string_list_new(nullptr);
   for (const auto& choice : row->setting->choices) {
@@ -250,10 +264,13 @@ void RefreshRow(Row* row, bool keep_edit) {
 }
 
 // Shows the reset button of each row that differs from its default, and the
-// counts of those rows.
+// counts of those rows. Rows a switched-off block leaves without effect are
+// greyed out.
 void ShowChanged(SettingsWindow* window) {
   std::vector<std::size_t> counts(window->badges.size(), 0);
   for (Row& row : window->rows) {
+    gtk_widget_set_sensitive(row.widget,
+                             window->document.IsActive(row.setting->key));
     const bool changed = window->document.IsChanged(*row.setting);
     if (changed && row.page < counts.size()) {
       ++counts[row.page];
@@ -456,6 +473,26 @@ void OnNumberChanged(GObject* object, GParamSpec*, gpointer user_data) {
   Apply(static_cast<Row*>(user_data),
         mocktail::ui::NumberValue(
             adw_spin_row_get_value(ADW_SPIN_ROW(object))));
+}
+
+gboolean OnNumberOutput(AdwSpinRow* spin, gpointer user_data) {
+  const Row* row = static_cast<const Row*>(user_data);
+  if (adw_spin_row_get_value(spin) != 0) {
+    return FALSE;
+  }
+  gtk_editable_set_text(GTK_EDITABLE(spin),
+                        Text(row->setting->zero_label).c_str());
+  return TRUE;
+}
+
+gint OnNumberInput(AdwSpinRow* spin, double* value, gpointer user_data) {
+  const Row* row = static_cast<const Row*>(user_data);
+  if (g_ascii_strcasecmp(gtk_editable_get_text(GTK_EDITABLE(spin)),
+                         Text(row->setting->zero_label).c_str()) != 0) {
+    return FALSE;
+  }
+  *value = 0;
+  return TRUE;
 }
 
 void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
@@ -847,6 +884,13 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
                                                setting.maximum, setting.step);
       g_signal_connect(row.widget, "notify::value",
                        G_CALLBACK(OnNumberChanged), &row);
+      if (!setting.zero_label.empty()) {
+        // A numeric row drops the label's letters.
+        adw_spin_row_set_numeric(ADW_SPIN_ROW(row.widget), FALSE);
+        g_signal_connect(row.widget, "output", G_CALLBACK(OnNumberOutput),
+                         &row);
+        g_signal_connect(row.widget, "input", G_CALLBACK(OnNumberInput), &row);
+      }
       break;
     case SettingKind::kText:
     case SettingKind::kFile:
@@ -860,6 +904,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
         gtk_widget_set_tooltip_text(row.pick, "Choose a file");
         gtk_widget_set_valign(row.pick, GTK_ALIGN_CENTER);
         gtk_widget_add_css_class(row.pick, "flat");
+        // The picker stands in for the pencil.
+        HideDescendant(row.widget, "edit-icon");
         adw_entry_row_add_suffix(ADW_ENTRY_ROW(row.widget), row.pick);
         g_signal_connect(row.pick, "clicked", G_CALLBACK(OnPickFile), &row);
       }
@@ -1089,6 +1135,10 @@ GtkWidget* BuildPages(SettingsWindow* window) {
       GtkWidget* group_widget = adw_preferences_group_new();
       adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group_widget),
                                       Text(group.title).c_str());
+      adw_preferences_group_set_description(
+          ADW_PREFERENCES_GROUP(group_widget),
+          group.description.empty() ? nullptr
+                                    : Text(group.description).c_str());
       GtkWidget* container = group_widget;
       std::size_t first = 0;
       if (!group.expander.empty()) {

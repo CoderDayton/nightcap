@@ -454,7 +454,7 @@ const std::vector<SettingsPage>& SettingsPages() {
        "input-mouse-symbolic",
        "Display & input",
        {
-           {"Mouse",
+           {"Mouse and touch",
             {
                 {"input.raw_mouse",
                  "Raw mouse input",
@@ -464,9 +464,6 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {},
                  "false",
                  {}},
-            }},
-           {"Touch",
-            {
                 {kTouchKey,
                  "Touch input",
                  "Turn on for a touch screen or tablet.",
@@ -542,11 +539,15 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"performance.memory_limit_mb",
                  "Memory limit",
-                 "Hard cap in MiB for Nightcap and Roblox. 0 turns it off.",
+                 "Hard cap in MiB for Nightcap and Roblox.",
                  SettingKind::kNumber,
                  {},
                  "0",
-                 {}},
+                 {},
+                 0,
+                 1048576,
+                 256,
+                 "Off"},
             }},
        }},
       {"audio",
@@ -581,8 +582,8 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"network.use_system_proxy",
                  "Use the system proxy",
-                 "Follow the desktop's HTTP or SOCKS5 proxy. Leave the fixed "
-                 "proxy empty while this is on.",
+                 "Follow the desktop's HTTP or SOCKS5 proxy in place of a "
+                 "fixed one.",
                  SettingKind::kToggle,
                  {},
                  "false",
@@ -594,7 +595,12 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"network.ca_bundle", "CA bundle (PEM)", "",
                  SettingKind::kFile, {}, "", {}},
-            }},
+            },
+            {},
+            {},
+            false,
+            "The CA certificates Roblox trusts, as one PEM file. Empty "
+            "uses the system's certificates."},
        }},
       {"discord",
        "Discord",
@@ -618,7 +624,11 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}},
                 {"integrations.discord_rpc.application_id",
                  "Application ID", "", SettingKind::kText, {}, "", {}},
-            }},
+            },
+            {},
+            {},
+            false,
+            "Empty Application ID uses Nightcap's own Discord app."},
            {"Join button",
             {
                 {"integrations.discord_rpc.join.enabled",
@@ -654,7 +664,13 @@ const std::vector<SettingsPage>& SettingsPages() {
                 {"integrations.discord_rpc.text.unknown_place",
                  "Unknown experience", "", SettingKind::kText, {},
                  "Unknown experience", {}},
-            }},
+            },
+            {},
+            {},
+            false,
+            "{place_name}, {creator_name} and {place_icon} are filled in "
+            "from the experience. A line whose value is missing is left "
+            "out."},
            {"Images",
             {
                 {"integrations.discord_rpc.images.large", "Large image", "",
@@ -667,14 +683,20 @@ const std::vector<SettingsPage>& SettingsPages() {
                 {"integrations.discord_rpc.images.small_text",
                  "Small image text", "", SettingKind::kText, {}, "Roblox",
                  {}},
-            }},
+            },
+            {},
+            {},
+            false,
+            "An image key from the Discord app, or {place_icon} for the "
+            "experience's icon. The text shows on hover and can use "
+            "{place_name}."},
        }},
       {"fleasion",
        "Fleasion",
        "application-x-addon-symbolic",
        "Integrations",
        {
-           {"Fleasion",
+           {"",
             {
                 {"integrations.fleasion.enabled", "Use Fleasion", "",
                  SettingKind::kToggle, {}, "false", {}},
@@ -775,7 +797,12 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}},
                 {"runtime.roblox_library", "Roblox library (libroblox.so)",
                  "", SettingKind::kFile, {}, "", {}},
-            }},
+            },
+            {},
+            {},
+            false,
+            "Leave the Roblox library empty to run the verified build "
+            "Nightcap downloads."},
            {"Files",
             {
                 {"config_folder",
@@ -960,6 +987,38 @@ std::string SettingsDocument::DefaultValue(const Setting& setting) const {
     return PresetInput(text_, setting.key) ? "true" : "false";
   }
   return std::string(setting.default_value);
+}
+
+bool SettingsDocument::IsSwitchedOn(std::string_view key) const {
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        if (setting.key == key && setting.kind == SettingKind::kToggle) {
+          return ToggleState(setting, Value(key));
+        }
+      }
+    }
+  }
+  return true;
+}
+
+bool SettingsDocument::IsActive(std::string_view key) const {
+  // The loader refuses a fixed proxy next to the system one.
+  if (key == kProxyKey && Value(kProxyKey).empty() &&
+      IsSwitchedOn("network.use_system_proxy")) {
+    return false;
+  }
+  for (std::size_t dot = key.find('.'); dot != std::string_view::npos;
+       dot = key.find('.', dot + 1)) {
+    const std::string switch_key = std::string(key.substr(0, dot)) + ".enabled";
+    if (switch_key == key) {
+      break;
+    }
+    if (!IsSwitchedOn(switch_key)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool SettingsDocument::IsChanged(const Setting& setting) const {

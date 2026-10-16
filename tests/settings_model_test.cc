@@ -1128,6 +1128,51 @@ TEST_F(SettingsModelTest, ResetTakesADeviceInputSwitchOut) {
   }
 }
 
+TEST_F(SettingsModelTest, ASwitchedOffBlockLeavesItsOtherRowsInactive) {
+  Write("integrations:\n  discord_rpc:\n    join:\n      enabled: false\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("integrations.discord_rpc.join.enabled"));
+  EXPECT_FALSE(document.IsActive("integrations.discord_rpc.join.button_label"));
+  EXPECT_TRUE(document.IsActive("integrations.discord_rpc.text.title"));
+  EXPECT_TRUE(document.IsActive("graphics.vsync"));
+
+  ASSERT_TRUE(document.Set("integrations.discord_rpc.enabled", "false", &error))
+      << error;
+  EXPECT_TRUE(document.IsActive("integrations.discord_rpc.enabled"));
+  EXPECT_FALSE(document.IsActive("integrations.discord_rpc.join.enabled"));
+  EXPECT_FALSE(document.IsActive("integrations.discord_rpc.text.title"));
+}
+
+TEST_F(SettingsModelTest, TheSystemProxyLeavesAnEmptyFixedProxyInactive) {
+  Write("network:\n  use_system_proxy: true\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(document.IsActive("network.proxy"));
+
+  // A fixed proxy stays editable, so it can be cleared.
+  Write("network:\n  proxy_host: 127.0.0.1\n  proxy_port: 8080\n");
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("network.proxy"));
+}
+
+TEST(SettingsPagesTest, TextGroupsExplainTheirPlaceholders) {
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      if (group.title != "Text" && group.title != "Images") {
+        continue;
+      }
+      SCOPED_TRACE(group.title);
+      for (const std::string_view placeholder :
+           {"{place_name}", "{place_icon}"}) {
+        EXPECT_NE(group.description.find(placeholder), std::string_view::npos);
+      }
+    }
+  }
+}
+
 }  // namespace
 }  // namespace ui
 }  // namespace mocktail

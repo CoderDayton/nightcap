@@ -54,6 +54,8 @@ struct Setting {
   double minimum = 0;
   double maximum = 1048576;
   double step = 256;
+  // What a kNumber row shows in place of 0, when 0 turns the setting off.
+  std::string_view zero_label;
 };
 
 struct SettingsGroup {
@@ -64,6 +66,9 @@ struct SettingsGroup {
   // With this, the first setting, a kToggle, is the expander row's own
   // switch, and the other settings apply only while it is on.
   bool expander_switch = false;
+  // Shown under the title. Text rows have no subtitle, so their format is
+  // explained here.
+  std::string_view description;
 };
 
 struct SettingsPage {
@@ -152,6 +157,11 @@ class SettingsDocument {
   bool SetText(std::string_view key, std::string_view value,
                std::string* error);
 
+  // False while an `enabled` switch of a block `key` is in, such as
+  // integrations.discord_rpc.enabled, is off. The switch itself stays active.
+  // An empty fixed proxy is inactive while the system proxy is on.
+  bool IsActive(std::string_view key) const;
+
   // Mouse, keyboard and touch compare with what the file's device turns on.
   bool IsChanged(const Setting& setting) const;
 
@@ -179,6 +189,8 @@ class SettingsDocument {
                                   bool empty_unsets) const;
   bool Save(runtime::RuntimeConfigEdit edit, std::string* error);
   std::string DefaultValue(const Setting& setting) const;
+  // True for a key that is not a listed switch.
+  bool IsSwitchedOn(std::string_view key) const;
 
   std::filesystem::path config_file_;
   std::string text_;
