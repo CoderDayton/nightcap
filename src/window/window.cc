@@ -982,6 +982,9 @@ bool ActivateWindowEventLifecycles() {
     std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
     g_pointer_capture_owner = std::make_shared<WindowPointerCaptureOwner>(
         g_pointer_capture_backend.get());
+    // main() exports the resolved VR state before the window exists.
+    const char* vr = GetEnvNonEmpty("MOCKTAIL_VR_ENABLED");
+    g_pointer_capture_owner->SetVrActive(StringEquals(vr, "1"));
   }
   fprintf(stderr,
           "  [input] SDL event pump target=%llu Hz raw-motion, no smoothing\n",

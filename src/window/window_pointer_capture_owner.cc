@@ -58,7 +58,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 }
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
-  if (!focused_) {
+  if (!focused_ || vr_active_) {
     return Apply(false, true);
   }
   MouseLockQueryCallback callback = nullptr;
@@ -124,6 +124,10 @@ bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
 
 void WindowPointerCaptureOwner::SetGameSessionActive(bool active) {
   game_session_active_ = active;
+}
+
+void WindowPointerCaptureOwner::SetVrActive(bool active) {
+  vr_active_ = active;
 }
 
 bool WindowPointerCaptureOwner::OnShiftKeyPressed(bool text_input_active) {
