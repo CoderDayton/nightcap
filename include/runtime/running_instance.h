@@ -42,6 +42,8 @@ struct LaunchCommand {
   std::vector<std::string> arguments;
   // NAME=value entries.
   std::vector<std::string> environment;
+  // Empty keeps this process's own.
+  std::filesystem::path working_directory;
 };
 
 // The arguments in /proc/<pid>/cmdline. Nightcap zeroes a join link after
@@ -56,9 +58,19 @@ std::optional<LaunchCommand> ReadLaunchCommand(pid_t pid);
 
 // Starts `program` in a session of its own, so it keeps running after this
 // process exits. Empty arguments run it with just its path; an empty
-// environment passes this process's own.
+// environment passes this process's own. Signals start out with their
+// default handling, whatever this process ignores or blocks.
 bool StartDetached(const std::filesystem::path& program, std::string* error,
                    const LaunchCommand& command = {});
+
+// Closes the running Nightcap and starts `program` with its arguments,
+// environment and working directory. Nothing is closed when its launch
+// cannot be read, since it could not be started the same way again. A
+// Nightcap that does not close within `timeout` may still close later.
+bool RestartRunningInstance(const std::filesystem::path& lock_file,
+                            const std::filesystem::path& program,
+                            std::chrono::milliseconds timeout,
+                            std::string* error);
 
 }  // namespace runtime
 }  // namespace mocktail

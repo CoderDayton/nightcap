@@ -40,15 +40,43 @@ runtime::RuntimeConfigValue Get(std::string_view text, std::string_view key) {
   return runtime::GetRuntimeConfigValue(text, key);
 }
 
+using ValueCache =
+    std::map<std::string, runtime::RuntimeConfigValue, std::less<>>;
+
+// Reads keys from one config text. With a cache, each key is parsed once.
+class Reader {
+ public:
+  explicit Reader(std::string_view text, ValueCache* cache = nullptr)
+      : text_(text), cache_(cache) {}
+
+  runtime::RuntimeConfigValue Get(std::string_view key) const {
+    if (cache_ == nullptr) {
+      return runtime::GetRuntimeConfigValue(text_, key);
+    }
+    auto found = cache_->find(key);
+    if (found == cache_->end()) {
+      found = cache_
+                  ->emplace(std::string(key),
+                            runtime::GetRuntimeConfigValue(text_, key))
+                  .first;
+    }
+    return found->second;
+  }
+
+ private:
+  std::string_view text_;
+  ValueCache* cache_;
+};
+
 // The preset the file picks, as the file spells it. Empty when it picks none.
-std::string DevicePreset(std::string_view text) {
+std::string DevicePreset(const Reader& file) {
   for (const std::string_view key : {kDeviceKey, kDeviceTypeKey}) {
-    if (runtime::RuntimeConfigValue device = Get(text, key); device.found) {
+    if (runtime::RuntimeConfigValue device = file.Get(key); device.found) {
       return std::move(device.value);
     }
   }
   if (const runtime::RuntimeConfigValue playability =
-          Get(text, kPlayabilityKey);
+          file.Get(kPlayabilityKey);
       playability.found) {
     const bool desktop = playability.value != "0" &&
                          playability.value != "off" &&
@@ -58,7 +86,6 @@ std::string DevicePreset(std::string_view text) {
   return {};
 }
 
-// What the file's device turns on for the input `key`.
 bool HasYamlContent(std::string_view text) {
   std::size_t start = 0;
   while (start < text.size()) {
@@ -94,8 +121,9 @@ std::string WithoutEmptyMapping(std::string_view text) {
   return kept;
 }
 
-bool PresetInput(std::string_view text, std::string_view key) {
-  const std::string preset = DevicePreset(text);
+// What the file's device turns on for the input `key`.
+bool PresetInput(const Reader& file, std::string_view key) {
+  const std::string preset = DevicePreset(file);
   const runtime::DeviceProfile* profile = runtime::FindDeviceProfile(
       preset.empty() ? runtime::kDefaultDeviceProfileName
                      : std::string_view(preset));
@@ -107,18 +135,18 @@ bool PresetInput(std::string_view text, std::string_view key) {
                             : profile->keyboard_enabled;
 }
 
-bool DeviceInput(std::string_view text, std::string_view key) {
-  if (const runtime::RuntimeConfigValue value = Get(text, key); value.found) {
+bool DeviceInput(const Reader& file, std::string_view key) {
+  if (const runtime::RuntimeConfigValue value = file.Get(key); value.found) {
     return value.value == "true";
   }
   if (key == kTouchKey) {
     if (const runtime::RuntimeConfigValue value =
-            Get(text, kTouchKeyWithoutDevice);
+            file.Get(kTouchKeyWithoutDevice);
         value.found) {
       return value.value == "true";
     }
   }
-  return PresetInput(text, key);
+  return PresetInput(file, key);
 }
 
 // Runs `step` on the text of `edit`, unless `edit` already failed.
@@ -143,7 +171,7 @@ runtime::RuntimeConfigEdit ToDeviceBlock(std::string_view text) {
   if (Get(text, kDeviceTypeKey).found) {
     return Unchanged(text);
   }
-  const std::string preset = DevicePreset(text);
+  const std::string preset = DevicePreset(Reader(text));
   const runtime::RuntimeConfigValue touch = Get(text, kTouchKeyWithoutDevice);
   runtime::RuntimeConfigEdit edit = runtime::SetRuntimeConfigString(
       text, kDeviceTypeKey,
@@ -182,9 +210,9 @@ runtime::RuntimeConfigEdit SetDevicePreset(std::string_view text,
   });
 }
 
-std::string ProxyValue(std::string_view text) {
-  const runtime::RuntimeConfigValue host = Get(text, kProxyHostKey);
-  const runtime::RuntimeConfigValue port = Get(text, kProxyPortKey);
+std::string ProxyValue(const Reader& file) {
+  const runtime::RuntimeConfigValue host = file.Get(kProxyHostKey);
+  const runtime::RuntimeConfigValue port = file.Get(kProxyPortKey);
   return host.found && port.found ? host.value + ":" + port.value
                                   : std::string();
 }
@@ -987,25 +1015,33 @@ bool SettingsDocument::Load(std::string* error) {
     *error = probe.error;
     return false;
   }
-  text_ = std::move(read.text);
+  Replace(std::move(read.text));
   return true;
 }
 
+void SettingsDocument::Replace(std::string text) {
+  text_ = std::move(text);
+  values_.clear();
+}
+
 std::string SettingsDocument::Value(std::string_view key) const {
+  const Reader file(text_, &values_);
   if (key == kTouchKey || key == kMouseKey || key == kKeyboardKey) {
-    return DeviceInput(text_, key) ? "true" : "false";
+    return DeviceInput(file, key) ? "true" : "false";
   }
   if (key == kDeviceKey) {
-    return DevicePreset(text_);
+    return DevicePreset(file);
   }
   if (key == kProxyKey) {
-    return ProxyValue(text_);
+    return ProxyValue(file);
   }
-  return Get(text_, key).value;
+  return file.Get(key).value;
 }
 
 bool SettingsDocument::IsSet(std::string_view key) const {
-  return Get(text_, key == kProxyKey ? kProxyHostKey : key).found;
+  return Reader(text_, &values_)
+      .Get(key == kProxyKey ? kProxyHostKey : key)
+      .found;
 }
 
 bool SettingsDocument::Set(std::string_view key, std::string_view value,
@@ -1021,7 +1057,8 @@ bool SettingsDocument::SetText(std::string_view key, std::string_view value,
 std::string SettingsDocument::DefaultValue(const Setting& setting) const {
   if (setting.key == kTouchKey || setting.key == kMouseKey ||
       setting.key == kKeyboardKey) {
-    return PresetInput(text_, setting.key) ? "true" : "false";
+    return PresetInput(Reader(text_, &values_), setting.key) ? "true"
+                                                             : "false";
   }
   return std::string(setting.default_value);
 }
@@ -1174,13 +1211,13 @@ bool SettingsDocument::Save(runtime::RuntimeConfigEdit edit,
     runtime::RuntimeConfigText read =
         runtime::ReadRuntimeConfigText(config_file_);
     if (read && read.text != text_) {
-      text_ = std::move(read.text);
+      Replace(std::move(read.text));
       undo_.reset();
     }
     return false;
   }
   undo_ = std::move(text_);
-  text_ = std::move(edited);
+  Replace(std::move(edited));
   ++saved_changes_;
   return true;
 }

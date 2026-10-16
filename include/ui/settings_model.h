@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -193,8 +195,14 @@ class SettingsDocument {
   // True for a key that is not a listed switch.
   bool IsSwitchedOn(std::string_view key) const;
 
+  // Set text_ through this, which forgets the values read from the old text.
+  void Replace(std::string text);
+
   std::filesystem::path config_file_;
   std::string text_;
+  // The values read from text_. A refresh asks for each key many times.
+  mutable std::map<std::string, runtime::RuntimeConfigValue, std::less<>>
+      values_;
   std::optional<std::string> undo_;
   std::size_t saved_changes_ = 0;
 };

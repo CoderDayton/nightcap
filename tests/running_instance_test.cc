@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -111,15 +112,20 @@ class RunningInstanceTest : public ::testing::Test {
     std::filesystem::remove_all(directory_);
   }
 
-  // Forks a process that holds the lock. With `ignore_term` it stays on
-  // SIGTERM; otherwise it exits on it after a short delay.
-  void StartHolder(bool ignore_term) {
+  // Forks a process that holds the lock from inside directory_. With
+  // `ignore_term` it stays on SIGTERM; otherwise it exits on it after a short
+  // delay. With `hide_proc` its /proc files cannot be read.
+  void StartHolder(bool ignore_term, bool hide_proc = false) {
     int ready[2];
     ASSERT_EQ(pipe(ready), 0);
     holder_ = fork();
     ASSERT_GE(holder_, 0);
     if (holder_ == 0) {
       close(ready[0]);
+      if (chdir(directory_.c_str()) != 0 ||
+          (hide_proc && prctl(PR_SET_DUMPABLE, 0) != 0)) {
+        _exit(1);
+      }
       if (ignore_term) {
         signal(SIGTERM, SIG_IGN);
       } else {
@@ -209,6 +215,9 @@ TEST_F(RunningInstanceTest, ReadsHowAProcessWasStarted) {
   holder_ = fork();
   ASSERT_GE(holder_, 0);
   if (holder_ == 0) {
+    if (chdir(directory_.c_str()) != 0) {
+      _exit(126);
+    }
     char* const arguments[] = {const_cast<char*>("sleep"),
                                const_cast<char*>("30"), nullptr};
     char* const environment[] = {const_cast<char*>("NIGHTCAP_TEST=1"),
@@ -228,13 +237,16 @@ TEST_F(RunningInstanceTest, ReadsHowAProcessWasStarted) {
   ASSERT_TRUE(command.has_value());
   EXPECT_EQ(command->arguments, (Strings{"sleep", "30"}));
   EXPECT_EQ(command->environment, (Strings{"NIGHTCAP_TEST=1"}));
+  EXPECT_EQ(command->working_directory,
+            std::filesystem::canonical(directory_));
   EXPECT_FALSE(ReadLaunchCommand(-1).has_value());
 }
 
 TEST_F(RunningInstanceTest, StartDetachedPassesArgumentsAndEnvironment) {
   const std::filesystem::path marker = directory_ / "marker";
   const std::filesystem::path program = directory_ / "program.sh";
-  std::ofstream(program) << "#!/bin/sh\nprintf '%s|%s|%s' \"$0\" \"$1\" \"$X\" > '"
+  std::ofstream(program) << "#!/bin/sh\nprintf '%s|%s|%s|%s' \"$0\" \"$1\" "
+                            "\"$X\" \"$(pwd)\" > '"
                          << marker.string() << ".tmp' && mv '"
                          << marker.string() << ".tmp' '" << marker.string()
                          << "'\n";
@@ -243,6 +255,7 @@ TEST_F(RunningInstanceTest, StartDetachedPassesArgumentsAndEnvironment) {
   LaunchCommand command;
   command.arguments = {"renamed", "first"};
   command.environment = {"X=yes", "PATH=/usr/bin:/bin"};
+  command.working_directory = std::filesystem::canonical(directory_);
   std::string error;
   ASSERT_TRUE(StartDetached(program, &error, command)) << error;
   for (int attempt = 0; attempt < 100 && !std::filesystem::exists(marker);
@@ -253,7 +266,77 @@ TEST_F(RunningInstanceTest, StartDetachedPassesArgumentsAndEnvironment) {
   std::string text;
   std::getline(std::ifstream(marker), text);
   // A script sees its own path as $0, whatever the first argument says.
-  EXPECT_EQ(text, program.string() + "|first|yes");
+  EXPECT_EQ(text, program.string() + "|first|yes|" +
+                      command.working_directory.string());
+}
+
+TEST_F(RunningInstanceTest, RestartLeavesAnInstanceItCannotReadRunning) {
+  StartHolder(false, true);
+  std::string error;
+  EXPECT_FALSE(RestartRunningInstance(lock_, directory_ / "missing",
+                                      milliseconds(2000), &error));
+  EXPECT_FALSE(error.empty());
+  EXPECT_TRUE(FindRunningInstance(lock_).running);
+}
+
+TEST_F(RunningInstanceTest, RestartStartsTheProgramWhereTheOldOneRan) {
+  StartHolder(false);
+  const std::filesystem::path marker = directory_ / "marker";
+  const std::filesystem::path program = directory_ / "program.sh";
+  std::ofstream(program) << "#!/bin/sh\npwd > '" << marker.string()
+                         << ".tmp' && mv '" << marker.string() << ".tmp' '"
+                         << marker.string() << "'\n";
+  std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+
+  std::string error;
+  ASSERT_TRUE(RestartRunningInstance(lock_, program, milliseconds(5000),
+                                     &error))
+      << error;
+  EXPECT_EQ(waitpid(holder_, nullptr, 0), holder_);
+  holder_ = -1;
+  for (int attempt = 0; attempt < 100 && !std::filesystem::exists(marker);
+       ++attempt) {
+    std::this_thread::sleep_for(milliseconds(20));
+  }
+  ASSERT_TRUE(std::filesystem::exists(marker));
+  std::string text;
+  std::getline(std::ifstream(marker), text);
+  EXPECT_EQ(text, std::filesystem::canonical(directory_).string());
+}
+
+TEST_F(RunningInstanceTest, StartDetachedDoesNotPassOnIgnoredSignals) {
+  const std::filesystem::path marker = directory_ / "marker";
+  const std::filesystem::path program = directory_ / "program.sh";
+  std::ofstream(program) << "#!/bin/sh\ngrep SigIgn /proc/$$/status > '"
+                         << marker.string() << ".tmp' && mv '"
+                         << marker.string() << ".tmp' '" << marker.string()
+                         << "'\n";
+  std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+
+  // A shell runs a background job with SIGINT and SIGQUIT ignored.
+  struct sigaction ignore {};
+  ignore.sa_handler = SIG_IGN;
+  struct sigaction old_int {};
+  struct sigaction old_quit {};
+  sigaction(SIGINT, &ignore, &old_int);
+  sigaction(SIGQUIT, &ignore, &old_quit);
+  std::string error;
+  const bool started = StartDetached(program, &error);
+  sigaction(SIGINT, &old_int, nullptr);
+  sigaction(SIGQUIT, &old_quit, nullptr);
+  ASSERT_TRUE(started) << error;
+  for (int attempt = 0; attempt < 100 && !std::filesystem::exists(marker);
+       ++attempt) {
+    std::this_thread::sleep_for(milliseconds(20));
+  }
+  ASSERT_TRUE(std::filesystem::exists(marker));
+  std::string line;
+  std::getline(std::ifstream(marker), line);
+  const unsigned long long ignored =
+      std::stoull(line.substr(line.find_first_not_of("SigIgn:\t ")), nullptr,
+                  16);
+  EXPECT_EQ(ignored & ((1ULL << (SIGINT - 1)) | (1ULL << (SIGQUIT - 1))), 0u)
+      << line;
 }
 
 TEST_F(RunningInstanceTest, StartDetachedReportsAProgramThatCannotRun) {

@@ -100,6 +100,8 @@ struct SettingsWindow {
   // Set while rows are filled from the file, so that filling one is not
   // taken for a change by the user.
   bool refreshing = false;
+  Row* stepped = nullptr;
+  guint stepped_timer = 0;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -130,24 +132,27 @@ void SetChoices(Row* row) {
   g_object_unref(labels);
 }
 
-// The names SDL gives the audio devices, which are the names Nightcap picks
-// a device by. Empty when SDL finds no audio system.
-std::vector<std::string> AudioDeviceNames(bool recording) {
+std::vector<std::string> AudioDeviceNames(SDL_AudioDeviceID* ids, int count) {
   std::vector<std::string> names;
-  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-    return names;
-  }
-  int count = 0;
-  SDL_AudioDeviceID* ids = recording ? SDL_GetAudioRecordingDevices(&count)
-                                     : SDL_GetAudioPlaybackDevices(&count);
   for (int index = 0; ids != nullptr && index < count; ++index) {
     if (const char* name = SDL_GetAudioDeviceName(ids[index])) {
       names.emplace_back(name);
     }
   }
   SDL_free(ids);
-  SDL_QuitSubSystem(SDL_INIT_AUDIO);
   return names;
+}
+
+void FindAudioDevices(SettingsWindow* window) {
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    return;
+  }
+  int count = 0;
+  SDL_AudioDeviceID* ids = SDL_GetAudioPlaybackDevices(&count);
+  window->output_devices = AudioDeviceNames(ids, count);
+  ids = SDL_GetAudioRecordingDevices(&count);
+  window->input_devices = AudioDeviceNames(ids, count);
+  SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 void RefreshDeviceRow(Row* row, const std::string& value) {
@@ -289,17 +294,11 @@ struct RestartJob {
 
 void RunRestart(GTask* task, gpointer, gpointer task_data, GCancellable*) {
   auto* job = static_cast<RestartJob*>(task_data);
-  // Read before Nightcap closes, so the new one starts with the same
-  // arguments and environment as the one it replaces.
-  const std::optional<mocktail::runtime::LaunchCommand> command =
-      mocktail::runtime::ReadLaunchCommand(
-          mocktail::runtime::FindRunningInstance(job->instance_lock).pid);
-  const bool restarted =
-      mocktail::runtime::StopRunningInstance(
-          job->instance_lock, std::chrono::seconds(15), &job->error) &&
-      mocktail::runtime::StartDetached(
-          job->restart_program, &job->error,
-          command.value_or(mocktail::runtime::LaunchCommand{}));
+  // Long enough for Roblox to finish closing. Past it, Nightcap may still
+  // close on the SIGTERM it was sent, and nothing starts it again.
+  const bool restarted = mocktail::runtime::RestartRunningInstance(
+      job->instance_lock, job->restart_program, std::chrono::minutes(2),
+      &job->error);
   g_task_return_boolean(task, restarted);
 }
 
@@ -327,10 +326,13 @@ void OnRestartDone(GObject*, GAsyncResult* result, gpointer user_data) {
   }
 }
 
+void SaveStepped(SettingsWindow* window);
+
 void StartRestart(SettingsWindow* window) {
   if (window->restarting) {
     return;
   }
+  SaveStepped(window);
   window->restarting = true;
   window->saved_while_restarting = false;
   gtk_widget_set_sensitive(window->restart, FALSE);
@@ -412,19 +414,53 @@ void ShowSaved(Row* row, std::size_t before, bool saved,
   RefreshRows(window, saved ? row : nullptr);
 }
 
-void Apply(Row* row, const std::string& value) {
-  SettingsWindow* window = row->window;
-  if (window->refreshing) {
+std::string SteppedValue(const Row& row) {
+  if (row.setting->kind == SettingKind::kNumber) {
+    return mocktail::ui::NumberValue(
+        adw_spin_row_get_value(ADW_SPIN_ROW(row.widget)));
+  }
+  FrameRate rate;
+  rate.mode = static_cast<FrameRateMode>(
+      adw_combo_row_get_selected(ADW_COMBO_ROW(row.widget)));
+  rate.custom =
+      static_cast<int>(adw_spin_row_get_value(ADW_SPIN_ROW(row.custom)));
+  return mocktail::ui::FrameRateValue(rate);
+}
+
+void SaveValue(Row* row, const std::string& value);
+
+// Saves a stepped row now. Every other save, Undo, Restart and closing the
+// window call this first, so a stepped value is never lost or saved late.
+void SaveStepped(SettingsWindow* window) {
+  if (window->stepped == nullptr) {
     return;
   }
+  Row* row = window->stepped;
+  g_source_remove(window->stepped_timer);
+  window->stepped = nullptr;
+  window->stepped_timer = 0;
+  SaveValue(row, SteppedValue(*row));
+}
+
+void SaveValue(Row* row, const std::string& value) {
+  SettingsWindow* window = row->window;
   std::string error;
   const std::size_t before = window->document.saved_changes();
   const bool saved = window->document.Set(row->setting->key, value, &error);
   ShowSaved(row, before, saved, error);
 }
 
+void Apply(Row* row, const std::string& value) {
+  if (row->window->refreshing) {
+    return;
+  }
+  SaveStepped(row->window);
+  SaveValue(row, value);
+}
+
 void OnUndo(GtkButton*, gpointer user_data) {
   auto* window = static_cast<SettingsWindow*>(user_data);
+  SaveStepped(window);
   std::string error;
   if (!window->document.Undo(&error)) {
     ShowError(window, error);
@@ -433,10 +469,32 @@ void OnUndo(GtkButton*, gpointer user_data) {
   RefreshRows(window);
 }
 
-void OnNumberChanged(GObject* object, GParamSpec*, gpointer user_data) {
-  Apply(static_cast<Row*>(user_data),
-        mocktail::ui::NumberValue(
-            adw_spin_row_get_value(ADW_SPIN_ROW(object))));
+// Holding + on a spin row steps it many times a second. The file is saved
+// once, half a second after the last step.
+void OnSteppedValueChanged(GObject*, GParamSpec*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  if (window->refreshing) {
+    return;
+  }
+  if (window->stepped != row) {
+    SaveStepped(window);
+  } else {
+    g_source_remove(window->stepped_timer);
+  }
+  window->stepped = row;
+  window->stepped_timer = g_timeout_add(
+      500,
+      [](gpointer data) -> gboolean {
+        auto* stepped_window = static_cast<SettingsWindow*>(data);
+        // The source ends when this returns, so it is not removed again.
+        stepped_window->stepped_timer = 0;
+        Row* stepped_row = stepped_window->stepped;
+        stepped_window->stepped = nullptr;
+        SaveValue(stepped_row, SteppedValue(*stepped_row));
+        return G_SOURCE_REMOVE;
+      },
+      window);
 }
 
 gboolean OnNumberOutput(AdwSpinRow* spin, gpointer user_data) {
@@ -462,6 +520,7 @@ gint OnNumberInput(AdwSpinRow* spin, double* value, gpointer user_data) {
 void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
   SettingsWindow* window = row->window;
+  SaveStepped(window);
   std::string error;
   const std::size_t before = window->document.saved_changes();
   const std::string_view text = gtk_editable_get_text(GTK_EDITABLE(entry));
@@ -477,6 +536,7 @@ void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
 void OnReset(GtkButton*, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
   SettingsWindow* window = row->window;
+  SaveStepped(window);
   std::string error;
   const std::size_t before = window->document.saved_changes();
   const bool saved = window->document.Reset(*row->setting, &error);
@@ -553,17 +613,13 @@ void OnDeviceChanged(GObject* object, GParamSpec*, gpointer user_data) {
   Apply(row, value);
 }
 
-void OnFrameRateChanged(GObject*, GParamSpec*, gpointer user_data) {
+void OnFrameRateModeChanged(GObject*, GParamSpec*, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
   const guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row->widget));
   if (selected > static_cast<guint>(FrameRateMode::kCustom)) {
     return;
   }
-  FrameRate rate;
-  rate.mode = static_cast<FrameRateMode>(selected);
-  rate.custom =
-      static_cast<int>(adw_spin_row_get_value(ADW_SPIN_ROW(row->custom)));
-  Apply(row, mocktail::ui::FrameRateValue(rate));
+  Apply(row, SteppedValue(*row));
 }
 
 // The dialog that edits fflags.json as text.
@@ -838,15 +894,15 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
                              mocktail::ui::kDefaultCustomFrameRate);
       SetRowText(row.custom, "Custom limit", "Frames per second");
       g_signal_connect(row.widget, "notify::selected",
-                       G_CALLBACK(OnFrameRateChanged), &row);
+                       G_CALLBACK(OnFrameRateModeChanged), &row);
       g_signal_connect(row.custom, "notify::value",
-                       G_CALLBACK(OnFrameRateChanged), &row);
+                       G_CALLBACK(OnSteppedValueChanged), &row);
       break;
     case SettingKind::kNumber:
       row.widget = adw_spin_row_new_with_range(setting.minimum,
                                                setting.maximum, setting.step);
       g_signal_connect(row.widget, "notify::value",
-                       G_CALLBACK(OnNumberChanged), &row);
+                       G_CALLBACK(OnSteppedValueChanged), &row);
       if (!setting.zero_label.empty()) {
         // A numeric row drops the label's letters.
         adw_spin_row_set_numeric(ADW_SPIN_ROW(row.widget), FALSE);
@@ -1170,6 +1226,7 @@ void OnDiscardTextResponse(AdwAlertDialog*, const char* response,
 // Closing asks first while a text row holds text that is not applied.
 gboolean OnCloseRequest(GtkWindow*, gpointer user_data) {
   auto* window = static_cast<SettingsWindow*>(user_data);
+  SaveStepped(window);
   const Row* edited = nullptr;
   for (const Row& row : window->rows) {
     if ((row.setting->kind == SettingKind::kText ||
@@ -1233,8 +1290,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   GtkWidget* content = nullptr;
   std::string error;
   if (window->document.Load(&error)) {
-    window->output_devices = AudioDeviceNames(false);
-    window->input_devices = AudioDeviceNames(true);
+    FindAudioDevices(window);
     content = BuildSplitView(window, ADW_APPLICATION_WINDOW(window_widget));
     RefreshRows(window);
   } else {
