@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace mocktail {
 namespace runtime {
@@ -101,6 +102,24 @@ std::string LegacyFontName(int32_t font) {
   return "SourceSansPro-Regular.ttf";
 }
 
+// TwemojiMozilla covers Unicode emoji; RobloxEmoji holds the private-use
+// Roblox and Robux symbols.
+constexpr const char* kEmojiFontNames[] = {"TwemojiMozilla.ttf",
+                                           "RobloxEmoji.ttf"};
+
+std::vector<std::string> EmojiFontFiles(
+    const std::filesystem::path& asset_content_root) {
+  std::vector<std::string> files;
+  for (const char* name : kEmojiFontNames) {
+    const std::filesystem::path candidate =
+        asset_content_root / "fonts" / name;
+    if (IsRegularFile(candidate)) {
+      files.push_back(candidate.lexically_normal().string());
+    }
+  }
+  return files;
+}
+
 }  // namespace
 
 RobloxTextFontSelection ResolveRobloxTextFont(
@@ -111,6 +130,7 @@ RobloxTextFontSelection ResolveRobloxTextFont(
   }
 
   const std::filesystem::path content(asset_content_root);
+  selection.emoji_files = EmojiFontFiles(content);
   const std::optional<FontMapping> mapped = MappingFor(font, content);
   if (mapped.has_value()) {
     const std::filesystem::path candidate = content / "fonts" / mapped->file;
