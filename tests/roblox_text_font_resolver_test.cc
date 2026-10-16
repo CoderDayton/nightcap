@@ -97,6 +97,23 @@ TEST(RobloxTextFontResolverTest, RejectsMappingPathTraversal) {
       (assets.root() / "assets/fonts/SourceSansPro-Regular.ttf").string());
 }
 
+TEST(RobloxTextFontResolverTest, AddsBundledEmojiFontsAsFallbacks) {
+  TemporaryFontAssets assets;
+  ASSERT_FALSE(assets.root().empty());
+  ASSERT_TRUE(assets.CreateFile("assets/fonts/SourceSansPro-Regular.ttf"));
+  ASSERT_TRUE(assets.CreateFile("assets/content/fonts/RobloxEmoji.ttf"));
+  ASSERT_TRUE(assets.CreateFile("assets/content/fonts/TwemojiMozilla.ttf"));
+
+  const RobloxTextFontSelection selection =
+      ResolveRobloxTextFont(3, assets.content().string());
+
+  ASSERT_EQ(selection.emoji_files.size(), 2U);
+  EXPECT_EQ(selection.emoji_files[0],
+            (assets.content() / "fonts/TwemojiMozilla.ttf").string());
+  EXPECT_EQ(selection.emoji_files[1],
+            (assets.content() / "fonts/RobloxEmoji.ttf").string());
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail
