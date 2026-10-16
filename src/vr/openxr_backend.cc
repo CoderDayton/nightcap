@@ -3,6 +3,7 @@
 #include "mocktail/vr/vr_pose_math.h"
 
 #include "vr/gles_transport.h"
+#include "vr/vr_shaders_spirv.h"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 
@@ -251,6 +252,33 @@ struct OpenXrBackend::VkProcs {
   PFN_vkGetPhysicalDeviceQueueFamilyProperties
       GetPhysicalDeviceQueueFamilyProperties = nullptr;
   PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties = nullptr;
+  // FXAA pass.
+  PFN_vkCreateShaderModule CreateShaderModule = nullptr;
+  PFN_vkDestroyShaderModule DestroyShaderModule = nullptr;
+  PFN_vkCreateRenderPass CreateRenderPass = nullptr;
+  PFN_vkDestroyRenderPass DestroyRenderPass = nullptr;
+  PFN_vkCreateFramebuffer CreateFramebuffer = nullptr;
+  PFN_vkDestroyFramebuffer DestroyFramebuffer = nullptr;
+  PFN_vkCreatePipelineLayout CreatePipelineLayout = nullptr;
+  PFN_vkDestroyPipelineLayout DestroyPipelineLayout = nullptr;
+  PFN_vkCreateGraphicsPipelines CreateGraphicsPipelines = nullptr;
+  PFN_vkDestroyPipeline DestroyPipeline = nullptr;
+  PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout = nullptr;
+  PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout = nullptr;
+  PFN_vkCreateDescriptorPool CreateDescriptorPool = nullptr;
+  PFN_vkDestroyDescriptorPool DestroyDescriptorPool = nullptr;
+  PFN_vkAllocateDescriptorSets AllocateDescriptorSets = nullptr;
+  PFN_vkUpdateDescriptorSets UpdateDescriptorSets = nullptr;
+  PFN_vkCreateSampler CreateSampler = nullptr;
+  PFN_vkDestroySampler DestroySampler = nullptr;
+  PFN_vkCmdBeginRenderPass CmdBeginRenderPass = nullptr;
+  PFN_vkCmdEndRenderPass CmdEndRenderPass = nullptr;
+  PFN_vkCmdBindPipeline CmdBindPipeline = nullptr;
+  PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets = nullptr;
+  PFN_vkCmdPushConstants CmdPushConstants = nullptr;
+  PFN_vkCmdSetViewport CmdSetViewport = nullptr;
+  PFN_vkCmdSetScissor CmdSetScissor = nullptr;
+  PFN_vkCmdDraw CmdDraw = nullptr;
 };
 
 namespace {
@@ -847,6 +875,32 @@ void OpenXrBackend::SetupDeviceAfterCreationLocked(
   MOCKTAIL_BACKEND_VK_FN(QueueSubmit)
   MOCKTAIL_BACKEND_VK_FN(GetDeviceQueue)
   MOCKTAIL_BACKEND_VK_FN(DeviceWaitIdle)
+  MOCKTAIL_BACKEND_VK_FN(CreateShaderModule)
+  MOCKTAIL_BACKEND_VK_FN(DestroyShaderModule)
+  MOCKTAIL_BACKEND_VK_FN(CreateRenderPass)
+  MOCKTAIL_BACKEND_VK_FN(DestroyRenderPass)
+  MOCKTAIL_BACKEND_VK_FN(CreateFramebuffer)
+  MOCKTAIL_BACKEND_VK_FN(DestroyFramebuffer)
+  MOCKTAIL_BACKEND_VK_FN(CreatePipelineLayout)
+  MOCKTAIL_BACKEND_VK_FN(DestroyPipelineLayout)
+  MOCKTAIL_BACKEND_VK_FN(CreateGraphicsPipelines)
+  MOCKTAIL_BACKEND_VK_FN(DestroyPipeline)
+  MOCKTAIL_BACKEND_VK_FN(CreateDescriptorSetLayout)
+  MOCKTAIL_BACKEND_VK_FN(DestroyDescriptorSetLayout)
+  MOCKTAIL_BACKEND_VK_FN(CreateDescriptorPool)
+  MOCKTAIL_BACKEND_VK_FN(DestroyDescriptorPool)
+  MOCKTAIL_BACKEND_VK_FN(AllocateDescriptorSets)
+  MOCKTAIL_BACKEND_VK_FN(UpdateDescriptorSets)
+  MOCKTAIL_BACKEND_VK_FN(CreateSampler)
+  MOCKTAIL_BACKEND_VK_FN(DestroySampler)
+  MOCKTAIL_BACKEND_VK_FN(CmdBeginRenderPass)
+  MOCKTAIL_BACKEND_VK_FN(CmdEndRenderPass)
+  MOCKTAIL_BACKEND_VK_FN(CmdBindPipeline)
+  MOCKTAIL_BACKEND_VK_FN(CmdBindDescriptorSets)
+  MOCKTAIL_BACKEND_VK_FN(CmdPushConstants)
+  MOCKTAIL_BACKEND_VK_FN(CmdSetViewport)
+  MOCKTAIL_BACKEND_VK_FN(CmdSetScissor)
+  MOCKTAIL_BACKEND_VK_FN(CmdDraw)
 #undef MOCKTAIL_BACKEND_VK_FN
 #define MOCKTAIL_BACKEND_VK_INSTANCE_FN(name)                                  \
   vk_->name =                                                                  \
@@ -1386,6 +1440,7 @@ void OpenXrBackend::MatchSwapchainFormatToEyesLocked() {
 }
 
 void OpenXrBackend::DestroySwapchains() {
+  DestroyFxaaTargetsLocked();  // views of these images
   for (EyeSwapchain& slot : eye_swapchains_) {
     slot.images.clear();
     slot.gl_images.clear();
@@ -1723,6 +1778,7 @@ void OpenXrBackend::NoteDestroyImage(VkImage image) {
   std::lock_guard<std::mutex> lock(mutex_);
   // A frame copy or mirror blit may still read it on the GPU.
   WaitAsyncSubmissionsLocked(image);
+  ForgetFxaaSourceLocked(image);
   images_.erase(image);
   eye_render_queues_.erase(image);
   eye_render_frames_.erase(image);
@@ -3261,6 +3317,7 @@ bool OpenXrBackend::EnsureCopyResources(VkDevice device,
 }
 
 void OpenXrBackend::DestroyCopyResources() {
+  DestroyFxaaLocked();  // callers idle the device first
   mirror_ready_ = VK_NULL_HANDLE;
   mirror_readback_ = {};
   next_async_ = 0;
@@ -3412,6 +3469,8 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
   PublishMirrorReadbackLocked();
   EnsureMirrorForExtent(eyes_[0].width, eyes_[0].height);
 
+  // Before taking a slot: rebinding an eye waits for every pending one.
+  const bool fxaa = PrepareFxaaLocked();
   AsyncSubmission *const slot = NextAsyncSubmissionLocked();
   if (slot == nullptr) {
     (void)IdleHostDevice(vk_->DeviceWaitIdle, vk_device_);
@@ -3425,6 +3484,35 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
     return false;
   }
 
+  if (fxaa)
+    RecordFxaaEyesLocked(command);
+  else
+    RecordEyeCopiesLocked(command, source, destination);
+
+  if (vk_->EndCommandBuffer(command) != VK_SUCCESS) {
+    return false;
+  }
+  VkSubmitInfo submit{};
+  submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &command;
+  // The present dependencies were consumed earlier on this queue, so the
+  // copy runs after the guest's eye passes without the CPU waiting for them.
+  // xrReleaseSwapchainImage only needs the copy submitted to this queue.
+  // NoteDestroyImage waits for this slot before the guest frees a source.
+  slot->images = {source[0], source[1], destination[0], destination[1]};
+  if (SubmitAsyncLocked(queue, slot, submit) != VK_SUCCESS) {
+    return false;
+  }
+  if (mirror_.enabled())
+    mirror_readback_ = {slot,           slot->serial,    published_pose_.frame,
+                        eyes_[0].format, eyes_[0].width, eyes_[0].height};
+  return true;
+}
+
+void OpenXrBackend::RecordEyeCopiesLocked(VkCommandBuffer command,
+                                          const VkImage source[2],
+                                          const VkImage destination[2]) {
   // Phase 1: transition both sources to TRANSFER_SRC and both swapchain
   // destinations to TRANSFER_DST in one barrier batch.
   std::array<VkImageMemoryBarrier, 4> prepare{};
@@ -3526,26 +3614,417 @@ bool OpenXrBackend::CopyEyesIntoSwapchains(VkQueue queue) {
                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                           nullptr, static_cast<std::uint32_t>(finish.size()),
                           finish.data());
+}
 
-  if (vk_->EndCommandBuffer(command) != VK_SUCCESS) {
+bool OpenXrBackend::FxaaEnabled() const {
+  static const bool enabled = [] {
+    const std::string mode = EnvString("MOCKTAIL_VR_ANTI_ALIASING", "fxaa");
+    if (mode != "fxaa" && mode != "off")
+      Log("  [vr-backend] unknown MOCKTAIL_VR_ANTI_ALIASING '%s'; using off\n",
+          mode.c_str());
+    return mode == "fxaa";
+  }();
+  return enabled && graphics_api_ == VrGraphicsApi::kVulkan;
+}
+
+bool OpenXrBackend::CreateFxaaPipelineLocked(VkFormat target_format) {
+  const auto module = [&](const std::uint32_t *words, std::size_t bytes,
+                          VkShaderModule *out) {
+    VkShaderModuleCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info.codeSize = bytes;
+    info.pCode = words;
+    return vk_->CreateShaderModule(vk_device_, &info, nullptr, out) ==
+           VK_SUCCESS;
+  };
+  if (fxaa_.vertex == VK_NULL_HANDLE &&
+      !module(kFullscreenVertexSpirv, sizeof(kFullscreenVertexSpirv),
+              &fxaa_.vertex))
+    return false;
+  if (fxaa_.fragment == VK_NULL_HANDLE &&
+      !module(kFxaaFragmentSpirv, sizeof(kFxaaFragmentSpirv), &fxaa_.fragment))
+    return false;
+  if (fxaa_.sampler == VK_NULL_HANDLE) {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter = info.minFilter = VK_FILTER_LINEAR;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    info.addressModeU = info.addressModeV = info.addressModeW =
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (vk_->CreateSampler(vk_device_, &info, nullptr, &fxaa_.sampler) !=
+        VK_SUCCESS)
+      return false;
+  }
+  if (fxaa_.set_layout == VK_NULL_HANDLE) {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binding.pImmutableSamplers = &fxaa_.sampler;
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 1;
+    info.pBindings = &binding;
+    if (vk_->CreateDescriptorSetLayout(vk_device_, &info, nullptr,
+                                       &fxaa_.set_layout) != VK_SUCCESS)
+      return false;
+  }
+  if (fxaa_.pool == VK_NULL_HANDLE) {
+    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2};
+    VkDescriptorPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info.maxSets = 2;
+    info.poolSizeCount = 1;
+    info.pPoolSizes = &size;
+    if (vk_->CreateDescriptorPool(vk_device_, &info, nullptr, &fxaa_.pool) !=
+        VK_SUCCESS)
+      return false;
+    const VkDescriptorSetLayout layouts[2] = {fxaa_.set_layout,
+                                              fxaa_.set_layout};
+    VkDescriptorSetAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocate.descriptorPool = fxaa_.pool;
+    allocate.descriptorSetCount = 2;
+    allocate.pSetLayouts = layouts;
+    if (vk_->AllocateDescriptorSets(vk_device_, &allocate, fxaa_.sets) !=
+        VK_SUCCESS)
+      return false;
+  }
+  if (fxaa_.layout == VK_NULL_HANDLE) {
+    VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                              3 * sizeof(std::uint32_t)};
+    VkPipelineLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info.setLayoutCount = 1;
+    info.pSetLayouts = &fxaa_.set_layout;
+    info.pushConstantRangeCount = 1;
+    info.pPushConstantRanges = &range;
+    if (vk_->CreatePipelineLayout(vk_device_, &info, nullptr, &fxaa_.layout) !=
+        VK_SUCCESS)
+      return false;
+  }
+  if (fxaa_.target_format == target_format && fxaa_.pipeline != VK_NULL_HANDLE)
+    return true;
+  if (fxaa_.pipeline != VK_NULL_HANDLE)
+    vk_->DestroyPipeline(vk_device_, fxaa_.pipeline, nullptr);
+  if (fxaa_.render_pass != VK_NULL_HANDLE)
+    vk_->DestroyRenderPass(vk_device_, fxaa_.render_pass, nullptr);
+  fxaa_.pipeline = VK_NULL_HANDLE;
+  fxaa_.render_pass = VK_NULL_HANDLE;
+  fxaa_.target_format = VK_FORMAT_UNDEFINED;
+
+  // The swapchain image arrives (and stays) a color attachment; every pixel
+  // is overwritten, so its old contents are never loaded.
+  VkAttachmentDescription attachment{};
+  attachment.format = target_format;
+  attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+  attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  VkAttachmentReference reference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription subpass{};
+  subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpass.colorAttachmentCount = 1;
+  subpass.pColorAttachments = &reference;
+  VkRenderPassCreateInfo pass{};
+  pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  pass.attachmentCount = 1;
+  pass.pAttachments = &attachment;
+  pass.subpassCount = 1;
+  pass.pSubpasses = &subpass;
+  if (vk_->CreateRenderPass(vk_device_, &pass, nullptr, &fxaa_.render_pass) !=
+      VK_SUCCESS)
+    return false;
+
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType = stages[1].sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = fxaa_.vertex;
+  stages[0].pName = "main";
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = fxaa_.fragment;
+  stages[1].pName = "main";
+  VkPipelineVertexInputStateCreateInfo vertex_input{};
+  vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  VkPipelineInputAssemblyStateCreateInfo assembly{};
+  assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewport{};
+  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport.viewportCount = viewport.scissorCount = 1;
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineColorBlendAttachmentState blend{};
+  blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo color{};
+  color.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  color.attachmentCount = 1;
+  color.pAttachments = &blend;
+  const VkDynamicState dynamic_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                            VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamic{};
+  dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamic.dynamicStateCount = 2;
+  dynamic.pDynamicStates = dynamic_states;
+  VkGraphicsPipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  info.stageCount = 2;
+  info.pStages = stages;
+  info.pVertexInputState = &vertex_input;
+  info.pInputAssemblyState = &assembly;
+  info.pViewportState = &viewport;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &multisample;
+  info.pColorBlendState = &color;
+  info.pDynamicState = &dynamic;
+  info.layout = fxaa_.layout;
+  info.renderPass = fxaa_.render_pass;
+  if (vk_->CreateGraphicsPipelines(vk_device_, VK_NULL_HANDLE, 1, &info,
+                                   nullptr, &fxaa_.pipeline) != VK_SUCCESS) {
+    fxaa_.pipeline = VK_NULL_HANDLE;
     return false;
   }
-  VkSubmitInfo submit{};
-  submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &command;
-  // The present dependencies were consumed earlier on this queue, so the
-  // copy runs after the guest's eye passes without the CPU waiting for them.
-  // xrReleaseSwapchainImage only needs the copy submitted to this queue.
-  // NoteDestroyImage waits for this slot before the guest frees a source.
-  slot->images = {source[0], source[1], destination[0], destination[1]};
-  if (SubmitAsyncLocked(queue, slot, submit) != VK_SUCCESS) {
-    return false;
-  }
-  if (mirror_.enabled())
-    mirror_readback_ = {slot,           slot->serial,    published_pose_.frame,
-                        eyes_[0].format, eyes_[0].width, eyes_[0].height};
+  fxaa_.target_format = target_format;
   return true;
+}
+
+bool OpenXrBackend::PrepareFxaaLocked() {
+  if (!FxaaEnabled() || fxaa_.failed || vk_ == nullptr)
+    return false;
+  // Sampling needs SAMPLED usage on the guest's eye images.
+  for (int eye = 0; eye < 2; ++eye) {
+    const auto record = images_.find(eyes_[eye].image);
+    if (record == images_.end() ||
+        !(record->second.usage & VK_IMAGE_USAGE_SAMPLED_BIT))
+      return false;
+  }
+  const auto fail = [this](const char *what) {
+    fxaa_.failed = true;
+    Log("  [vr-backend] FXAA unavailable (%s); copying the eyes without "
+        "anti-aliasing\n",
+        what);
+    return false;
+  };
+  const VkFormat target_format = eye_swapchains_[0].format;
+  if (fxaa_.target_format != target_format) {
+    // Framebuffers name the old render pass; pending draws use both.
+    WaitAsyncSubmissionsLocked(VK_NULL_HANDLE);
+    DestroyFxaaTargetsLocked();
+  }
+  if (!CreateFxaaPipelineLocked(target_format))
+    return fail("pipeline");
+  for (int eye = 0; eye < 2; ++eye) {
+    const EyeSwapchain &swapchain = eye_swapchains_[eye];
+    auto &views = fxaa_.target_views[eye];
+    auto &framebuffers = fxaa_.framebuffers[eye];
+    if (framebuffers.size() == swapchain.images.size())
+      continue;
+    for (std::size_t i = framebuffers.size(); i < swapchain.images.size(); ++i) {
+      VkImageViewCreateInfo view{};
+      view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+      view.image = swapchain.images[i];
+      view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      view.format = swapchain.format;
+      view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      VkImageView target = VK_NULL_HANDLE;
+      if (vk_->CreateImageView(vk_device_, &view, nullptr, &target) !=
+          VK_SUCCESS)
+        return fail("swapchain view");
+      views.push_back(target);
+      VkFramebufferCreateInfo info{};
+      info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+      info.renderPass = fxaa_.render_pass;
+      info.attachmentCount = 1;
+      info.pAttachments = &target;
+      info.width = swapchain.width;
+      info.height = swapchain.height;
+      info.layers = 1;
+      VkFramebuffer framebuffer = VK_NULL_HANDLE;
+      if (vk_->CreateFramebuffer(vk_device_, &info, nullptr, &framebuffer) !=
+          VK_SUCCESS)
+        return fail("framebuffer");
+      framebuffers.push_back(framebuffer);
+    }
+  }
+  for (int eye = 0; eye < 2; ++eye) {
+    if (fxaa_.sources[eye] == eyes_[eye].image &&
+        fxaa_.source_views[eye] != VK_NULL_HANDLE)
+      continue;
+    // A set must not change while a pending draw reads it. Eyes rebind
+    // rarely (Roblox recreated its eye targets), so waiting here is cheap.
+    WaitAsyncSubmissionsLocked(VK_NULL_HANDLE);
+    if (fxaa_.source_views[eye] != VK_NULL_HANDLE)
+      vk_->DestroyImageView(vk_device_, fxaa_.source_views[eye], nullptr);
+    fxaa_.source_views[eye] = VK_NULL_HANDLE;
+    fxaa_.sources[eye] = VK_NULL_HANDLE;
+    VkImageViewCreateInfo view{};
+    view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view.image = eyes_[eye].image;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = eyes_[eye].format;
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vk_->CreateImageView(vk_device_, &view, nullptr,
+                             &fxaa_.source_views[eye]) != VK_SUCCESS) {
+      fxaa_.source_views[eye] = VK_NULL_HANDLE;
+      return fail("eye view");
+    }
+    fxaa_.sources[eye] = eyes_[eye].image;
+    VkDescriptorImageInfo image{};
+    image.imageView = fxaa_.source_views[eye];
+    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = fxaa_.sets[eye];
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image;
+    vk_->UpdateDescriptorSets(vk_device_, 1, &write, 0, nullptr);
+  }
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    Log("  [vr-backend] FXAA anti-aliasing on (%ux%u per eye)\n",
+        eye_swapchains_[0].width, eye_swapchains_[0].height);
+  }
+  return true;
+}
+
+void OpenXrBackend::RecordFxaaEyesLocked(VkCommandBuffer command) {
+  const auto barrier = [&](VkImage image, VkImageLayout from, VkImageLayout to,
+                           VkAccessFlags src_access, VkAccessFlags dst_access,
+                           VkPipelineStageFlags src_stage,
+                           VkPipelineStageFlags dst_stage) {
+    VkImageMemoryBarrier b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcAccessMask = src_access;
+    b.dstAccessMask = dst_access;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vk_->CmdPipelineBarrier(command, src_stage, dst_stage, 0, 0, nullptr, 0,
+                            nullptr, 1, &b);
+  };
+  const bool linearize = eye_swapchains_[0].format == VK_FORMAT_R8G8B8A8_SRGB ||
+                         eye_swapchains_[0].format == VK_FORMAT_B8G8R8A8_SRGB;
+  for (int eye = 0; eye < 2; ++eye) {
+    const EyeBinding &binding = eyes_[eye];
+    const EyeSwapchain &swapchain = eye_swapchains_[eye];
+    barrier(binding.image, binding.final_layout,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    barrier(swapchain.images[swapchain.acquired_index],
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    VkRenderPassBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    begin.renderPass = fxaa_.render_pass;
+    begin.framebuffer = fxaa_.framebuffers[eye][swapchain.acquired_index];
+    begin.renderArea.extent = {swapchain.width, swapchain.height};
+    vk_->CmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    vk_->CmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                         fxaa_.pipeline);
+    vk_->CmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               fxaa_.layout, 0, 1, &fxaa_.sets[eye], 0,
+                               nullptr);
+    const VkViewport viewport{0.f, 0.f, float(swapchain.width),
+                              float(swapchain.height), 0.f, 1.f};
+    const VkRect2D scissor{{0, 0}, {swapchain.width, swapchain.height}};
+    vk_->CmdSetViewport(command, 0, 1, &viewport);
+    vk_->CmdSetScissor(command, 0, 1, &scissor);
+    struct {
+      float texel[2];
+      std::uint32_t linearize;
+    } push{{1.f / float(binding.width), 1.f / float(binding.height)},
+           linearize ? 1u : 0u};
+    vk_->CmdPushConstants(command, fxaa_.layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                          0, sizeof(push), &push);
+    vk_->CmdDraw(command, 3, 1, 0, 0);
+    vk_->CmdEndRenderPass(command);
+    VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAccessFlags access = VK_ACCESS_SHADER_READ_BIT;
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (mirror_.enabled()) {
+      // The shared-memory mirror still reads the guest's own pixels.
+      barrier(binding.image, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+              access, VK_ACCESS_TRANSFER_READ_BIT, stage,
+              VK_PIPELINE_STAGE_TRANSFER_BIT);
+      mirror_.RecordEyeCopy(MirrorProcs(), command, eye, binding.image,
+                            binding.final_layout, binding.width,
+                            binding.height);
+      layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      access = VK_ACCESS_TRANSFER_READ_BIT;
+      stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    // Back to the guest's layout before its next frame renders into it.
+    barrier(binding.image, layout, binding.final_layout, access,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, stage,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+  }
+}
+
+void OpenXrBackend::DestroyFxaaTargetsLocked() {
+  for (int eye = 0; eye < 2; ++eye) {
+    if (vk_ != nullptr && vk_device_ != VK_NULL_HANDLE) {
+      for (const VkFramebuffer framebuffer : fxaa_.framebuffers[eye])
+        vk_->DestroyFramebuffer(vk_device_, framebuffer, nullptr);
+      for (const VkImageView view : fxaa_.target_views[eye])
+        vk_->DestroyImageView(vk_device_, view, nullptr);
+    }
+    fxaa_.framebuffers[eye].clear();
+    fxaa_.target_views[eye].clear();
+  }
+}
+
+void OpenXrBackend::ForgetFxaaSourceLocked(VkImage image) {
+  for (int eye = 0; eye < 2; ++eye) {
+    if (image == VK_NULL_HANDLE || fxaa_.sources[eye] != image)
+      continue;
+    if (vk_ != nullptr && vk_device_ != VK_NULL_HANDLE &&
+        fxaa_.source_views[eye] != VK_NULL_HANDLE)
+      vk_->DestroyImageView(vk_device_, fxaa_.source_views[eye], nullptr);
+    fxaa_.source_views[eye] = VK_NULL_HANDLE;
+    fxaa_.sources[eye] = VK_NULL_HANDLE;
+  }
+}
+
+void OpenXrBackend::DestroyFxaaLocked() {
+  DestroyFxaaTargetsLocked();
+  ForgetFxaaSourceLocked(fxaa_.sources[0]);
+  ForgetFxaaSourceLocked(fxaa_.sources[1]);
+  if (vk_ != nullptr && vk_device_ != VK_NULL_HANDLE) {
+    // The pool frees its sets.
+    if (fxaa_.pipeline) vk_->DestroyPipeline(vk_device_, fxaa_.pipeline, nullptr);
+    if (fxaa_.render_pass)
+      vk_->DestroyRenderPass(vk_device_, fxaa_.render_pass, nullptr);
+    if (fxaa_.layout)
+      vk_->DestroyPipelineLayout(vk_device_, fxaa_.layout, nullptr);
+    if (fxaa_.pool) vk_->DestroyDescriptorPool(vk_device_, fxaa_.pool, nullptr);
+    if (fxaa_.set_layout)
+      vk_->DestroyDescriptorSetLayout(vk_device_, fxaa_.set_layout, nullptr);
+    if (fxaa_.sampler) vk_->DestroySampler(vk_device_, fxaa_.sampler, nullptr);
+    if (fxaa_.vertex) vk_->DestroyShaderModule(vk_device_, fxaa_.vertex, nullptr);
+    if (fxaa_.fragment)
+      vk_->DestroyShaderModule(vk_device_, fxaa_.fragment, nullptr);
+  }
+  fxaa_ = {};
 }
 
 void OpenXrBackend::PublishMirrorReadbackLocked() {
@@ -3823,9 +4302,12 @@ bool OpenXrBackend::CaptureEyeEvidence(VkQueue queue, int eye) {
     VkPhysicalDeviceMemoryProperties properties{};
     vk_->GetPhysicalDeviceMemoryProperties(vk_physical_device_, &properties);
     for (int i = 0; i < 2; ++i) {
+      // sRGB formats hold the same bytes; only the channel order matters.
       Require(formats[i] == VK_FORMAT_R8G8B8A8_UNORM ||
-                  formats[i] == VK_FORMAT_B8G8R8A8_UNORM,
-              "evidence currently requires 8-bit UNORM images");
+                  formats[i] == VK_FORMAT_B8G8R8A8_UNORM ||
+                  formats[i] == VK_FORMAT_R8G8B8A8_SRGB ||
+                  formats[i] == VK_FORMAT_B8G8R8A8_SRGB,
+              "evidence currently requires 8-bit RGBA images");
       VkBufferCreateInfo info{};
       info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       info.size = size;
@@ -3918,7 +4400,8 @@ bool OpenXrBackend::CaptureEyeEvidence(VkQueue queue, int eye) {
               "evidence map failed");
       const auto *bytes = static_cast<const unsigned char *>(mapped);
       std::vector<unsigned char> rgb(size / 4 * 3);
-      const bool bgra = formats[i] == VK_FORMAT_B8G8R8A8_UNORM;
+      const bool bgra = formats[i] == VK_FORMAT_B8G8R8A8_UNORM ||
+                        formats[i] == VK_FORMAT_B8G8R8A8_SRGB;
       for (std::size_t pixel = 0; pixel < size / 4; ++pixel) {
         rgb[pixel * 3] = bytes[pixel * 4 + (bgra ? 2 : 0)];
         rgb[pixel * 3 + 1] = bytes[pixel * 4 + 1];

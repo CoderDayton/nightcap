@@ -80,6 +80,11 @@ graphics:
   # enabled: true/false still works as on/off; set one or the other.
   # Standalone OpenXR test scene: mocktail-vr-probe --scene.
   # mode: off
+  # String (default: fxaa): smooth jagged edges in the headset. Roblox draws
+  # the VR eyes without anti-aliasing; fxaa filters each eye on its way to the
+  # headset, which costs well under a millisecond. off sends the eyes as
+  # rendered.
+  # anti_aliasing: fxaa
   # Optional string or integer: frame-rate limit used instead of
   # graphics.frame_rate_limit while VR is active. Same values: -1 (Roblox's
   # own cap, usually 60), display, unlimited, or any positive integer. The

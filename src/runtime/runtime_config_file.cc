@@ -170,6 +170,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "runtime.roblox_library",
       "vr.enabled",
       "vr.mode",
+      "vr.anti_aliasing",
       "vr.frame_rate_limit",
       "appearance.theme",
       "graphics.backend",
@@ -343,6 +344,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_VR_MODE"] = *mode;
+  }
+  if (const auto anti_aliasing = value("vr.anti_aliasing");
+      anti_aliasing.has_value()) {
+    if (*anti_aliasing != "fxaa" && *anti_aliasing != "off") {
+      *error = "vr.anti_aliasing must be fxaa or off";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_ANTI_ALIASING"] = *anti_aliasing;
   }
   if (const auto frame_rate = value("vr.frame_rate_limit");
       frame_rate.has_value()) {

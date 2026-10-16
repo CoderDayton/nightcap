@@ -20,6 +20,9 @@ Release notes on GitHub are taken from the matching section here.
 - `vr.mode` in `config.yaml`: `off` starts on the desktop, `on` starts in VR, and `auto` starts in VR only
   when SteamVR is already running with a connected headset. `auto` never starts SteamVR. `vr.enabled` still
   works.
+- Anti-aliasing in VR. Roblox draws the VR eyes without it, so edges were jagged in the headset. FXAA now
+  smooths each eye on its way to the headset, with no measurable frame-time cost on a Quest 2 at 90 Hz.
+  `vr.anti_aliasing: off` turns it off.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
 

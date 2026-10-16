@@ -176,6 +176,22 @@ TEST(RuntimeConfigFileTest, VrModeSelectsOnOffOrAuto) {
   EXPECT_NE(invalid.error.find("vr.mode"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaOrOff) {
+  TemporaryDirectory temporary;
+  for (const char* value : {"fxaa", "off"}) {
+    const auto loaded = LoadRuntimeConfig(
+        MapEnvironment(),
+        temporary.Write(std::string("version: 1\nvr:\n  anti_aliasing: ") +
+                        value + "\n"));
+    EXPECT_TRUE(loaded) << value << ": " << loaded.error;
+  }
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  anti_aliasing: msaa\n"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.anti_aliasing"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
   TemporaryDirectory temporary;
   const auto defaults = LoadRuntimeConfig(

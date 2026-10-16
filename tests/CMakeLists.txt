@@ -109,6 +109,14 @@ if(MOCKTAIL_ENABLE_VR)
       "$<TARGET_FILE:mocktail_vr_probe>" "$<TARGET_FILE:mocktail_test_openxr_runtime>"
       "$<TARGET_FILE:mocktail>")
   set_tests_properties(OpenXrPreviewContract PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+  # The checked-in SPIR-V must match shaders/vr. Needs glslc to check.
+  find_program(MOCKTAIL_GLSLC glslc)
+  if(MOCKTAIL_GLSLC)
+    add_test(NAME VrShaders.SpirvMatchesSources
+      COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/generate_vr_shaders.py" --check
+        --glslc "${MOCKTAIL_GLSLC}")
+  endif()
   target_compile_definitions(openxr_backend_test PRIVATE
     "MOCKTAIL_TEST_OPENXR_RUNTIME=\"$<TARGET_FILE:mocktail_test_openxr_runtime>\"")
   add_dependencies(openxr_backend_test mocktail_test_openxr_runtime)

@@ -345,6 +345,9 @@ class OpenXrBackend final {
   // readbacks) into one command buffer and submits it once. Only the shared
   // memory mirror waits for it; the headset path leaves it to the GPU.
   bool CopyEyesIntoSwapchains(VkQueue queue);
+  void RecordEyeCopiesLocked(VkCommandBuffer command, const VkImage source[2],
+                             const VkImage destination[2]);
+  void RecordFxaaEyesLocked(VkCommandBuffer command);
   // Per-frame GPU work (desktop mirror, eye copies) is submitted without a CPU
   // wait. A slot is reused only after its fence signalled; its images let a
   // guest destroy wait for the submissions that still read them.
@@ -367,6 +370,35 @@ class OpenXrBackend final {
     std::uint32_t height = 0;
   };
   void PublishMirrorReadbackLocked();
+  // vr.anti_aliasing: fxaa. The eye copy becomes one FXAA draw per eye into
+  // the runtime's swapchain image. Anything it cannot set up falls back to
+  // the plain copy, which never loses headset output.
+  struct FxaaState {
+    VkFormat target_format = VK_FORMAT_UNDEFINED;
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet sets[2] = {};
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    // The eye image each set samples, and its view.
+    VkImage sources[2] = {};
+    VkImageView source_views[2] = {};
+    // Per eye, one view and framebuffer per runtime swapchain image.
+    std::vector<VkImageView> target_views[2];
+    std::vector<VkFramebuffer> framebuffers[2];
+    bool failed = false;
+  };
+  bool FxaaEnabled() const;
+  // Pipeline, targets and eye bindings for this frame; false means copy.
+  bool PrepareFxaaLocked();
+  bool CreateFxaaPipelineLocked(VkFormat target_format);
+  void DestroyFxaaTargetsLocked();
+  void ForgetFxaaSourceLocked(VkImage image);
+  void DestroyFxaaLocked();
   // The next slot, recorded-ready, or nullptr when its previous submission
   // did not finish in time (the device is hung or lost).
   AsyncSubmission* NextAsyncSubmissionLocked();
@@ -470,6 +502,7 @@ class OpenXrBackend final {
   std::array<AsyncSubmission, kAsyncSubmissions> async_{};
   std::size_t next_async_ = 0;
   MirrorReadback mirror_readback_{};
+  FxaaState fxaa_{};
   // The mirror's signal for this present, which PrepareHostPresent passes on.
   VkSemaphore mirror_ready_ = VK_NULL_HANDLE;
   // Semaphores of destroyed desktop swapchains. A present may still wait on
