@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mocktail {
 namespace runtime {
@@ -10,8 +11,10 @@ namespace runtime {
 // Android's RbxKeyboard resolves the Roblox Font enum through
 // assets/android/fonts/font-mappings.json. The selected file lives below
 // assets/content/fonts while legacy SourceSansPro faces live in assets/fonts.
+// Emoji come from the color fonts Roblox ships next to the mapped faces.
 struct RobloxTextFontSelection {
   std::string primary_file;
+  std::vector<std::string> emoji_files;
   float size_scale = 0.795F;
   bool exact_mapping = false;
 };

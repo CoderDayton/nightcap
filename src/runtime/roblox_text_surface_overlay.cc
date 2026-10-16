@@ -26,7 +26,7 @@ namespace {
 
 constexpr std::size_t kMaximumRasterTextBytes = 4096;
 constexpr std::uint64_t kMaximumOverlayPixels = 16ULL * 1024ULL * 1024ULL;
-constexpr std::size_t kMaximumFallbackFonts = 6;
+constexpr std::size_t kMaximumFallbackFonts = 8;
 
 std::mutex g_active_overlay_mutex;
 RobloxTextSurfaceOverlay* g_active_overlay = nullptr;
@@ -121,8 +121,33 @@ std::vector<std::string> ResolveFontFiles(
   } else if (!selection.primary_file.empty()) {
     files.push_back(selection.primary_file);
   }
+  files.insert(files.end(), selection.emoji_files.begin(),
+               selection.emoji_files.end());
   if (!FcInit()) {
     return files;
+  }
+
+  // The sorted sans list rarely reaches an emoji font before the cap, so ask
+  // for the system emoji font by name ahead of it.
+  FcPattern* emoji = FcNameParse(reinterpret_cast<const FcChar8*>("emoji"));
+  if (emoji != nullptr) {
+    FcConfigSubstitute(nullptr, emoji, FcMatchPattern);
+    FcDefaultSubstitute(emoji);
+    FcResult emoji_result = FcResultNoMatch;
+    FcPattern* matched = FcFontMatch(nullptr, emoji, &emoji_result);
+    FcPatternDestroy(emoji);
+    FcChar8* file = nullptr;
+    if (matched != nullptr &&
+        FcPatternGetString(matched, FC_FILE, 0, &file) == FcResultMatch &&
+        file != nullptr && file[0] != '\0') {
+      const std::string candidate(reinterpret_cast<const char*>(file));
+      if (std::find(files.begin(), files.end(), candidate) == files.end()) {
+        files.push_back(candidate);
+      }
+    }
+    if (matched != nullptr) {
+      FcPatternDestroy(matched);
+    }
   }
 
   FcPattern* pattern = FcNameParse(reinterpret_cast<const FcChar8*>("sans"));
