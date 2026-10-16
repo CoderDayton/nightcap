@@ -13,11 +13,9 @@
 #include <utility>
 #include <vector>
 
-extern char** environ;
+#include "runtime/helper_program.h"
 
-#ifndef MOCKTAIL_INSTALL_LIBDIR
-#define MOCKTAIL_INSTALL_LIBDIR "lib"
-#endif
+extern char** environ;
 
 namespace mocktail {
 namespace runtime {
@@ -38,56 +36,9 @@ bool HasNonEmpty(const Environment& environment, std::string_view name) {
   return value.has_value() && !value->empty();
 }
 
-bool IsExecutableRegularFile(const std::filesystem::path& path) {
-  std::error_code error;
-  return std::filesystem::is_regular_file(path, error) &&
-         !std::filesystem::is_symlink(path, error) &&
-         access(path.c_str(), X_OK) == 0;
-}
-
 std::filesystem::path DialogHelper(const Environment& environment) {
-  const std::optional<std::string> helper_override =
-      environment.Get("MOCKTAIL_FAILURE_DIALOG_HELPER");
-  if (helper_override.has_value()) {
-    const std::filesystem::path helper(*helper_override);
-    return helper.is_absolute() && IsExecutableRegularFile(helper)
-               ? helper
-               : std::filesystem::path{};
-  }
-
-  const std::optional<std::string> project_override =
-      environment.Get("MOCKTAIL_PROJECT_ROOT");
-  if (project_override.has_value()) {
-    const std::filesystem::path root(*project_override);
-    if (root.is_absolute()) {
-      const std::filesystem::path helper =
-          root / "bin" / "mocktail_failure_dialog";
-      if (IsExecutableRegularFile(helper)) {
-        return helper;
-      }
-    }
-  }
-
-  std::error_code error;
-  const std::filesystem::path executable =
-      std::filesystem::read_symlink("/proc/self/exe", error);
-  if (error || executable.empty()) {
-    return {};
-  }
-  const std::filesystem::path executable_dir = executable.parent_path();
-  const std::vector<std::filesystem::path> candidates = {
-      executable_dir / "mocktail_failure_dialog",
-      executable_dir.parent_path() / MOCKTAIL_INSTALL_LIBDIR / "mocktail" /
-          "mocktail_failure_dialog",
-      executable_dir.parent_path() / "libexec" / "mocktail" /
-          "mocktail_failure_dialog",
-  };
-  for (const std::filesystem::path& candidate : candidates) {
-    if (IsExecutableRegularFile(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
+  return FindHelperProgram(environment, "MOCKTAIL_FAILURE_DIALOG_HELPER",
+                           "mocktail_failure_dialog");
 }
 
 void WaitForHelper(int helper_pid) {

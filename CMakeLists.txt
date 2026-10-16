@@ -357,6 +357,7 @@ target_link_libraries(mocktail_runtime PRIVATE
 # Keep GTK out of the process that loads Android libraries.
 add_library(mocktail_failure_dialog_runtime STATIC
   src/runtime/failure_dialog.cc
+  src/runtime/helper_program.cc
   src/runtime/settings_launcher.cc
 )
 add_library(Mocktail::FailureDialog ALIAS mocktail_failure_dialog_runtime)
