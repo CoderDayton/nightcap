@@ -159,7 +159,8 @@ class SettingsDocument {
 
   // False while an `enabled` switch of a block `key` is in, such as
   // integrations.discord_rpc.enabled, is off. The switch itself stays active.
-  // An empty fixed proxy is inactive while the system proxy is on.
+  // An empty fixed proxy is inactive while the system proxy is on, and the
+  // Fleasion port while Fleasion routes through the hosts file.
   bool IsActive(std::string_view key) const;
 
   // Mouse, keyboard and touch compare with what the file's device turns on.

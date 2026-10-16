@@ -731,7 +731,7 @@ const std::vector<SettingsPage>& SettingsPages() {
        "application-x-addon-symbolic",
        "Integrations",
        {
-           {"",
+           {"Connection",
             {
                 {"integrations.fleasion.enabled", "Use Fleasion", "",
                  SettingKind::kToggle, {}, "false", {}},
@@ -753,7 +753,9 @@ const std::vector<SettingsPage>& SettingsPages() {
             },
             "Use Fleasion",
             "Trust Fleasion's certificate without editing Roblox files.",
-            true},
+            true,
+            "Empty CA certificate uses Fleasion's own, in "
+            "~/.config/Fleasion/proxy_ca."},
        }},
       {"advanced",
        "Advanced",
@@ -783,7 +785,7 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}},
                 {"updates.source",
                  "Download source",
-                 "Both start with APKPure today.",
+                 "Both pick the same sources for now.",
                  SettingKind::kChoice,
                  {
                      {"apk-pure", "APKPure"},
@@ -1041,6 +1043,10 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   // The loader refuses a fixed proxy next to the system one.
   if (key == kProxyKey && Value(kProxyKey).empty() &&
       IsSwitchedOn("network.use_system_proxy")) {
+    return false;
+  }
+  if (key == "integrations.fleasion.proxy_port" &&
+      Value("integrations.fleasion.proxy_mode") == "hosts") {
     return false;
   }
   for (std::size_t dot = key.find('.'); dot != std::string_view::npos;

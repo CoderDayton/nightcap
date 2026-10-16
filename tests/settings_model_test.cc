@@ -1185,6 +1185,20 @@ TEST_F(SettingsModelTest, TheSystemProxyLeavesAnEmptyFixedProxyInactive) {
   EXPECT_TRUE(document.IsActive("network.proxy"));
 }
 
+TEST_F(SettingsModelTest, HostsRoutingLeavesTheFleasionPortInactive) {
+  Write("integrations:\n  fleasion:\n    enabled: true\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("integrations.fleasion.proxy_port"));
+
+  ASSERT_TRUE(
+      document.Set("integrations.fleasion.proxy_mode", "hosts", &error))
+      << error;
+  EXPECT_FALSE(document.IsActive("integrations.fleasion.proxy_port"));
+  EXPECT_TRUE(document.IsActive("integrations.fleasion.ca_certificate"));
+}
+
 TEST(SettingsPagesTest, TextGroupsExplainTheirPlaceholders) {
   for (const SettingsPage& page : SettingsPages()) {
     for (const SettingsGroup& group : page.groups) {
