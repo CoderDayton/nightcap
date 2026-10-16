@@ -22,13 +22,18 @@ Release notes on GitHub are taken from the matching section here.
 - `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
   and `compressed texture (MB)` counters. `scripts/summarize_profile_trace.py` prints the peak of each.
 
+### Fixed
+
+- Joining a game from a website link while already in a game no longer freezes Nightcap. It leaves the
+  current game and joins the new one, and leaving that game returns to the home screen.
+
 ### Changed
 
-- Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
-  memory for each block of sound it plays.
 - The home screen and avatar editor have fewer long frames. PC profiles compile the app's menu scripts to
   native code and turn this off while you are in a game, so games run as before. Set
   `FFlagDebugLuauCodegenAll` in `fflags.json` to choose it yourself.
+- Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
+  memory for each block of sound it plays.
 
 ## [0.3.4] - 2026-10-11
 
