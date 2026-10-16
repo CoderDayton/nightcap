@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "runtime/luau_codegen_switch.h"
 #include "runtime/runtime_paths.h"
 
 namespace mocktail {
@@ -359,6 +360,9 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
     return false;
   }
   overrides[std::string(kDesktopAppPolicyOverride)] = policy_json;
+  // Native Luau code makes the app's menus faster. LuauCodegenMenuSwitch turns
+  // it off in games, which keep Roblox's own per-script choice.
+  overrides.emplace(std::string(kLuauCodegenAllClientSetting), "True");
   // The SDUI Charts page in 2.736/2.738 can pass a table to TextColor3 and
   // leave the whole LuaApp blank. Default to the working legacy page while
   // preserving explicit user overrides for testing newer UI patches.

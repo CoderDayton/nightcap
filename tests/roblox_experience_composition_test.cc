@@ -816,13 +816,9 @@ TEST(RobloxExperienceCompositionTest,
   ASSERT_TRUE(composition.DrainLaunchRequests().ok());
   EXPECT_EQ(probe.leaves, 1);
   EXPECT_EQ(probe.starts.load(), 1);
-  ASSERT_TRUE(composition.DrainLaunchRequests().ok());
-  EXPECT_EQ(probe.leaves, 1);
-  EXPECT_EQ(probe.starts.load(), 1);
 
-  // The exact gameDidLeave callback is the safe boundary between the old
-  // controller and the replacement server launch.
-  composition.NotifyLuaAppDidReturn();
+  // nativeAppBridgeV2LeaveGame ends in the Native stage and Roblox sends no
+  // Lua app return, so the queued launch starts once the leave has returned.
   for (int attempt = 0; attempt < 1000 && probe.starts.load() < 2; ++attempt) {
     ASSERT_TRUE(composition.DrainLaunchRequests().ok());
     std::this_thread::sleep_for(std::chrono::milliseconds(1));

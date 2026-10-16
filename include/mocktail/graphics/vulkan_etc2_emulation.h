@@ -30,6 +30,18 @@ bool Etc2UploadByteCounts(EtcFormat format, const VkExtent3D& extent,
                           std::uint32_t layer_count, VkDeviceSize* compressed,
                           VkDeviceSize* decoded);
 
+// Sums every mip level and layer; `scale` multiplies the host image's
+// level-0 width and height only.
+bool Etc2ImageByteCounts(EtcFormat format, const VkExtent3D& extent,
+                         std::uint32_t mip_levels, std::uint32_t layers,
+                         std::uint32_t scale, VkDeviceSize* compressed,
+                         VkDeviceSize* decoded);
+
+struct EmulatedTextureBytes {
+  VkDeviceSize compressed = 0;
+  VkDeviceSize decoded = 0;
+};
+
 // Whether emulated ETC2 is reported to the application as a supported
 // feature, from the MOCKTAIL_ADVERTISE_ETC2 value: "0" hides it, anything
 // else (or unset) reports it. Hidden ETC2 still decodes ETC2 images the
@@ -151,6 +163,10 @@ class VulkanEtc2Emulation final {
   // Destroys the staging buffers owned by a command buffer that is no longer
   // pending, after waiting for any decode still writing into them.
   void ReleaseCommandBuffer(VkCommandBuffer command_buffer);
+
+  // Traced as the "emulated texture (MB)" and "compressed texture (MB)"
+  // counters.
+  EmulatedTextureBytes TextureBytes() const;
 
   struct State;
 

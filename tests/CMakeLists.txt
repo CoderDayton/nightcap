@@ -402,6 +402,13 @@ target_link_libraries(roblox_desktop_app_policy_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_desktop_app_policy_test)
 
+add_executable(luau_codegen_switch_test luau_codegen_switch_test.cc)
+target_link_libraries(luau_codegen_switch_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(luau_codegen_switch_test)
+
 add_executable(browser_tracker_service_test browser_tracker_service_test.cc)
 target_link_libraries(browser_tracker_service_test PRIVATE
   Mocktail::Services
@@ -1290,6 +1297,7 @@ if(MOCKTAIL_ENABLE_UPSTREAM_JNIVM)
 endif()
 gtest_discover_tests(libc_shim_test)
 gtest_discover_tests(discord_rpc_test)
+gtest_discover_tests(luau_codegen_switch_test)
 gtest_discover_tests(asset_manager_test)
 gtest_discover_tests(android_looper_test)
 gtest_discover_tests(android_native_window_test)

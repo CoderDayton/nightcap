@@ -236,6 +236,22 @@ TEST(RobloxDesktopAppPolicyTest, DefaultsDesktopFlyoutSidePanelUnlessOverridden)
             "0");
 }
 
+TEST(RobloxDesktopAppPolicyTest, DefaultsLuauCodegenAllUnlessOverridden) {
+  const std::string policy =
+      nlohmann::json({{"PlatformGroup", "Desktop"}}).dump();
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(policy, "{}", &merged,
+                                                          &error))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugLuauCodegenAll"], "True");
+
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(
+      policy, R"({"FFlagDebugLuauCodegenAll":false})", &merged, &error))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugLuauCodegenAll"], false);
+}
+
 TEST(RobloxDesktopAppPolicyTest, RejectsMalformedOrSymlinkedStorage) {
   TemporaryDirectory temporary;
   const std::filesystem::path default_path = temporary.path() / "default.json";

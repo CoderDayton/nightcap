@@ -1461,8 +1461,9 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
       return Status::Ok();
     if (!launch_in_progress_ && active_launch_ == nullptr && game_active_ &&
         !pending_launch_requests_.empty()) {
-      // Start the queued launch only after consuming this leave callback, so
-      // it cannot reach the next controller.
+      // Blocks a reentrant drain while the leave pumps main-thread messages.
+      // The leave ends in the Native stage with no Lua app return, so the
+      // queued launch starts on the next drain.
       controlled_switch_waiting_for_return_ = true;
       switch_active_game = true;
     }
@@ -1471,7 +1472,7 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
     std::fprintf(stderr,
                  "[experience] leaving active game for queued launch\n");
     const Status leave_status = LeaveGame();
-    if (!leave_status.ok()) {
+    {
       std::lock_guard<std::mutex> lock(mutex_);
       controlled_switch_waiting_for_return_ = false;
     }

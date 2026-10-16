@@ -6,8 +6,9 @@
 Usage: summarize_profile_trace.py TRACE [TRACE ...]
 
 Each trace gets its own column, so `before.json after.json` compares them.
-Frame times come from the "frame interval (ms)" counter; every other row is
-a slice name recorded by the Vulkan adapter.
+Frame times come from the "frame interval (ms)" counter, peaks from the
+texture counters; every other row is a slice name recorded by the Vulkan
+adapter.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import sys
 from typing import Iterable
 
 FRAME_COUNTER = "frame interval (ms)"
+PEAK_COUNTERS = ("emulated texture (MB)", "compressed texture (MB)")
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class Distribution:
 class Summary:
     frames: Distribution | None
     slices: dict[str, Distribution]
+    peaks: dict[str, float]
 
 
 def _nearest_rank(ordered: list[float], percent: float) -> float:
@@ -57,16 +60,21 @@ def _distribution(values: list[float]) -> Distribution:
 def summarize(events: Iterable[dict]) -> Summary:
     frames: list[float] = []
     slices: dict[str, list[float]] = {}
+    peaks: dict[str, float] = {}
     for event in events:
         phase = event.get("ph")
         if phase == "C" and event.get("name") == FRAME_COUNTER:
             frames.append(float(event["args"]["value"]))
+        elif phase == "C" and event.get("name") in PEAK_COUNTERS:
+            value = float(event["args"]["value"])
+            peaks[event["name"]] = max(peaks.get(event["name"], value), value)
         elif phase == "X":
             slices.setdefault(event["name"], []).append(event["dur"] / 1000)
     return Summary(
         frames=_distribution(frames) if frames else None,
         slices={name: _distribution(values)
-                for name, values in slices.items()})
+                for name, values in slices.items()},
+        peaks=peaks)
 
 
 def _row(label: str, cells: list[str]) -> str:
@@ -96,6 +104,11 @@ def to_markdown(traces: list[tuple[str, Summary]]) -> str:
     if any(frames):
         lines += [_metric_row(f"frame interval {field} (ms)", frames, field)
                   for field in ("mean", "p50", "p95", "p99", "max")]
+    for name in PEAK_COUNTERS:
+        if any(name in summary.peaks for summary in summaries):
+            lines.append(_row(f"{name} peak", [
+                f"{summary.peaks[name]:.2f}" if name in summary.peaks else "-"
+                for summary in summaries]))
 
     # Largest total time first, taken from whichever trace spent the most.
     totals: dict[str, float] = {}

@@ -129,14 +129,23 @@ runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
-`MOCKTAIL_SMALL_TEXTURE_UPSCALE` (default `4`) redraws ETC2 textures of 64px or
+`MOCKTAIL_SMALL_TEXTURE_UPSCALE` (default `4`) stores ETC2 textures of 64px or
 smaller at N times their width and height. At the default that is 16 times the
 pixels per affected texture.
+
+Upscaling alone adds no detail. Each original pixel becomes an N×N block of the
+same colour, and the GPU's filtering already blends a small texture that much
+when it draws it. The extra size only shows when a replacement PNG in
+`~/.config/mocktail/textures` has more detail than the original.
 
 The cost lands in two places. Decoding and resampling is CPU work on up to 8
 threads while textures load, which shows up as a burst rather than a steady
 load. The enlarged textures then stay in GPU memory for the session and cost
-extra sampling bandwidth on every frame that uses them.
+extra sampling bandwidth on every frame that uses them. In Blade Ball the
+memory share is small: decoded textures came to 5.1 times their ETC2 size both
+with the default and with upscaling off. The `emulated texture (MB)` and
+`compressed texture (MB)` counters in a `--profile` trace give the figures for
+any game.
 
 That decode does not run on the thread that submits the frame. On a device
 with a timeline semaphore, uploads decode on a background dispatcher and the
@@ -149,6 +158,37 @@ Set it to `1` to turn upscaling off:
 
 ```bash
 MOCKTAIL_SMALL_TEXTURE_UPSCALE=1 mocktail
+```
+
+## Native code in the menus
+
+The home screen and avatar editor run Roblox's Lua app in the Luau interpreter,
+and its long frames come from that thread. PC profiles set
+`FFlagDebugLuauCodegenAll`, which compiles every script to native code. That
+makes the menus' Lua about 2.5 times cheaper for about 56 MB of compiled code.
+
+In a game the same flag compiles every game script too: Blade Ball grew from 7
+MB to about 300 MB and hit Roblox's native code limit, which shows warnings in
+F9. So Nightcap turns the flag off when a game starts joining and back on when
+you return to the menus. Roblox reads the flag each time it compiles a script,
+and a game's compiled code is freed when you leave it. Games run with Roblox's
+own per-script choice, the same as without the flag.
+
+The log shows each switch:
+
+```text
+[luau-codegen] menus-only switch at +0x<offset in libroblox.so>
+[luau-codegen] native code for all scripts off
+[luau-codegen] native code for all scripts on
+```
+
+Setting `FFlagDebugLuauCodegenAll` in `fflags.json` turns the switching off
+and your value applies everywhere. To keep the interpreter in the menus too:
+
+```json
+{
+  "FFlagDebugLuauCodegenAll": false
+}
 ```
 
 ## Frame rate and present mode

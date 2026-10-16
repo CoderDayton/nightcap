@@ -25,9 +25,19 @@ Release notes on GitHub are taken from the matching section here.
   edges more precisely and keeps text sharper for a little more GPU time, or `off`.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
+- `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
+  and `compressed texture (MB)` counters. `scripts/summarize_profile_trace.py` prints the peak of each.
+
+### Fixed
+
+- Joining a game from a website link while already in a game no longer freezes Nightcap. It leaves the
+  current game and joins the new one, and leaving that game returns to the home screen.
 
 ### Changed
 
+- The home screen and avatar editor have fewer long frames. PC profiles compile the app's menu scripts to
+  native code and turn this off while you are in a game, so games run as before. Set
+  `FFlagDebugLuauCodegenAll` in `fflags.json` to choose it yourself.
 - Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
   memory for each block of sound it plays.
 - VR on Vulkan no longer makes the CPU wait for the GPU each frame. The eye copies, the desktop mirror and

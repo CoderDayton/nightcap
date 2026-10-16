@@ -67,6 +67,7 @@
 #include "runtime/display_size.h"
 #include "runtime/environment.h"
 #include "runtime/discord_rpc.h"
+#include "runtime/luau_codegen_switch.h"
 #include "runtime/jnivm_platform_web_callbacks.h"
 #include "runtime/owned_pthread.h"
 #include "runtime/platform_cache_migration.h"
@@ -4692,6 +4693,27 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                 << "; continuing without Rich Presence\n";
     }
   }
+  mocktail::runtime::LuauCodegenMenuSwitch luau_codegen_switch(
+      [&process_environment]() -> std::uint8_t* {
+        if (process_environment.GetOr("MOCKTAIL_LUAU_CODEGEN_MENU_SWITCH",
+                                      "0") != "1") {
+          return nullptr;
+        }
+        const std::uintptr_t base = g_libroblox_base;
+        std::uint8_t* flag = mocktail::runtime::FindFastFlagValue(
+            mocktail::runtime::LoadedImageSegments(base),
+            mocktail::runtime::kLuauCodegenAllFastFlagName);
+        if (flag == nullptr) {
+          std::cerr << "  [luau-codegen] DebugLuauCodegenAll not found; "
+                       "leaving it on in games\n";
+        } else {
+          std::cout << "  [luau-codegen] menus-only switch at +0x" << std::hex
+                    << (reinterpret_cast<std::uintptr_t>(flag) - base)
+                    << std::dec << '\n';
+        }
+        return flag;
+      },
+      discord_rpc.observer());
   const mocktail::runtime::InputCapabilityConfig& input_capabilities =
       runtime_config.input_capabilities();
   if (!runtime_config.frame_rate().valid()) {
@@ -6917,7 +6939,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               jni_factory, present_boundary, std::move(surface_config),
               &dependencies.roblox_credential(),
               mocktail::runtime::RobloxExperienceSurfaceProvider{},
-              discord_rpc.observer(),
+              luau_codegen_switch.observer(),
               dependencies.clear_persisted_web_view_cookie(),
               runtime_config.microphone_enabled(),
               platform_web_symbols.account);

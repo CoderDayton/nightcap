@@ -92,6 +92,34 @@ bool Etc2UploadByteCounts(EtcFormat format, const VkExtent3D& extent,
   return true;
 }
 
+bool Etc2ImageByteCounts(EtcFormat format, const VkExtent3D& extent,
+                         std::uint32_t mip_levels, std::uint32_t layers,
+                         std::uint32_t scale, VkDeviceSize* compressed,
+                         VkDeviceSize* decoded) {
+  if (extent.width == 0 || extent.height == 0 || extent.depth == 0 ||
+      mip_levels == 0 || layers == 0 || scale == 0 || compressed == nullptr ||
+      decoded == nullptr) {
+    return false;
+  }
+  const auto level = [](std::uint32_t size, std::uint32_t mip) {
+    return std::max<VkDeviceSize>(1, static_cast<VkDeviceSize>(size) >> mip);
+  };
+  VkDeviceSize compressed_total = 0;
+  VkDeviceSize decoded_total = 0;
+  for (std::uint32_t mip = 0; mip < mip_levels && mip < 32; ++mip) {
+    const VkDeviceSize depth = level(extent.depth, mip);
+    compressed_total += ((level(extent.width, mip) + 3) / 4) *
+                        ((level(extent.height, mip) + 3) / 4) * depth *
+                        EtcBlockBytes(format);
+    decoded_total += level(extent.width * scale, mip) *
+                     level(extent.height * scale, mip) * depth *
+                     EtcDecodedTexelBytes(format);
+  }
+  *compressed = compressed_total * layers;
+  *decoded = decoded_total * layers;
+  return true;
+}
+
 namespace {
 
 bool EmulationDisabledByEnvironment() {
@@ -207,7 +235,20 @@ struct ImageRecord {
   // Decoded level-0 texels of a scaled image; every host mip is resampled
   // from them so the texture keeps its detail at every draw size.
   std::shared_ptr<const RgbaImage> base;
+  EmulatedTextureBytes bytes;
 };
+
+// `now` is read under the lock that produced `totals`, so concurrent changes
+// reach the trace in the order they happened.
+void TraceTextureBytes(const EmulatedTextureBytes& totals, std::uint64_t now) {
+  ChromeTraceWriter* const trace = ActiveProfileTrace();
+  if (trace == nullptr) {
+    return;
+  }
+  constexpr double kMegabyte = 1024.0 * 1024.0;
+  trace->Counter("emulated texture (MB)", now, totals.decoded / kMegabyte);
+  trace->Counter("compressed texture (MB)", now, totals.compressed / kMegabyte);
+}
 
 bool IsColorFormat(EtcFormat format) {
   return format == EtcFormat::kEtc2Rgb8 || format == EtcFormat::kEtc2Rgb8A1 ||
@@ -669,6 +710,8 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkPhysicalDevice, bool> physical_devices;
   std::vector<std::unique_ptr<HostDevice>> devices;
   std::unordered_map<VkImage, ImageRecord> images;
+  // Sum over `images`; guarded by `mutex`.
+  EmulatedTextureBytes texture_bytes;
   std::unordered_map<VkBuffer, BufferBinding> buffers;
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
   std::unordered_map<VkCommandBuffer, CommandRecord> commands;
@@ -1245,6 +1288,8 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
   std::vector<std::unique_ptr<StagingBlock>> doomed;
+  EmulatedTextureBytes totals;
+  std::uint64_t now = 0;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     for (auto it = state_->commands.begin(); it != state_->commands.end();) {
@@ -1265,11 +1310,20 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
       }
     }
     for (auto it = state_->images.begin(); it != state_->images.end();) {
-      it = it->second.device == device ? state_->images.erase(it) : std::next(it);
+      if (it->second.device == device) {
+        state_->texture_bytes.compressed -= it->second.bytes.compressed;
+        state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        it = state_->images.erase(it);
+      } else {
+        ++it;
+      }
     }
+    totals = state_->texture_bytes;
+    now = TraceClockNanos();
     state_->has_commands.store(!state_->commands.empty(),
                                std::memory_order_release);
   }
+  TraceTextureBytes(totals, now);
   if (const HostDevice* dev = state_->Find(device); dev != nullptr) {
     for (const auto& block : doomed) {
       DestroyStagingBlock(*dev, *block);
@@ -1316,6 +1370,14 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   }
   const VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (result == VK_SUCCESS && image != nullptr) {
+    EmulatedTextureBytes bytes;
+    if (!Etc2ImageByteCounts(format.etc_format, create_info->extent,
+                             create_info->mipLevels, create_info->arrayLayers,
+                             scale, &bytes.compressed, &bytes.decoded)) {
+      bytes = {};
+    }
+    EmulatedTextureBytes totals;
+    std::uint64_t now = 0;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
       state_->images[*image] = {device,
@@ -1324,8 +1386,14 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
                                 create_info->extent.width,
                                 create_info->extent.height,
                                 nullptr,
-                                nullptr};
+                                nullptr,
+                                bytes};
+      state_->texture_bytes.compressed += bytes.compressed;
+      state_->texture_bytes.decoded += bytes.decoded;
+      totals = state_->texture_bytes;
+      now = TraceClockNanos();
     }
+    TraceTextureBytes(totals, now);
     if (ShouldLog(&g_image_logs, 4)) {
       std::fprintf(stderr,
                    "  [vulkan] ETC2 image %ux%u mips=%u format=%d -> host "
@@ -1346,10 +1414,31 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
     return;
   }
   if (dev->emulated) {
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    state_->images.erase(image);
+    EmulatedTextureBytes totals;
+    std::uint64_t now = 0;
+    bool changed = false;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      const auto it = state_->images.find(image);
+      if (it != state_->images.end()) {
+        state_->texture_bytes.compressed -= it->second.bytes.compressed;
+        state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        state_->images.erase(it);
+        totals = state_->texture_bytes;
+        now = TraceClockNanos();
+        changed = true;
+      }
+    }
+    if (changed) {
+      TraceTextureBytes(totals, now);
+    }
   }
   dev->destroy_image(device, image, allocator);
+}
+
+EmulatedTextureBytes VulkanEtc2Emulation::TextureBytes() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->texture_bytes;
 }
 
 VkResult VulkanEtc2Emulation::CreateImageView(

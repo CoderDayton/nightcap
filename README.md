@@ -136,6 +136,11 @@ caused by `Color3` errors in the newer SDUI page. An explicit
 PC profiles also set `FIntFlyoutTestVariantRollout12` to `2`, which shows the
 desktop side panel menu. An explicit override takes precedence.
 
+PC profiles compile the app's menus to native code with
+`FFlagDebugLuauCodegenAll`, and turn it off while you are in a game. Setting
+it yourself turns the switching off and your value applies everywhere. See
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md#native-code-in-the-menus).
+
 ```json
 {
   "FFlagExample": "True",
