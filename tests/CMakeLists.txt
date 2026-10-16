@@ -54,6 +54,7 @@ endif()
 add_executable(settings_model_test settings_model_test.cc)
 target_link_libraries(settings_model_test PRIVATE
   Mocktail::SettingsModel
+  Mocktail::Update
   GTest::gtest_main
 )
 
@@ -249,6 +250,12 @@ target_link_libraries(runtime_paths_test PRIVATE
 
 add_executable(asset_overlay_names_test asset_overlay_names_test.cc)
 target_link_libraries(asset_overlay_names_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(running_instance_test running_instance_test.cc)
+target_link_libraries(running_instance_test PRIVATE
   Mocktail::Runtime
   GTest::gtest_main
 )
@@ -1097,6 +1104,7 @@ gtest_discover_tests(game_mode_link_namespace_test PROPERTIES
 gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(asset_overlay_names_test)
+gtest_discover_tests(running_instance_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
 gtest_discover_tests(process_launch_policy_test)

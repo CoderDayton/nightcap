@@ -15,6 +15,12 @@ namespace runtime {
 // while every process started from one installed binary shares one owner.
 std::string CurrentExecutableInstanceKey();
 
+std::filesystem::path CurrentUserInstanceLockPath();
+
+// The program that starts this installation: the AppImage file when running
+// from one, otherwise this executable.
+std::filesystem::path CurrentExecutableIdentityPath();
+
 // Holds a non-blocking advisory lock for one Mocktail game process. The
 // descriptor remains open for the lifetime of this object, so the kernel also
 // releases the lock after a crash or forced process termination.

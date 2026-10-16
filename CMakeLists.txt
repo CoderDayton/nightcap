@@ -307,6 +307,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/runtime_config_store.cc
   src/runtime/runtime_config_file.cc
   src/runtime/runtime_paths.cc
+  src/runtime/running_instance.cc
   src/runtime/session_log.cc
   src/runtime/single_instance_lock.cc
   src/runtime/startup_state_machine.cc

@@ -24,45 +24,172 @@ namespace {
 constexpr std::string_view kTouchKey = "device.touch";
 // Where a file with no device key holds it.
 constexpr std::string_view kTouchKeyWithoutDevice = "input.touch_enabled";
+constexpr std::string_view kMouseKey = "device.mouse";
+constexpr std::string_view kKeyboardKey = "device.keyboard";
+constexpr std::string_view kDeviceKey = "device";
+constexpr std::string_view kDeviceTypeKey = "device.type";
+// The older way to pick a PC or a phone. The loader refuses it beside a
+// device.
+constexpr std::string_view kPlayabilityKey =
+    "compatibility.desktop_playability";
+constexpr std::string_view kProxyKey = "network.proxy";
+constexpr std::string_view kProxyHostKey = "network.proxy_host";
+constexpr std::string_view kProxyPortKey = "network.proxy_port";
 
-// Whether Nightcap turns touch input on for the config `text`.
-bool TouchInput(std::string_view text) {
-  for (const std::string_view key : {kTouchKey, kTouchKeyWithoutDevice}) {
-    const runtime::RuntimeConfigValue value =
-        runtime::GetRuntimeConfigValue(text, key);
-    if (value.found) {
+runtime::RuntimeConfigValue Get(std::string_view text, std::string_view key) {
+  return runtime::GetRuntimeConfigValue(text, key);
+}
+
+// The preset the file picks, as the file spells it. Empty when it picks none.
+std::string DevicePreset(std::string_view text) {
+  for (const std::string_view key : {kDeviceKey, kDeviceTypeKey}) {
+    if (runtime::RuntimeConfigValue device = Get(text, key); device.found) {
+      return std::move(device.value);
+    }
+  }
+  if (const runtime::RuntimeConfigValue playability =
+          Get(text, kPlayabilityKey);
+      playability.found) {
+    const bool desktop = playability.value != "0" &&
+                         playability.value != "off" &&
+                         playability.value != "false";
+    return desktop ? "pc-windows-11" : "mobile-pixel-7";
+  }
+  return {};
+}
+
+// What the file's device turns on for the input `key`.
+bool PresetInput(std::string_view text, std::string_view key) {
+  const std::string preset = DevicePreset(text);
+  const runtime::DeviceProfile* profile = runtime::FindDeviceProfile(
+      preset.empty() ? runtime::kDefaultDeviceProfileName
+                     : std::string_view(preset));
+  if (profile == nullptr) {
+    return false;
+  }
+  return key == kTouchKey   ? profile->touch_enabled
+         : key == kMouseKey ? profile->mouse_enabled
+                            : profile->keyboard_enabled;
+}
+
+bool DeviceInput(std::string_view text, std::string_view key) {
+  if (const runtime::RuntimeConfigValue value = Get(text, key); value.found) {
+    return value.value == "true";
+  }
+  if (key == kTouchKey) {
+    if (const runtime::RuntimeConfigValue value =
+            Get(text, kTouchKeyWithoutDevice);
+        value.found) {
       return value.value == "true";
     }
   }
-  // Unset, the device decides.
-  runtime::RuntimeConfigValue device =
-      runtime::GetRuntimeConfigValue(text, "device");
-  if (!device.found) {
-    device = runtime::GetRuntimeConfigValue(text, "device.type");
+  return PresetInput(text, key);
+}
+
+// Runs `step` on the text of `edit`, unless `edit` already failed.
+template <typename Step>
+runtime::RuntimeConfigEdit Then(runtime::RuntimeConfigEdit edit, Step step) {
+  return edit ? step(edit.text) : edit;
+}
+
+runtime::RuntimeConfigEdit Unchanged(std::string_view text) {
+  return {std::string(text), {}};
+}
+
+runtime::RuntimeConfigEdit UnsetIfSet(std::string_view text,
+                                      std::string_view key) {
+  return Get(text, key).found ? runtime::UnsetRuntimeConfigValue(text, key)
+                              : Unchanged(text);
+}
+
+// `text` with the device in block form: a type, the touch switch moved in
+// from input.touch_enabled, and no desktop_playability.
+runtime::RuntimeConfigEdit ToDeviceBlock(std::string_view text) {
+  if (Get(text, kDeviceTypeKey).found) {
+    return Unchanged(text);
   }
-  const runtime::DeviceProfile* profile = runtime::FindDeviceProfile(
-      device.found ? std::string_view(device.value)
-                   : runtime::kDefaultDeviceProfileName);
-  return profile != nullptr && profile->touch_enabled;
+  const std::string preset = DevicePreset(text);
+  const runtime::RuntimeConfigValue touch = Get(text, kTouchKeyWithoutDevice);
+  runtime::RuntimeConfigEdit edit = runtime::SetRuntimeConfigString(
+      text, kDeviceTypeKey,
+      preset.empty() ? runtime::kDefaultDeviceProfileName
+                     : std::string_view(preset));
+  if (touch.found) {
+    edit = Then(std::move(edit), [&touch](std::string_view moved) {
+      return Then(runtime::SetRuntimeConfigString(moved, kTouchKey, touch.value),
+                  [](std::string_view current) {
+                    return runtime::UnsetRuntimeConfigValue(
+                        current, kTouchKeyWithoutDevice);
+                  });
+    });
+  }
+  return Then(std::move(edit), [](std::string_view current) {
+    return UnsetIfSet(current, kPlayabilityKey);
+  });
+}
+
+// A new preset brings its own touch, mouse and keyboard, so the switches set
+// for the old one are dropped.
+runtime::RuntimeConfigEdit SetDevicePreset(std::string_view text,
+                                           std::string_view value) {
+  const std::string_view key =
+      Get(text, kDeviceTypeKey).found ? kDeviceTypeKey : kDeviceKey;
+  runtime::RuntimeConfigEdit edit = Unchanged(text);
+  for (const std::string_view dropped :
+       {kPlayabilityKey, kTouchKeyWithoutDevice, kTouchKey, kMouseKey,
+        kKeyboardKey}) {
+    edit = Then(std::move(edit), [dropped](std::string_view current) {
+      return UnsetIfSet(current, dropped);
+    });
+  }
+  return Then(std::move(edit), [key, value](std::string_view current) {
+    return runtime::SetRuntimeConfigString(current, key, value);
+  });
+}
+
+std::string ProxyValue(std::string_view text) {
+  const runtime::RuntimeConfigValue host = Get(text, kProxyHostKey);
+  const runtime::RuntimeConfigValue port = Get(text, kProxyPortKey);
+  return host.found && port.found ? host.value + ":" + port.value
+                                  : std::string();
+}
+
+// `text` with the fixed proxy set from "host:port", or unset when empty.
+runtime::RuntimeConfigEdit SetProxy(std::string_view text,
+                                    std::string_view value) {
+  if (value.empty()) {
+    return Then(UnsetIfSet(text, kProxyHostKey),
+                [](std::string_view current) {
+                  return UnsetIfSet(current, kProxyPortKey);
+                });
+  }
+  const std::size_t colon = value.rfind(':');
+  if (colon == std::string_view::npos || colon == 0 ||
+      colon + 1 == value.size()) {
+    return {{}, "Write the proxy as host:port, like 127.0.0.1:8080"};
+  }
+  return Then(runtime::SetRuntimeConfigString(text, kProxyHostKey,
+                                              value.substr(0, colon)),
+              [value, colon](std::string_view current) {
+                return runtime::SetRuntimeConfigString(
+                    current, kProxyPortKey, value.substr(colon + 1));
+              });
+}
+
+bool IsDeviceDetail(std::string_view key) {
+  return key.substr(0, 7) == "device." && key != kDeviceTypeKey &&
+         key != kTouchKey;
 }
 
 // `text` with touch input set to `value`, which is "true" or "false".
 runtime::RuntimeConfigEdit SetTouchInput(std::string_view text,
                                          std::string_view value) {
-  const runtime::RuntimeConfigValue preset =
-      runtime::GetRuntimeConfigValue(text, "device");
-  if (preset.found) {
-    // A device given as one name has no place for the switch. It becomes
-    // the block form of the same device.
-    runtime::RuntimeConfigEdit block =
-        runtime::SetRuntimeConfigString(text, "device.type", preset.value);
-    if (!block) {
-      return block;
-    }
-    return runtime::SetRuntimeConfigString(block.text, kTouchKey, value);
-  }
-  if (runtime::GetRuntimeConfigValue(text, "device.type").found) {
-    return runtime::SetRuntimeConfigString(text, kTouchKey, value);
+  // A device given as one name has no place for the switch. It becomes the
+  // block form of the same device.
+  if (Get(text, kDeviceKey).found || Get(text, kDeviceTypeKey).found) {
+    return Then(ToDeviceBlock(text), [value](std::string_view block) {
+      return runtime::SetRuntimeConfigString(block, kTouchKey, value);
+    });
   }
   return runtime::SetRuntimeConfigString(text, kTouchKeyWithoutDevice, value);
 }
@@ -310,6 +437,17 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "roblox",
                  {}},
             }},
+           {"Window",
+            {
+                {"window.width", "Width",
+                 "Starting width, in desktop units.", SettingKind::kNumber,
+                 {}, "1280", {}, 1, 16384, 1},
+                {"window.height", "Height",
+                 "Starting height, in desktop units.", SettingKind::kNumber,
+                 {}, "720", {}, 1, 16384, 1},
+                {"window.title", "Title", "", SettingKind::kText, {},
+                 "Roblox", {}},
+            }},
        }},
       {"input",
        "Input",
@@ -336,6 +474,30 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {},
                  "false",
                  {}},
+            }},
+           {"Device",
+            {
+                {kDeviceKey,
+                 "Device",
+                 "What Roblox is told it runs on. Phone and console get "
+                 "their own menus and controls.",
+                 SettingKind::kChoice,
+                 {
+                     {"pc-windows-11", "PC"},
+                     {"mobile-pixel-7", "Phone"},
+                     {"console-ps5", "Console"},
+                 },
+                 "pc-windows-11",
+                 {
+                     {"pc", "pc-windows-11"},
+                     {"mobile", "mobile-pixel-7"},
+                     {"console", "console-ps5"},
+                 }},
+                {kMouseKey, "Mouse", "Off hides the mouse from Roblox.",
+                 SettingKind::kToggle, {}, "true", {}},
+                {kKeyboardKey, "Keyboard",
+                 "Off hides the keyboard from Roblox.", SettingKind::kToggle,
+                 {}, "true", {}},
             }},
        }},
       {"performance",
@@ -410,6 +572,30 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}},
             }},
        }},
+      {"network",
+       "Network",
+       "network-wired-symbolic",
+       "System",
+       {
+           {"Proxy",
+            {
+                {"network.use_system_proxy",
+                 "Use the system proxy",
+                 "Follow the desktop's HTTP or SOCKS5 proxy. Leave the fixed "
+                 "proxy empty while this is on.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+                {kProxyKey, "Fixed proxy (host:port)", "", SettingKind::kText,
+                 {}, "", {}},
+            }},
+           {"Certificates",
+            {
+                {"network.ca_bundle", "CA bundle (PEM)", "",
+                 SettingKind::kFile, {}, "", {}},
+            }},
+       }},
       {"discord",
        "Discord",
        "user-available-symbolic",
@@ -430,6 +616,8 @@ const std::vector<SettingsPage>& SettingsPages() {
                 {"integrations.discord_rpc.show_elapsed_time",
                  "Show elapsed time", "", SettingKind::kToggle, {}, "true",
                  {}},
+                {"integrations.discord_rpc.application_id",
+                 "Application ID", "", SettingKind::kText, {}, "", {}},
             }},
            {"Join button",
             {
@@ -481,6 +669,35 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}},
             }},
        }},
+      {"fleasion",
+       "Fleasion",
+       "application-x-addon-symbolic",
+       "Integrations",
+       {
+           {"Fleasion",
+            {
+                {"integrations.fleasion.enabled", "Use Fleasion", "",
+                 SettingKind::kToggle, {}, "false", {}},
+                {"integrations.fleasion.proxy_mode",
+                 "Routing",
+                 "Match the mode set in Fleasion.",
+                 SettingKind::kChoice,
+                 {
+                     {"env", "Proxy"},
+                     {"hosts", "Hosts file"},
+                 },
+                 "env",
+                 {}},
+                {"integrations.fleasion.proxy_port", "Proxy port",
+                 "Fleasion's local proxy port, used by Proxy routing.",
+                 SettingKind::kNumber, {}, "58443", {}, 1, 65535, 1},
+                {"integrations.fleasion.ca_certificate", "CA certificate",
+                 "", SettingKind::kFile, {}, "", {}},
+            },
+            "Use Fleasion",
+            "Trust Fleasion's certificate without editing Roblox files.",
+            true},
+       }},
       {"advanced",
        "Advanced",
        "applications-engineering-symbolic",
@@ -507,6 +724,57 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {},
                  "true",
                  {}},
+                {"updates.source",
+                 "Download source",
+                 "Both start with APKPure today.",
+                 SettingKind::kChoice,
+                 {
+                     {"apk-pure", "APKPure"},
+                     {"auto", "Automatic"},
+                 },
+                 "apk-pure",
+                 {}},
+                {"updates.launch_after_update",
+                 "Start Nightcap after a scripted update",
+                 "Used by scripts/auto_update_roblox.sh.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+            }},
+           {"Device identity",
+            {
+                {"device.platform", "Platform", "", SettingKind::kText, {},
+                 "", {}},
+                {"device.name", "Device name", "", SettingKind::kText, {},
+                 "", {}},
+                {"device.manufacturer", "Manufacturer", "",
+                 SettingKind::kText, {}, "", {}},
+                {"device.model", "Model", "", SettingKind::kText, {}, "",
+                 {}},
+                {"device.brand", "Brand", "", SettingKind::kText, {}, "",
+                 {}},
+                {"device.code", "Device code", "", SettingKind::kText, {},
+                 "", {}},
+                {"device.sku", "SKU", "", SettingKind::kText, {}, "", {}},
+                {"device.soc_model", "Chip", "", SettingKind::kText, {}, "",
+                 {}},
+            },
+            "Custom device identity",
+            "What the device reports about itself. Empty fields use the "
+            "device preset's values."},
+           {"Runtime",
+            {
+                {"runtime.headless",
+                 "Start without a window",
+                 "For testing. The game cannot be seen or played while this "
+                 "is on.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+                {"runtime.roblox_library", "Roblox library (libroblox.so)",
+                 "", SettingKind::kFile, {}, "", {}},
             }},
            {"Files",
             {
@@ -660,49 +928,142 @@ bool SettingsDocument::Load(std::string* error) {
 }
 
 std::string SettingsDocument::Value(std::string_view key) const {
-  if (key == kTouchKey) {
-    return TouchInput(text_) ? "true" : "false";
+  if (key == kTouchKey || key == kMouseKey || key == kKeyboardKey) {
+    return DeviceInput(text_, key) ? "true" : "false";
   }
-  return runtime::GetRuntimeConfigValue(text_, key).value;
+  if (key == kDeviceKey) {
+    return DevicePreset(text_);
+  }
+  if (key == kProxyKey) {
+    return ProxyValue(text_);
+  }
+  return Get(text_, key).value;
 }
 
 bool SettingsDocument::IsSet(std::string_view key) const {
-  return runtime::GetRuntimeConfigValue(text_, key).found;
+  return Get(text_, key == kProxyKey ? kProxyHostKey : key).found;
 }
 
 bool SettingsDocument::Set(std::string_view key, std::string_view value,
                            std::string* error) {
-  runtime::RuntimeConfigEdit edit =
-      key == kTouchKey ? SetTouchInput(text_, value)
-      : value.empty()  ? runtime::UnsetRuntimeConfigValue(text_, key)
-                       : runtime::SetRuntimeConfigString(text_, key, value);
-  return Save(std::move(edit.text), std::move(edit.error), error);
+  return Save(Edit(key, value, true), error);
 }
 
 bool SettingsDocument::SetText(std::string_view key, std::string_view value,
                                std::string* error) {
-  runtime::RuntimeConfigEdit edit =
-      runtime::SetRuntimeConfigString(text_, key, value);
-  return Save(std::move(edit.text), std::move(edit.error), error);
+  return Save(Edit(key, value, false), error);
+}
+
+std::string SettingsDocument::DefaultValue(const Setting& setting) const {
+  if (setting.key == kTouchKey || setting.key == kMouseKey ||
+      setting.key == kKeyboardKey) {
+    return PresetInput(text_, setting.key) ? "true" : "false";
+  }
+  return std::string(setting.default_value);
+}
+
+bool SettingsDocument::IsChanged(const Setting& setting) const {
+  const std::string fallback = DefaultValue(setting);
+  std::string value = Value(setting.key);
+  if (value.empty()) {
+    value = fallback;
+  }
+  switch (setting.kind) {
+    case SettingKind::kToggle:
+      return (value == "true") != (fallback == "true");
+    case SettingKind::kChoice:
+    case SettingKind::kDevice:
+      return ChoiceIndex(setting, value) != ChoiceIndex(setting, fallback);
+    case SettingKind::kFrameRate: {
+      const FrameRate now = ParseFrameRate(value);
+      const FrameRate then = ParseFrameRate(fallback);
+      return now.mode != then.mode ||
+             (now.mode == FrameRateMode::kCustom && now.custom != then.custom);
+    }
+    case SettingKind::kNumber:
+      return std::strtod(value.c_str(), nullptr) !=
+             std::strtod(fallback.c_str(), nullptr);
+    case SettingKind::kText:
+    case SettingKind::kFile:
+      return value != fallback;
+    case SettingKind::kEditor:
+    case SettingKind::kFolder:
+      return false;
+  }
+  return false;
+}
+
+bool SettingsDocument::Reset(const Setting& setting, std::string* error) {
+  // The device's own inputs come back once the switch is out of the file.
+  if (setting.key == kTouchKey || setting.key == kMouseKey ||
+      setting.key == kKeyboardKey) {
+    runtime::RuntimeConfigEdit edit = UnsetIfSet(text_, setting.key);
+    if (setting.key == kTouchKey) {
+      edit = Then(std::move(edit), [](std::string_view current) {
+        return UnsetIfSet(current, kTouchKeyWithoutDevice);
+      });
+    }
+    return Save(std::move(edit), error);
+  }
+  // An empty device would not load, so it is set to the default preset.
+  if (setting.key == kDeviceKey) {
+    return Set(setting.key, setting.default_value, error);
+  }
+  // An empty value unsets the key, which brings the default back.
+  return Set(setting.key, "", error);
+}
+
+std::size_t ChangedCount(const SettingsPage& page,
+                         const SettingsDocument& document) {
+  std::size_t count = 0;
+  for (const SettingsGroup& group : page.groups) {
+    for (const Setting& setting : group.settings) {
+      count += document.IsChanged(setting) ? 1 : 0;
+    }
+  }
+  return count;
+}
+
+runtime::RuntimeConfigEdit SettingsDocument::Edit(std::string_view key,
+                                                  std::string_view value,
+                                                  bool empty_unsets) const {
+  if (key == kTouchKey) {
+    return SetTouchInput(text_, value);
+  }
+  if (key == kDeviceKey) {
+    return SetDevicePreset(text_, value);
+  }
+  if (key == kProxyKey) {
+    return SetProxy(text_, value);
+  }
+  if (value.empty() && empty_unsets) {
+    return runtime::UnsetRuntimeConfigValue(text_, key);
+  }
+  if (IsDeviceDetail(key)) {
+    return Then(ToDeviceBlock(text_), [key, value](std::string_view block) {
+      return runtime::SetRuntimeConfigString(block, key, value);
+    });
+  }
+  return runtime::SetRuntimeConfigString(text_, key, value);
 }
 
 bool SettingsDocument::Undo(std::string* error) {
   if (!undo_.has_value()) {
     return true;
   }
-  std::string previous = std::move(*undo_);
-  const bool saved = Save(std::move(previous), std::string(), error);
+  const bool saved = Save({std::move(*undo_), {}}, error);
   // An undo is not itself a change to take back.
   undo_.reset();
   return saved;
 }
 
-bool SettingsDocument::Save(std::string edited, std::string edit_error,
+bool SettingsDocument::Save(runtime::RuntimeConfigEdit edit,
                             std::string* error) {
-  if (!edit_error.empty()) {
-    *error = std::move(edit_error);
+  if (!edit) {
+    *error = std::move(edit.error);
     return false;
   }
+  std::string edited = std::move(edit.text);
   if (edited == text_) {
     return true;
   }

@@ -14,6 +14,7 @@
 #include "runtime/environment.h"
 #include "runtime/runtime_config_file.h"
 #include "services/client_settings_service.h"
+#include "update/update_config.h"
 
 namespace mocktail {
 namespace ui {
@@ -39,6 +40,18 @@ const Setting& Find(std::string_view key) {
   ADD_FAILURE() << "no setting " << key;
   static const Setting missing;
   return missing;
+}
+
+// A text each text row accepts.
+std::string TextSample(std::string_view key) {
+  if (key == "runtime.roblox_library") return "/opt/roblox/libroblox.so";
+  if (key == "network.ca_bundle") return "/etc/ssl/custom.pem";
+  if (key == "integrations.fleasion.ca_certificate") return "/etc/ssl/ca.crt";
+  if (key == "integrations.discord_rpc.application_id") {
+    return "123456789012345678";
+  }
+  if (key == "network.proxy") return "127.0.0.1:8080";
+  return "Custom: {place_name} #1";
 }
 
 class SettingsModelTest : public testing::Test {
@@ -103,7 +116,56 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
   }
   EXPECT_EQ(titles, (std::vector<std::string_view>{
                         "Graphics", "Input", "Performance", "Audio",
-                        "Discord", "Advanced"}));
+                        "Network", "Discord", "Fleasion", "Advanced"}));
+}
+
+TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
+  // Every key the loader and the updater accept, and the row that sets it.
+  std::vector<std::pair<std::string_view, std::string_view>> keys = {
+      {"device", "device"},
+      {"device.type", "device"},
+      {"compatibility.desktop_playability", "device"},
+      {"input.touch_enabled", "device.touch"},
+      {"network.proxy_host", "network.proxy"},
+      {"network.proxy_port", "network.proxy"},
+  };
+  for (const std::string_view key : {
+           "device.platform", "device.name", "device.manufacturer",
+           "device.model", "device.brand", "device.code", "device.sku",
+           "device.soc_model", "device.touch", "device.mouse",
+           "device.keyboard", "runtime.headless", "runtime.roblox_library",
+           "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
+           "graphics.vsync", "performance.multithreaded_rendering",
+           "performance.physics_worker_mode", "performance.memory_limit_mb",
+           "performance.gamemode", "audio.output_device", "audio.input_device",
+           "window.width", "window.height", "window.title", "window.high_dpi",
+           "input.raw_mouse", "network.use_system_proxy", "network.ca_bundle",
+           "integrations.fleasion.enabled", "integrations.fleasion.proxy_mode",
+           "integrations.fleasion.proxy_port",
+           "integrations.fleasion.ca_certificate",
+           "integrations.discord_rpc.enabled",
+           "integrations.discord_rpc.show_place_name",
+           "integrations.discord_rpc.show_elapsed_time",
+           "integrations.discord_rpc.application_id",
+           "integrations.discord_rpc.join.enabled",
+           "integrations.discord_rpc.join.public_servers_only",
+           "integrations.discord_rpc.join.button_label",
+           "integrations.discord_rpc.text.browsing",
+           "integrations.discord_rpc.text.joining",
+           "integrations.discord_rpc.text.playing",
+           "integrations.discord_rpc.text.state",
+           "integrations.discord_rpc.text.unknown_place",
+           "integrations.discord_rpc.text.title",
+           "integrations.discord_rpc.images.large",
+           "integrations.discord_rpc.images.large_text",
+           "integrations.discord_rpc.images.small",
+           "integrations.discord_rpc.images.small_text", "updates.automatic",
+           "updates.source", "updates.launch_after_update"}) {
+    keys.emplace_back(key, key);
+  }
+  for (const auto& [key, row] : keys) {
+    EXPECT_EQ(Find(row).key, row) << key;
+  }
 }
 
 TEST_F(SettingsModelTest, PagesOfOneSectionAreNextToEachOther) {
@@ -162,24 +224,33 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
         if (setting.kind == SettingKind::kEditor) {
           continue;
         }
-        if (setting.kind == SettingKind::kText) {
-          for (const std::string value :
-               {std::string("Custom: {place_name} #1"),
-                std::string(setting.default_value)}) {
-            ASSERT_TRUE(document.SetText(setting.key, value, &error))
-                << setting.key << " = " << value << ": " << error;
-            EXPECT_EQ(document.Value(setting.key), value) << setting.key;
-            const runtime::RuntimeConfigLoadResult loaded = LoadFile();
-            ASSERT_TRUE(loaded) << setting.key << " = " << value << ": "
-                                << loaded.error;
-          }
+        if (setting.kind == SettingKind::kText ||
+            setting.kind == SettingKind::kFile) {
+          const std::string value = TextSample(setting.key);
+          ASSERT_TRUE(document.SetText(setting.key, value, &error))
+              << setting.key << " = " << value << ": " << error;
+          EXPECT_EQ(document.Value(setting.key), value) << setting.key;
+          runtime::RuntimeConfigLoadResult loaded = LoadFile();
+          ASSERT_TRUE(loaded) << setting.key << " = " << value << ": "
+                              << loaded.error;
+          // A text with no default goes back to unset.
+          ASSERT_TRUE(setting.default_value.empty()
+                          ? document.Set(setting.key, "", &error)
+                          : document.SetText(setting.key,
+                                             setting.default_value, &error))
+              << setting.key << ": " << error;
+          loaded = LoadFile();
+          ASSERT_TRUE(loaded) << setting.key << ": " << loaded.error;
           continue;
         }
+        // Each row ends on its default, so the next rows start from a file
+        // Nightcap loads.
         std::vector<std::string> values;
         if (setting.kind == SettingKind::kNumber) {
-          values = {NumberValue(4096), NumberValue(0)};
+          values = {NumberValue(4096), std::string(setting.default_value)};
         } else if (setting.kind == SettingKind::kToggle) {
-          values = {"true", "false"};
+          const bool on = setting.default_value == "true";
+          values = {on ? "false" : "true", on ? "true" : "false"};
         } else if (setting.kind == SettingKind::kFrameRate) {
           for (const FrameRateMode mode :
                {FrameRateMode::kDisplay, FrameRateMode::kUnlimited,
@@ -190,6 +261,7 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
           for (const SettingChoice& choice : setting.choices) {
             values.emplace_back(choice.value);
           }
+          values.emplace_back(setting.default_value);
         }
         for (const std::string& value : values) {
           ASSERT_TRUE(document.Set(setting.key, value, &error))
@@ -755,6 +827,305 @@ TEST_F(SettingsModelTest, FrameRateReadsEveryForm) {
   EXPECT_EQ(FrameRateValue({FrameRateMode::kUnlimited, 0}), "unlimited");
   EXPECT_EQ(FrameRateValue({FrameRateMode::kCustom, 144}), "144");
   EXPECT_EQ(FrameRateValue({FrameRateMode::kCustom, 0}), "120");
+}
+
+TEST_F(SettingsModelTest, TheDevicePresetKeepsTheFileLoadable) {
+  const Setting& device = Find("device");
+  ASSERT_EQ(device.kind, SettingKind::kChoice);
+  struct Case {
+    std::string_view file;
+    std::string_view shown;
+    // What else the file must still say once the preset is console.
+    std::string_view kept;
+  };
+  for (const Case& test : {
+           Case{"device: pc\n", "pc", ""},
+           Case{"device:\n  type: mobile\n  model: Tablet\n", "mobile",
+                "model: Tablet"},
+           Case{"compatibility:\n  desktop_playability: false\n",
+                "mobile-pixel-7", ""},
+           Case{"input:\n  touch_enabled: true\n", "", ""},
+           Case{"device:\n  type: pc\n  touch: false\n  mouse: false\n", "pc",
+                "type: console-ps5"},
+       }) {
+    SCOPED_TRACE(std::string(test.file));
+    Write(test.file);
+    SettingsDocument document(file_);
+    std::string error;
+    ASSERT_TRUE(document.Load(&error)) << error;
+    EXPECT_EQ(document.Value(device.key), test.shown);
+    EXPECT_NE(ChoiceIndex(device, document.Value(device.key)), kNoChoice);
+
+    ASSERT_TRUE(document.Set(device.key, "console-ps5", &error))
+        << error << "\n" << Read();
+    EXPECT_EQ(document.Value(device.key), "console-ps5");
+    const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+    ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
+    EXPECT_EQ(loaded.config.device_profile().name, "console-ps5") << Read();
+    EXPECT_NE(Read().find(test.kept), std::string::npos) << Read();
+    // The switches of the old preset are left only as comments.
+    for (const std::string_view key :
+         {"  desktop_playability:", "  touch_enabled:", "  touch:",
+          "  mouse:", "  keyboard:"}) {
+      EXPECT_EQ(Read().find(key), std::string::npos) << key << "\n" << Read();
+    }
+    EXPECT_EQ(document.Value("device.touch"), "false");
+    EXPECT_EQ(document.Value("device.keyboard"), "true");
+  }
+}
+
+TEST_F(SettingsModelTest, DeviceDetailsTurnAPresetIntoADeviceBlock) {
+  Write("device: mobile\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Value("device.model"), "");
+  ASSERT_TRUE(document.SetText("device.model", "Tablet", &error)) << error;
+  EXPECT_EQ(document.Value("device.model"), "Tablet");
+  EXPECT_EQ(document.Value("device"), "mobile");
+  runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
+  EXPECT_EQ(loaded.config.device_profile().model, "Tablet");
+  EXPECT_EQ(loaded.config.device_profile().device_class,
+            runtime::DeviceClass::kMobile);
+
+  ASSERT_TRUE(document.Set("device.model", "", &error)) << error;
+  loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
+  EXPECT_EQ(loaded.config.device_profile().name, "mobile-pixel-7");
+}
+
+TEST_F(SettingsModelTest, MouseAndKeyboardSwitchesShowAndSetTheDevice) {
+  for (const std::string_view key : {"device.mouse", "device.keyboard"}) {
+    SCOPED_TRACE(std::string(key));
+    std::filesystem::remove(file_);
+    SettingsDocument document(file_);
+    std::string error;
+    ASSERT_TRUE(document.Load(&error)) << error;
+    const Setting& setting = Find(key);
+    ASSERT_EQ(setting.kind, SettingKind::kToggle);
+    EXPECT_TRUE(ToggleState(setting, document.Value(key)));
+
+    ASSERT_TRUE(document.Set(key, "false", &error)) << error;
+    EXPECT_FALSE(ToggleState(setting, document.Value(key)));
+    const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+    ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
+    const runtime::InputCapabilityConfig& input =
+        loaded.config.input_capabilities();
+    EXPECT_EQ(key == "device.mouse" ? input.mouse_enabled
+                                    : input.keyboard_enabled,
+              false);
+    EXPECT_EQ(loaded.config.device_profile().name, "pc-windows-11");
+  }
+}
+
+TEST_F(SettingsModelTest, TheFixedProxyIsOneHostAndPortRow) {
+  const Setting& proxy = Find("network.proxy");
+  ASSERT_EQ(proxy.kind, SettingKind::kText);
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(document.IsSet(proxy.key));
+
+  ASSERT_TRUE(document.SetText(proxy.key, "proxy.lan:3128", &error)) << error;
+  EXPECT_TRUE(document.IsSet(proxy.key));
+  EXPECT_EQ(document.Value(proxy.key), "proxy.lan:3128");
+  runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  ASSERT_TRUE(loaded.config.network_proxy().has_value());
+  EXPECT_EQ(loaded.config.network_proxy()->host, "proxy.lan");
+  EXPECT_EQ(loaded.config.network_proxy()->port, 3128);
+
+  const std::string before = Read();
+  for (const std::string_view refused : {"proxy.lan", "proxy.lan:", ":80"}) {
+    EXPECT_FALSE(document.SetText(proxy.key, refused, &error)) << refused;
+    EXPECT_FALSE(error.empty());
+    EXPECT_EQ(Read(), before);
+  }
+
+  ASSERT_TRUE(document.Set(proxy.key, "", &error)) << error;
+  EXPECT_FALSE(document.IsSet(proxy.key));
+  loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.network_proxy().has_value());
+}
+
+TEST_F(SettingsModelTest, NumberRowsKeepToTheRangeTheLoaderAccepts) {
+  EXPECT_EQ(Find("window.width").minimum, 1);
+  EXPECT_EQ(Find("window.height").minimum, 1);
+  EXPECT_EQ(Find("integrations.fleasion.proxy_port").minimum, 1);
+  EXPECT_EQ(Find("integrations.fleasion.proxy_port").maximum, 65535);
+  EXPECT_EQ(Find("performance.memory_limit_mb").minimum, 0);
+}
+
+TEST_F(SettingsModelTest, TheNewRowsReachTheLoadedConfig) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Set("window.width", "1600", &error)) << error;
+  ASSERT_TRUE(document.SetText("window.title", "Nightcap", &error)) << error;
+  ASSERT_TRUE(document.Set("runtime.headless", "true", &error)) << error;
+  ASSERT_TRUE(document.Set("network.use_system_proxy", "true", &error))
+      << error;
+  ASSERT_TRUE(document.Set("integrations.fleasion.proxy_mode", "hosts", &error))
+      << error;
+  ASSERT_TRUE(document.SetText("integrations.discord_rpc.application_id",
+                               "123456789012345678", &error))
+      << error;
+  ASSERT_TRUE(document.Set("updates.source", "auto", &error)) << error;
+  ASSERT_TRUE(document.Set("updates.launch_after_update", "true", &error))
+      << error;
+
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.window().width, 1600);
+  EXPECT_EQ(loaded.config.window().title, "Nightcap");
+  EXPECT_TRUE(loaded.config.headless());
+  EXPECT_TRUE(loaded.config.use_system_proxy());
+  EXPECT_EQ(loaded.config.fleasion_proxy_mode(), "hosts");
+  EXPECT_EQ(loaded.config.discord_rpc().application_id, "123456789012345678");
+  const update::UpdateConfigResult updates = update::LoadUpdateConfig(file_);
+  ASSERT_TRUE(updates) << updates.error;
+  EXPECT_EQ(updates.config.source, "auto");
+  EXPECT_TRUE(updates.config.launch_after_update);
+}
+
+// A value for `setting` other than its default, or nothing when the row
+// cannot take one here.
+std::optional<std::string> ChangedSample(const Setting& setting) {
+  switch (setting.kind) {
+    case SettingKind::kToggle:
+      return ToggleState(setting, setting.default_value) ? "false" : "true";
+    case SettingKind::kChoice:
+    case SettingKind::kDevice:
+      for (const SettingChoice& choice : setting.choices) {
+        if (!choice.value.empty() &&
+            ChoiceIndex(setting, choice.value) !=
+                ChoiceIndex(setting, setting.default_value)) {
+          return std::string(choice.value);
+        }
+      }
+      return std::nullopt;
+    case SettingKind::kFrameRate:
+      return "144";
+    case SettingKind::kNumber: {
+      const double value = std::stod(std::string(setting.default_value));
+      return NumberValue(value + setting.step <= setting.maximum
+                             ? value + setting.step
+                             : value - setting.step);
+    }
+    case SettingKind::kText:
+    case SettingKind::kFile:
+      return TextSample(setting.key);
+    case SettingKind::kEditor:
+    case SettingKind::kFolder:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+TEST_F(SettingsModelTest, ANewFileHasNoChangedRows) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        EXPECT_FALSE(document.IsChanged(setting))
+            << setting.key << " = " << document.Value(setting.key);
+      }
+    }
+    EXPECT_EQ(ChangedCount(page, document), 0u) << page.name;
+  }
+}
+
+TEST_F(SettingsModelTest, AChangedRowIsCountedAndResetPutsItBack) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        const std::optional<std::string> value = ChangedSample(setting);
+        if (!value.has_value()) {
+          continue;
+        }
+        SCOPED_TRACE(std::string(setting.key) + " = " + *value);
+        const bool text = setting.kind == SettingKind::kText ||
+                          setting.kind == SettingKind::kFile;
+        ASSERT_TRUE(text ? document.SetText(setting.key, *value, &error)
+                         : document.Set(setting.key, *value, &error))
+            << error;
+        EXPECT_TRUE(document.IsChanged(setting));
+        EXPECT_EQ(ChangedCount(page, document), 1u);
+
+        ASSERT_TRUE(document.Reset(setting, &error)) << error;
+        EXPECT_FALSE(document.IsChanged(setting)) << document.Value(setting.key);
+        EXPECT_EQ(ChangedCount(page, document), 0u);
+        const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+        ASSERT_TRUE(loaded) << loaded.error << "\n" << Read();
+      }
+    }
+  }
+}
+
+TEST_F(SettingsModelTest, DeviceInputsCompareWithTheChosenDevice) {
+  Write("device: mobile\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsChanged(Find("device")));
+  // A phone has touch on and no mouse, so neither switch counts as changed.
+  EXPECT_FALSE(document.IsChanged(Find("device.touch")));
+  EXPECT_FALSE(document.IsChanged(Find("device.mouse")));
+
+  ASSERT_TRUE(document.Set("device.mouse", "true", &error)) << error;
+  EXPECT_TRUE(document.IsChanged(Find("device.mouse")));
+  ASSERT_TRUE(document.Reset(Find("device.mouse"), &error)) << error;
+  EXPECT_FALSE(document.IsChanged(Find("device.mouse")));
+  EXPECT_EQ(document.Value("device"), "mobile");
+}
+
+TEST_F(SettingsModelTest, AnAliasOfTheDefaultIsNotAChange) {
+  Write("device: pc\ngraphics:\n  vsync: false\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(document.IsChanged(Find("device")));
+}
+
+TEST_F(SettingsModelTest, ResetTakesTheKeyOutOfTheFile) {
+  Write("graphics:\n  vsync: off\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  for (const std::string_view key : {"window.title", "runtime.headless"}) {
+    SCOPED_TRACE(key);
+    const Setting& setting = Find(key);
+    ASSERT_TRUE(setting.kind == SettingKind::kText
+                    ? document.SetText(key, "Custom", &error)
+                    : document.Set(key, "true", &error))
+        << error;
+    ASSERT_TRUE(document.Reset(setting, &error)) << error;
+    EXPECT_FALSE(document.IsSet(key)) << Read();
+  }
+}
+
+TEST_F(SettingsModelTest, ResetTakesADeviceInputSwitchOut) {
+  Write("device:\n  type: pc\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  for (const std::string_view key :
+       {"device.touch", "device.mouse", "device.keyboard"}) {
+    SCOPED_TRACE(key);
+    const std::string flipped =
+        document.Value(key) == "true" ? "false" : "true";
+    ASSERT_TRUE(document.Set(key, flipped, &error)) << error;
+    ASSERT_TRUE(document.Reset(Find(key), &error)) << error;
+    EXPECT_FALSE(document.IsSet(key)) << Read();
+    EXPECT_FALSE(document.IsSet("input.touch_enabled")) << Read();
+  }
 }
 
 }  // namespace

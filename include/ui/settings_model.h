@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "runtime/runtime_config_editor.h"
 #include "runtime/runtime_config_store.h"
 
 namespace mocktail {
@@ -23,6 +24,8 @@ enum class SettingKind {
   kFrameRate,
   kNumber,
   kText,
+  // A text row that holds an absolute file path, with a file picker.
+  kFile,
   // A drop-down of the setting's choices and the audio devices found.
   kDevice,
   // A row that opens the editor for fflags.json.
@@ -47,11 +50,20 @@ struct Setting {
   std::string_view default_value;
   // Other spellings the loader accepts, each with the choice it means.
   std::vector<std::pair<std::string_view, std::string_view>> aliases;
+  // A kNumber row's range. It must stay inside what the loader accepts.
+  double minimum = 0;
+  double maximum = 1048576;
+  double step = 256;
 };
 
 struct SettingsGroup {
   std::string_view title;
   std::vector<Setting> settings;
+  std::string_view expander;
+  std::string_view expander_subtitle;
+  // With this, the first setting, a kToggle, is the expander row's own
+  // switch, and the other settings apply only while it is on.
+  bool expander_switch = false;
 };
 
 struct SettingsPage {
@@ -140,6 +152,11 @@ class SettingsDocument {
   bool SetText(std::string_view key, std::string_view value,
                std::string* error);
 
+  // Mouse, keyboard and touch compare with what the file's device turns on.
+  bool IsChanged(const Setting& setting) const;
+
+  bool Reset(const Setting& setting, std::string* error);
+
   // Whether a change saved from this document can be taken back.
   bool CanUndo() const { return undo_.has_value(); }
 
@@ -157,13 +174,20 @@ class SettingsDocument {
   const std::filesystem::path& config_file() const { return config_file_; }
 
  private:
-  bool Save(std::string edited, std::string edit_error, std::string* error);
+  // Otherwise an empty `value` is written as an empty text.
+  runtime::RuntimeConfigEdit Edit(std::string_view key, std::string_view value,
+                                  bool empty_unsets) const;
+  bool Save(runtime::RuntimeConfigEdit edit, std::string* error);
+  std::string DefaultValue(const Setting& setting) const;
 
   std::filesystem::path config_file_;
   std::string text_;
   std::optional<std::string> undo_;
   std::size_t saved_changes_ = 0;
 };
+
+std::size_t ChangedCount(const SettingsPage& page,
+                         const SettingsDocument& document);
 
 // A place in a text. Both numbers start at 1, and the column counts
 // characters, not bytes.

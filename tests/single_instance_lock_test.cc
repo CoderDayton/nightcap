@@ -156,6 +156,14 @@ TEST_F(SingleInstanceLockTest, ReleasesLockWithOwnerLifetime) {
   EXPECT_TRUE(replacement.acquired()) << replacement.error();
 }
 
+TEST_F(SingleInstanceLockTest, NamesTheLockAndProgramOfThisInstallation) {
+  const SingleInstanceLock lock = SingleInstanceLock::AcquireForCurrentUser();
+  EXPECT_EQ(CurrentUserInstanceLockPath(), lock.path());
+  std::error_code error;
+  EXPECT_EQ(CurrentExecutableIdentityPath(),
+            std::filesystem::weakly_canonical("/proc/self/exe", error));
+}
+
 TEST_F(SingleInstanceLockTest, UsesStableExecutableNamespace) {
   const std::string first = CurrentExecutableInstanceKey();
   const std::string second = CurrentExecutableInstanceKey();
