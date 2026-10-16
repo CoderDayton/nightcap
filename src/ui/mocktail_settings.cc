@@ -1181,14 +1181,22 @@ void OnChangedChipClicked(GtkButton*, gpointer user_data) {
         gtk_list_box_get_row_at_index(window->sidebar,
                                       static_cast<int>(row.page)));
     adw_navigation_split_view_set_show_content(window->split, TRUE);
-    // A row inside a closed expander cannot take focus.
+    // A row inside a closed expander cannot take focus. One whose switch is
+    // off cannot open, so its own row takes the focus.
+    GtkWidget* target = row.widget;
     for (GtkWidget* parent = gtk_widget_get_parent(row.widget);
          parent != nullptr; parent = gtk_widget_get_parent(parent)) {
-      if (ADW_IS_EXPANDER_ROW(parent)) {
-        adw_expander_row_set_expanded(ADW_EXPANDER_ROW(parent), TRUE);
+      if (!ADW_IS_EXPANDER_ROW(parent)) {
+        continue;
+      }
+      AdwExpanderRow* expander = ADW_EXPANDER_ROW(parent);
+      if (adw_expander_row_get_enable_expansion(expander)) {
+        adw_expander_row_set_expanded(expander, TRUE);
+      } else {
+        target = parent;
       }
     }
-    gtk_widget_grab_focus(row.widget);
+    gtk_widget_grab_focus(target);
     return;
   }
 }
