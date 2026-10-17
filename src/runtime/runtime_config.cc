@@ -173,9 +173,35 @@ std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy) {
          (ipv6 ? "]" : "") + ":" + std::to_string(proxy.port);
 }
 
+const char* VrModeName(VrMode mode) {
+  switch (mode) {
+    case VrMode::kOn:
+      return "on";
+    case VrMode::kAuto:
+      return "auto";
+    case VrMode::kOff:
+      break;
+  }
+  return "off";
+}
+
 RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   RuntimeConfig config;
   config.headless_ = LegacyEnabled(environment, "MOCKTAIL_HEADLESS");
+  if (environment.Get("MOCKTAIL_VR_ENABLED").has_value()) {
+    config.vr_enabled_ = ReadBoolean(environment, "MOCKTAIL_VR_ENABLED",
+                                     kDefaultVrEnabled, &config.vr_valid_);
+    config.vr_mode_ = config.vr_enabled_ ? VrMode::kOn : VrMode::kOff;
+  } else if (const auto mode = environment.Get("MOCKTAIL_VR_MODE");
+             mode.has_value()) {
+    if (*mode == "auto") {
+      config.vr_mode_ = VrMode::kAuto;
+    } else {
+      config.vr_enabled_ = ReadBoolean(environment, "MOCKTAIL_VR_MODE",
+                                       kDefaultVrEnabled, &config.vr_valid_);
+      config.vr_mode_ = config.vr_enabled_ ? VrMode::kOn : VrMode::kOff;
+    }
+  }
   config.roblox_library_path_ = environment.GetOr(
       "ROBLOX_LIB_PATH", config.roblox_library_path_.string());
   config.graphics_backend_name_ = environment.GetOr(
@@ -286,6 +312,10 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   }
   config.frame_rate_ = ParseFrameRatePolicy(
       environment.GetOr("MOCKTAIL_FRAME_RATE_LIMIT", "-1"));
+  config.vr_frame_rate_ = ParseFrameRatePolicy(
+      environment.GetOr("MOCKTAIL_VR_FRAME_RATE_LIMIT", "unlimited"));
+  config.vr_anti_aliasing_ =
+      environment.GetOr("MOCKTAIL_VR_ANTI_ALIASING", config.vr_anti_aliasing_);
   config.vsync_mode_ = environment.GetOr("MOCKTAIL_VSYNC", "auto");
   config.performance_ = ParsePerformancePolicy(
       environment.GetOr("MOCKTAIL_MULTITHREADED_RENDERING", "0"),

@@ -1,5 +1,6 @@
 #include "compat/build_profile.h"
 
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -18,6 +19,23 @@ namespace {
 
 const std::string kManifestPath =
     std::string(MOCKTAIL_TEST_SOURCE_DIR) + "/config/roblox_compatibility.json";
+
+TEST(BuildProfileTest, Payload3092IncludesVrAndSecondAudioLayout) {
+  const auto result = FindBuildProfile(
+      kManifestPath, "5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+  ASSERT_TRUE(result) << result.error;
+  ASSERT_TRUE(result.profile.has_value());
+  EXPECT_EQ(result.profile->version_name, "2.738.1397");
+  EXPECT_EQ(result.profile->version_code, 3092);
+  EXPECT_TRUE(result.profile->default_allowed);
+  EXPECT_TRUE(result.profile->allow_host_abi_bridges);
+  EXPECT_FALSE(result.profile->allow_legacy_binary_patches);
+  ASSERT_TRUE(result.profile->vr_debug_device_bridge.has_value());
+  EXPECT_EQ(result.profile->vr_debug_device_bridge->vtable_rva, 0x6d08108u);
+  ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->vtable_layout_version,
+            2u);
+}
 
 TEST(BuildProfileTest, FindsCurrentPayloadAsSupported) {
   const ProfileLookupResult result = FindBuildProfile(
@@ -160,7 +178,24 @@ TEST(BuildProfileTest, RejectsPartialInputProfilesAndUpgradesCachedLayouts) {
     std::ifstream input(kManifestPath);
     input >> document;
   }
-  auto &entry = document["profiles"].back();
+  // Start from build 2998, whose input RVAs the assertions below expect, and
+  // later re-identify it as 3092 to test the cached-layout upgrade. Drop the
+  // shipped 3092 entry first so the Build ID stays unique.
+  auto &profiles = document["profiles"];
+  for (auto it = profiles.begin(); it != profiles.end();) {
+    if (it->value("elf_build_id", "") ==
+        "5f0704edd9064f566ee3d6df2bd2fabbcc709f03")
+      it = profiles.erase(it);
+    else
+      ++it;
+  }
+  const auto found = std::find_if(
+      profiles.begin(), profiles.end(), [](const nlohmann::json &profile) {
+        return profile.value("elf_build_id", "") ==
+               "ade08266c67aee88ec9c1d00902150e1684dad3a";
+      });
+  ASSERT_NE(found, profiles.end());
+  auto &entry = *found;
   auto &bridge = entry["fmod_output_device_bridge"];
   char path[] = "/tmp/mocktail-input-profile-XXXXXX";
   int fd = mkstemp(path);

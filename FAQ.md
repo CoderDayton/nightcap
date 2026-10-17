@@ -81,7 +81,5 @@ Start WiVRn or SteamVR/ALVR, connect your headset, then run:
 ./build/mocktail --vr
 ```
 
-That branch's
-[README](https://github.com/CoderDayton/nightcap/blob/vr/README.md#experimental-vr)
-and [docs/VR.md](https://github.com/CoderDayton/nightcap/blob/vr/docs/VR.md)
-have the details, including how to try it without a headset.
+The [README](README.md#experimental-vr) and [docs/VR.md](docs/VR.md) have the
+details, including how to try it without a headset.

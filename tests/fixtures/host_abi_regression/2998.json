@@ -109,5 +109,26 @@
   },
   "schema_version": 1,
   "version_code": 2998,
-  "version_name": "2.736.1408"
+  "version_name": "2.736.1408",
+  "vr_device_bridge": {
+    "camera_head_scale_offset": "0x140",
+    "camera_vtable_offset": "0x3a8",
+    "constructor_rva": "0x3810614",
+    "device_create_framebuffer_vtable_offset": "0x180",
+    "emulator_flag_storage_rva": "0x7369920",
+    "eye_getter_rva": "0x38109e6",
+    "eye_initializer_rva": "0x3810a18",
+    "fix_register_motors_flag_rva": "0x7367da0",
+    "hand_pitch_storage_rva": "0x73677a8",
+    "haptic_sink_rva": "0x1d48b70",
+    "keep_haptics_flag_rva": "0x72fcd18",
+    "pointer_frame_rva": "0x4d573ee",
+    "pointer_hand_selector_offset": "0x118",
+    "state_getter_rva": "0x38109f6",
+    "state_memcpy_rva": "0x6b7bfe0",
+    "support_generic_haptics_flag_rva": "0x73677d0",
+    "vr_haptics_flag_rva": "0x7367588",
+    "vtable_rva": "0x6c87b38",
+    "workspace_getter_rva": "0x263778c"
+  }
 }

@@ -132,6 +132,10 @@ FrameRate ParseFrameRate(std::string_view value);
 // The file's value for `rate`. Empty means the key is left unset.
 std::string FrameRateValue(const FrameRate& rate);
 
+FrameRate FrameRateSettingState(const Setting& setting, std::string_view value);
+std::string FrameRateSettingValue(const Setting& setting,
+                                  const FrameRate& rate);
+
 // The config file as the window edits it. Every change is saved at once.
 class SettingsDocument {
  public:

@@ -22,6 +22,7 @@ add_library(mocktail_input_runtime STATIC
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_font_resolver.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_surface_overlay.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_window_input_runtime.cc
+  ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_xr_controller_input.cc
 )
 add_library(Mocktail::InputRuntime ALIAS mocktail_input_runtime)
 target_include_directories(mocktail_input_runtime PUBLIC
@@ -33,12 +34,14 @@ target_include_directories(mocktail_input_runtime PRIVATE
 target_link_libraries(mocktail_input_runtime PUBLIC
   Mocktail::PlatformSdl
   Mocktail::Runtime
+  Mocktail::VR
   mocktail_window
   PkgConfig::UTF8PROC
   PRIVATE
     PkgConfig::FONTCONFIG
     SDL3_ttf::SDL3_ttf
     nlohmann_json::nlohmann_json
+    ${CMAKE_DL_LIBS}
 )
 target_compile_features(mocktail_input_runtime PUBLIC cxx_std_17)
 mocktail_apply_compile_options(mocktail_input_runtime)
@@ -47,6 +50,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   add_executable(roblox_input_router_test
     ${MOCKTAIL_INPUT_ROOT}/tests/roblox_gamepad_input_test.cc
     ${MOCKTAIL_INPUT_ROOT}/tests/roblox_input_router_test.cc
+    ${MOCKTAIL_INPUT_ROOT}/tests/roblox_xr_controller_input_test.cc
   )
   target_link_libraries(roblox_input_router_test PRIVATE
     Mocktail::InputRuntime

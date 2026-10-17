@@ -93,7 +93,7 @@ bool UnthrottledPresentation(const RuntimeConfig& config) {
   if (config.vsync_mode() == "off" || config.vsync_mode() == "0") {
     return true;
   }
-  return config.frame_rate().mode == FrameRateLimitMode::kUnlimited;
+  return config.active_frame_rate().mode == FrameRateLimitMode::kUnlimited;
 }
 
 bool ParsePciVendor(const std::string& raw, unsigned int* vendor) {

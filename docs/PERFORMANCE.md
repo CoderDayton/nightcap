@@ -197,6 +197,31 @@ and your value applies everywhere. To keep the interpreter in the menus too:
 framerate cap in charge; Nightcap sets no `DFIntTaskSchedulerTargetFps`
 override. A fixed value forwards that number to the scheduler.
 
+In VR, `vr.frame_rate_limit` (`MOCKTAIL_VR_FRAME_RATE_LIMIT`) replaces
+`graphics.frame_rate_limit` and takes the same values. Its default is
+`unlimited`: the scheduler target goes to 240 and `xrWaitFrame` holds each
+frame to the headset's refresh rate. Set `-1` to restore Roblox's own cap, or a
+number such as `90` to pin it.
+
+`MOCKTAIL_VR_RENDER_SCALE` (default `1.0`, range `0.25`–`2.0`) scales each
+axis of the OpenXR runtime's recommended eye size. SteamVR's recommendation
+already includes its own supersampling, so on a Quest 2 at 90 Hz it is about
+2244x2352 per eye. If a frame misses the 11.1 ms budget, the runtime halves
+the rate to 45 FPS; `0.75` renders about 56% of the pixels.
+
+`MOCKTAIL_VR_UNPACED=1` is a benchmark mode. Roblox no longer waits for the
+headset between frames; each XR frame stays open across several Roblox frames
+and is submitted with the newest eyes once per display period. Pair it with a
+fixed scheduler target above 240 and `MOCKTAIL_VSYNC=off` to find the
+maximum rate:
+
+```bash
+MOCKTAIL_VR_UNPACED=1 MOCKTAIL_VR_FRAME_RATE_LIMIT=9999 MOCKTAIL_VSYNC=off mocktail --vr
+```
+
+Frames beyond the headset refresh are never displayed, and they all reuse the
+open frame's head pose, so expect judder. Do not play in this mode.
+
 `graphics.vsync` (default `auto`) selects the presentation mode. `auto` and
 `on` both pick the lowest-latency synchronized mode the driver offers, in
 order: `FIFO_LATEST_READY`, `MAILBOX`, `FIFO_RELAXED`, `FIFO`. The first two do

@@ -168,6 +168,10 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "device.keyboard",
       "runtime.headless",
       "runtime.roblox_library",
+      "vr.enabled",
+      "vr.mode",
+      "vr.anti_aliasing",
+      "vr.frame_rate_limit",
       "appearance.theme",
       "graphics.backend",
       "graphics.frame_rate_limit",
@@ -318,6 +322,46 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_THEME"] = *theme;
+  }
+  // The file only sets MOCKTAIL_VR_MODE, so --vr and --no-vr
+  // (MOCKTAIL_VR_ENABLED) always win over it.
+  const auto enabled = value("vr.enabled");
+  const auto mode = value("vr.mode");
+  if (enabled.has_value() && mode.has_value()) {
+    *error = "set either vr.mode or vr.enabled, not both";
+    return false;
+  }
+  if (enabled.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*enabled, &parsed)) {
+      *error = "vr.enabled must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_MODE"] = parsed ? "on" : "off";
+  }
+  if (mode.has_value()) {
+    if (*mode != "on" && *mode != "off" && *mode != "auto") {
+      *error = "vr.mode must be on, off, or auto";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_MODE"] = *mode;
+  }
+  if (const auto anti_aliasing = value("vr.anti_aliasing");
+      anti_aliasing.has_value()) {
+    if (*anti_aliasing != "fxaa" && *anti_aliasing != "smaa" &&
+        *anti_aliasing != "off") {
+      *error = "vr.anti_aliasing must be fxaa, smaa, or off";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_ANTI_ALIASING"] = *anti_aliasing;
+  }
+  if (const auto frame_rate = value("vr.frame_rate_limit");
+      frame_rate.has_value()) {
+    if (!ParseFrameRatePolicy(*frame_rate).valid()) {
+      *error = "vr.frame_rate_limit is not supported: " + *frame_rate;
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_FRAME_RATE_LIMIT"] = *frame_rate;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -722,7 +766,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
           *error = "device must be a preset scalar or detailed mapping";
           valid = false;
         }
-      } else if (key == "runtime" || key == "appearance" ||
+      } else if (key == "runtime" || key == "appearance" || key == "vr" ||
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network") {
@@ -791,6 +835,12 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
   result.config = RuntimeConfig::FromEnvironment(layered);
   if (!result.config.frame_rate().valid()) {
     result.error = "frame-rate policy is invalid";
+  } else if (!result.config.vr_frame_rate().valid()) {
+    result.error = "VR frame-rate policy is invalid";
+  } else if (!result.config.vr_valid()) {
+    result.error = "VR configuration is invalid: MOCKTAIL_VR_ENABLED must be "
+                   "1/0, true/false, or on/off, and MOCKTAIL_VR_MODE on, off, "
+                   "or auto";
   } else if (!result.config.device_profile_valid()) {
     result.error = "device profile is invalid";
   } else if (!result.config.input_capabilities().touch_enabled &&
@@ -831,6 +881,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
 
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error) {
+  if (!config.vr_valid()) {
+    if (error != nullptr) *error = "cannot export an invalid VR configuration";
+    return false;
+  }
   if (!config.fleasion_valid()) {
     if (error != nullptr) *error = "cannot export invalid Fleasion configuration";
     return false;
@@ -887,6 +941,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
   const bool base_exported =
       SetEnvironmentValue("MOCKTAIL_HEADLESS", config.headless() ? "1" : "0",
                           error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_ENABLED", config.vr_enabled() ? "1" : "0",
+                          error) &&
       SetEnvironmentValue("MOCKTAIL_DEVICE_PROFILE", std::string(device.name),
                           error) &&
       SetEnvironmentValue("MOCKTAIL_DEVICE_CLASS",
@@ -939,6 +995,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                           config.desktop_playability() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
                           FrameRateValue(config.frame_rate()), error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_FRAME_RATE_LIMIT",
+                          FrameRateValue(config.vr_frame_rate()), error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_ANTI_ALIASING",
+                          config.vr_anti_aliasing(), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

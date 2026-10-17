@@ -115,7 +115,7 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
     }
   }
   EXPECT_EQ(titles, (std::vector<std::string_view>{
-                        "Graphics", "Input", "Performance", "Audio",
+                        "Graphics", "Input", "VR", "Performance", "Audio",
                         "Network", "Discord", "Fleasion", "Advanced"}));
 }
 
@@ -128,6 +128,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
       {"input.touch_enabled", "device.touch"},
       {"network.proxy_host", "network.proxy"},
       {"network.proxy_port", "network.proxy"},
+      {"vr.enabled", "vr.mode"},
   };
   for (const std::string_view key : {
            "device.platform", "device.name", "device.manufacturer",
@@ -161,7 +162,8 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "integrations.discord_rpc.images.large_text",
            "integrations.discord_rpc.images.small",
            "integrations.discord_rpc.images.small_text", "updates.automatic",
-           "updates.source", "updates.launch_after_update"}) {
+           "updates.source", "updates.launch_after_update", "vr.mode",
+           "vr.anti_aliasing", "vr.frame_rate_limit"}) {
     keys.emplace_back(key, key);
   }
   for (const auto& [key, row] : keys) {
@@ -256,7 +258,7 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
           for (const FrameRateMode mode :
                {FrameRateMode::kDisplay, FrameRateMode::kUnlimited,
                 FrameRateMode::kCustom, FrameRateMode::kRoblox}) {
-            values.push_back(FrameRateValue({mode, 144}));
+            values.push_back(FrameRateSettingValue(setting, {mode, 144}));
           }
         } else {
           for (const SettingChoice& choice : setting.choices) {
@@ -299,6 +301,60 @@ TEST_F(SettingsModelTest, SavedValuesReachTheLoadedConfig) {
   EXPECT_EQ(loaded.config.vsync_mode(), "on");
   EXPECT_TRUE(loaded.config.window().high_dpi);
   EXPECT_TRUE(loaded.config.input_capabilities().raw_mouse);
+}
+
+TEST_F(SettingsModelTest, VrValuesReachTheLoadedConfig) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Set("vr.mode", "auto", &error)) << error;
+  ASSERT_TRUE(document.Set("vr.anti_aliasing", "smaa", &error)) << error;
+  ASSERT_TRUE(document.Set(
+      "vr.frame_rate_limit",
+      FrameRateSettingValue(Find("vr.frame_rate_limit"),
+                            {FrameRateMode::kRoblox, 0}),
+      &error))
+      << error;
+
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.vr_mode(), runtime::VrMode::kAuto);
+  EXPECT_EQ(loaded.config.vr_anti_aliasing(), "smaa");
+  EXPECT_EQ(loaded.config.vr_frame_rate().mode,
+            runtime::FrameRateLimitMode::kUnmanaged);
+}
+
+TEST_F(SettingsModelTest, TheOldVrSwitchShowsAsAModeAndMakesWayForOne) {
+  Write("vr:\n  enabled: true\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Value("vr.mode"), "on");
+  EXPECT_TRUE(document.IsChanged(Find("vr.mode")));
+
+  ASSERT_TRUE(document.Set("vr.mode", "auto", &error)) << error;
+  EXPECT_EQ(Read().find("\n  enabled:"), std::string::npos) << Read();
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.vr_mode(), runtime::VrMode::kAuto);
+
+  Write("vr:\n  enabled: false\n");
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Reset(Find("vr.mode"), &error)) << error;
+  ASSERT_TRUE(LoadFile()) << Read();
+  EXPECT_EQ(document.Value("vr.mode"), "");
+  EXPECT_FALSE(document.IsChanged(Find("vr.mode")));
+}
+
+TEST_F(SettingsModelTest, AFrameRateRowStartsFromItsOwnDefault) {
+  const Setting& vr = Find("vr.frame_rate_limit");
+  const Setting& graphics = Find("graphics.frame_rate_limit");
+  EXPECT_EQ(FrameRateSettingState(vr, "").mode, FrameRateMode::kUnlimited);
+  EXPECT_EQ(FrameRateSettingState(graphics, "").mode, FrameRateMode::kRoblox);
+  EXPECT_EQ(FrameRateSettingValue(vr, {FrameRateMode::kRoblox, 0}), "-1");
+  EXPECT_EQ(FrameRateSettingValue(graphics, {FrameRateMode::kRoblox, 0}), "");
+  EXPECT_EQ(FrameRateSettingValue(vr, {FrameRateMode::kDisplay, 0}),
+            "display");
 }
 
 std::vector<std::string> Values(const std::vector<DeviceChoice>& choices) {

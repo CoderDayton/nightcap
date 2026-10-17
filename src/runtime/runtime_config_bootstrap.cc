@@ -71,6 +71,28 @@ graphics:
   # unless frame_rate_limit is unlimited.
   # vsync: off
 
+# vr:
+  # String (default: off): experimental VR through OpenXR on supported Roblox
+  # builds. off always starts on the desktop. on always starts in VR, like
+  # --vr. auto starts in VR when SteamVR is already running with a connected
+  # headset (ALVR included), and on the desktop otherwise. auto never starts
+  # SteamVR. --vr and --no-vr override this for one launch. The older
+  # enabled: true/false still works as on/off; set one or the other.
+  # Standalone OpenXR test scene: mocktail-vr-probe --scene.
+  # mode: off
+  # String (default: fxaa): smooth jagged edges in the headset. Roblox draws
+  # the VR eyes without anti-aliasing, so each eye is filtered on its way to
+  # the headset. fxaa is the cheapest. smaa finds edges more precisely and
+  # keeps text and fine detail sharper, at a little more GPU time. off sends
+  # the eyes as rendered.
+  # anti_aliasing: fxaa
+  # Optional string or integer: frame-rate limit used instead of
+  # graphics.frame_rate_limit while VR is active. Same values: -1 (Roblox's
+  # own cap, usually 60), display, unlimited, or any positive integer. The
+  # default, unlimited, lets the OpenXR runtime pace frames at the headset's
+  # refresh rate.
+  # frame_rate_limit: unlimited
+
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every
   # physical CPU core. A place's Lua/main thread can still remain serial.

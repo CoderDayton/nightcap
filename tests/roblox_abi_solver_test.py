@@ -139,6 +139,74 @@ def plain(address: int):
     return SOLVER.Instruction(address, "nop ", (), None)
 
 
+def shaped(address: int, shape: str, target: int | None = None):
+    return SOLVER.Instruction(address, shape, (), target)
+
+
+class VrOperandTest(unittest.TestCase):
+    def solver(self, reference_code, candidate_code):
+        solver = SOLVER.Solver.from_indexes(
+            FakeIndex({0x100: function()}, instructions={0x100: reference_code}),
+            FakeIndex({0x1100: function()}, instructions={0x1100: candidate_code}),
+        )
+        solver.matches["pointer"] = SOLVER.Match(0x1100, 1.0, 1.0, "score")
+        return solver
+
+    def test_reads_a_changed_field_offset_between_aligned_neighbours(self) -> None:
+        solver = self.solver(
+            [shaped(0x100, "push rbp"), shaped(0x101, "mov eax, dword ptr [rdi + 0x118]"),
+             shaped(0x102, "ret ")],
+            [shaped(0x1100, "push rbp"), shaped(0x1101, "nop "),
+             shaped(0x1102, "mov eax, dword ptr [rdi + 0x108]"), shaped(0x1103, "ret ")],
+        )
+        self.assertEqual(solver.map_operand("selector", "pointer", 0x100, 0x118), 0x108)
+
+    def test_ignores_stack_slots_with_the_same_value(self) -> None:
+        solver = self.solver(
+            [shaped(0x100, "mov qword ptr [rsp + 0x140], rax"),
+             shaped(0x101, "movss xmm0, dword ptr [rax + 0x140]"), shaped(0x102, "ret ")],
+            [shaped(0x1100, "mov qword ptr [rsp + 0x140], rax"),
+             shaped(0x1101, "movss xmm0, dword ptr [rax + 0x130]"), shaped(0x1102, "ret ")],
+        )
+        self.assertEqual(solver.map_operand("head scale", "pointer", 0x100, 0x140), 0x130)
+
+    def test_a_vtable_offset_skips_data_fields_with_the_same_value(self) -> None:
+        solver = self.solver(
+            [shaped(0x100, "mov r12d, dword ptr [rax + 0x190]"),
+             shaped(0x101, "mov rax, qword ptr [rsi]"),
+             shaped(0x102, "mov rax, qword ptr [rax + 0x190]"), shaped(0x103, "mov rdi, r14"),
+             shaped(0x104, "call qword ptr [rcx + 0x3a8]"), shaped(0x105, "ret ")],
+            [shaped(0x1100, "mov r12d, dword ptr [rax + 0x190]"),
+             shaped(0x1101, "mov rax, qword ptr [rsi]"),
+             shaped(0x1102, "mov rax, qword ptr [rax + 0x188]"), shaped(0x1103, "mov rdi, r14"),
+             shaped(0x1104, "call qword ptr [rcx + 0x3a0]"), shaped(0x1105, "ret ")],
+        )
+        self.assertEqual(
+            solver.map_operand("framebuffer", "pointer", 0x100, 0x190, vtable_call=True), 0x188
+        )
+        self.assertEqual(
+            solver.map_operand("camera", "pointer", 0x100, 0x3a8, vtable_call=True), 0x3a0
+        )
+
+    def test_rejects_two_candidates_for_one_offset(self) -> None:
+        solver = self.solver(
+            [shaped(0x100, "push rbp"), shaped(0x101, "mov eax, dword ptr [rdi + 0x118]"),
+             shaped(0x102, "ret ")],
+            [shaped(0x1100, "push rbp"), shaped(0x1101, "mov eax, dword ptr [rdi + 0x108]"),
+             shaped(0x1102, "mov eax, dword ptr [rdi + 0x110]"), shaped(0x1103, "ret ")],
+        )
+        with self.assertRaisesRegex(SOLVER.AnalyzerError, "selector"):
+            solver.map_operand("selector", "pointer", 0x100, 0x118)
+
+    def test_maps_a_call_target(self) -> None:
+        solver = self.solver(
+            [shaped(0x100, "push rbp"), shaped(0x101, "call", 0x500), shaped(0x102, "ret ")],
+            [shaped(0x1100, "push rbp"), shaped(0x1101, "call", 0x1500),
+             shaped(0x1102, "ret ")],
+        )
+        self.assertEqual(solver.map_call_target("memcpy", "pointer", 0x100, 0x500), 0x1500)
+
+
 class FunctionLinkTest(unittest.TestCase):
     def test_lists_each_caller_and_data_user_once(self) -> None:
         callers, data_users = SOLVER.INDEX.link_functions({
@@ -432,7 +500,9 @@ class CheckReportTest(unittest.TestCase):
 
 @unittest.skipUnless(DERIVER.capstone is not None, "Python capstone is unavailable")
 class CheckCommandTest(unittest.TestCase):
-    def run_check(self, reference: dict, reference_library, candidate_library):
+    def run_check(
+        self, reference: dict, reference_library, candidate_library, extra=()
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             sidecar = Path(temporary) / "reference.json"
             sidecar.write_text(json.dumps(regression_sidecar(reference)), encoding="utf-8")
@@ -446,6 +516,7 @@ class CheckCommandTest(unittest.TestCase):
                     "--reference-compatibility", str(manifest),
                     "--candidate-lib", str(candidate_library),
                     "--cache-dir", str(REGRESSION_CACHE / "function_index"),
+                    *extra,
                 ])
         return status, output.getvalue()
 
@@ -454,6 +525,16 @@ class CheckCommandTest(unittest.TestCase):
             self, "2998", "3092"
         )
         status, output = self.run_check(reference, reference_library, candidate_library)
+        self.assertEqual(status, 0, output)
+        self.assertIn("deriver and solver agree", output)
+
+    def test_compares_the_vr_bridge_with_the_offset_finder(self) -> None:
+        reference, _, reference_library, candidate_library = regression_images(
+            self, "2998", "3092"
+        )
+        status, output = self.run_check(
+            reference, reference_library, candidate_library, ("--vr",)
+        )
         self.assertEqual(status, 0, output)
         self.assertIn("deriver and solver agree", output)
 
@@ -492,6 +573,43 @@ WEAKEST_SCORE_LEAD = {
     ("3092", "3222"): 0.22,
     ("3222", "3092"): 0.21,
 }
+
+
+# Builds with VR answers; each pair solves the second build's VR bridge.
+VR_PAIRS = (("2998", "3092"), ("3092", "3222"), ("3222", "3092"))
+
+
+@unittest.skipUnless(DERIVER.capstone is not None, "Python capstone is unavailable")
+class VrRegressionTest(unittest.TestCase):
+    def test_solves_each_vr_bridge_from_its_predecessor(self) -> None:
+        for reference_name, candidate_name in VR_PAIRS:
+            with self.subTest(reference=reference_name, candidate=candidate_name):
+                reference, candidate, reference_library, candidate_library = (
+                    regression_images(self, reference_name, candidate_name)
+                )
+                with DERIVER.ElfImage(reference_library) as reference_image, DERIVER.ElfImage(
+                    candidate_library
+                ) as candidate_image:
+                    solver = SOLVER.Solver(
+                        reference_image, candidate_image, REGRESSION_CACHE / "function_index"
+                    )
+                    solved = solver.derive_vr(reference["vr_device_bridge"])
+                self.assertEqual(solved, candidate["vr_device_bridge"])
+
+    def test_offset_finder_output_converts_to_the_bridge_fields(self) -> None:
+        finder = {
+            "vr_debug_device_bridge": {"vtable_rva": "0x10"},
+            "vr_bridge_supplement": {
+                "world_pointer_getter_rva": "0x20", "usercframe_selector_offset": "0x118",
+            },
+        }
+        converted = CHECK.vr_bridge_from_finder(finder, (
+            "vtable_rva", "pointer_frame_rva", "pointer_hand_selector_offset"
+        ))
+        self.assertEqual(converted, {
+            "vtable_rva": "0x10", "pointer_frame_rva": "0x20",
+            "pointer_hand_selector_offset": "0x118",
+        })
 
 
 @unittest.skipUnless(DERIVER.capstone is not None, "Python capstone is unavailable")

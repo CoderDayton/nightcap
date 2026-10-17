@@ -11,8 +11,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +43,9 @@
 
 namespace mocktail {
 namespace window {
+namespace {
+bool AttachVrEgl();
+}
 
 // Local EGL declarations avoid conflicts with the stub headers.
 
@@ -165,6 +170,17 @@ static WindowFullscreenStateSync g_fullscreen_state_sync;
 static std::unique_ptr<WindowResizeReadinessGate> g_resize_readiness_gate;
 static std::unique_ptr<SdlTextInputBackend> g_text_input_backend;
 static std::unique_ptr<WindowTextInputOwner> g_text_input_owner;
+// Generation of the showKeyboard request still awaiting its hideKeyboard;
+// 0 when Roblox wants no keyboard.
+static std::atomic<uint64_t> g_text_input_requested_generation{0};
+struct VirtualInput {
+  std::string text;      // committed text when non-empty
+  uint32_t scancode = 0; // otherwise one key press
+};
+static std::mutex g_virtual_input_mutex;
+static std::deque<VirtualInput> g_virtual_input;
+// Set while the queue may hold input, so a pump with none takes no lock.
+static std::atomic<bool> g_virtual_input_pending{false};
 static std::unique_ptr<SdlPointerCaptureBackend> g_pointer_capture_backend;
 // The owner is created and destroyed on the SDL thread, but the experience
 // composition reaches it from its own thread. The mutex guards the pointer
@@ -966,6 +982,9 @@ bool ActivateWindowEventLifecycles() {
     std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
     g_pointer_capture_owner = std::make_shared<WindowPointerCaptureOwner>(
         g_pointer_capture_backend.get());
+    // main() exports the resolved VR state before the window exists.
+    const char* vr = GetEnvNonEmpty("MOCKTAIL_VR_ENABLED");
+    g_pointer_capture_owner->SetVrActive(StringEquals(vr, "1"));
   }
   fprintf(stderr,
           "  [input] SDL event pump target=%llu Hz raw-motion, no smoothing\n",
@@ -1119,8 +1138,7 @@ bool Init(int width, int height, const char* title) {
     return false;
   }
 
-  if (StringEquals(GetEnvNonEmpty("MOCKTAIL_GRAPHICS_BACKEND"),
-                   "direct-vulkan")) {
+  if (ShouldUseNativeVulkanBackend()) {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
       fprintf(stderr, "  [window] SDL_Init failed: %s\n", SDL_GetError());
       return false;
@@ -1415,6 +1433,16 @@ bool Init(int width, int height, const char* title) {
     }
     return CreateSoftwareWaitingWindow(width, height, title);
   }
+  if (!AttachVrEgl()) {
+    SDL_GL_DestroyContext(sdl_context);
+    SDL_DestroyWindow(g_state.sdl_window);
+    g_state.sdl_window = nullptr;
+    g_state.egl_context = nullptr;
+    g_state.egl_display = nullptr;
+    g_state.egl_config = nullptr;
+    g_state.egl_surface = nullptr;
+    return false;
+  }
   fprintf(stderr, "  [window] EGL context and surface initialized via SDL3\n");
   if (WindowTraceEnabled()) {
     fprintf(
@@ -1448,6 +1476,23 @@ bool Init(int width, int height, const char* title) {
   return true;
 }
 
+namespace {
+bool AttachVrEgl() {
+  using Attach =
+      bool (*)(void *, void *, void *, void *, void *(*)(const char *));
+  auto attach =
+      reinterpret_cast<Attach>(dlsym(RTLD_DEFAULT, "mocktail_vr_attach_egl"));
+  if (!attach)
+    return true;
+  return attach(
+      g_state.egl_display, g_state.egl_config, g_state.egl_context,
+      reinterpret_cast<void *>(SDL_EGL_GetProcAddress("eglGetProcAddress")),
+      +[](const char *name) -> void * {
+        return reinterpret_cast<void *>(SDL_GL_GetProcAddress(name));
+      });
+}
+} // namespace
+
 bool MakeCurrentOnThread() {
   if (!g_state.initialised || !g_state.egl_context) {
     if (WindowTraceEnabled()) {
@@ -1465,7 +1510,7 @@ bool MakeCurrentOnThread() {
     return false;
   }
   fprintf(stderr, "  [window] EGL context now current on engine thread\n");
-  return true;
+  return AttachVrEgl();
 }
 
 bool ReleaseCurrentOnThread() {
@@ -1480,6 +1525,11 @@ bool ReleaseCurrentOnThread() {
             SDL_GetError());
     return false;
   }
+  using Release = void (*)();
+  auto release =
+      reinterpret_cast<Release>(dlsym(RTLD_DEFAULT, "mocktail_vr_release_egl"));
+  if (release)
+    release();
   if (WindowTraceEnabled()) {
     fprintf(stderr, "  [window] EGL context released on current thread\n");
   }
@@ -1624,24 +1674,63 @@ bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
 }
 void ClearPreTextInputPumpCallback() { g_pre_text_input_pump_gate.Clear(); }
 void SetWindowTextInputOwnerEnabled(bool enabled) {
+  if (!enabled) {
+    g_text_input_requested_generation.store(0, std::memory_order_release);
+  }
   if (g_text_input_owner != nullptr) {
     g_text_input_owner->SetEnabled(enabled);
   }
 }
 bool RequestShowTextInput(uint64_t generation, const TextInputArea& area,
                           const TextInputOptions& options) {
-  return g_text_input_owner != nullptr &&
-         g_text_input_owner->RequestShowTextInput(generation, area, options);
+  const bool accepted =
+      g_text_input_owner != nullptr &&
+      g_text_input_owner->RequestShowTextInput(generation, area, options);
+  if (accepted) {
+    g_text_input_requested_generation.store(generation,
+                                            std::memory_order_release);
+  }
+  return accepted;
 }
 bool RequestHideTextInput(uint64_t generation) {
-  return g_text_input_owner != nullptr &&
-         g_text_input_owner->RequestHideTextInput(generation);
+  const bool accepted = g_text_input_owner != nullptr &&
+                        g_text_input_owner->RequestHideTextInput(generation);
+  if (accepted) {
+    uint64_t expected = generation;
+    g_text_input_requested_generation.compare_exchange_strong(
+        expected, 0, std::memory_order_acq_rel);
+  }
+  return accepted;
+}
+bool TextInputRequested() {
+  return g_text_input_requested_generation.load(std::memory_order_acquire) !=
+         0;
+}
+void QueueVirtualTextInput(const char* utf8) {
+  if (utf8 == nullptr || utf8[0] == '\0') {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
+  g_virtual_input.push_back(VirtualInput{utf8, 0});
+  g_virtual_input_pending.store(true, std::memory_order_release);
+}
+void QueueVirtualKeyPress(uint32_t scancode) {
+  if (scancode == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
+  g_virtual_input.push_back(VirtualInput{{}, scancode});
+  g_virtual_input_pending.store(true, std::memory_order_release);
 }
 void* GetGLProcAddress(const char* name) {
   if (!g_state.initialised || name == nullptr || name[0] == '\0') {
     return nullptr;
   }
-  return reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
+  void *raw = reinterpret_cast<void *>(SDL_GL_GetProcAddress(name));
+  using Wrap = void *(*)(const char *, void *);
+  static auto wrap =
+      reinterpret_cast<Wrap>(dlsym(RTLD_DEFAULT, "mocktail_vr_wrap_gles_proc"));
+  return wrap ? wrap(name, raw) : raw;
 }
 
 void ShowIfHidden() {
@@ -1720,6 +1809,16 @@ bool SwapBuffers() {
     }
     return false;
   }
+
+  using Notify = void (*)();
+  static auto vr_begin = reinterpret_cast<Notify>(
+      dlsym(RTLD_DEFAULT, "mocktail_vr_note_host_present_begin"));
+  static auto vr_present =
+      reinterpret_cast<Notify>(dlsym(RTLD_DEFAULT, "mocktail_vr_gles_present"));
+  if (vr_begin)
+    vr_begin();
+  if (vr_present)
+    vr_present();
 
   if (g_gles_text_overlay == nullptr) {
     graphics::GlesTextOverlaySource source;
@@ -2241,6 +2340,31 @@ bool PumpEvents() {
                                      g_text_input_owner->active())) {
     fprintf(stderr, "  [input] SDL pointer capture state update failed\n");
   }
+  if (g_virtual_input_pending.exchange(false, std::memory_order_acq_rel)) {
+    std::deque<VirtualInput> virtual_input;
+    {
+      std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
+      virtual_input.swap(g_virtual_input);
+    }
+    for (const VirtualInput& input : virtual_input) {
+      platform::PlatformEvent event{};
+      event.timestamp_ns = SDL_GetTicksNS();
+      if (!input.text.empty()) {
+        event.payload = platform::TextInputEvent{input.text};
+        g_platform_event_observer.Notify(event);
+        continue;
+      }
+      const auto scancode = static_cast<SDL_Scancode>(input.scancode);
+      const auto keycode = static_cast<uint32_t>(
+          SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, false));
+      event.payload = platform::KeyEvent{true, false, input.scancode, keycode,
+                                         0};
+      g_platform_event_observer.Notify(event);
+      event.payload = platform::KeyEvent{false, false, input.scancode, keycode,
+                                         0};
+      g_platform_event_observer.Notify(event);
+    }
+  }
   platform::PlatformEvent pending_motion{};
   bool has_pending_motion = false;
 
@@ -2515,6 +2639,14 @@ void Shutdown() {
   // resources below.
   g_gles_text_overlay.reset();
   if (!g_state.direct_vulkan && g_state.egl_context != nullptr) {
+    // Drain the XR session while its EGL context still exists and is current.
+    SDL_GL_MakeCurrent(g_state.sdl_window,
+                       static_cast<SDL_GLContext>(g_state.egl_context));
+    using Detach = void (*)(void *);
+    auto detach =
+        reinterpret_cast<Detach>(dlsym(RTLD_DEFAULT, "mocktail_vr_detach_egl"));
+    if (detach)
+      detach(g_state.egl_context);
     SDL_GL_MakeCurrent(g_state.sdl_window, nullptr);
   }
   if (!g_state.direct_vulkan && g_state.egl_context) {

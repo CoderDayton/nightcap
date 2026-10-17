@@ -12,8 +12,8 @@ Release notes on GitHub are taken from the matching section here.
   not save a value Nightcap could not start with. Changes apply the next time Nightcap starts. If Nightcap
   is open when you change something, the window offers to restart it for you, with the same options and
   environment it was started with. It opens on the main menu. Every `config.yaml` setting has a row,
-  including the device, the window size, the proxy, Fleasion and the update source. A setting you changed
-  from its default gets a button that resets it.
+  including the device, the window size, the proxy, Fleasion, VR and the update source. A setting you
+  changed from its default gets a button that resets it.
 - An asset overlay folder, `~/.local/share/mocktail/asset_overlay`. A file there replaces the file Roblox
   ships at the same path, such as a cursor, a font or a sky texture, and it stays in place when Roblox
   updates. The layout matches Sober's `asset_overlay` folder. `MOCKTAIL_ASSET_OVERLAY_DIR` moves it. Thanks to
@@ -29,6 +29,12 @@ Release notes on GitHub are taken from the matching section here.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 - Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
   maintains it.
+- `vr.mode` in `config.yaml`: `off` starts on the desktop, `on` starts in VR, and `auto` starts in VR only
+  when SteamVR is already running with a connected headset. `auto` never starts SteamVR. `vr.enabled` still
+  works.
+- Anti-aliasing in VR. Roblox draws the VR eyes without it, so edges were jagged in the headset. Each eye is
+  now filtered on its way to the headset. `vr.anti_aliasing` picks `fxaa` (the default), `smaa`, which finds
+  edges more precisely and keeps text sharper for a little more GPU time, or `off`.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
 - `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
@@ -47,6 +53,11 @@ Release notes on GitHub are taken from the matching section here.
   `FFlagDebugLuauCodegenAll` in `fflags.json` to choose it yourself.
 - Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
   memory for each block of sound it plays.
+- VR on Vulkan no longer makes the CPU wait for the GPU each frame. The eye copies, the desktop mirror and
+  the `MOCKTAIL_VR_MIRROR_SHM` readback are ordered on the GPU, so Roblox prepares the next frame while the
+  last one renders. On a simulated 120 Hz headset this removed 2 to 5 ms of waiting per frame and steadied
+  the frame rate. The shared-memory mirror now shows each frame one frame later.
+- `MOCKTAIL_VR_PERF` also reports `desktop_mirror`, `present_prepare` and `present_interval`.
 - Less hitching while textures load in. Freeing GPU memory no longer waits for texture decodes that do not
   read it. In Blade Ball the worst `vkFreeMemory` fell from 31ms to 3ms.
 
