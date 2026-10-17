@@ -6,8 +6,11 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <mutex>
 #include <vector>
 
@@ -289,6 +292,22 @@ constexpr std::uintptr_t kTimelineSemaphore = 0x900;
 
 std::mutex g_signal_mutex;
 std::vector<std::uint64_t> g_signalled;
+std::condition_variable g_signal_changed;
+bool g_hold_signals = false;
+bool g_signal_held = false;
+
+void HoldDecodeSignals(bool hold) {
+  std::lock_guard<std::mutex> lock(g_signal_mutex);
+  g_hold_signals = hold;
+  g_signal_held = false;
+  g_signal_changed.notify_all();
+}
+
+bool WaitForHeldSignal() {
+  std::unique_lock<std::mutex> lock(g_signal_mutex);
+  return g_signal_changed.wait_for(lock, std::chrono::seconds(5),
+                                   [] { return g_signal_held; });
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL FakeCreateSemaphore(
     VkDevice, const VkSemaphoreCreateInfo*, const VkAllocationCallbacks*,
@@ -299,7 +318,12 @@ VKAPI_ATTR VkResult VKAPI_CALL FakeCreateSemaphore(
 
 VKAPI_ATTR VkResult VKAPI_CALL
 FakeSignalSemaphore(VkDevice, const VkSemaphoreSignalInfo* info) {
-  std::lock_guard<std::mutex> lock(g_signal_mutex);
+  std::unique_lock<std::mutex> lock(g_signal_mutex);
+  if (g_hold_signals) {
+    g_signal_held = true;
+    g_signal_changed.notify_all();
+    g_signal_changed.wait(lock, [] { return !g_hold_signals; });
+  }
   g_signalled.push_back(info->value);
   return VK_SUCCESS;
 }
@@ -1255,6 +1279,42 @@ TEST(VulkanEtc2EmulationTest, FreeMemoryWaitsForDecodesReadingThatMemory) {
   ASSERT_FALSE(signalled.empty()) << "free returned with a decode in flight";
   EXPECT_GE(signalled.back(), wait.value);
   EXPECT_EQ(g_staging[0], 134);
+  emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+TEST(VulkanEtc2EmulationTest, ReleasingOtherMemoryDoesNotWaitForDecodes) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1E);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20E);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkDeviceMemory other_memory = FakeHandle<VkDeviceMemory>(0x310);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x70F);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  ResetSignalledValues();
+
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x2E), true,
+                           HostVisibleMemory(), FakeGetDeviceProcAddr, true);
+  RecordDecodeOf134(&emulation, device, source, source_memory, command_buffer);
+
+  HoldDecodeSignals(true);
+  const Etc2SubmitWait wait =
+      emulation.PrepareSubmit(&command_buffer, 1, true);
+  const bool held = wait.semaphore != VK_NULL_HANDLE && WaitForHeldSignal();
+  if (!held) {
+    HoldDecodeSignals(false);
+  }
+  ASSERT_TRUE(held) << "no deferred decode reached its signal";
+
+  std::future<void> released = std::async(std::launch::async, [&] {
+    emulation.UnmapMemory(device, other_memory);
+    emulation.FreeMemory(device, other_memory, nullptr);
+  });
+  const bool returned = released.wait_for(std::chrono::seconds(2)) ==
+                        std::future_status::ready;
+  HoldDecodeSignals(false);
+  released.wait();
+  EXPECT_TRUE(returned) << "releasing other memory waited for a decode";
   emulation.ReleaseCommandBuffer(command_buffer);
 }
 

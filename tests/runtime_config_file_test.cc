@@ -479,6 +479,38 @@ input:
   EXPECT_TRUE(enabled.config.input_capabilities().raw_mouse);
 }
 
+TEST(RuntimeConfigFileTest, SystemCursorDefaultsOffAndLoadsFromYaml) {
+  TemporaryDirectory defaulted_directory;
+  const RuntimeConfigLoadResult defaulted = LoadRuntimeConfig(
+      MapEnvironment(), defaulted_directory.Write(R"yaml(
+version: 1
+input:
+  raw_mouse: true
+)yaml"));
+  ASSERT_TRUE(defaulted) << defaulted.error;
+  EXPECT_FALSE(defaulted.config.input_capabilities().system_cursor);
+
+  TemporaryDirectory enabled_directory;
+  const RuntimeConfigLoadResult enabled = LoadRuntimeConfig(
+      MapEnvironment(), enabled_directory.Write(R"yaml(
+version: 1
+input:
+  system_cursor: true
+)yaml"));
+  ASSERT_TRUE(enabled) << enabled.error;
+  EXPECT_TRUE(enabled.config.input_capabilities().system_cursor);
+
+  TemporaryDirectory invalid_directory;
+  const RuntimeConfigLoadResult invalid = LoadRuntimeConfig(
+      MapEnvironment(), invalid_directory.Write(R"yaml(
+version: 1
+input:
+  system_cursor: sometimes
+)yaml"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("input.system_cursor"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, LoadsTypedDesktopAndGraphicsSettings) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(

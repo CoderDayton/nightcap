@@ -266,6 +266,11 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       raw_mouse.has_value()) {
     config.input_capabilities_.raw_mouse = *raw_mouse;
   }
+  if (const std::optional<bool> system_cursor =
+          InputEnabled(environment, "MOCKTAIL_SYSTEM_CURSOR");
+      system_cursor.has_value()) {
+    config.input_capabilities_.system_cursor = *system_cursor;
+  }
   bool customized_device = false;
   config.device_profile_valid_ =
       config.device_profile_valid_ &&

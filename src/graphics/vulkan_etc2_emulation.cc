@@ -714,6 +714,7 @@ struct VulkanEtc2Emulation::State {
   EmulatedTextureBytes texture_bytes;
   std::unordered_map<VkBuffer, BufferBinding> buffers;
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
+  std::unordered_map<VkDeviceMemory, std::uint64_t> deferred_reads;
   std::unordered_map<VkCommandBuffer, CommandRecord> commands;
   std::atomic<bool> has_commands{false};
   // Blocks of every device, in creation order. Guarded by `mutex`; a block's
@@ -1141,6 +1142,24 @@ struct VulkanEtc2Emulation::State {
     });
   }
 
+  void WaitForReadsOf(VkDeviceMemory memory) {
+    std::uint64_t ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto found = deferred_reads.find(memory);
+      if (found == deferred_reads.end()) {
+        return;
+      }
+      ticket = found->second;
+    }
+    WaitForTicket(ticket);
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto found = deferred_reads.find(memory);
+    if (found != deferred_reads.end() && found->second <= ticket) {
+      deferred_reads.erase(found);
+    }
+  }
+
   // Blocks until nothing is queued or in flight.
   void DrainDecodes() {
     std::uint64_t ticket = 0;
@@ -1531,7 +1550,7 @@ void VulkanEtc2Emulation::UnmapMemory(VkDevice device, VkDeviceMemory memory) {
   if (dev->emulated) {
     // A deferred gather reads this mapping on a worker, so it must finish
     // before the pointer stops being valid.
-    state_->DrainDecodes();
+    state_->WaitForReadsOf(memory);
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(memory);
   }
@@ -1545,7 +1564,7 @@ VkResult VulkanEtc2Emulation::UnmapMemory2(VkDevice device,
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   if (dev->emulated && info != nullptr) {
-    state_->DrainDecodes();
+    state_->WaitForReadsOf(info->memory);
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(info->memory);
   }
@@ -1559,7 +1578,7 @@ void VulkanEtc2Emulation::FreeMemory(VkDevice device, VkDeviceMemory memory,
     return;
   }
   if (dev->emulated) {
-    state_->DrainDecodes();
+    state_->WaitForReadsOf(memory);
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(memory);
   }
@@ -1780,6 +1799,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     std::uint8_t* source = nullptr;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkDeviceSize memory_offset = 0;
+    VkDeviceMemory source_memory = VK_NULL_HANDLE;
   };
   std::vector<Work> work;
   {
@@ -1797,6 +1817,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
         }
         Work item;
         item.upload = upload;
+        item.source_memory = binding->second.memory;
         const VkDeviceSize absolute =
             binding->second.offset + upload.source_offset;
         const auto mapping = state_->mappings.find(binding->second.memory);
@@ -1966,6 +1987,11 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     ticket = state_->Enqueue(std::move(batch));
+    if (defer_gather) {
+      for (const Work& item : work) {
+        state_->deferred_reads[item.source_memory] = ticket;
+      }
+    }
     const auto remember = [this, ticket](VkCommandBuffer command_buffer) {
       const auto record = state_->commands.find(command_buffer);
       if (record != state_->commands.end()) {

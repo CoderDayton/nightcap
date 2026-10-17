@@ -377,6 +377,12 @@ target_link_libraries(asset_overlay_names_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(roblox_cursor_hook_test roblox_cursor_hook_test.cc)
+target_link_libraries(roblox_cursor_hook_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(running_instance_test running_instance_test.cc)
 target_link_libraries(running_instance_test PRIVATE
   Mocktail::Runtime
@@ -1250,6 +1256,7 @@ gtest_discover_tests(game_mode_link_namespace_test PROPERTIES
 gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(asset_overlay_names_test)
+gtest_discover_tests(roblox_cursor_hook_test)
 gtest_discover_tests(running_instance_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)

@@ -6,6 +6,7 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <mutex>
 #include <thread>
@@ -33,23 +34,38 @@ class WindowPointerCaptureOwnerTestPeer {
     std::lock_guard<std::mutex> lock(owner->mutex_);
     return owner->in_flight_ != 0;
   }
+
+  static void SetClock(WindowPointerCaptureOwner* owner,
+                       std::int64_t (*clock)()) {
+    owner->clock_ = clock;
+  }
+
+  static constexpr std::int64_t kRobloxCursorLifetimeNs =
+      WindowPointerCaptureOwner::kRobloxCursorLifetimeNs;
 };
 
 namespace {
 
 class FakeBackend final : public PointerCaptureBackend {
  public:
-  bool Apply(bool relative_mode, bool cursor_visible) override {
-    calls.push_back({relative_mode, cursor_visible});
+  bool Apply(bool relative_mode, CursorShape cursor) override {
+    calls.push_back(
+        {relative_mode, cursor != CursorShape::kHidden, cursor});
     return succeeds;
+  }
+
+  bool ShowsCursorWhileCaptured() const override {
+    return shows_captured_cursor;
   }
 
   struct Call {
     bool relative_mode;
     bool cursor_visible;
+    CursorShape cursor;
   };
   std::vector<Call> calls;
   bool succeeds = true;
+  bool shows_captured_cursor = false;
 };
 
 struct QueryState {
@@ -540,6 +556,178 @@ TEST(WindowPointerCaptureOwnerTest, TextInputWithoutNativeCursorShowsSystemCurso
   EXPECT_TRUE(owner.Pump(true));
   EXPECT_FALSE(owner.captured());
   EXPECT_FALSE(owner.cursor_visible());
+}
+
+std::int64_t g_fake_now_ns = 1;
+
+std::int64_t FakeNow() { return g_fake_now_ns; }
+
+TEST(WindowPointerCaptureOwnerTest, ShowsTheSystemCursorRobloxReports) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+
+  // Nothing reported: Roblox draws its own cursor, as without the setting.
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+
+  owner.PublishRobloxCursor(CursorShape::kPointer);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kPointer);
+  EXPECT_EQ(backend.calls.back().cursor, CursorShape::kPointer);
+
+  owner.PublishRobloxCursor(CursorShape::kText);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kText);
+
+  // A game's own cursor stays Roblox's to draw.
+  owner.PublishRobloxCursor(CursorShape::kHidden);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, MouseLockHidesTheReportedCursor) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.PublishRobloxCursor(CursorShape::kArrow);
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_EQ(owner.cursor(), CursorShape::kArrow);
+
+  query.locked_center = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+
+  query.locked_center = false;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
+}
+
+TEST(WindowPointerCaptureOwnerTest, StaleReportHidesTheSystemCursor) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  WindowPointerCaptureOwnerTestPeer::SetClock(&owner, &FakeNow);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+
+  g_fake_now_ns = 1000;
+  owner.PublishRobloxCursor(CursorShape::kArrow);
+  g_fake_now_ns +=
+      WindowPointerCaptureOwnerTestPeer::kRobloxCursorLifetimeNs;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
+
+  // Roblox stopped drawing a cursor, as on a loading screen.
+  g_fake_now_ns += 1;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, FocusLossShowsTheArrowOverReports) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.PublishRobloxCursor(CursorShape::kText);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnFocusLost());
+  EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
+  EXPECT_TRUE(owner.OnFocusGained(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kText);
+}
+
+TEST(WindowPointerCaptureOwnerTest, CameraDragKeepsTheCursorAtThePressPoint) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.PublishRobloxCursor(CursorShape::kPointer);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kPointer);
+  // Roblox hides its own cursor for the drag; the shape from the press holds.
+  owner.PublishRobloxCursor(CursorShape::kHidden);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kPointer);
+  EXPECT_TRUE(backend.calls.back().relative_mode);
+
+  owner.PublishRobloxCursor(CursorShape::kArrow);
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
+}
+
+TEST(WindowPointerCaptureOwnerTest, CameraDragOverRobloxCursorKeepsItHidden) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_EQ(owner.cursor(), CursorShape::kHidden);
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, RefocusingDragOverRobloxCursorKeepsItHidden) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.OnFocusLost());
+  ASSERT_EQ(owner.cursor(), CursorShape::kArrow);
+
+  // The right click that brings focus back starts the drag at once.
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, NativeLockHidesTheCursorEvenWhenShowable) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.PublishRobloxCursor(CursorShape::kArrow);
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.locked_center = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, CameraDragHidesTheCursorWhereItWouldJump) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.PublishRobloxCursor(CursorShape::kArrow);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
 }
 
 }  // namespace

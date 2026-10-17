@@ -2930,20 +2930,24 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
     return result;
   }
 
-  const WindowDimensionFn window_width =
+  static const WindowDimensionFn window_width =
       ResolveProcessFunction<WindowDimensionFn>("mocktail_window_width");
-  const WindowDimensionFn window_height =
+  static const WindowDimensionFn window_height =
       ResolveProcessFunction<WindowDimensionFn>("mocktail_window_height");
-  if (window_width == nullptr || window_height == nullptr ||
-      window_width() <= 0 || window_height() <= 0) {
+  if (window_width == nullptr || window_height == nullptr) {
+    return result;
+  }
+  const int width = window_width();
+  const int height = window_height();
+  if (width <= 0 || height <= 0) {
     return result;
   }
   capabilities->currentExtent.width = std::clamp(
-      static_cast<std::uint32_t>(window_width()),
-      capabilities->minImageExtent.width, capabilities->maxImageExtent.width);
+      static_cast<std::uint32_t>(width), capabilities->minImageExtent.width,
+      capabilities->maxImageExtent.width);
   capabilities->currentExtent.height = std::clamp(
-      static_cast<std::uint32_t>(window_height()),
-      capabilities->minImageExtent.height, capabilities->maxImageExtent.height);
+      static_cast<std::uint32_t>(height), capabilities->minImageExtent.height,
+      capabilities->maxImageExtent.height);
 
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
