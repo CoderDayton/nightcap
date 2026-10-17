@@ -84,10 +84,14 @@ input:
   # the two disagree. Turn this on when first-person aiming feels too slow or
   # too fast under fractional scaling. The pointer position is unaffected.
   raw_mouse: false
-  # Boolean (default: false): show the desktop's own arrow, hand and text
-  # cursors instead of the ones Roblox draws. A game's custom cursor and the
-  # shift lock cursor are still drawn by Roblox.
+  # Boolean (default: false): use the desktop's cursor theme for the arrow,
+  # hand and text cursors instead of Roblox's pictures.
   system_cursor: false
+  # Boolean (default: false): have the desktop draw the cursor instead of
+  # Roblox drawing it into the game, so cursor effects and tools work with it.
+  # Uses Roblox's pictures, a game's own cursor included. The shift lock
+  # cursor is still drawn by Roblox.
+  hardware_cursor: false
 
 integrations:
   fleasion:

@@ -528,9 +528,17 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "false",
                  {}},
                 {"input.system_cursor",
-                 "System cursors",
-                 "Use the desktop's arrow, hand and text cursors. Custom game "
-                 "cursors still show.",
+                 "System cursor theme",
+                 "Use your desktop's arrow, hand and text cursors instead of "
+                 "Roblox's.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+                {"input.hardware_cursor",
+                 "Hardware cursor",
+                 "Let the desktop draw the cursor, a game's own included, so "
+                 "cursor effects work with it.",
                  SettingKind::kToggle,
                  {},
                  "false",

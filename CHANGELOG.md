@@ -21,11 +21,15 @@ Release notes on GitHub are taken from the matching section here.
 - The asset overlay folder now also replaces files Roblox downloads and no longer ships, such as the shift
   lock and text cursors. Put the file under `content/`, at the path Roblox uses. Thanks to @dim-ghub for the
   idea.
-- `input.system_cursor` in `config.yaml`, or System cursors in the settings window, shows your desktop's
-  own arrow, hand and text cursors instead of the ones Roblox draws. A game's custom cursor and the shift
-  lock cursor are still drawn by Roblox. If a Roblox update changes the code this relies on, Nightcap logs
-  that and keeps Roblox's cursors. `MOCKTAIL_CURSOR_TRACE=1` prints each cursor Roblox draws. On Wayland,
-  the desktop cursor also stays at the press point while you hold the right mouse button to turn the camera.
+- `input.system_cursor` in `config.yaml`, or System cursor theme in the settings window, shows your
+  desktop theme's arrow, hand and text cursors instead of Roblox's.
+- `input.hardware_cursor`, or Hardware cursor in the settings window, has the desktop draw the cursor
+  instead of Roblox drawing it into the game, so cursor tools such as Hypr Dynamic Cursors work with it.
+  It keeps Roblox's pictures, a game's own cursor included. With both on, the theme covers the stock
+  cursors and a game's own cursor is still drawn by the desktop. The shift lock cursor stays Roblox's. If a
+  Roblox update changes the code these rely on, Nightcap logs that and Roblox keeps drawing its cursors.
+  `MOCKTAIL_CURSOR_TRACE=1` prints each cursor Roblox draws. On Wayland, a desktop-drawn cursor also stays
+  at the press point while you hold the right mouse button to turn the camera.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 - Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
   maintains it.

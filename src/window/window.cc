@@ -965,7 +965,10 @@ bool ActivateWindowEventLifecycles() {
   {
     std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
     g_pointer_capture_owner = std::make_shared<WindowPointerCaptureOwner>(
-        g_pointer_capture_backend.get());
+        g_pointer_capture_backend.get(), [] {
+          return static_cast<std::uint64_t>(
+              g_real_swap_count.load(std::memory_order_relaxed));
+        });
   }
   fprintf(stderr,
           "  [input] SDL event pump target=%llu Hz raw-motion, no smoothing\n",
@@ -1603,11 +1606,11 @@ void SetGameSessionActive(bool active) {
   }
 }
 
-void PublishRobloxCursor(CursorShape shape) {
+void PublishRobloxCursor(CursorShape shape, CursorImagePtr image) {
   const std::shared_ptr<WindowPointerCaptureOwner> owner =
       SharedPointerCaptureOwner();
   if (owner != nullptr) {
-    owner->PublishRobloxCursor(shape);
+    owner->PublishRobloxCursor(shape, std::move(image));
   }
 }
 
