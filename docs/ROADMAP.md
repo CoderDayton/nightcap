@@ -4,26 +4,15 @@ What Nightcap is working toward, in priority order. Items move to
 [Shipped](#shipped) when they land on `main`. Open an issue to propose a
 change to this list.
 
-## 1. Settings UI
-
-Nightcap is configured by editing `~/.config/mocktail/config.yaml`. Most
-people never open it, so they never find the FPS unlock or the vsync switch.
-
-Goal: a small GTK4 settings window, reachable from the app menu and from a
-`--settings` flag, that reads and writes the same `config.yaml`.
-
-- Graphics tab: backend, frame rate limit, vsync, small texture upscale.
-- Input tab: the `input.raw_mouse` toggle and controller options.
-- Advanced tab: FFlag overrides with a plain text editor for `fflags.json`.
-- Discord tab: every field in the `discord_rpc` block, so a friend can see
-what you are playing and you can switch it all off in one click.
-- Changes apply on next launch. A restart button restarts Nightcap.
-
-Done when every option in `config/mocktail.example.yaml` that a player would
-touch can be set without a text editor.
+Nothing is queued right now.
 
 ## Shipped
 
+- Settings window, from the app menu or `mocktail --settings`: graphics,
+input, performance, audio, and Discord options, and a text editor for
+`fflags.json`. It edits the same `config.yaml`, keeps your comments, and
+does not save a value Nightcap could not start with. Changes apply on the
+next launch.
 - Lower input latency: frames are presented as soon as they are ready.
 - Controllers hot-plug without a restart, and a pad that is unplugged mid-game
 releases its held buttons and sticks instead of leaving them stuck.

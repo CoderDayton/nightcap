@@ -2,6 +2,7 @@
 #define MOCKTAIL_SERVICES_CLIENT_SETTINGS_SERVICE_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -48,6 +49,9 @@ struct FflagsMergeResult {
   std::size_t count = 0;
   std::string error;
 };
+
+// The largest fflags file LoadAndMergeFflagsFile reads.
+inline constexpr std::uintmax_t kMaximumFflagsFileBytes = 64U * 1024U;
 
 // Loads a flat, optional fflags JSON file underneath caller-provided values.
 // count is the number of file entries added after caller values take

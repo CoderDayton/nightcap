@@ -10,6 +10,8 @@ namespace runtime {
 enum class CommandMode {
   kRun,
   kHelp,
+  // Open the settings window in place of the game.
+  kSettings,
 };
 
 enum class WindowMode {

@@ -62,6 +62,8 @@ readonly installed_desktop="${XDG_DATA_HOME}/applications/io.github.CoderDayton.
 [[ -f "${installed_desktop}" && ! -L "${installed_desktop}" ]]
 grep -Fxq "Exec=env SDL_VIDEODRIVER=wayland,x11 ${mocktail_binary} %u" \
   "${installed_desktop}"
+grep -Fxq "Exec=${mocktail_binary} --settings" "${installed_desktop}"
+[[ "$(grep -c '^Exec=' "${installed_desktop}")" == 2 ]]
 grep -Fxq \
   'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;' \
   "${installed_desktop}"
@@ -90,6 +92,10 @@ grep -Fxq \
   "Exec=env SDL_VIDEODRIVER=wayland,x11 ${fixture_project}/build/mocktail %u" \
   "${installed_desktop}"
 grep -Fxq "Path=${fixture_project}" "${installed_desktop}"
+grep -Fxq "Exec=${fixture_project}/build/mocktail --settings" \
+  "${installed_desktop}"
+# Path belongs to the main entry only, never to the action below it.
+[[ "$(grep -c '^Path=' "${installed_desktop}")" == 1 ]]
 
 unsafe_binary="${test_root}/mocktail unsafe"
 cp -- "${mocktail_binary}" "${unsafe_binary}"

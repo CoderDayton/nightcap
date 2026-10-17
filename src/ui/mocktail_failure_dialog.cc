@@ -9,6 +9,8 @@
 #include <string>
 #include <string_view>
 
+#include "mocktail/platform/application_id.h"
+
 namespace {
 
 constexpr char kMessagePacket = 'M';
@@ -155,6 +157,9 @@ void InstallProgressStyle(GdkDisplay* display) {
 
 bool InitializeUi(UiStyle style) {
   g_set_application_name("Nightcap");
+  // GTK names a window's app after the program. Without this, docks cannot
+  // tie the window to Nightcap's desktop entry and give it an icon of its own.
+  g_set_prgname(mocktail::platform::kApplicationId);
   if (!gtk_init_check()) {
     return false;
   }
@@ -170,7 +175,7 @@ bool InitializeUi(UiStyle style) {
   if (display == nullptr) {
     return false;
   }
-  gtk_window_set_default_icon_name("io.github.CoderDayton.nightcap");
+  gtk_window_set_default_icon_name(mocktail::platform::kApplicationId);
   adw_style_manager_set_color_scheme(adw_style_manager_get_default(),
                                      ADW_COLOR_SCHEME_FORCE_DARK);
   adw_style_manager_set_color_scheme(adw_style_manager_get_for_display(display),

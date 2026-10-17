@@ -26,6 +26,7 @@ readonly icon="${install_root}/usr/share/icons/hicolor/scalable/apps/io.github.C
 [[ -x "${binary}" ]]
 [[ -x "${runtime}/mocktail_updater" ]]
 [[ -x "${runtime}/mocktail_failure_dialog" ]]
+[[ -x "${runtime}/mocktail_settings" ]]
 [[ -x "${runtime}/mocktail_webview_helper" ]]
 [[ -x "${runtime}/mocktail_freebsd_socket_helper" ]]
 LC_ALL=C readelf -h "${runtime}/mocktail_freebsd_socket_helper" |
@@ -34,6 +35,7 @@ readelf -h "${binary}" | grep -Fq 'ELF64'
 readelf -h "${runtime}/mocktail_updater" | grep -Fq 'ELF64'
 readelf -d "${binary}" | grep -Eq '\$ORIGIN/\.\./(lib|lib64)/mocktail'
 readelf -d "${runtime}/mocktail_failure_dialog" | grep -Fq 'libadwaita-1.so.0'
+readelf -d "${runtime}/mocktail_settings" | grep -Fq 'libadwaita-1.so.0'
 ! readelf -d "${binary}" | grep -Fq 'libadwaita-1.so.0'
 
 [[ -f "${runtime}/libOpenSLES.so" ]]
@@ -50,6 +52,7 @@ fi
 [[ -f "${desktop}" ]]
 grep -Fq 'Name=Nightcap' "${desktop}"
 grep -Fxq 'Exec=env SDL_VIDEODRIVER=wayland,x11 /usr/bin/mocktail %u' "${desktop}"
+grep -Fxq 'Exec=/usr/bin/mocktail --settings' "${desktop}"
 grep -Fq 'Icon=io.github.CoderDayton.nightcap' "${desktop}"
 [[ -f "${metainfo}" ]]
 grep -Fq '<id>io.github.CoderDayton.nightcap</id>' "${metainfo}"

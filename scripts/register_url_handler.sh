@@ -146,7 +146,8 @@ desktop_source="$(ResolveRegularFile "${desktop_source}" "desktop template")"
    "$(grep -Fxc 'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;' \
        "${desktop_source}")" == 1 &&
    "$(grep -Fxc 'X-Mocktail-Managed=true' "${desktop_source}")" == 1 &&
-   "$(grep -c '^Exec=' "${desktop_source}")" == 1 ]] ||
+   "$(grep -Fxc 'Exec=mocktail --settings' "${desktop_source}")" == 1 &&
+   "$(grep -c '^Exec=' "${desktop_source}")" == 2 ]] ||
   Die "desktop template does not match the Mocktail URL-handler contract"
 
 [[ -n "${HOME:-}" && "${HOME}" == /* ]] ||
@@ -174,7 +175,10 @@ fi
 temporary="$(mktemp "${applications_dir}/.${DESKTOP_ID}.XXXXXX.desktop")"
 trap 'rm -f -- "${temporary}"' EXIT
 while IFS= read -r line || [[ -n "${line}" ]]; do
-  if [[ "${line}" == Exec=* ]]; then
+  if [[ "${line}" == 'Exec=mocktail --settings' ]]; then
+    # The Settings action. Path is a key of the main entry only.
+    printf 'Exec=%s --settings\n' "${mocktail_executable}"
+  elif [[ "${line}" == Exec=* ]]; then
     printf 'Exec=env SDL_VIDEODRIVER=wayland,x11 %s %%u\n' \
       "${mocktail_executable}"
     if [[ -n "${launch_working_directory}" ]]; then

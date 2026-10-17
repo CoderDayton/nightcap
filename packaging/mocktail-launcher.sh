@@ -42,6 +42,7 @@ fi
 MAIN_BINARY="${BIN_DIR}/mocktail"
 UPDATE_HELPER="${BIN_DIR}/mocktail_updater"
 FAILURE_DIALOG_HELPER="${BIN_DIR}/mocktail_failure_dialog"
+SETTINGS_HELPER="${BIN_DIR}/mocktail_settings"
 WEBVIEW_HELPER="${BIN_DIR}/mocktail_webview_helper"
 FREEBSD_SOCKET_HELPER="${BUNDLED_BIN_DIR}/mocktail_freebsd_socket_helper"
 ANDROID_BUILD_TOOLS="${RUNTIME_ROOT}/runtime/android-tools/bin"
@@ -424,6 +425,7 @@ CheckSystem() {
   if [[ "${ABI_MODE}" == thin ]]; then
     CheckElfDependencies "${MAIN_BINARY}" runtime || status=1
     CheckElfDependencies "${FAILURE_DIALOG_HELPER}" libadwaita/GTK || status=1
+    CheckElfDependencies "${SETTINGS_HELPER}" libadwaita/GTK || status=1
     CheckElfDependencies "${WEBVIEW_HELPER}" WebKit/GTK || status=1
   fi
 
@@ -486,6 +488,8 @@ CheckSystem() {
 [[ -x "${UPDATE_HELPER}" ]] || Die "missing executable: ${UPDATE_HELPER}"
 [[ -x "${FAILURE_DIALOG_HELPER}" ]] ||
   Die "missing executable: ${FAILURE_DIALOG_HELPER}"
+[[ -x "${SETTINGS_HELPER}" ]] ||
+  Die "missing executable: ${SETTINGS_HELPER}"
 [[ -x "${WEBVIEW_HELPER}" ]] || Die "missing WebView helper: ${WEBVIEW_HELPER}"
 [[ -x "${ANDROID_BUILD_TOOLS}/aapt" &&
    -x "${ANDROID_BUILD_TOOLS}/apksigner" ]] ||
@@ -505,11 +509,13 @@ if [[ "${1:-}" == --check-system ]]; then
 fi
 
 data_root="${MOCKTAIL_DATA_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/mocktail}"
-information_only=false
+# The host check is for starting the game. Help and the settings window do
+# not start it, and Settings must open on a host that cannot run it yet.
+starts_game=true
 case "${1:-}" in
-  --help|-h) information_only=true ;;
+  --help|-h|--settings) starts_game=false ;;
 esac
-if [[ "${information_only}" == false && -z "${ROBLOX_LIB_PATH:-}" &&
+if [[ "${starts_game}" == true && -z "${ROBLOX_LIB_PATH:-}" &&
       ! -f "${data_root}/current.json" &&
       "${MOCKTAIL_SKIP_HOST_CHECK:-0}" != 1 ]]; then
   printf 'Mocktail first-run host check...\n'
