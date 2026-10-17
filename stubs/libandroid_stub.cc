@@ -354,6 +354,15 @@ bool MocktailUsesDirectVulkan() {
   return backend != nullptr && std::strcmp(backend, "direct-vulkan") == 0;
 }
 
+// The transparent stand-in for a stock cursor texture while the desktop
+// draws the cursor, or null.
+const unsigned char* SystemCursorAsset(const char* filename, size_t* size) {
+  using Fn = const unsigned char* (*)(const char*, size_t*);
+  static Fn cached_fn = nullptr;
+  Fn fn = ResolveCached(&cached_fn, "mocktail_system_cursor_asset");
+  return fn != nullptr ? fn(filename, size) : nullptr;
+}
+
 }  // namespace
 
 extern "C" {
@@ -362,6 +371,19 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
                            int) {
   if (mgr == nullptr) {
     return nullptr;
+  }
+  size_t cursor_size = 0;
+  if (const unsigned char* cursor = SystemCursorAsset(filename, &cursor_size);
+      cursor != nullptr) {
+    // No file backs it, so openFileDescriptor finds no path to open.
+    auto* asset = new AAsset;
+    asset->apk_entry = ApkEntryName(filename);
+    asset->data.assign(cursor, cursor + cursor_size);
+    if (AssetTraceEnabled()) {
+      std::fprintf(stderr, "[asset] open %s -> system cursor (%zu bytes)\n",
+                   filename, asset->data.size());
+    }
+    return asset;
   }
   ResolvedAsset resolved = ResolveAssetPath(filename);
   if (resolved.path.empty()) {

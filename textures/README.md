@@ -76,5 +76,10 @@ Set `MOCKTAIL_ASSET_TRACE=1` to print every file Roblox opens as
 `[asset] miss <name>`. A line that ends in `[overlay]` came from the overlay
 folder. `MOCKTAIL_ASSET_OVERLAY_DIR` points the lookup somewhere else.
 
+With `input.system_cursor` on, Roblox's arrow, hand and text cursors are
+replaced by the desktop's, so overlay files for `ArrowCursor.png`,
+`ArrowFarCursor.png` and `IBeamCursor.png` are not used. The shift lock
+cursor still comes from the overlay.
+
 An overlay file changes the texture's bytes, so a texture override keyed on the
 original file's hash stops matching it. Use one of the two for a given texture.

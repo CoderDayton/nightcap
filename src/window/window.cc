@@ -1603,6 +1603,14 @@ void SetGameSessionActive(bool active) {
   }
 }
 
+void PublishRobloxCursor(CursorShape shape) {
+  const std::shared_ptr<WindowPointerCaptureOwner> owner =
+      SharedPointerCaptureOwner();
+  if (owner != nullptr) {
+    owner->PublishRobloxCursor(shape);
+  }
+}
+
 void ClearMouseLockQueryCallback() {
   const std::shared_ptr<WindowPointerCaptureOwner> owner =
       SharedPointerCaptureOwner();

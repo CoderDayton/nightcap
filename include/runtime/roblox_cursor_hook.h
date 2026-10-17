@@ -1,0 +1,82 @@
+#ifndef MOCKTAIL_RUNTIME_ROBLOX_CURSOR_HOOK_H_
+#define MOCKTAIL_RUNTIME_ROBLOX_CURSOR_HOOK_H_
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace mocktail {
+namespace runtime {
+
+// What Roblox draws as the mouse cursor, by the system cursor that can stand
+// in for it. kOther is a game's own cursor, the shift lock cursor, or none:
+// Roblox keeps drawing those itself.
+enum class RobloxCursorKind : std::uint8_t {
+  kOther,
+  kArrow,
+  kPointer,
+  kText,
+};
+
+// Classifies the content ID of the cursor Roblox draws, such as
+// rbxasset://textures/Cursors/KeyboardMouse/ArrowFarCursor.png. Only the
+// stock keyboard-and-mouse cursors have a system equivalent.
+RobloxCursorKind ClassifyRobloxCursorContent(std::string_view content);
+
+// True for an asset path that names one of those stock cursor textures, with
+// or without a scheme or a leading directory, such as
+// android/textures/Cursors/KeyboardMouse/IBeamCursor.png.
+bool IsStockSystemCursorAsset(std::string_view path);
+
+// The rbxasset:// names of the stock cursor textures. Unmapping them makes
+// Roblox open the local file for one it would otherwise download.
+std::vector<std::string> StockSystemCursorAssetNames();
+
+// A fully transparent 64x64 PNG that replaces each stock cursor texture, so
+// Roblox draws nothing under the system cursor.
+const std::uint8_t* TransparentCursorPng(std::size_t* size);
+
+// One loaded ELF segment, addressed as the code that runs from it sees it.
+struct CursorHookSegment {
+  std::uintptr_t address = 0;
+  const std::uint8_t* data = nullptr;
+  std::size_t size = 0;
+  bool executable = false;
+};
+
+// Where the hooks go in Roblox's per-frame cursor draw.
+struct CursorRenderSite {
+  // Entry of the function that picks and draws the cursor.
+  std::uintptr_t render_function = 0;
+  // The `call` that reads the type of the cursor content just before the
+  // draw. Its argument points at that content.
+  std::uintptr_t content_type_call = 0;
+  // What that call reaches.
+  std::uintptr_t content_type_function = 0;
+};
+
+// Finds the draw function through the one instruction that loads its
+// "[FLog::CursorCache] Invalid asset ID" message, then checks the code shape
+// both hooks rely on. Fails rather than guess when any part does not match.
+std::optional<CursorRenderSite> LocateCursorRenderSite(
+    const std::vector<CursorHookSegment>& segments, std::string* error);
+
+using RobloxCursorObserver = void (*)(RobloxCursorKind kind);
+
+// Hooks the cursor draw of the libroblox.so loaded at `image_base`, which no
+// code may have run from yet. The observer is called from Roblox's render
+// thread each time Roblox draws or skips the cursor. Returns false, changing
+// nothing, when the code does not match.
+bool InstallRobloxCursorHooks(std::uintptr_t image_base,
+                              RobloxCursorObserver observer,
+                              std::string* error);
+
+bool RobloxCursorHooksInstalled();
+
+}  // namespace runtime
+}  // namespace mocktail
+
+#endif  // MOCKTAIL_RUNTIME_ROBLOX_CURSOR_HOOK_H_

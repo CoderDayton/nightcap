@@ -1,9 +1,12 @@
 #include "window/window_pointer_capture_owner.h"
 
+#include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_video.h>
 
+#include <chrono>
 #include <cstdio>
+#include <cstring>
 
 #include "window/host_surface_commit_gate.h"
 
@@ -17,11 +20,31 @@ namespace {
 // unwind.
 thread_local WindowPointerCaptureOwner* t_pointer_query_owner = nullptr;
 
+std::int64_t SteadyNowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 }  // namespace
+
+const char* CursorShapeName(CursorShape shape) {
+  switch (shape) {
+    case CursorShape::kHidden:
+      return "hidden";
+    case CursorShape::kArrow:
+      return "arrow";
+    case CursorShape::kPointer:
+      return "pointer";
+    case CursorShape::kText:
+      return "text";
+  }
+  return "unknown";
+}
 
 WindowPointerCaptureOwner::WindowPointerCaptureOwner(
     PointerCaptureBackend* backend)
-    : backend_(backend) {}
+    : backend_(backend), clock_(&SteadyNowNs) {}
 
 WindowPointerCaptureOwner::~WindowPointerCaptureOwner() { Shutdown(); }
 
@@ -59,7 +82,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_) {
-    return Apply(false, true);
+    return Apply(false, CursorShape::kArrow);
   }
   MouseLockQueryCallback callback = nullptr;
   void* context = nullptr;
@@ -107,10 +130,39 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   // Text editing only suppresses the host's fallback RMB camera capture.
   const bool capture_requested =
       native_capture_active || (right_drag_active && !text_input_active);
-  // When capture is released, Roblox still draws its own cursor.
-  // Show the system pointer only when the native client cannot provide one.
-  const bool cursor_visible = !client_active && !capture_requested;
-  return Apply(capture_requested, cursor_visible);
+  // When capture is released, Roblox still draws its own cursor. Show the
+  // system pointer only when the native client cannot provide one, or when
+  // Roblox reports a stock cursor the desktop has its own shape for.
+  CursorShape cursor = CursorShape::kHidden;
+  if (!capture_requested) {
+    cursor = client_active ? CurrentRobloxCursor() : CursorShape::kArrow;
+  } else {
+    if (!captured_) {
+      capture_cursor_ =
+          cursor_ != CursorShape::kHidden ? cursor_ : CursorShape::kArrow;
+    }
+    // Roblox hides its cursor during an RMB camera drag. Keep one at the
+    // press point instead. Shift lock and first person draw their own.
+    if (!native_capture_active && backend_ != nullptr &&
+        backend_->ShowsCursorWhileCaptured()) {
+      cursor = capture_cursor_;
+    }
+  }
+  return Apply(capture_requested, cursor);
+}
+
+void WindowPointerCaptureOwner::PublishRobloxCursor(CursorShape shape) {
+  roblox_cursor_.store(shape, std::memory_order_relaxed);
+  roblox_cursor_time_ns_.store(clock_(), std::memory_order_release);
+}
+
+CursorShape WindowPointerCaptureOwner::CurrentRobloxCursor() const {
+  const std::int64_t published =
+      roblox_cursor_time_ns_.load(std::memory_order_acquire);
+  if (published == 0 || clock_() - published > kRobloxCursorLifetimeNs) {
+    return CursorShape::kHidden;
+  }
+  return roblox_cursor_.load(std::memory_order_relaxed);
 }
 
 bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
@@ -153,7 +205,7 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
   discard_next_motion_after_right_drag_ = false;
-  return Apply(false, true);
+  return Apply(false, CursorShape::kArrow);
 }
 
 bool WindowPointerCaptureOwner::Shutdown() {
@@ -165,41 +217,50 @@ bool WindowPointerCaptureOwner::Shutdown() {
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
   discard_next_motion_after_right_drag_ = false;
-  return Apply(false, true);
+  return Apply(false, CursorShape::kArrow);
 }
 
-bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible) {
-  if (capture == captured_ && cursor_visible == cursor_visible_) {
+bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor) {
+  if (capture == captured_ && cursor == cursor_) {
     return true;
   }
   if (backend_ == nullptr) {
     captured_ = false;
-    cursor_visible_ = true;
-    return !capture && cursor_visible;
+    cursor_ = CursorShape::kArrow;
+    return !capture && cursor == CursorShape::kArrow;
   }
-  if (backend_->Apply(capture, cursor_visible)) {
+  if (backend_->Apply(capture, cursor)) {
     const bool capture_changed = capture != captured_;
-    const bool cursor_changed = cursor_visible != cursor_visible_;
+    const bool visibility_changed =
+        (cursor == CursorShape::kHidden) != (cursor_ == CursorShape::kHidden);
     captured_ = capture;
-    cursor_visible_ = cursor_visible;
+    cursor_ = cursor;
     if (capture_changed && capture) {
       std::fprintf(stderr, "  [input] SDL relative pointer capture enabled\n");
     } else if (capture_changed) {
       std::fprintf(stderr, "  [input] SDL relative pointer capture released\n");
     }
-    if (cursor_changed) {
+    // Shape changes follow every hover, so only visibility is logged.
+    if (visibility_changed) {
       std::fprintf(stderr, "  [input] SDL system cursor %s\n",
-                   cursor_visible ? "shown" : "hidden");
+                   cursor != CursorShape::kHidden ? "shown" : "hidden");
     }
     return true;
   }
-  backend_->Apply(false, true);
+  backend_->Apply(false, CursorShape::kArrow);
   captured_ = false;
-  cursor_visible_ = true;
+  cursor_ = CursorShape::kArrow;
   return false;
 }
 
-bool SdlPointerCaptureBackend::Apply(bool relative_mode, bool cursor_visible) {
+bool SdlPointerCaptureBackend::ShowsCursorWhileCaptured() const {
+  // Wayland locks the pointer in place for relative mode. Other drivers
+  // confine it to the window center, where a shown cursor would jump.
+  const char* driver = SDL_GetCurrentVideoDriver();
+  return driver != nullptr && std::strcmp(driver, "wayland") == 0;
+}
+
+bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor) {
   auto* window = static_cast<SDL_Window*>(window_);
   if (window == nullptr) {
     return false;
@@ -209,6 +270,9 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, bool cursor_visible) {
   // window surface on Wayland compositors without wp_pointer_warp_v1.
   HostSurfaceCommitGate::MainThreadScope commit_scope(
       ProcessHostSurfaceCommitGate());
+  // Read whenever relative mode or the cursor changes, so it is set first.
+  SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE,
+              relative_mode && cursor != CursorShape::kHidden ? "1" : "0");
   if (relative_mode && !relative_mode_) {
     SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
     capture_anchor_valid_ = true;
@@ -232,7 +296,25 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, bool cursor_visible) {
   if (!relative_mode_) {
     capture_anchor_valid_ = false;
   }
-  return cursor_visible ? SDL_ShowCursor() : SDL_HideCursor();
+  if (cursor == CursorShape::kHidden) {
+    return SDL_HideCursor();
+  }
+  if (cursor != shape_) {
+    const auto index = static_cast<std::size_t>(cursor);
+    if (system_cursors_[index] == nullptr) {
+      const SDL_SystemCursor id =
+          cursor == CursorShape::kPointer ? SDL_SYSTEM_CURSOR_POINTER
+          : cursor == CursorShape::kText  ? SDL_SYSTEM_CURSOR_TEXT
+                                          : SDL_SYSTEM_CURSOR_DEFAULT;
+      system_cursors_[index] = SDL_CreateSystemCursor(id);
+    }
+    // A desktop without the shape keeps the cursor SDL already shows.
+    if (system_cursors_[index] != nullptr &&
+        SDL_SetCursor(static_cast<SDL_Cursor*>(system_cursors_[index]))) {
+      shape_ = cursor;
+    }
+  }
+  return SDL_ShowCursor();
 }
 
 }  // namespace window
