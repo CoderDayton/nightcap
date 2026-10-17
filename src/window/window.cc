@@ -1902,8 +1902,9 @@ bool ShouldIgnoreCloseRequest() {
 }
 
 void MaybeQueueInputReadinessSequence() {
-  if (g_state.input_test_sequence_queued ||
-      !StringEquals(GetEnvNonEmpty("MOCKTAIL_INPUT_TEST_CLICK"), "1") ||
+  static const bool enabled =
+      StringEquals(GetEnvNonEmpty("MOCKTAIL_INPUT_TEST_CLICK"), "1");
+  if (!enabled || g_state.input_test_sequence_queued ||
       !HasPresentedFrame() || !g_platform_event_observer.HasObserver() ||
       g_state.sdl_window == nullptr) {
     return;
@@ -1998,8 +1999,11 @@ void MaybeRequestResizeReadiness() {
 }
 
 bool FullscreenShortcutEnabled() {
-  const char* value = GetEnvNonEmpty("MOCKTAIL_F11_FULLSCREEN");
-  return value == nullptr || !StringEquals(value, "0");
+  static const bool enabled = [] {
+    const char* value = GetEnvNonEmpty("MOCKTAIL_F11_FULLSCREEN");
+    return value == nullptr || !StringEquals(value, "0");
+  }();
+  return enabled;
 }
 
 bool RequestFullscreenState(bool fullscreen, const char* reason) {
@@ -2086,9 +2090,10 @@ bool HandleFullscreenShortcut(const SDL_Event& event) {
 }
 
 void MaybeRequestFullscreenReadiness() {
-  const char* mode = GetEnvNonEmpty("MOCKTAIL_FULLSCREEN_READINESS");
-  const bool single_transition = StringEquals(mode, "1");
-  const bool round_trip = StringEquals(mode, "roundtrip");
+  static const char* const mode =
+      GetEnvNonEmpty("MOCKTAIL_FULLSCREEN_READINESS");
+  static const bool single_transition = StringEquals(mode, "1");
+  static const bool round_trip = StringEquals(mode, "roundtrip");
   if ((!single_transition && !round_trip) || !HasPresentedFrame()) {
     return;
   }
