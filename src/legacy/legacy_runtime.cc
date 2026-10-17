@@ -83,6 +83,7 @@
 #include "runtime/runtime_paths.h"
 #include "runtime/texture_memory_policy.h"
 #include "services/client_settings_service.h"
+#include "services/cursor_picture_source.h"
 #include "services/http_client.h"
 #include "window/window.h"
 #include "window/window_game_surface_bridge.h"
@@ -99,8 +100,10 @@
 std::atomic<bool> g_allow_legacy_binary_patches{false};
 std::atomic<bool> g_allow_host_abi_bridges{false};
 std::atomic<bool> g_allow_host_constructor_replay{false};
-// input.system_cursor, read before libroblox.so loads.
+// input.system_cursor and input.hardware_cursor, read before libroblox.so
+// loads.
 std::atomic<bool> g_system_cursor_requested{false};
+std::atomic<bool> g_hardware_cursor_requested{false};
 std::atomic<const mocktail::compat::HostAbiProfile*>
     g_active_host_abi_profile{nullptr};
 
@@ -1975,8 +1978,8 @@ extern "C" void MocktailConstructorWrapper() {
 void DisableOverlaidAssetMappings(uintptr_t base) {
   std::vector<std::string> names = mocktail::runtime::OverlayRbxAssetNames(
       CurrentRuntimePaths().asset_overlay_dir());
-  // Stock cursors become transparent local files under the system cursor.
-  if (mocktail::runtime::RobloxCursorHooksInstalled()) {
+  // Stock cursors become transparent local files under the system theme.
+  if (mocktail::runtime::RobloxCursorThemeActive()) {
     for (std::string& name :
          mocktail::runtime::StockSystemCursorAssetNames()) {
       if (std::find(names.begin(), names.end(), name) == names.end()) {
@@ -2019,26 +2022,54 @@ void DisableOverlaidAssetMappings(uintptr_t base) {
             << std::flush;
 }
 
-void PublishRobloxCursor(mocktail::runtime::RobloxCursorKind kind) {
+void PublishRobloxCursor(
+    mocktail::runtime::RobloxCursorKind kind,
+    const std::shared_ptr<const mocktail::CursorImage>& image) {
   using mocktail::runtime::RobloxCursorKind;
   using mocktail::window::CursorShape;
   mocktail::window::PublishRobloxCursor(
       kind == RobloxCursorKind::kArrow     ? CursorShape::kArrow
       : kind == RobloxCursorKind::kPointer ? CursorShape::kPointer
       : kind == RobloxCursorKind::kText    ? CursorShape::kText
-                                           : CursorShape::kHidden);
+      : kind == RobloxCursorKind::kCustom  ? CursorShape::kCustom
+                                           : CursorShape::kHidden,
+      image);
+}
+
+std::string FetchCursorPicture(void* context, const std::string& content) {
+  return static_cast<mocktail::services::CursorPictureSource*>(context)->Fetch(
+      content);
 }
 
 // Must run before any libroblox code does: it patches the cursor draw.
-void InstallSystemCursorHooks(uintptr_t base) {
-  if (!g_system_cursor_requested.load(std::memory_order_acquire)) {
+void InstallCursorHooks(uintptr_t base) {
+  mocktail::runtime::RobloxCursorOptions options;
+  options.system_theme =
+      g_system_cursor_requested.load(std::memory_order_acquire);
+  options.hardware = g_hardware_cursor_requested.load(std::memory_order_acquire);
+  if (!options.system_theme && !options.hardware) {
     return;
   }
+  if (options.hardware) {
+    // Lives as long as the process: the picture worker never stops.
+    static mocktail::services::CurlHttpClient http;
+    static mocktail::services::CursorPictureSource pictures(
+        &http, CurrentRuntimePaths().cookie_file(),
+        CurrentRuntimePaths().asset_overlay_dir(), [] {
+          // Roblox reports its asset folder once it starts.
+          const char* root = std::getenv("MOCKTAIL_ASSET_ROOT");
+          return std::filesystem::path(root != nullptr ? root
+                                                       : DefaultAssetPath());
+        });
+    options.fetch = &FetchCursorPicture;
+    options.fetch_context = &pictures;
+    options.desktop_shows_cursor = &mocktail::window::DesktopShowsRobloxCursor;
+  }
   std::string error;
-  if (!mocktail::runtime::InstallRobloxCursorHooks(base, &PublishRobloxCursor,
-                                                   &error)) {
-    std::cerr << "  [cursor] system cursors unavailable for this Roblox "
-                 "version, keeping Roblox's own: "
+  if (!mocktail::runtime::InstallRobloxCursorHooks(
+          base, options, &PublishRobloxCursor, &error)) {
+    std::cerr << "  [cursor] cursor settings unavailable for this Roblox "
+                 "version, Roblox keeps drawing its cursors: "
               << error << '\n'
               << std::flush;
   }
@@ -2052,7 +2083,7 @@ extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
   }
 
   g_libroblox_base = base;
-  InstallSystemCursorHooks(base);
+  InstallCursorHooks(base);
   DisableOverlaidAssetMappings(base);
   g_mocktail_abort_libroblox_base = base;
   g_libroblox_base_static = base;
@@ -4731,6 +4762,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   }
   g_system_cursor_requested.store(input_capabilities.system_cursor,
                                   std::memory_order_release);
+  g_hardware_cursor_requested.store(input_capabilities.hardware_cursor,
+                                    std::memory_order_release);
   setenv("MOCKTAIL_TOUCH_ENABLED_INTERNAL",
          input_capabilities.touch_enabled ? "1" : "0", 1);
   setenv("MOCKTAIL_MOUSE_ENABLED_INTERNAL",

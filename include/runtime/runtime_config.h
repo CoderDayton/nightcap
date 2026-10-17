@@ -43,10 +43,12 @@ struct InputCapabilityConfig {
   // surface units. The two differ only when the desktop display scale and the
   // window's pixel density disagree, as under fractional scaling.
   bool raw_mouse = false;
-  // Show the desktop's arrow, hand and text cursors in place of the stock
-  // ones Roblox draws. Custom game cursors and the mouse-lock cursor are
-  // still drawn by Roblox.
+  // Show the desktop theme's arrow, hand and text cursors in place of the
+  // stock ones Roblox draws.
   bool system_cursor = false;
+  // Have the desktop draw the cursor pictures Roblox would draw into the
+  // game, a game's own included. The mouse-lock cursor stays Roblox's.
+  bool hardware_cursor = false;
 };
 
 struct NetworkProxyConfig {

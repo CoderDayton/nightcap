@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -35,22 +36,18 @@ class WindowPointerCaptureOwnerTestPeer {
     return owner->in_flight_ != 0;
   }
 
-  static void SetClock(WindowPointerCaptureOwner* owner,
-                       std::int64_t (*clock)()) {
-    owner->clock_ = clock;
-  }
-
-  static constexpr std::int64_t kRobloxCursorLifetimeNs =
-      WindowPointerCaptureOwner::kRobloxCursorLifetimeNs;
+  static constexpr std::uint64_t kRobloxCursorLifetimeFrames =
+      WindowPointerCaptureOwner::kRobloxCursorLifetimeFrames;
 };
 
 namespace {
 
 class FakeBackend final : public PointerCaptureBackend {
  public:
-  bool Apply(bool relative_mode, CursorShape cursor) override {
+  bool Apply(bool relative_mode, CursorShape cursor,
+             const CursorImagePtr& image) override {
     calls.push_back(
-        {relative_mode, cursor != CursorShape::kHidden, cursor});
+        {relative_mode, cursor != CursorShape::kHidden, cursor, image});
     return succeeds;
   }
 
@@ -62,6 +59,7 @@ class FakeBackend final : public PointerCaptureBackend {
     bool relative_mode;
     bool cursor_visible;
     CursorShape cursor;
+    CursorImagePtr image;
   };
   std::vector<Call> calls;
   bool succeeds = true;
@@ -532,9 +530,9 @@ TEST(WindowPointerCaptureOwnerTest, TextInputWithoutNativeCursorShowsSystemCurso
   EXPECT_FALSE(owner.cursor_visible());
 }
 
-std::int64_t g_fake_now_ns = 1;
+std::uint64_t g_fake_frames = 0;
 
-std::int64_t FakeNow() { return g_fake_now_ns; }
+std::uint64_t FakeFrames() { return g_fake_frames; }
 
 TEST(WindowPointerCaptureOwnerTest, ShowsTheSystemCursorRobloxReports) {
   FakeBackend backend;
@@ -584,21 +582,38 @@ TEST(WindowPointerCaptureOwnerTest, MouseLockHidesTheReportedCursor) {
 TEST(WindowPointerCaptureOwnerTest, StaleReportHidesTheSystemCursor) {
   FakeBackend backend;
   QueryState query;
-  WindowPointerCaptureOwner owner(&backend);
-  WindowPointerCaptureOwnerTestPeer::SetClock(&owner, &FakeNow);
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames);
   ASSERT_TRUE(owner.RegisterQuery(Query, &query));
 
-  g_fake_now_ns = 1000;
+  g_fake_frames = 100;
   owner.PublishRobloxCursor(CursorShape::kArrow);
-  g_fake_now_ns +=
-      WindowPointerCaptureOwnerTestPeer::kRobloxCursorLifetimeNs;
+  g_fake_frames +=
+      WindowPointerCaptureOwnerTestPeer::kRobloxCursorLifetimeFrames;
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
 
-  // Roblox stopped drawing a cursor, as on a loading screen.
-  g_fake_now_ns += 1;
+  // Roblox presents frames with no cursor, as on a loading screen.
+  g_fake_frames += 1;
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, IdleRobloxKeepsTheReportedCursor) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+
+  g_fake_frames = 100;
+  owner.PublishRobloxCursor(CursorShape::kPointer);
+  // The screen sits still: Roblox presents nothing and reports nothing, for
+  // as many pumps as it takes. The cursor must not blink.
+  const std::size_t calls_before = backend.calls.size();
+  for (int pump = 0; pump < 1000; ++pump) {
+    EXPECT_TRUE(owner.Pump(false));
+    EXPECT_EQ(owner.cursor(), CursorShape::kPointer);
+  }
+  EXPECT_EQ(backend.calls.size(), calls_before + 1);
 }
 
 TEST(WindowPointerCaptureOwnerTest, FocusLossShowsTheArrowOverReports) {
@@ -702,6 +717,115 @@ TEST(WindowPointerCaptureOwnerTest, CameraDragHidesTheCursorWhereItWouldJump) {
   EXPECT_TRUE(owner.OnRightButton(true, false));
   EXPECT_TRUE(owner.captured());
   EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+CursorImagePtr MakeCursorImage() {
+  auto image = std::make_shared<CursorImage>();
+  image->width = 2;
+  image->height = 2;
+  image->hot_x = 1;
+  image->hot_y = 1;
+  image->rgba.assign(16, 0xFF);
+  return image;
+}
+
+TEST(WindowPointerCaptureOwnerTest, ShowsAGameCursorPicture) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+
+  const CursorImagePtr first = MakeCursorImage();
+  owner.PublishRobloxCursor(CursorShape::kCustom, first);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kCustom);
+  EXPECT_EQ(owner.cursor_image(), first);
+  EXPECT_EQ(backend.calls.back().image, first);
+
+  // An animated cursor swaps pictures; each one reaches the desktop.
+  const std::size_t calls = backend.calls.size();
+  const CursorImagePtr second = MakeCursorImage();
+  owner.PublishRobloxCursor(CursorShape::kCustom, second);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(backend.calls.size(), calls + 1);
+  EXPECT_EQ(owner.cursor_image(), second);
+
+  owner.PublishRobloxCursor(CursorShape::kArrow, second);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
+  EXPECT_EQ(owner.cursor_image(), nullptr);
+}
+
+TEST(WindowPointerCaptureOwnerTest, GameCursorWithoutAPictureStaysRobloxs) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+
+  owner.PublishRobloxCursor(CursorShape::kCustom, nullptr);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, CameraDragKeepsTheGameCursorPicture) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  const CursorImagePtr image = MakeCursorImage();
+  owner.PublishRobloxCursor(CursorShape::kCustom, image);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kCustom);
+  EXPECT_EQ(owner.cursor_image(), image);
+}
+
+TEST(WindowPointerCaptureOwnerTest, ShiftLockLeavesTheCursorToRoblox) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.DesktopShowsRobloxCursor());
+
+  // A game's crosshair under shift lock: the desktop hides its cursor, so
+  // Roblox must keep drawing it.
+  query.locked_center = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+
+  query.locked_center = false;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.DesktopShowsRobloxCursor());
+
+  // The drag keeps showing the desktop cursor where it can.
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.DesktopShowsRobloxCursor());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+
+  EXPECT_TRUE(owner.OnFocusLost());
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+}
+
+TEST(WindowPointerCaptureOwnerTest, DragThatHidesTheCursorLeavesItToRoblox) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
 }
 
 }  // namespace

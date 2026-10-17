@@ -5,7 +5,12 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <utility>
+#include <vector>
+
+#include "mocktail/cursor_image.h"
 
 namespace mocktail {
 namespace window {
@@ -13,20 +18,25 @@ namespace window {
 using MouseLockQueryCallback = bool (*)(void* context, bool* locked_center);
 
 // The desktop cursor shown over the window. kHidden leaves the pointer to
-// Roblox, which draws its own.
+// Roblox, which draws its own. kCustom shows a game's own cursor picture.
 enum class CursorShape : std::uint8_t {
   kHidden,
   kArrow,
   kPointer,
   kText,
+  kCustom,
 };
 
 const char* CursorShapeName(CursorShape shape);
 
+using CursorImagePtr = std::shared_ptr<const CursorImage>;
+
 class PointerCaptureBackend {
  public:
   virtual ~PointerCaptureBackend() = default;
-  virtual bool Apply(bool relative_mode, CursorShape cursor) = 0;
+  // `image` is set for kCustom only.
+  virtual bool Apply(bool relative_mode, CursorShape cursor,
+                     const CursorImagePtr& image) = 0;
   // True when a cursor shown during relative mode stays where the capture
   // began, instead of following the hidden pointer.
   virtual bool ShowsCursorWhileCaptured() const { return false; }
@@ -34,7 +44,12 @@ class PointerCaptureBackend {
 
 class WindowPointerCaptureOwner final {
  public:
-  explicit WindowPointerCaptureOwner(PointerCaptureBackend* backend);
+  // Counts the frames presented to the window. Without one, Roblox's
+  // reports never go stale.
+  using FrameCounter = std::uint64_t (*)();
+
+  explicit WindowPointerCaptureOwner(PointerCaptureBackend* backend,
+                                     FrameCounter presented_frames = nullptr);
   ~WindowPointerCaptureOwner();
 
   WindowPointerCaptureOwner(const WindowPointerCaptureOwner&) = delete;
@@ -71,22 +86,32 @@ class WindowPointerCaptureOwner final {
   // equivalent, or kHidden when it draws a custom one or none. Called from
   // Roblox's render thread each time it draws the cursor. While these keep
   // arriving, Pump shows that desktop cursor instead of hiding the pointer.
-  void PublishRobloxCursor(CursorShape shape);
+  void PublishRobloxCursor(CursorShape shape, CursorImagePtr image = nullptr);
+  // True while a cursor Roblox reports would be shown by the desktop. When
+  // false, as under shift lock or first person, Roblox must keep drawing its
+  // cursor, such as a game's crosshair. Read from Roblox's render thread.
+  bool DesktopShowsRobloxCursor() const {
+    return desktop_shows_roblox_cursor_.load(std::memory_order_relaxed);
+  }
 
   bool captured() const { return captured_; }
   bool cursor_visible() const { return cursor_ != CursorShape::kHidden; }
   CursorShape cursor() const { return cursor_; }
+  const CursorImagePtr& cursor_image() const { return cursor_image_; }
 
  private:
   friend class WindowPointerCaptureOwnerTestPeer;
 
-  using Clock = std::int64_t (*)();
   // Roblox stops reporting when it stops drawing a cursor, such as on a
-  // loading screen. An older report no longer describes the screen.
-  static constexpr std::int64_t kRobloxCursorLifetimeNs = 250'000'000;
+  // loading screen: frames still reach the window, without a report. A
+  // Roblox that presents nothing, as when the screen sits still, leaves the
+  // last frame and its cursor on screen, so the report holds.
+  static constexpr std::uint64_t kRobloxCursorLifetimeFrames = 8;
 
-  bool Apply(bool capture, CursorShape cursor);
-  CursorShape CurrentRobloxCursor() const;
+  std::uint64_t PresentedFrames() const;
+
+  bool Apply(bool capture, CursorShape cursor, CursorImagePtr image = nullptr);
+  std::pair<CursorShape, CursorImagePtr> CurrentRobloxCursor();
 
   PointerCaptureBackend* backend_ = nullptr;
   std::mutex mutex_;
@@ -106,27 +131,41 @@ class WindowPointerCaptureOwner final {
   bool discard_next_motion_after_right_drag_ = false;
   bool captured_ = false;
   CursorShape cursor_ = CursorShape::kArrow;
+  CursorImagePtr cursor_image_;
   // What showed when the current capture began. An RMB camera drag keeps it
   // on screen at the press point; kHidden leaves the drag to Roblox.
   CursorShape capture_cursor_ = CursorShape::kHidden;
-  Clock clock_;
-  std::atomic<CursorShape> roblox_cursor_{CursorShape::kHidden};
-  // 0 until Roblox reports a cursor.
-  std::atomic<std::int64_t> roblox_cursor_time_ns_{0};
+  CursorImagePtr capture_cursor_image_;
+  FrameCounter presented_frames_ = nullptr;
+  // Written on Roblox's render thread, read on the SDL thread.
+  std::mutex roblox_cursor_mutex_;
+  CursorShape roblox_cursor_ = CursorShape::kHidden;
+  CursorImagePtr roblox_cursor_image_;
+  bool roblox_cursor_reported_ = false;
+  std::atomic<bool> desktop_shows_roblox_cursor_{false};
+  // PresentedFrames() at the last report.
+  std::uint64_t roblox_cursor_frame_ = 0;
 };
 
 class SdlPointerCaptureBackend final : public PointerCaptureBackend {
  public:
   explicit SdlPointerCaptureBackend(void* window) : window_(window) {}
 
-  bool Apply(bool relative_mode, CursorShape cursor) override;
+  bool Apply(bool relative_mode, CursorShape cursor,
+             const CursorImagePtr& image) override;
   bool ShowsCursorWhileCaptured() const override;
 
  private:
+  // The SDL cursor for a shape, or for a game's picture; null when the
+  // desktop cannot make it.
+  void* CursorFor(CursorShape cursor, const CursorImagePtr& image);
+
   void* window_ = nullptr;
   // Created on first use and freed by SDL when the video subsystem quits.
   void* system_cursors_[4] = {};
-  CursorShape shape_ = CursorShape::kHidden;
+  // Recent game cursors, oldest first.
+  std::vector<std::pair<CursorImagePtr, void*>> custom_cursors_;
+  void* current_cursor_ = nullptr;
   float capture_anchor_x_ = 0.0f;
   float capture_anchor_y_ = 0.0f;
   bool relative_mode_ = false;
