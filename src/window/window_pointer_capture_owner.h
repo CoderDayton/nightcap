@@ -107,8 +107,8 @@ class WindowPointerCaptureOwner final {
   bool captured_ = false;
   CursorShape cursor_ = CursorShape::kArrow;
   // What showed when the current capture began. An RMB camera drag keeps it
-  // on screen at the press point.
-  CursorShape capture_cursor_ = CursorShape::kArrow;
+  // on screen at the press point; kHidden leaves the drag to Roblox.
+  CursorShape capture_cursor_ = CursorShape::kHidden;
   Clock clock_;
   std::atomic<CursorShape> roblox_cursor_{CursorShape::kHidden};
   // 0 until Roblox reports a cursor.

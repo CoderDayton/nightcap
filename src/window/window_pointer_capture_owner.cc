@@ -133,16 +133,17 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   // When capture is released, Roblox still draws its own cursor. Show the
   // system pointer only when the native client cannot provide one, or when
   // Roblox reports a stock cursor the desktop has its own shape for.
+  const CursorShape uncaptured_cursor =
+      client_active ? CurrentRobloxCursor() : CursorShape::kArrow;
   CursorShape cursor = CursorShape::kHidden;
   if (!capture_requested) {
-    cursor = client_active ? CurrentRobloxCursor() : CursorShape::kArrow;
+    cursor = uncaptured_cursor;
   } else {
+    // Not cursor_, which is the unfocused arrow on a refocusing click.
     if (!captured_) {
-      capture_cursor_ =
-          cursor_ != CursorShape::kHidden ? cursor_ : CursorShape::kArrow;
+      capture_cursor_ = uncaptured_cursor;
     }
-    // Roblox hides its cursor during an RMB camera drag. Keep one at the
-    // press point instead. Shift lock and first person draw their own.
+    // An RMB drag keeps a desktop cursor that was already showing.
     if (!native_capture_active && backend_ != nullptr &&
         backend_->ShowsCursorWhileCaptured()) {
       cursor = capture_cursor_;

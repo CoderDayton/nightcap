@@ -640,7 +640,7 @@ TEST(WindowPointerCaptureOwnerTest, CameraDragKeepsTheCursorAtThePressPoint) {
   EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
 }
 
-TEST(WindowPointerCaptureOwnerTest, CameraDragOverRobloxCursorShowsTheArrow) {
+TEST(WindowPointerCaptureOwnerTest, CameraDragOverRobloxCursorKeepsItHidden) {
   FakeBackend backend;
   backend.shows_captured_cursor = true;
   QueryState query;
@@ -652,7 +652,24 @@ TEST(WindowPointerCaptureOwnerTest, CameraDragOverRobloxCursorShowsTheArrow) {
 
   EXPECT_TRUE(owner.OnRightButton(true, false));
   EXPECT_TRUE(owner.captured());
-  EXPECT_EQ(owner.cursor(), CursorShape::kArrow);
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
+}
+
+TEST(WindowPointerCaptureOwnerTest, RefocusingDragOverRobloxCursorKeepsItHidden) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.OnFocusLost());
+  ASSERT_EQ(owner.cursor(), CursorShape::kArrow);
+
+  // The right click that brings focus back starts the drag at once.
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
 }
 
 TEST(WindowPointerCaptureOwnerTest, NativeLockHidesTheCursorEvenWhenShowable) {
