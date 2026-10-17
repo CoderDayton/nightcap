@@ -42,6 +42,8 @@ Release notes on GitHub are taken from the matching section here.
   `FFlagDebugLuauCodegenAll` in `fflags.json` to choose it yourself.
 - Nightcap answers Roblox's Java calls with less work per call, and the audio thread no longer allocates
   memory for each block of sound it plays.
+- Less hitching while textures load in. Freeing GPU memory no longer waits for texture decodes that do not
+  read it. In Blade Ball the worst `vkFreeMemory` fell from 31ms to 3ms.
 
 ## [0.3.4] - 2026-10-11
 
