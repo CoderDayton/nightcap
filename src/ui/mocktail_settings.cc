@@ -7,8 +7,10 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "mocktail/platform/application_id.h"
 #include "mocktail/platform/sdl_window_icon_data.h"
 #include "runtime/environment.h"
 #include "runtime/running_instance.h"
@@ -29,7 +31,7 @@ using mocktail::ui::SettingsDocument;
 using mocktail::ui::SettingsGroup;
 using mocktail::ui::SettingsPage;
 
-constexpr char kApplicationId[] = "io.github.CoderDayton.nightcap";
+using mocktail::platform::kApplicationId;
 
 constexpr char kWindowStyle[] = R"(
 .navigation-sidebar > row { min-height: 44px; margin: 1px 6px; padding: 0 14px; }
@@ -427,42 +429,50 @@ std::string SteppedValue(const Row& row) {
   return mocktail::ui::FrameRateValue(rate);
 }
 
-void SaveValue(Row* row, const std::string& value);
-
-// Saves a stepped row now. Every other save, Undo, Restart and closing the
-// window call this first, so a stepped value is never lost or saved late.
 void SaveStepped(SettingsWindow* window) {
-  if (window->stepped == nullptr) {
+  if (window->stepped_timer != 0) {
+    g_source_remove(window->stepped_timer);
+    window->stepped_timer = 0;
+  }
+  Row* row = std::exchange(window->stepped, nullptr);
+  if (row == nullptr || window->closed) {
     return;
   }
-  Row* row = window->stepped;
-  g_source_remove(window->stepped_timer);
-  window->stepped = nullptr;
-  window->stepped_timer = 0;
-  SaveValue(row, SteppedValue(*row));
-}
-
-void SaveValue(Row* row, const std::string& value) {
-  SettingsWindow* window = row->window;
   std::string error;
   const std::size_t before = window->document.saved_changes();
-  const bool saved = window->document.Set(row->setting->key, value, &error);
-  ShowSaved(row, before, saved, error);
+  if (!window->document.Set(row->setting->key, SteppedValue(*row), &error)) {
+    ShowError(window, error);
+    RefreshRows(window);
+    return;
+  }
+  if (window->document.saved_changes() != before) {
+    OnChangeSaved(window);
+  }
+  gtk_widget_set_visible(window->undo, window->document.CanUndo());
+  ShowChanged(window);
+}
+
+SettingsDocument& EditDocument(SettingsWindow* window) {
+  SaveStepped(window);
+  return window->document;
 }
 
 void Apply(Row* row, const std::string& value) {
-  if (row->window->refreshing) {
+  SettingsWindow* window = row->window;
+  if (window->refreshing) {
     return;
   }
-  SaveStepped(row->window);
-  SaveValue(row, value);
+  SettingsDocument& document = EditDocument(window);
+  std::string error;
+  const std::size_t before = document.saved_changes();
+  const bool saved = document.Set(row->setting->key, value, &error);
+  ShowSaved(row, before, saved, error);
 }
 
 void OnUndo(GtkButton*, gpointer user_data) {
   auto* window = static_cast<SettingsWindow*>(user_data);
-  SaveStepped(window);
   std::string error;
-  if (!window->document.Undo(&error)) {
+  if (!EditDocument(window).Undo(&error)) {
     ShowError(window, error);
   }
   gtk_widget_set_visible(window->undo, FALSE);
@@ -489,9 +499,7 @@ void OnSteppedValueChanged(GObject*, GParamSpec*, gpointer user_data) {
         auto* stepped_window = static_cast<SettingsWindow*>(data);
         // The source ends when this returns, so it is not removed again.
         stepped_window->stepped_timer = 0;
-        Row* stepped_row = stepped_window->stepped;
-        stepped_window->stepped = nullptr;
-        SaveValue(stepped_row, SteppedValue(*stepped_row));
+        SaveStepped(stepped_window);
         return G_SOURCE_REMOVE;
       },
       window);
@@ -519,27 +527,24 @@ gint OnNumberInput(AdwSpinRow* spin, double* value, gpointer user_data) {
 
 void OnTextApplied(AdwEntryRow* entry, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
-  SettingsWindow* window = row->window;
-  SaveStepped(window);
+  SettingsDocument& document = EditDocument(row->window);
   std::string error;
-  const std::size_t before = window->document.saved_changes();
+  const std::size_t before = document.saved_changes();
   const std::string_view text = gtk_editable_get_text(GTK_EDITABLE(entry));
   // A field with no default left empty means unset, not an empty text the
   // loader would refuse.
-  const bool saved =
-      text.empty() && row->setting->default_value.empty()
-          ? window->document.Set(row->setting->key, text, &error)
-          : window->document.SetText(row->setting->key, text, &error);
+  const bool saved = text.empty() && row->setting->default_value.empty()
+                         ? document.Set(row->setting->key, text, &error)
+                         : document.SetText(row->setting->key, text, &error);
   ShowSaved(row, before, saved, error);
 }
 
 void OnReset(GtkButton*, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
-  SettingsWindow* window = row->window;
-  SaveStepped(window);
+  SettingsDocument& document = EditDocument(row->window);
   std::string error;
-  const std::size_t before = window->document.saved_changes();
-  const bool saved = window->document.Reset(*row->setting, &error);
+  const std::size_t before = document.saved_changes();
+  const bool saved = document.Reset(*row->setting, &error);
   ShowSaved(row, before, saved, error);
 }
 
@@ -1259,7 +1264,13 @@ gboolean OnCloseRequest(GtkWindow*, gpointer user_data) {
 }
 
 void OnWindowDestroy(GtkWidget*, gpointer user_data) {
-  static_cast<SettingsWindow*>(user_data)->closed = true;
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  window->closed = true;
+  if (window->stepped_timer != 0) {
+    g_source_remove(window->stepped_timer);
+    window->stepped_timer = 0;
+  }
+  window->stepped = nullptr;
 }
 
 void OnActivate(GtkApplication* application, gpointer user_data) {

@@ -370,6 +370,7 @@ mocktail_apply_compile_options(mocktail_failure_dialog_runtime)
 add_executable(mocktail_failure_dialog
   src/ui/mocktail_failure_dialog.cc
 )
+target_include_directories(mocktail_failure_dialog PRIVATE include)
 target_link_libraries(mocktail_failure_dialog PRIVATE PkgConfig::LIBADWAITA)
 mocktail_apply_compile_options(mocktail_failure_dialog)
 

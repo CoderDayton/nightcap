@@ -138,7 +138,9 @@ class RunningInstanceTest : public ::testing::Test {
       if (descriptor < 0 || flock(descriptor, LOCK_EX) != 0) {
         _exit(1);
       }
-      (void)write(ready[1], "x", 1);
+      if (write(ready[1], "x", 1) != 1) {
+        _exit(1);
+      }
       for (;;) {
         pause();
       }
@@ -270,8 +272,28 @@ TEST_F(RunningInstanceTest, StartDetachedPassesArgumentsAndEnvironment) {
                       command.working_directory.string());
 }
 
+TEST_F(RunningInstanceTest, StartDetachedRunsWhereItCanWhenTheFolderIsGone) {
+  const std::filesystem::path marker = directory_ / "marker";
+  const std::filesystem::path program = directory_ / "program.sh";
+  std::ofstream(program) << "#!/bin/sh\n: > '" << marker.string() << "'\n";
+  std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+  LaunchCommand command;
+  command.working_directory = directory_ / "gone";
+
+  std::string error;
+  ASSERT_TRUE(StartDetached(program, &error, command)) << error;
+  for (int attempt = 0; attempt < 100 && !std::filesystem::exists(marker);
+       ++attempt) {
+    std::this_thread::sleep_for(milliseconds(20));
+  }
+  EXPECT_TRUE(std::filesystem::exists(marker));
+}
+
 TEST_F(RunningInstanceTest, RestartLeavesAnInstanceItCannotReadRunning) {
   StartHolder(false, true);
+  if (ReadLaunchCommand(holder_).has_value()) {
+    GTEST_SKIP() << "this user can read every process, as root can";
+  }
   std::string error;
   EXPECT_FALSE(RestartRunningInstance(lock_, directory_ / "missing",
                                       milliseconds(2000), &error));

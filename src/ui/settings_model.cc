@@ -43,16 +43,14 @@ runtime::RuntimeConfigValue Get(std::string_view text, std::string_view key) {
 using ValueCache =
     std::map<std::string, runtime::RuntimeConfigValue, std::less<>>;
 
-// Reads keys from one config text. With a cache, each key is parsed once.
 class Reader {
  public:
   explicit Reader(std::string_view text, ValueCache* cache = nullptr)
-      : text_(text), cache_(cache) {}
+      : text_(text), cache_(cache != nullptr ? cache : &own_) {}
+  Reader(const Reader&) = delete;
+  Reader& operator=(const Reader&) = delete;
 
-  runtime::RuntimeConfigValue Get(std::string_view key) const {
-    if (cache_ == nullptr) {
-      return runtime::GetRuntimeConfigValue(text_, key);
-    }
+  const runtime::RuntimeConfigValue& Get(std::string_view key) const {
     auto found = cache_->find(key);
     if (found == cache_->end()) {
       found = cache_
@@ -65,17 +63,19 @@ class Reader {
 
  private:
   std::string_view text_;
+  mutable ValueCache own_;
   ValueCache* cache_;
 };
 
 // The preset the file picks, as the file spells it. Empty when it picks none.
 std::string DevicePreset(const Reader& file) {
   for (const std::string_view key : {kDeviceKey, kDeviceTypeKey}) {
-    if (runtime::RuntimeConfigValue device = file.Get(key); device.found) {
-      return std::move(device.value);
+    if (const runtime::RuntimeConfigValue& device = file.Get(key);
+        device.found) {
+      return device.value;
     }
   }
-  if (const runtime::RuntimeConfigValue playability =
+  if (const runtime::RuntimeConfigValue& playability =
           file.Get(kPlayabilityKey);
       playability.found) {
     const bool desktop = playability.value != "0" &&
@@ -136,11 +136,11 @@ bool PresetInput(const Reader& file, std::string_view key) {
 }
 
 bool DeviceInput(const Reader& file, std::string_view key) {
-  if (const runtime::RuntimeConfigValue value = file.Get(key); value.found) {
+  if (const runtime::RuntimeConfigValue& value = file.Get(key); value.found) {
     return value.value == "true";
   }
   if (key == kTouchKey) {
-    if (const runtime::RuntimeConfigValue value =
+    if (const runtime::RuntimeConfigValue& value =
             file.Get(kTouchKeyWithoutDevice);
         value.found) {
       return value.value == "true";
@@ -211,8 +211,8 @@ runtime::RuntimeConfigEdit SetDevicePreset(std::string_view text,
 }
 
 std::string ProxyValue(const Reader& file) {
-  const runtime::RuntimeConfigValue host = file.Get(kProxyHostKey);
-  const runtime::RuntimeConfigValue port = file.Get(kProxyPortKey);
+  const runtime::RuntimeConfigValue& host = file.Get(kProxyHostKey);
+  const runtime::RuntimeConfigValue& port = file.Get(kProxyPortKey);
   return host.found && port.found ? host.value + ":" + port.value
                                   : std::string();
 }

@@ -30,6 +30,14 @@ std::string ReadProcFile(const std::string& path, bool* read) {
 
 std::string ReadProcLocks() { return ReadProcFile("/proc/locks", nullptr); }
 
+// Runs between fork and exec, so it makes only the system call. A report that
+// cannot be written leaves the parent reading a successful start.
+void ReportStartError(int pipe, int error_number) {
+  while (write(pipe, &error_number, sizeof(error_number)) < 0 &&
+         errno == EINTR) {
+  }
+}
+
 // Every entry of a NUL-separated list, empty ones included.
 std::vector<std::string> SplitNulList(std::string_view list) {
   std::vector<std::string> entries;
@@ -143,15 +151,19 @@ RunningInstance FindRunningInstance(const std::filesystem::path& lock_file) {
   return {true, *holder};
 }
 
-bool StopRunningInstance(const std::filesystem::path& lock_file,
-                         std::chrono::milliseconds timeout,
-                         std::string* error) {
-  const RunningInstance instance = FindRunningInstance(lock_file);
+namespace {
+
+constexpr char kUnreachableError[] =
+    "Nightcap is running where the settings window cannot reach it";
+
+bool StopInstance(const std::filesystem::path& lock_file,
+                  const RunningInstance& instance,
+                  std::chrono::milliseconds timeout, std::string* error) {
   if (!instance.running) {
     return true;
   }
   if (instance.pid <= 0) {
-    *error = "Nightcap is running where the settings window cannot reach it";
+    *error = kUnreachableError;
     return false;
   }
   if (kill(instance.pid, SIGTERM) != 0 && errno != ESRCH) {
@@ -169,6 +181,21 @@ bool StopRunningInstance(const std::filesystem::path& lock_file,
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   return true;
+}
+
+void EnterFolderIfItExists(const std::string& folder) {
+  if (!folder.empty() && chdir(folder.c_str()) != 0) {
+    return;
+  }
+}
+
+}
+
+bool StopRunningInstance(const std::filesystem::path& lock_file,
+                         std::chrono::milliseconds timeout,
+                         std::string* error) {
+  return StopInstance(lock_file, FindRunningInstance(lock_file), timeout,
+                      error);
 }
 
 bool StartDetached(const std::filesystem::path& program, std::string* error,
@@ -226,16 +253,13 @@ bool StartDetached(const std::filesystem::path& program, std::string* error,
       sigset_t none;
       sigemptyset(&none);
       sigprocmask(SIG_SETMASK, &none, nullptr);
-      if (working_directory.empty() || chdir(working_directory.c_str()) == 0) {
-        execve(path.c_str(), arguments.data(), envp);
-      }
-      const int exec_error = errno;
-      (void)write(report[1], &exec_error, sizeof(exec_error));
+      EnterFolderIfItExists(working_directory);
+      execve(path.c_str(), arguments.data(), envp);
+      ReportStartError(report[1], errno);
       _exit(127);
     }
     if (grandchild < 0) {
-      const int fork_error = errno;
-      (void)write(report[1], &fork_error, sizeof(fork_error));
+      ReportStartError(report[1], errno);
     }
     _exit(0);
   }
@@ -258,13 +282,17 @@ bool RestartRunningInstance(const std::filesystem::path& lock_file,
                             std::chrono::milliseconds timeout,
                             std::string* error) {
   const RunningInstance instance = FindRunningInstance(lock_file);
+  if (instance.running && instance.pid <= 0) {
+    *error = kUnreachableError;
+    return false;
+  }
   const std::optional<LaunchCommand> command =
       instance.running ? ReadLaunchCommand(instance.pid) : std::nullopt;
   if (instance.running && !command.has_value()) {
     *error = "cannot read how Nightcap was started, so it was left running";
     return false;
   }
-  return StopRunningInstance(lock_file, timeout, error) &&
+  return StopInstance(lock_file, instance, timeout, error) &&
          StartDetached(program, error, command.value_or(LaunchCommand{}));
 }
 

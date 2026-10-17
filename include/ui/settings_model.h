@@ -57,20 +57,20 @@ struct Setting {
   double maximum = 1048576;
   double step = 256;
   // What a kNumber row shows in place of 0, when 0 turns the setting off.
-  std::string_view zero_label;
+  std::string_view zero_label = {};
 };
 
 struct SettingsGroup {
   std::string_view title;
   std::vector<Setting> settings;
-  std::string_view expander;
-  std::string_view expander_subtitle;
+  std::string_view expander = {};
+  std::string_view expander_subtitle = {};
   // With this, the first setting, a kToggle, is the expander row's own
   // switch, and the other settings apply only while it is on.
   bool expander_switch = false;
   // Shown under the title. Text rows have no subtitle, so their format is
   // explained here.
-  std::string_view description;
+  std::string_view description = {};
 };
 
 struct SettingsPage {
