@@ -159,11 +159,15 @@ mocktail --settings
 ```
 
 With the Flatpak, run
-`flatpak run io.github.CoderDayton.nightcap --settings`.
+`flatpak run io.github.CoderDayton.nightcap --settings`. To open it with a
+key, bind that command to a keyboard shortcut in your desktop's settings. If
+Settings is missing from the menu right after you install, log out and back
+in.
 
 The window edits `~/.config/mocktail/config.yaml`. It keeps your comments
 and layout, saves each change at once, and does not save a value Nightcap
-could not start with. Changes apply the next time Nightcap starts.
+could not start with. Changes apply the next time Nightcap starts. If
+Nightcap is open, the window offers to restart it, except in the Flatpak.
 
 You can also edit the file by hand. Useful options:
 

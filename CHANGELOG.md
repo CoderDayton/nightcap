@@ -33,6 +33,7 @@ Release notes on GitHub are taken from the matching section here.
 
 - Joining a game from a website link while already in a game no longer freezes Nightcap. It leaves the
   current game and joins the new one, and leaving that game returns to the home screen.
+- The loading window no longer gets a dock icon of its own. It now shows under Nightcap's icon.
 
 ### Changed
 
