@@ -174,6 +174,25 @@ if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
   set_tests_properties(FleasionIntegrationTest.ProxyAndTrust PROPERTIES TIMEOUT 45)
 endif()
 
+add_executable(settings_model_test settings_model_test.cc)
+target_link_libraries(settings_model_test PRIVATE
+  Mocktail::SettingsModel
+  Mocktail::Update
+  GTest::gtest_main
+)
+
+add_executable(runtime_config_store_test runtime_config_store_test.cc)
+target_link_libraries(runtime_config_store_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(runtime_config_editor_test runtime_config_editor_test.cc)
+target_link_libraries(runtime_config_editor_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(runtime_config_file_test runtime_config_file_test.cc)
 target_link_libraries(runtime_config_file_test PRIVATE
   Mocktail::Runtime
@@ -250,6 +269,13 @@ target_link_libraries(session_log_test PRIVATE
 add_executable(failure_dialog_test failure_dialog_test.cc)
 target_link_libraries(failure_dialog_test PRIVATE
   Mocktail::FailureDialog
+  GTest::gtest_main
+)
+
+add_executable(settings_launcher_test settings_launcher_test.cc)
+target_link_libraries(settings_launcher_test PRIVATE
+  Mocktail::FailureDialog
+  Mocktail::Runtime
   GTest::gtest_main
 )
 
@@ -347,6 +373,12 @@ target_link_libraries(runtime_paths_test PRIVATE
 
 add_executable(asset_overlay_names_test asset_overlay_names_test.cc)
 target_link_libraries(asset_overlay_names_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(running_instance_test running_instance_test.cc)
+target_link_libraries(running_instance_test PRIVATE
   Mocktail::Runtime
   GTest::gtest_main
 )
@@ -1189,6 +1221,9 @@ gtest_discover_tests(jnivm_test)
 gtest_discover_tests(jnivm_fields_test)
 gtest_discover_tests(jnivm_fmod_write_allocation_test)
 gtest_discover_tests(runtime_config_test)
+gtest_discover_tests(runtime_config_editor_test)
+gtest_discover_tests(runtime_config_store_test)
+gtest_discover_tests(settings_model_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
@@ -1198,6 +1233,7 @@ gtest_discover_tests(support_bundle_runtime_test)
 gtest_discover_tests(vulkan_icd_selection_test)
 gtest_discover_tests(session_log_test)
 gtest_discover_tests(failure_dialog_test)
+gtest_discover_tests(settings_launcher_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
@@ -1214,6 +1250,7 @@ gtest_discover_tests(game_mode_link_namespace_test PROPERTIES
 gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(asset_overlay_names_test)
+gtest_discover_tests(running_instance_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
 gtest_discover_tests(process_launch_policy_test)

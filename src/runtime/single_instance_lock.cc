@@ -108,6 +108,14 @@ bool IsPositiveDecimal(std::string_view value) {
 
 }  // namespace
 
+std::filesystem::path CurrentUserInstanceLockPath() {
+  return CurrentUserLockPath();
+}
+
+std::filesystem::path CurrentExecutableIdentityPath() {
+  return ExecutableIdentityPath();
+}
+
 std::string CurrentExecutableInstanceKey() {
   static const std::string instance_key = []() {
     // FNV-1a is used only for a compact deterministic namespace. The endpoint

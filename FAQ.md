@@ -4,8 +4,14 @@
 ## How do I turn Discord RPC off?
 
 RPC is on by default. It never signs in to Discord and never reads an
-account token. To turn it off, launch Nightcap once to create the config,
-then close it. Open `config.yaml`:
+account token.
+
+The quick way: open Settings (right-click Nightcap in the app menu, or run
+`mocktail --settings`), go to Discord, and switch off "Show activity in
+Discord". Then restart Nightcap.
+
+To do it by hand, launch Nightcap once to create the config, then close
+it. Open `config.yaml`:
 
 - Native / AppImage: `~/.config/mocktail/config.yaml`
 - Flatpak: `~/.var/app/io.github.CoderDayton.nightcap/config/mocktail/config.yaml`

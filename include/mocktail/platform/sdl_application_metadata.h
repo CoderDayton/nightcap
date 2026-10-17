@@ -2,14 +2,14 @@
 #ifndef MOCKTAIL_PLATFORM_SDL_APPLICATION_METADATA_H_
 #define MOCKTAIL_PLATFORM_SDL_APPLICATION_METADATA_H_
 
+#include "mocktail/platform/application_id.h"
 #include "mocktail/status.h"
 
 namespace mocktail {
 namespace platform {
 
 inline constexpr char kMocktailApplicationName[] = "Nightcap";
-inline constexpr char kMocktailApplicationIdentifier[] =
-    "io.github.CoderDayton.nightcap";
+inline constexpr const char* kMocktailApplicationIdentifier = kApplicationId;
 
 // Configures the stable compositor identity before SDL initializes. The
 // identifier matches the installed desktop file and icon name so Wayland and

@@ -1526,6 +1526,26 @@ TEST_P(UpdateCoordinatorTest, RetriesTheSameCandidateOnNextStartupAfterEagain) {
   EXPECT_FALSE(std::filesystem::exists(Marker()));
 }
 
+TEST_P(UpdateCoordinatorTest, StartupKeepsTheCurrentPayloadWhenUpdatesAreOff) {
+  request.canary_spawn = Spawn();
+  Write(paths.config_file,
+        "version: 1\nupdates:\n  automatic: false\n  source: apk-pure\n");
+  const auto off = RunUpdate(paths, request);
+  ASSERT_TRUE(off) << off.error;
+  EXPECT_FALSE(off.changed);
+  EXPECT_EQ(off.payload_id, active_id);
+  EXPECT_EQ(CurrentId(), active_id);
+  EXPECT_EQ(spawns, 0);
+  EXPECT_NE(off.message.find("updates are disabled"), std::string::npos);
+
+  Write(paths.config_file,
+        "version: 1\nupdates:\n  automatic: true\n  source: apk-pure\n");
+  const auto on = RunUpdate(paths, request);
+  ASSERT_TRUE(on) << on.error;
+  EXPECT_TRUE(on.changed);
+  EXPECT_EQ(CurrentId(), newer_id);
+}
+
 TEST_P(UpdateCoordinatorTest, RealRejectionIsFilteredOnNextStartup) {
   RejectOnce();
   const auto second = RunUpdate(paths, request);

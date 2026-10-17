@@ -67,6 +67,8 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
                            &result.error)) {
         return result;
       }
+    } else if (argument == "--settings") {
+      result.options.mode = CommandMode::kSettings;
     } else if (argument == "--headless") {
       result.options.window_mode = WindowMode::kHeadless;
     } else if (argument == "--windowed") {
@@ -146,6 +148,10 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
                          : "unknown option: " + argument;
       return result;
     }
+  }
+  if (result.options.mode == CommandMode::kSettings && argc != 2) {
+    result.error = "--settings must be used on its own";
+    return result;
   }
   if (result.options.force_run_latest &&
       (!result.options.roblox_library_path.empty() ||
@@ -292,6 +298,7 @@ std::string CommandLineUsage(const std::string& program_name) {
          "website link\n"
       << "  --profile <file>         Write a Chrome trace of Vulkan adapter "
          "work for ui.perfetto.dev\n"
+      << "  --settings               Open the settings window\n"
       << "  --help, -h               Show this help\n\n"
       << "Auth:\n"
       << "  When no saved Roblox session is found, Roblox's welcome screen "
