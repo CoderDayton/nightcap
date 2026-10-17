@@ -155,6 +155,9 @@ void InstallProgressStyle(GdkDisplay* display) {
 
 bool InitializeUi(UiStyle style) {
   g_set_application_name("Nightcap");
+  // GTK names a window's app after the program. Without this, docks cannot
+  // tie the window to Nightcap's desktop entry and give it an icon of its own.
+  g_set_prgname("io.github.CoderDayton.nightcap");
   if (!gtk_init_check()) {
     return false;
   }
