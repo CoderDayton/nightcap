@@ -9,7 +9,6 @@
 #include <cerrno>
 #include <charconv>
 #include <fstream>
-#include <limits>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <system_error>
@@ -39,7 +38,7 @@ std::string SuggestedId() {
   std::random_device entropy;
   std::mt19937_64 random(entropy());
   std::uniform_int_distribution<std::uint64_t> distribution(
-      1, std::numeric_limits<std::uint64_t>::max());
+      1'000'000'000'000'000ULL, 9'999'999'999'999'999ULL);
   return std::to_string(distribution(random));
 }
 
@@ -584,6 +583,11 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
     storage["BrowserTrackerId"] = authoritative_id;
     if (AtomicWrite(app_storage_file, storage, &result.error))
       result.status = BrowserTrackerStatus::kCreated;
+    close(lock);
+    return result;
+  }
+  if (!stored_id.empty()) {
+    result.browser_tracker_id = stored_id;
     close(lock);
     return result;
   }

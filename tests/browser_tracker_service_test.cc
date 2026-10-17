@@ -132,6 +132,44 @@ TEST_F(BrowserTrackerServiceTest, CookieBrowserIdReconcilesStoredMismatch) {
   EXPECT_TRUE(saved.at("keep"));
 }
 
+TEST_F(BrowserTrackerServiceTest,
+       TrustsStoredIdentityWhenCookieHasNoTrackerWithoutNetwork) {
+  std::filesystem::create_directories(Storage().parent_path());
+  const std::string storage = R"({"BrowserTrackerId":"1234567890123456"})";
+  std::ofstream(Storage()) << storage;
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  FakeHttpClient http;
+
+  const BrowserTrackerResult result =
+      BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(), true);
+
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.status, BrowserTrackerStatus::kExisting);
+  EXPECT_EQ(result.browser_tracker_id, "1234567890123456");
+  EXPECT_EQ(http.post_count, 0);
+  EXPECT_EQ(ReadFile(Storage()), storage);
+  EXPECT_EQ(ReadFile(Cookies()), ".ROBLOSECURITY=secret");
+}
+
+TEST_F(BrowserTrackerServiceTest, SuggestsIdsRobloxAccepts) {
+  std::filesystem::create_directories(root_);
+  FakeHttpClient http;
+  http.response = {true, 500, "", "", {}};
+  constexpr std::string_view kParameter = "suggestedBrowserTrackerId=";
+
+  for (int attempt = 0; attempt < 64; ++attempt) {
+    (void)BrowserTrackerService(http).EnsureInitialized(Storage(), Cookies(),
+                                                        true);
+    const std::string& url = http.last_request.url;
+    const std::size_t start = url.find(kParameter);
+    ASSERT_NE(start, std::string::npos);
+    const std::string id = url.substr(start + kParameter.size());
+    EXPECT_LE(id.size(), 17U) << id;
+    EXPECT_NE(id.front(), '0') << id;
+  }
+  EXPECT_EQ(http.post_count, 64);
+}
+
 TEST_F(BrowserTrackerServiceTest, RejectsMalformedResponseWithoutMutation) {
   FakeHttpClient http;
   std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
