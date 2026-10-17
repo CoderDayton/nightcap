@@ -51,6 +51,8 @@ Release notes on GitHub are taken from the matching section here.
   memory for each block of sound it plays.
 - Less hitching while textures load in. Freeing GPU memory no longer waits for texture decodes that do not
   read it. In Blade Ball the worst `vkFreeMemory` fell from 31ms to 3ms.
+- Nightcap starts about 0.2s faster. It no longer re-hashes an unchanged Roblox library twice on every
+  launch, and the browser tracker no longer waits on a web request.
 
 ## [0.3.4] - 2026-10-11
 

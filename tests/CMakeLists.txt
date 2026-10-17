@@ -858,6 +858,15 @@ target_compile_definitions(host_abi_profile_test PRIVATE
 )
 add_dependencies(host_abi_profile_test host_abi_profile_fixture)
 
+add_executable(file_digest_record_test
+  file_digest_record_test.cc
+)
+target_link_libraries(file_digest_record_test PRIVATE
+  Mocktail::Compat
+  GTest::gtest_main
+)
+gtest_discover_tests(file_digest_record_test)
+
 add_executable(payload_compatibility_host_abi_gate_test
   payload_compatibility_host_abi_gate_test.cc
 )

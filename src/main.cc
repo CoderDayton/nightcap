@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "compat/elf_build_id.h"
+#include "compat/file_digest_record.h"
 #include "compat/host_abi_profile.h"
 #include "compat/payload_compatibility.h"
 #include "legacy/legacy_runtime.h"
@@ -912,7 +913,9 @@ int main(int argc, char* argv[]) {
         mocktail::compat::CheckPayloadCompatibility(
             runtime_config.config.roblox_library_path().string(),
             compatibility_manifest,
-            command_line.options.allow_unverified_build);
+            command_line.options.allow_unverified_build,
+            (paths.cache_root() / mocktail::compat::kFileDigestRecordDirectory)
+                .string());
     if (!compatibility) {
       std::cerr << "[FATAL] " << compatibility.error << '\n';
       return EXIT_FAILURE;

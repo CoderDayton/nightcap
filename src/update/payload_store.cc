@@ -22,6 +22,7 @@
 #include <string>
 #include <utility>
 
+#include "compat/file_digest_record.h"
 #include "update/candidate_approval.h"
 #include "update/compatibility_catalog.h"
 #include "update/payload_integrity.h"
@@ -894,7 +895,8 @@ PayloadStoreResult PayloadStore::Import(
   return Promote(staged.payload_id);
 }
 
-PayloadStoreResult PayloadStore::VerifyCurrent() {
+PayloadStoreResult PayloadStore::VerifyCurrent(
+    const std::filesystem::path& digest_record_directory) {
   PayloadStoreResult result;
   StoreLock lock(root_, &result.error);
   if (!lock) return result;
@@ -908,8 +910,11 @@ PayloadStoreResult PayloadStore::VerifyCurrent() {
   if (!PopulateInspectedResult(root_, manifest, &result, &payload)) {
     return result;
   }
-  const std::string library_sha256 =
-      HashRegularFile(result.payload_directory / "libroblox.so", &result.error);
+  const std::filesystem::path library =
+      result.payload_directory / "libroblox.so";
+  const std::string library_sha256 = compat::RememberedFileDigest(
+      digest_record_directory, library,
+      [&] { return HashRegularFile(library, &result.error); });
   if (!result.error.empty() ||
       library_sha256 != payload.metadata.library_sha256) {
     if (result.error.empty())

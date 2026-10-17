@@ -1821,6 +1821,25 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
   EXPECT_FALSE(tampered);
   EXPECT_EQ(tampered.error,
             "active payload manifest hash does not match payload");
+
+  Write(temporary.root() / "store/current.json", activation.dump(2) + "\n");
+  const std::filesystem::path records = temporary.root() / "records";
+  ASSERT_TRUE(store.VerifyCurrent(records));
+  std::vector<std::string> recorded;
+  for (const auto& entry : std::filesystem::directory_iterator(records)) {
+    recorded.push_back(ReadFile(entry.path()));
+  }
+  ASSERT_EQ(recorded.size(), 1U);
+  const std::string library_sha256 = metadata["sha256"]["libroblox"];
+  EXPECT_NE(recorded[0].find(library_sha256), std::string::npos);
+
+  const std::filesystem::path library =
+      current.payload_directory / "libroblox.so";
+  ASSERT_EQ(chmod(library.c_str(), 0600), 0);
+  Write(library, "Native-library");
+  const PayloadStoreResult rewritten = store.VerifyCurrent(records);
+  EXPECT_FALSE(rewritten);
+  EXPECT_EQ(rewritten.error, "current payload library hash mismatch");
 }
 
 TEST(PayloadStoreTest, RestagesReadOnlyCorruptPayloadCollision) {

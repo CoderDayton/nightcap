@@ -767,6 +767,27 @@ TEST_F(ExternalHostAbiProfileLoaderTest, AcceptsExactRepeatedTierCReceipt) {
   EXPECT_EQ(result.profile, FindHostAbiProfile(build_id_));
 }
 
+TEST_F(ExternalHostAbiProfileLoaderTest, RecordsPayloadDigestForNextLaunch) {
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.approval_receipt_path = receipt_path_.string();
+  const std::filesystem::path records = temporary_root_ / "digest-records";
+  request.digest_record_directory = records.string();
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  ASSERT_TRUE(result) << result.error;
+  std::size_t record_count = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(records)) {
+    std::ifstream input(entry.path());
+    const std::string contents((std::istreambuf_iterator<char>(input)),
+                               std::istreambuf_iterator<char>());
+    EXPECT_NE(contents.find(payload_sha256_), std::string::npos);
+    ++record_count;
+  }
+  EXPECT_EQ(record_count, 1U);
+}
+
 TEST_F(ExternalHostAbiProfileLoaderTest,
        RejectsReceiptWithMismatchedCanaryRuntimeEvidence) {
   ExternalHostAbiProfileRequest request = BaseRequest();
