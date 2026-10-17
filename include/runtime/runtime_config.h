@@ -43,6 +43,10 @@ struct InputCapabilityConfig {
   // surface units. The two differ only when the desktop display scale and the
   // window's pixel density disagree, as under fractional scaling.
   bool raw_mouse = false;
+  // Show the desktop's arrow, hand and text cursors in place of the stock
+  // ones Roblox draws. Custom game cursors and the mouse-lock cursor are
+  // still drawn by Roblox.
+  bool system_cursor = false;
 };
 
 struct NetworkProxyConfig {

@@ -71,6 +71,7 @@
 #include "runtime/owned_pthread.h"
 #include "runtime/platform_cache_migration.h"
 #include "runtime/asset_overlay_names.h"
+#include "runtime/roblox_cursor_hook.h"
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
@@ -98,6 +99,8 @@
 std::atomic<bool> g_allow_legacy_binary_patches{false};
 std::atomic<bool> g_allow_host_abi_bridges{false};
 std::atomic<bool> g_allow_host_constructor_replay{false};
+// input.system_cursor, read before libroblox.so loads.
+std::atomic<bool> g_system_cursor_requested{false};
 std::atomic<const mocktail::compat::HostAbiProfile*>
     g_active_host_abi_profile{nullptr};
 
@@ -1970,8 +1973,17 @@ extern "C" void MocktailConstructorWrapper() {
 // before any libroblox code does: the segment loses PROT_EXEC while it is
 // written.
 void DisableOverlaidAssetMappings(uintptr_t base) {
-  const std::vector<std::string> names = mocktail::runtime::OverlayRbxAssetNames(
+  std::vector<std::string> names = mocktail::runtime::OverlayRbxAssetNames(
       CurrentRuntimePaths().asset_overlay_dir());
+  // Stock cursors become transparent local files under the system cursor.
+  if (mocktail::runtime::RobloxCursorHooksInstalled()) {
+    for (std::string& name :
+         mocktail::runtime::StockSystemCursorAssetNames()) {
+      if (std::find(names.begin(), names.end(), name) == names.end()) {
+        names.push_back(std::move(name));
+      }
+    }
+  }
   const long page_size = sysconf(_SC_PAGESIZE);
   if (names.empty() || page_size <= 0) {
     return;
@@ -2007,6 +2019,31 @@ void DisableOverlaidAssetMappings(uintptr_t base) {
             << std::flush;
 }
 
+void PublishRobloxCursor(mocktail::runtime::RobloxCursorKind kind) {
+  using mocktail::runtime::RobloxCursorKind;
+  using mocktail::window::CursorShape;
+  mocktail::window::PublishRobloxCursor(
+      kind == RobloxCursorKind::kArrow     ? CursorShape::kArrow
+      : kind == RobloxCursorKind::kPointer ? CursorShape::kPointer
+      : kind == RobloxCursorKind::kText    ? CursorShape::kText
+                                           : CursorShape::kHidden);
+}
+
+// Must run before any libroblox code does: it patches the cursor draw.
+void InstallSystemCursorHooks(uintptr_t base) {
+  if (!g_system_cursor_requested.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::string error;
+  if (!mocktail::runtime::InstallRobloxCursorHooks(base, &PublishRobloxCursor,
+                                                   &error)) {
+    std::cerr << "  [cursor] system cursors unavailable for this Roblox "
+                 "version, keeping Roblox's own: "
+              << error << '\n'
+              << std::flush;
+  }
+}
+
 extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
                                                     uintptr_t base) {
   if (realpath == nullptr || std::strstr(realpath, "libroblox.so") == nullptr ||
@@ -2015,6 +2052,7 @@ extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
   }
 
   g_libroblox_base = base;
+  InstallSystemCursorHooks(base);
   DisableOverlaidAssetMappings(base);
   g_mocktail_abort_libroblox_base = base;
   g_libroblox_base_static = base;
@@ -4691,6 +4729,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
            "or dark\n";
     return EXIT_FAILURE;
   }
+  g_system_cursor_requested.store(input_capabilities.system_cursor,
+                                  std::memory_order_release);
   setenv("MOCKTAIL_TOUCH_ENABLED_INTERNAL",
          input_capabilities.touch_enabled ? "1" : "0", 1);
   setenv("MOCKTAIL_MOUSE_ENABLED_INTERNAL",

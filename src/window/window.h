@@ -87,6 +87,10 @@ void ClearMouseLockQueryCallback();
 // must not capture over the app surface's own UI.
 void SetGameSessionActive(bool active);
 
+// The system cursor that stands in for the one Roblox draws this frame.
+// Called from Roblox's render thread.
+void PublishRobloxCursor(CursorShape shape);
+
 // Clear waits for a pre-input callback already in flight.
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
                                  void* context);
