@@ -95,6 +95,10 @@ struct RobloxCursorOptions {
   bool hardware = false;
   RobloxCursorPictureFetcher fetch = nullptr;
   void* fetch_context = nullptr;
+  // Whether the desktop would show a cursor taken from Roblox right now.
+  // While it would not, as under shift lock, Roblox keeps drawing it. Null
+  // means always.
+  bool (*desktop_shows_cursor)() = nullptr;
 };
 
 // `image` is set for kCustom only.

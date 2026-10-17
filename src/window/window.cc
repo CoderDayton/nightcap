@@ -1614,6 +1614,12 @@ void PublishRobloxCursor(CursorShape shape, CursorImagePtr image) {
   }
 }
 
+bool DesktopShowsRobloxCursor() {
+  const std::shared_ptr<WindowPointerCaptureOwner> owner =
+      SharedPointerCaptureOwner();
+  return owner != nullptr && owner->DesktopShowsRobloxCursor();
+}
+
 void ClearMouseLockQueryCallback() {
   const std::shared_ptr<WindowPointerCaptureOwner> owner =
       SharedPointerCaptureOwner();

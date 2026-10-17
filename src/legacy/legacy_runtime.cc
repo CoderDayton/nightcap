@@ -2063,6 +2063,7 @@ void InstallCursorHooks(uintptr_t base) {
         });
     options.fetch = &FetchCursorPicture;
     options.fetch_context = &pictures;
+    options.desktop_shows_cursor = &mocktail::window::DesktopShowsRobloxCursor;
   }
   std::string error;
   if (!mocktail::runtime::InstallRobloxCursorHooks(

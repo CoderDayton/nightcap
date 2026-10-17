@@ -84,6 +84,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_) {
+    desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
     return Apply(false, CursorShape::kArrow);
   }
   MouseLockQueryCallback callback = nullptr;
@@ -141,8 +142,10 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
                           CursorShape::kArrow, nullptr};
   CursorShape cursor = CursorShape::kHidden;
   CursorImagePtr image;
+  bool shows_roblox_cursor = false;
   if (!capture_requested) {
     std::tie(cursor, image) = uncaptured_cursor;
+    shows_roblox_cursor = client_active;
   } else {
     // Not cursor_, which is the unfocused arrow on a refocusing click.
     if (!captured_) {
@@ -153,8 +156,11 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
         backend_->ShowsCursorWhileCaptured()) {
       cursor = capture_cursor_;
       image = capture_cursor_image_;
+      shows_roblox_cursor = client_active;
     }
   }
+  desktop_shows_roblox_cursor_.store(shows_roblox_cursor,
+                                     std::memory_order_relaxed);
   return Apply(capture_requested, cursor, std::move(image));
 }
 
@@ -219,6 +225,7 @@ bool WindowPointerCaptureOwner::OnFocusGained(bool text_input_active) {
 
 bool WindowPointerCaptureOwner::OnFocusLost() {
   focused_ = false;
+  desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;
@@ -231,6 +238,7 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
 bool WindowPointerCaptureOwner::Shutdown() {
   ClearQuery();
   focused_ = false;
+  desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;

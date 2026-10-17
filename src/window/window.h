@@ -90,6 +90,9 @@ void SetGameSessionActive(bool active);
 // The system cursor that stands in for the one Roblox draws this frame, and
 // for kCustom the game's picture. Called from Roblox's render thread.
 void PublishRobloxCursor(CursorShape shape, CursorImagePtr image = nullptr);
+// Whether the desktop would show such a cursor now. Called from Roblox's
+// render thread.
+bool DesktopShowsRobloxCursor();
 
 // Clear waits for a pre-input callback already in flight.
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,

@@ -87,6 +87,12 @@ class WindowPointerCaptureOwner final {
   // Roblox's render thread each time it draws the cursor. While these keep
   // arriving, Pump shows that desktop cursor instead of hiding the pointer.
   void PublishRobloxCursor(CursorShape shape, CursorImagePtr image = nullptr);
+  // True while a cursor Roblox reports would be shown by the desktop. When
+  // false, as under shift lock or first person, Roblox must keep drawing its
+  // cursor, such as a game's crosshair. Read from Roblox's render thread.
+  bool DesktopShowsRobloxCursor() const {
+    return desktop_shows_roblox_cursor_.load(std::memory_order_relaxed);
+  }
 
   bool captured() const { return captured_; }
   bool cursor_visible() const { return cursor_ != CursorShape::kHidden; }
@@ -136,6 +142,7 @@ class WindowPointerCaptureOwner final {
   CursorShape roblox_cursor_ = CursorShape::kHidden;
   CursorImagePtr roblox_cursor_image_;
   bool roblox_cursor_reported_ = false;
+  std::atomic<bool> desktop_shows_roblox_cursor_{false};
   // PresentedFrames() at the last report.
   std::uint64_t roblox_cursor_frame_ = 0;
 };

@@ -784,6 +784,50 @@ TEST(WindowPointerCaptureOwnerTest, CameraDragKeepsTheGameCursorPicture) {
   EXPECT_EQ(owner.cursor_image(), image);
 }
 
+TEST(WindowPointerCaptureOwnerTest, ShiftLockLeavesTheCursorToRoblox) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.DesktopShowsRobloxCursor());
+
+  // A game's crosshair under shift lock: the desktop hides its cursor, so
+  // Roblox must keep drawing it.
+  query.locked_center = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+
+  query.locked_center = false;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.DesktopShowsRobloxCursor());
+
+  // The drag keeps showing the desktop cursor where it can.
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.DesktopShowsRobloxCursor());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+
+  EXPECT_TRUE(owner.OnFocusLost());
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+}
+
+TEST(WindowPointerCaptureOwnerTest, DragThatHidesTheCursorLeavesItToRoblox) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_FALSE(owner.DesktopShowsRobloxCursor());
+}
+
 }  // namespace
 }  // namespace window
 }  // namespace mocktail

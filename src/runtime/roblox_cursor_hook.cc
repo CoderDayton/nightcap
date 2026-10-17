@@ -266,6 +266,7 @@ bool g_hardware_cursors = false;
 const int* g_max_dimension_flag = nullptr;
 RobloxCursorPictureFetcher g_fetch = nullptr;
 void* g_fetch_context = nullptr;
+bool (*g_desktop_shows_cursor)() = nullptr;
 // Cursor pictures by content ID, oldest first, filled by the picture worker
 // and read on Roblox's render thread. The worker takes requests in order.
 std::mutex g_custom_mutex;
@@ -356,7 +357,11 @@ std::uintptr_t ContentTypeHook(std::uintptr_t a, std::uintptr_t b,
       g_drawn = stock;
     } else if (g_hardware_cursors && IsHardwareCursorContent(content)) {
       g_drawn_image = FindCustomCursor(content);
-      if (g_drawn_image != nullptr) {
+      // Under shift lock the desktop hides its cursor, so a game's crosshair
+      // stays Roblox's to draw.
+      const bool desktop_shows =
+          g_desktop_shows_cursor == nullptr || g_desktop_shows_cursor();
+      if (g_drawn_image != nullptr && desktop_shows) {
         // The desktop draws it, so Roblox skips its draw as for no cursor.
         g_drawn = RobloxCursorKind::kCustom;
         return kEmptyContentType;
@@ -774,6 +779,7 @@ bool InstallRobloxCursorHooks(std::uintptr_t image_base,
   g_hardware_cursors = options.hardware && options.fetch != nullptr;
   g_fetch = options.fetch;
   g_fetch_context = options.fetch_context;
+  g_desktop_shows_cursor = options.desktop_shows_cursor;
   g_max_dimension_flag =
       site->max_dimension_flag != 0
           ? reinterpret_cast<const int*>(site->max_dimension_flag)
