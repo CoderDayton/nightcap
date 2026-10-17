@@ -12,8 +12,8 @@ Release notes on GitHub are taken from the matching section here.
   not save a value Nightcap could not start with. Changes apply the next time Nightcap starts. If Nightcap
   is open when you change something, the window offers to restart it for you, with the same options and
   environment it was started with. It opens on the main menu. Every `config.yaml` setting has a row,
-  including the device, the window size, the proxy, Fleasion and the update source. A setting you changed
-  from its default gets a button that resets it.
+  including the device, the window size, the proxy, Fleasion, VR and the update source. A setting you
+  changed from its default gets a button that resets it.
 - An asset overlay folder, `~/.local/share/mocktail/asset_overlay`. A file there replaces the file Roblox
   ships at the same path, such as a cursor, a font or a sky texture, and it stays in place when Roblox
   updates. The layout matches Sober's `asset_overlay` folder. `MOCKTAIL_ASSET_OVERLAY_DIR` moves it. Thanks to
