@@ -2052,9 +2052,9 @@ void InstallCursorHooks(uintptr_t base) {
   }
   if (options.hardware) {
     // Lives as long as the process: the picture worker never stops.
-    static mocktail::services::CurlHttpClient http;
-    static mocktail::services::CursorPictureSource pictures(
-        &http, CurrentRuntimePaths().cookie_file(),
+    static auto* http = new mocktail::services::CurlHttpClient;
+    static auto* pictures = new mocktail::services::CursorPictureSource(
+        http, CurrentRuntimePaths().cookie_file(),
         CurrentRuntimePaths().asset_overlay_dir(), [] {
           // Roblox reports its asset folder once it starts.
           const char* root = std::getenv("MOCKTAIL_ASSET_ROOT");
@@ -2062,7 +2062,7 @@ void InstallCursorHooks(uintptr_t base) {
                                                        : DefaultAssetPath());
         });
     options.fetch = &FetchCursorPicture;
-    options.fetch_context = &pictures;
+    options.fetch_context = pictures;
     options.desktop_shows_cursor = &mocktail::window::DesktopShowsRobloxCursor;
   }
   std::string error;

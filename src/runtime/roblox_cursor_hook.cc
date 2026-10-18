@@ -269,12 +269,14 @@ void* g_fetch_context = nullptr;
 bool (*g_desktop_shows_cursor)() = nullptr;
 // Cursor pictures by content ID, oldest first, filled by the picture worker
 // and read on Roblox's render thread. The worker takes requests in order.
-std::mutex g_custom_mutex;
-std::condition_variable g_custom_requested;
-std::vector<std::pair<std::string, std::shared_ptr<const CursorImage>>>
-    g_custom_images;
-std::set<std::string, std::less<>> g_requested_pictures;
-std::deque<std::string> g_picture_queue;
+std::mutex& g_custom_mutex = *new std::mutex;
+std::condition_variable& g_custom_requested = *new std::condition_variable;
+std::vector<std::pair<std::string, std::shared_ptr<const CursorImage>>>&
+    g_custom_images = *new std::vector<
+        std::pair<std::string, std::shared_ptr<const CursorImage>>>;
+std::set<std::string, std::less<>>& g_requested_pictures =
+    *new std::set<std::string, std::less<>>;
+std::deque<std::string>& g_picture_queue = *new std::deque<std::string>;
 // The render thread's last lookup, so a cursor that stays put costs no lock.
 std::string g_last_custom_content;
 std::shared_ptr<const CursorImage> g_last_custom_image;
