@@ -24,6 +24,7 @@ struct ExternalHostAbiProfileRequest {
   std::string compatibility_manifest_path;
   std::string expected_build_id;
   std::string approval_receipt_path;
+  std::string digest_record_directory;
   bool candidate_canary = false;
   bool candidate_process_authorization = false;
   bool explicit_unverified_authorization = false;
@@ -49,7 +50,8 @@ ExternalHostAbiProfileResult InitializeHostAbiProfileFromEnvironment(
     const std::string& payload_path,
     const std::string& compatibility_manifest_path,
     const std::string& expected_build_id,
-    bool explicit_unverified_authorization);
+    bool explicit_unverified_authorization,
+    const std::string& digest_record_directory = {});
 
 const HostAbiProfile* FindLoadedExternalHostAbiProfile(
     std::string_view build_id) noexcept;

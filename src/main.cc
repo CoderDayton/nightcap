@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "compat/elf_build_id.h"
+#include "compat/file_digest_record.h"
 #include "compat/host_abi_profile.h"
 #include "compat/payload_compatibility.h"
 #include "legacy/legacy_runtime.h"
@@ -869,7 +870,9 @@ int main(int argc, char* argv[]) {
     compatibility = mocktail::compat::CheckPayloadCompatibility(
         runtime_config.config.roblox_library_path().string(),
         compatibility_manifest,
-        command_line.options.allow_unverified_build);
+        command_line.options.allow_unverified_build,
+        (paths.cache_root() / mocktail::compat::kFileDigestRecordDirectory)
+            .string());
     if (!compatibility) {
       std::cerr << "[FATAL] " << compatibility.error << '\n';
       return EXIT_FAILURE;
@@ -1164,8 +1167,6 @@ int main(int argc, char* argv[]) {
     if (environment.HasNonEmpty("MOCKTAIL_COOKIE_FILE")) {
       tracker_cookie_file = environment.GetOr("MOCKTAIL_COOKIE_FILE", "");
       tracker_cookie_owned = false;
-    } else if (mocktail::runtime::RuntimePaths::Exists(paths.cookie_file())) {
-      tracker_cookie_file = paths.cookie_file();
     }
     const mocktail::services::BrowserTrackerResult browser_tracker_result =
         browser_tracker.EnsureInitialized(app_storage_file, tracker_cookie_file,

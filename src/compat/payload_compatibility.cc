@@ -11,7 +11,7 @@ namespace compat {
 
 PayloadCompatibilityResult CheckPayloadCompatibility(
     const std::string& library_path, const std::string& manifest_path,
-    bool allow_unverified_build) {
+    bool allow_unverified_build, const std::string& digest_record_directory) {
   PayloadCompatibilityResult result;
   const BuildIdResult build_id = ReadElfBuildId(library_path);
   if (!build_id) {
@@ -23,7 +23,8 @@ PayloadCompatibilityResult CheckPayloadCompatibility(
 
   const ExternalHostAbiProfileResult external_host_abi =
       InitializeHostAbiProfileFromEnvironment(
-          library_path, manifest_path, result.build_id, allow_unverified_build);
+          library_path, manifest_path, result.build_id, allow_unverified_build,
+          digest_record_directory);
   if (!external_host_abi) {
     result.error =
         "Cannot load exact Roblox host ABI profile: " + external_host_abi.error;

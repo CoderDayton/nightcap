@@ -170,6 +170,39 @@ TEST(RobloxLaunchUriTest, ParsesClassicWebsiteRequestGameJobLaunch) {
   ExpectCanonicalRequestMatches(request);
 }
 
+TEST(RobloxLaunchUriTest, ParsesClassicPlayButtonRequestGameJobWithoutServer) {
+  constexpr char kUri[] =
+      "roblox-player:1+launchmode:play+gameinfo:ignored+launchtime:123+"
+      "placelauncherurl:https%3A%2F%2Fwww.roblox.com%2FGame%2F"
+      "PlaceLauncher.ashx%3Frequest%3DRequestGameJob%26browserTrackerId%3D7%"
+      "26placeId%3D1962086868%26isPlayTogetherGame%3Dfalse%"
+      "26joinAttemptOrigin%3DPlayButton";
+  RobloxExperienceLaunchRequest request;
+
+  const Status status = ParseRobloxLaunchUri(kUri, &request);
+
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(request.place_id, 1962086868);
+  EXPECT_TRUE(request.game_instance_id.empty());
+  EXPECT_EQ(request.join_attempt_origin, "PlayButton");
+  ExpectCanonicalRequestMatches(request);
+}
+
+TEST(RobloxLaunchUriTest, ParsesModernLaunchWithUnencodedReferralPage) {
+  RobloxExperienceLaunchRequest request;
+
+  const Status status = ParseRobloxLaunchUri(
+      "roblox://experiences/start?placeId=1962086868&"
+      "referralPage=https://www.roblox.com/games/1962086868/Tower",
+      &request);
+
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(request.place_id, 1962086868);
+  EXPECT_EQ(request.referral_page,
+            "https://www.roblox.com/games/1962086868/Tower");
+  ExpectCanonicalRequestMatches(request);
+}
+
 TEST(RobloxLaunchUriTest, ParsesClassicWebsiteRequestPrivateGameLaunch) {
   constexpr char kUri[] =
       "roblox-player:1+launchmode:play+gameinfo:ignored+launchtime:123+"

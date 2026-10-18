@@ -530,9 +530,9 @@ Status ValidateSelector(const LaunchFields& fields) {
                : Invalid("RequestGame contains a non-public join selector");
   }
   if (request == "requestgamejob") {
-    return !fields.game_instance_id.empty()
+    return selector_count == 0 || !fields.game_instance_id.empty()
                ? Status::Ok()
-               : Invalid("RequestGameJob requires a game instance");
+               : Invalid("RequestGameJob contains a non-public join selector");
   }
   if (request == "requestprivategame") {
     return private_join || !fields.reserved_server_access_code.empty()
@@ -631,8 +631,7 @@ Status ParseModern(std::string_view payload, LaunchFields* fields) {
   } else {
     return Invalid("Roblox launch path is unsupported");
   }
-  if (query.find('#') != std::string_view::npos ||
-      query.find('/') != std::string_view::npos) {
+  if (query.find('#') != std::string_view::npos) {
     return Invalid("Roblox launch URI contains an unsupported fragment");
   }
   return ParseQuery(query, decode_launch_data_twice, fields);

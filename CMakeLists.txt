@@ -205,6 +205,7 @@ pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
 pkg_check_modules(CAPSTONE REQUIRED IMPORTED_TARGET capstone)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
+pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 pkg_check_modules(LIBADWAITA REQUIRED IMPORTED_TARGET "libadwaita-1>=1.6")
 pkg_check_modules(WEBKITGTK6 REQUIRED IMPORTED_TARGET webkitgtk-6.0)
@@ -355,6 +356,7 @@ target_link_libraries(mocktail_runtime PRIVATE
   nlohmann_json::nlohmann_json
   PkgConfig::GIO
   PkgConfig::LIBYAML
+  PkgConfig::LIBPNG
   ${CMAKE_DL_LIBS}
 )
 
@@ -407,6 +409,7 @@ add_library(mocktail_services STATIC
   src/services/auth_service.cc
   src/services/browser_tracker_service.cc
   src/services/client_settings_service.cc
+  src/services/cursor_picture_source.cc
 )
 add_library(Mocktail::Services ALIAS mocktail_services)
 target_include_directories(mocktail_services PUBLIC include)

@@ -511,6 +511,29 @@ input:
   EXPECT_NE(invalid.error.find("input.system_cursor"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, HardwareCursorIsSeparateFromTheSystemTheme) {
+  TemporaryDirectory directory;
+  const RuntimeConfigLoadResult loaded = LoadRuntimeConfig(
+      MapEnvironment(), directory.Write(R"yaml(
+version: 1
+input:
+  hardware_cursor: true
+)yaml"));
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.input_capabilities().hardware_cursor);
+  EXPECT_FALSE(loaded.config.input_capabilities().system_cursor);
+
+  TemporaryDirectory invalid_directory;
+  const RuntimeConfigLoadResult invalid = LoadRuntimeConfig(
+      MapEnvironment(), invalid_directory.Write(R"yaml(
+version: 1
+input:
+  hardware_cursor: maybe
+)yaml"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("input.hardware_cursor"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, LoadsTypedDesktopAndGraphicsSettings) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(

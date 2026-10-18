@@ -21,11 +21,16 @@ Release notes on GitHub are taken from the matching section here.
 - The asset overlay folder now also replaces files Roblox downloads and no longer ships, such as the shift
   lock and text cursors. Put the file under `content/`, at the path Roblox uses. Thanks to @dim-ghub for the
   idea.
-- `input.system_cursor` in `config.yaml`, or System cursors in the settings window, shows your desktop's
-  own arrow, hand and text cursors instead of the ones Roblox draws. A game's custom cursor and the shift
-  lock cursor are still drawn by Roblox. If a Roblox update changes the code this relies on, Nightcap logs
-  that and keeps Roblox's cursors. `MOCKTAIL_CURSOR_TRACE=1` prints each cursor Roblox draws. On Wayland,
-  the desktop cursor also stays at the press point while you hold the right mouse button to turn the camera.
+- `input.system_cursor` in `config.yaml`, or System cursor theme in the settings window, shows your
+  desktop theme's arrow, hand and text cursors instead of Roblox's.
+- `input.hardware_cursor`, or Hardware cursor in the settings window, has the desktop draw the cursor
+  instead of Roblox drawing it into the game, so cursor tools such as Hypr Dynamic Cursors work with it.
+  It keeps Roblox's pictures, a game's own cursor included. With both on, the theme covers the stock
+  cursors and a game's own cursor is still drawn by the desktop. The shift lock cursor stays Roblox's. If a
+  Roblox update changes the code these rely on, Nightcap logs that and Roblox keeps drawing its cursors.
+  `MOCKTAIL_CURSOR_TRACE=1` prints each cursor Roblox draws. On Wayland, a desktop-drawn cursor also stays
+  at the press point while you hold the right mouse button to turn the camera, and sits at the center of the
+  window in first person and shift lock, where Roblox draws its cursor.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 - Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
   maintains it.
@@ -44,7 +49,11 @@ Release notes on GitHub are taken from the matching section here.
 
 - Joining a game from a website link while already in a game no longer freezes Nightcap. It leaves the
   current game and joins the new one, and leaving that game returns to the home screen.
+- Game links opened from a browser are no longer rejected when they ask for any public server, or when
+  they carry an unencoded `referralPage` address.
 - The loading window no longer gets a dock icon of its own. It now shows under Nightcap's icon.
+- The browser tracker ID no longer fails with HTTP 500 on almost every launch. Nightcap reuses the ID
+  Roblox already saved, asks for one only when there is none, and keeps its cookie out of your sign-in file.
 
 ### Changed
 
@@ -60,6 +69,8 @@ Release notes on GitHub are taken from the matching section here.
 - `MOCKTAIL_VR_PERF` also reports `desktop_mirror`, `present_prepare` and `present_interval`.
 - Less hitching while textures load in. Freeing GPU memory no longer waits for texture decodes that do not
   read it. In Blade Ball the worst `vkFreeMemory` fell from 31ms to 3ms.
+- Nightcap starts about 0.2s faster. It no longer re-hashes an unchanged Roblox library twice on every
+  launch, and the browser tracker no longer waits on a web request.
 
 ## [0.3.4] - 2026-10-11
 

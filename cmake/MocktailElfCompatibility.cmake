@@ -25,6 +25,7 @@ add_library(mocktail_compat STATIC
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_pthread_key_runtime.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_sysconf.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/elf_build_id.cc
+  ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/file_digest_record.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/build_profile.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/payload_compatibility.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/host_allocator_bridge.cc

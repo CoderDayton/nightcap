@@ -22,7 +22,8 @@ struct PayloadCompatibilityResult {
 
 PayloadCompatibilityResult CheckPayloadCompatibility(
     const std::string& library_path, const std::string& manifest_path,
-    bool allow_unverified_build);
+    bool allow_unverified_build,
+    const std::string& digest_record_directory = {});
 
 }  // namespace compat
 }  // namespace mocktail

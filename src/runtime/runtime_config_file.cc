@@ -189,6 +189,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.touch_enabled",
        "input.raw_mouse",
        "input.system_cursor",
+       "input.hardware_cursor",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
       "network.proxy_host",
@@ -500,6 +501,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_SYSTEM_CURSOR"] = parsed ? "on" : "off";
+  }
+  if (const auto hardware_cursor = value("input.hardware_cursor");
+      hardware_cursor.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*hardware_cursor, &parsed)) {
+      *error = "input.hardware_cursor must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_HARDWARE_CURSOR"] = parsed ? "on" : "off";
   }
   if (const auto desktop_playability =
           value("compatibility.desktop_playability");
@@ -991,6 +1001,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue(
           "MOCKTAIL_SYSTEM_CURSOR",
           config.input_capabilities().system_cursor ? "on" : "off", error) &&
+      SetEnvironmentValue(
+          "MOCKTAIL_HARDWARE_CURSOR",
+          config.input_capabilities().hardware_cursor ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_DESKTOP_PLAYABILITY",
                           config.desktop_playability() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",

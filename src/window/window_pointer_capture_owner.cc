@@ -4,9 +4,10 @@
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_video.h>
 
-#include <chrono>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <tuple>
 
 #include "window/host_surface_commit_gate.h"
 
@@ -20,11 +21,6 @@ namespace {
 // unwind.
 thread_local WindowPointerCaptureOwner* t_pointer_query_owner = nullptr;
 
-std::int64_t SteadyNowNs() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
 
 }  // namespace
 
@@ -38,13 +34,19 @@ const char* CursorShapeName(CursorShape shape) {
       return "pointer";
     case CursorShape::kText:
       return "text";
+    case CursorShape::kCustom:
+      return "custom";
   }
   return "unknown";
 }
 
 WindowPointerCaptureOwner::WindowPointerCaptureOwner(
-    PointerCaptureBackend* backend)
-    : backend_(backend), clock_(&SteadyNowNs) {}
+    PointerCaptureBackend* backend, FrameCounter presented_frames)
+    : backend_(backend), presented_frames_(presented_frames) {}
+
+std::uint64_t WindowPointerCaptureOwner::PresentedFrames() const {
+  return presented_frames_ != nullptr ? presented_frames_() : 0;
+}
 
 WindowPointerCaptureOwner::~WindowPointerCaptureOwner() { Shutdown(); }
 
@@ -82,6 +84,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_ || vr_active_) {
+    desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
     return Apply(false, CursorShape::kArrow);
   }
   MouseLockQueryCallback callback = nullptr;
@@ -133,37 +136,66 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   // When capture is released, Roblox still draws its own cursor. Show the
   // system pointer only when the native client cannot provide one, or when
   // Roblox reports a stock cursor the desktop has its own shape for.
-  const CursorShape uncaptured_cursor =
-      client_active ? CurrentRobloxCursor() : CursorShape::kArrow;
+  const std::pair<CursorShape, CursorImagePtr> uncaptured_cursor =
+      client_active ? CurrentRobloxCursor()
+                    : std::pair<CursorShape, CursorImagePtr>{
+                          CursorShape::kArrow, nullptr};
   CursorShape cursor = CursorShape::kHidden;
+  CursorImagePtr image;
+  bool shows_roblox_cursor = false;
+  bool center_pointer = false;
   if (!capture_requested) {
-    cursor = uncaptured_cursor;
+    std::tie(cursor, image) = uncaptured_cursor;
+    shows_roblox_cursor = client_active;
   } else {
     // Not cursor_, which is the unfocused arrow on a refocusing click.
     if (!captured_) {
-      capture_cursor_ = uncaptured_cursor;
+      std::tie(capture_cursor_, capture_cursor_image_) = uncaptured_cursor;
     }
-    // An RMB drag keeps a desktop cursor that was already showing.
-    if (!native_capture_active && backend_ != nullptr &&
-        backend_->ShowsCursorWhileCaptured()) {
-      cursor = capture_cursor_;
+    if (backend_ != nullptr && backend_->ShowsCursorWhileCaptured()) {
+      if (native_capture_active) {
+        // First person and shift lock draw the cursor at the center, so the
+        // desktop one goes there and follows what Roblox reports.
+        std::tie(cursor, image) = uncaptured_cursor;
+        center_pointer = true;
+      } else {
+        // An RMB drag keeps a desktop cursor that was already showing.
+        cursor = capture_cursor_;
+        image = capture_cursor_image_;
+      }
+      shows_roblox_cursor = client_active;
     }
   }
-  return Apply(capture_requested, cursor);
+  desktop_shows_roblox_cursor_.store(shows_roblox_cursor,
+                                     std::memory_order_relaxed);
+  return Apply(capture_requested, cursor, std::move(image), center_pointer);
 }
 
-void WindowPointerCaptureOwner::PublishRobloxCursor(CursorShape shape) {
-  roblox_cursor_.store(shape, std::memory_order_relaxed);
-  roblox_cursor_time_ns_.store(clock_(), std::memory_order_release);
-}
-
-CursorShape WindowPointerCaptureOwner::CurrentRobloxCursor() const {
-  const std::int64_t published =
-      roblox_cursor_time_ns_.load(std::memory_order_acquire);
-  if (published == 0 || clock_() - published > kRobloxCursorLifetimeNs) {
-    return CursorShape::kHidden;
+void WindowPointerCaptureOwner::PublishRobloxCursor(CursorShape shape,
+                                                    CursorImagePtr image) {
+  if (shape == CursorShape::kCustom && image == nullptr) {
+    shape = CursorShape::kHidden;
   }
-  return roblox_cursor_.load(std::memory_order_relaxed);
+  if (shape != CursorShape::kCustom) {
+    image.reset();
+  }
+  const std::uint64_t frame = PresentedFrames();
+  std::lock_guard<std::mutex> lock(roblox_cursor_mutex_);
+  roblox_cursor_ = shape;
+  roblox_cursor_image_ = std::move(image);
+  roblox_cursor_reported_ = true;
+  roblox_cursor_frame_ = frame;
+}
+
+std::pair<CursorShape, CursorImagePtr>
+WindowPointerCaptureOwner::CurrentRobloxCursor() {
+  const std::uint64_t frame = PresentedFrames();
+  std::lock_guard<std::mutex> lock(roblox_cursor_mutex_);
+  if (!roblox_cursor_reported_ ||
+      frame - roblox_cursor_frame_ > kRobloxCursorLifetimeFrames) {
+    return {CursorShape::kHidden, nullptr};
+  }
+  return {roblox_cursor_, roblox_cursor_image_};
 }
 
 bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
@@ -204,6 +236,7 @@ bool WindowPointerCaptureOwner::OnFocusGained(bool text_input_active) {
 
 bool WindowPointerCaptureOwner::OnFocusLost() {
   focused_ = false;
+  desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;
@@ -216,6 +249,7 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
 bool WindowPointerCaptureOwner::Shutdown() {
   ClearQuery();
   focused_ = false;
+  desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;
@@ -225,21 +259,29 @@ bool WindowPointerCaptureOwner::Shutdown() {
   return Apply(false, CursorShape::kArrow);
 }
 
-bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor) {
-  if (capture == captured_ && cursor == cursor_) {
+bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
+                                      CursorImagePtr image,
+                                      bool center_pointer) {
+  center_pointer = center_pointer && capture;
+  if (capture == captured_ && cursor == cursor_ &&
+      image.get() == cursor_image_.get() &&
+      center_pointer == pointer_centered_) {
     return true;
   }
   if (backend_ == nullptr) {
     captured_ = false;
     cursor_ = CursorShape::kArrow;
+    cursor_image_.reset();
     return !capture && cursor == CursorShape::kArrow;
   }
-  if (backend_->Apply(capture, cursor)) {
+  if (backend_->Apply(capture, cursor, image, center_pointer)) {
     const bool capture_changed = capture != captured_;
     const bool visibility_changed =
         (cursor == CursorShape::kHidden) != (cursor_ == CursorShape::kHidden);
     captured_ = capture;
     cursor_ = cursor;
+    cursor_image_ = std::move(image);
+    pointer_centered_ = center_pointer;
     if (capture_changed && capture) {
       std::fprintf(stderr, "  [input] SDL relative pointer capture enabled\n");
     } else if (capture_changed) {
@@ -252,9 +294,11 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor) {
     }
     return true;
   }
-  backend_->Apply(false, CursorShape::kArrow);
+  backend_->Apply(false, CursorShape::kArrow, nullptr, false);
   captured_ = false;
   cursor_ = CursorShape::kArrow;
+  cursor_image_.reset();
+  pointer_centered_ = false;
   return false;
 }
 
@@ -265,7 +309,57 @@ bool SdlPointerCaptureBackend::ShowsCursorWhileCaptured() const {
   return driver != nullptr && std::strcmp(driver, "wayland") == 0;
 }
 
-bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor) {
+void* SdlPointerCaptureBackend::CursorFor(CursorShape cursor,
+                                         const CursorImagePtr& image) {
+  if (cursor == CursorShape::kCustom) {
+    if (image == nullptr) {
+      return nullptr;
+    }
+    for (const auto& [cached, sdl_cursor] : custom_cursors_) {
+      if (cached == image) {
+        return sdl_cursor;
+      }
+    }
+    SDL_Surface* surface = SDL_CreateSurfaceFrom(
+        static_cast<int>(image->width), static_cast<int>(image->height),
+        SDL_PIXELFORMAT_RGBA32, const_cast<std::uint8_t*>(image->rgba.data()),
+        static_cast<int>(image->width * 4));
+    if (surface == nullptr) {
+      return nullptr;
+    }
+    SDL_Cursor* created =
+        SDL_CreateColorCursor(surface, static_cast<int>(image->hot_x),
+                              static_cast<int>(image->hot_y));
+    SDL_DestroySurface(surface);
+    if (created == nullptr) {
+      return nullptr;
+    }
+    // Games that animate their cursor swap pictures every few frames.
+    constexpr std::size_t kMaxCustomCursors = 16;
+    if (custom_cursors_.size() >= kMaxCustomCursors) {
+      const auto oldest = std::find_if(
+          custom_cursors_.begin(), custom_cursors_.end(),
+          [this](const auto& entry) { return entry.second != current_cursor_; });
+      SDL_DestroyCursor(static_cast<SDL_Cursor*>(oldest->second));
+      custom_cursors_.erase(oldest);
+    }
+    custom_cursors_.emplace_back(image, created);
+    return created;
+  }
+  const auto index = static_cast<std::size_t>(cursor);
+  if (system_cursors_[index] == nullptr) {
+    const SDL_SystemCursor id =
+        cursor == CursorShape::kPointer ? SDL_SYSTEM_CURSOR_POINTER
+        : cursor == CursorShape::kText  ? SDL_SYSTEM_CURSOR_TEXT
+                                        : SDL_SYSTEM_CURSOR_DEFAULT;
+    system_cursors_[index] = SDL_CreateSystemCursor(id);
+  }
+  return system_cursors_[index];
+}
+
+bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
+                                     const CursorImagePtr& image,
+                                     bool center_pointer) {
   auto* window = static_cast<SDL_Window*>(window_);
   if (window == nullptr) {
     return false;
@@ -283,6 +377,15 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor) {
     capture_anchor_valid_ = true;
     SDL_SetWindowMouseGrab(window, true);
   }
+  // Before relative mode starts: Wayland then locks the pointer where it is.
+  if (relative_mode && center_pointer && !pointer_centered_) {
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowSize(window, &width, &height)) {
+      SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
+    }
+  }
+  pointer_centered_ = relative_mode && center_pointer;
   if (!relative_mode && relative_mode_ && capture_anchor_valid_) {
     // SDL requires the warp before relative mode is disabled. This preserves
     // the desktop pointer position across Roblox's transient RMB camera drag.
@@ -304,20 +407,14 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor) {
   if (cursor == CursorShape::kHidden) {
     return SDL_HideCursor();
   }
-  if (cursor != shape_) {
-    const auto index = static_cast<std::size_t>(cursor);
-    if (system_cursors_[index] == nullptr) {
-      const SDL_SystemCursor id =
-          cursor == CursorShape::kPointer ? SDL_SYSTEM_CURSOR_POINTER
-          : cursor == CursorShape::kText  ? SDL_SYSTEM_CURSOR_TEXT
-                                          : SDL_SYSTEM_CURSOR_DEFAULT;
-      system_cursors_[index] = SDL_CreateSystemCursor(id);
-    }
-    // A desktop without the shape keeps the cursor SDL already shows.
-    if (system_cursors_[index] != nullptr &&
-        SDL_SetCursor(static_cast<SDL_Cursor*>(system_cursors_[index]))) {
-      shape_ = cursor;
-    }
+  void* wanted = CursorFor(cursor, image);
+  if (wanted == nullptr && cursor == CursorShape::kCustom) {
+    wanted = CursorFor(CursorShape::kArrow, nullptr);
+  }
+  // A desktop without the shape keeps the cursor SDL already shows.
+  if (wanted != nullptr && wanted != current_cursor_ &&
+      SDL_SetCursor(static_cast<SDL_Cursor*>(wanted))) {
+    current_cursor_ = wanted;
   }
   return SDL_ShowCursor();
 }

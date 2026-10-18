@@ -56,7 +56,8 @@ class PayloadStore final {
       const std::array<std::filesystem::path, 2>& canary_logs);
   PayloadStoreResult Import(const std::filesystem::path& prepared_payload);
   PayloadStoreResult InspectCurrent() const;
-  PayloadStoreResult VerifyCurrent();
+  PayloadStoreResult VerifyCurrent(
+      const std::filesystem::path& digest_record_directory = {});
   PayloadStoreResult Rollback();
   // Deletes payload trees nothing points at any more. The active payload, the
   // rollback target, and every ID in `keep` survive; a payload tree is around
