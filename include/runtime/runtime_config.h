@@ -55,6 +55,8 @@ struct NetworkProxyConfig {
   std::string scheme = "http";
   std::string host;
   int port = 0;
+  std::string username;
+  std::string password;
 };
 
 // Text and image fields expand {place_name}, {place_icon}, and
@@ -92,8 +94,11 @@ struct DiscordRpcConfig {
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
     std::string_view host, std::string_view port,
-    std::string_view scheme = "http");
-std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy);
+    std::string_view scheme = "http", std::string_view username = {},
+    std::string_view password = {});
+std::optional<NetworkProxyConfig> ReadNetworkProxy(const Environment& environment);
+std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy,
+                                 bool include_credentials = false);
 
 // Immutable, supported runtime options. Advanced MOCKTAIL_PATCH_* controls
 // intentionally do not belong here; they remain isolated in the legacy path.
