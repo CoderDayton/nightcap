@@ -1,4 +1,4 @@
-name: Nightly AppImage
+name: Nightly
 
 on:
   schedule:
@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       build: ${{ steps.decide.outputs.build }}
+      previous: ${{ steps.decide.outputs.previous }}
     steps:
       - name: Compare HEAD against the published continuous tag
         id: decide
@@ -31,6 +32,7 @@ jobs:
           set -Eeuo pipefail
           published="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/continuous" \
             --jq .object.sha 2>/dev/null || true)"
+          echo "previous=$published" >>"$GITHUB_OUTPUT"
           if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$published" == "$GITHUB_SHA" ]]; then
             echo 'build=false' >>"$GITHUB_OUTPUT"
             echo "continuous already points at $GITHUB_SHA; nothing to build"
@@ -38,129 +40,17 @@ jobs:
             echo 'build=true' >>"$GITHUB_OUTPUT"
           fi
 
-  appimage:
-    name: AppImage (AnyLinux)
+  build:
+    name: Build
     needs: probe
     if: needs.probe.outputs.build == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|continuous|Nightcap-nightly-x86_64.AppImage.zsync
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Build AppImage
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --workdir /workspace \
-            --env GH_TOKEN \
-            --env UPINFO \
-            ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
-              pacman -Syu --noconfirm --needed \
-                cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
-                nlohmann-json libyaml libelf minizip minizip-ng capstone gtk4 \
-                libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
-                vulkan-headers zlib libplacebo bubblewrap xdg-dbus-proxy \
-                patchelf jq unzip file ca-certificates dbus zsync
-
-              # Reduced ABI-compatible packages belong only in this builder.
-              # The native updater does not require a JRE or Android SDK.
-              ./scripts/install_anylinux_dependencies.sh
-
-              curl --fail --location --retry 3 \
-                --output /tmp/quick-sharun \
-                https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/2a025cef14483c5bc2a75b479071f4d5c58a906f/useful-tools/quick-sharun.sh
-              echo "fa66d0189e1e87df781c049dfb23cbb1e753786056f693a4483d6d3af61e7ee1  /tmp/quick-sharun" | \
-                sha256sum --check --strict
-              chmod 0755 /tmp/quick-sharun
-
-              curl --fail --location --retry 3 \
-                --output /tmp/sharun \
-                https://github.com/pkgforge-dev/Anylinux-sharun/releases/download/2.2.6/sharun-x86_64
-              echo "a4d51752f9861b4870ca529fea04087310b28f8943cc55b99a95b777d4db92ec  /tmp/sharun" | \
-                sha256sum --check --strict
-              chmod 0755 /tmp/sharun
-
-              curl --fail --location --retry 3 \
-                --output /tmp/anylinux.c \
-                https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/2a025cef14483c5bc2a75b479071f4d5c58a906f/useful-tools/lib/anylinux.c
-              echo "f50650ad96d177559bdd0737df509fa20bd4af08887631c738fc1f31bfac185f  /tmp/anylinux.c" | \
-                sha256sum --check --strict
-
-              curl --fail --location --retry 3 \
-                --output /tmp/appimagetool \
-                https://github.com/pkgforge-dev/appimagetool/releases/download/0.3.3/appimagetool-x86_64-linux
-              echo "0d01a4e2628efc897be9663f0faeed6a171e1851270b4e1ce4c22434a36ecebd  /tmp/appimagetool" | \
-                sha256sum --check --strict
-              chmod 0755 /tmp/appimagetool
-
-              curl --fail --location --retry 3 \
-                --output /tmp/uruntime \
-                https://github.com/VHSgunzo/uruntime/releases/download/v0.5.9/uruntime-appimage-dwarfs-lite-x86_64
-              echo "cef962c299f2fa19b2b3cdf2fa1565ee8541796cc89b9a97a591f94041e8b083  /tmp/uruntime" | \
-                sha256sum --check --strict
-              chmod 0755 /tmp/uruntime
-
-              curl --fail --location --retry 3 \
-                --output /tmp/mkdwarfs \
-                https://github.com/mhx/dwarfs/releases/download/v0.15.6/dwarfs-universal-0.15.6-Linux-x86_64
-              echo "50891c38ba359db8271819a6cbf6aaa8068681523f0c4f2b8242007a45edaa28  /tmp/mkdwarfs" | \
-                sha256sum --check --strict
-              chmod 0755 /tmp/mkdwarfs
-
-              git config --global --add safe.directory /workspace
-              git config --global --add safe.directory /workspace/third_party/Vulkan-Headers
-              git config --global --add safe.directory /workspace/third_party/libjnivm
-              # Install into the disposable container /usr before deployment.
-              export MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1
-              export MOCKTAIL_ANYLINUX_SHARUN=/tmp/sharun
-              export MOCKTAIL_ANYLINUX_C_SOURCE=/tmp/anylinux.c
-              export RUNTIME=/tmp/uruntime
-              export DWARFS_CMD=/tmp/mkdwarfs
-              make appimage BUILD_DIR=build-appimage JOBS=4 \
-                APPIMAGE=dist/Nightcap-nightly-x86_64.AppImage \
-                PORTABLE_MODE=standalone APPIMAGE_FORMAT=anylinux \
-                ANYLINUX_PACKAGER=/tmp/quick-sharun \
-                ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
-              test -x dist/Nightcap-nightly-x86_64.AppImage
-              test -s dist/Nightcap-nightly-x86_64.AppImage.zsync
-            '
-
-      - name: Smoke-test AppImage without FUSE
-        shell: bash
-        run: |
-          smoke_dir="$(mktemp -d)"
-          trap 'rm -rf -- "$smoke_dir"' EXIT
-          export XDG_DATA_HOME="$smoke_dir/data"
-          export XDG_CONFIG_HOME="$smoke_dir/config"
-          export XDG_CACHE_HOME="$smoke_dir/cache"
-          export XDG_STATE_HOME="$smoke_dir/state"
-          mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          test "$(dist/Nightcap-nightly-x86_64.AppImage --appimage-updateinformation)" = "$UPINFO"
-          timeout 60s dist/Nightcap-nightly-x86_64.AppImage --appimage-extract-and-run --help
-          timeout 60s dist/Nightcap-nightly-x86_64.AppImage --appimage-extract-and-run mocktail_updater status
-
-      - name: Upload AppImage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: Nightcap-AppImage
-          path: |
-            dist/Nightcap-nightly-x86_64.AppImage
-            dist/Nightcap-nightly-x86_64.AppImage.zsync
-          if-no-files-found: error
-          retention-days: 14
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      channel: nightly
 
   publish:
     name: Publish continuous release
-    needs: [probe, appimage]
+    needs: [probe, build]
     # A manual run from another branch still builds and smoke-tests, but the
     # continuous tag and release only ever follow main.
     if: needs.probe.outputs.build == 'true' && github.ref == 'refs/heads/main'
@@ -174,23 +64,68 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download AppImage
+      - name: Download packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: Nightcap-AppImage
+          pattern: 'Nightcap-*'
+          merge-multiple: true
           path: release
 
-      - name: Checksum the nightly build
+      - name: Name and checksum the nightly build
         shell: bash
         run: |
           set -Eeuo pipefail
+          shopt -s nullglob
           # The .zsync file names the AppImage it updates, so the build already
           # carries the published name.
           test -s release/Nightcap-nightly-x86_64.AppImage
           test -s release/Nightcap-nightly-x86_64.AppImage.zsync
-          (cd release && sha256sum Nightcap-nightly-x86_64.AppImage \
-            > Nightcap-nightly-x86_64.AppImage.sha256)
+          rename_one() {
+            local glob="$1" name="$2" matched
+            matched=(release/$glob)
+            if [[ ${#matched[@]} -ne 1 ]]; then
+              echo "::error::expected one ${glob} package, found ${#matched[@]}"
+              exit 1
+            fi
+            mv -- "${matched[0]}" "release/$name"
+          }
+          rename_one '*.deb' nightcap-nightly_amd64.deb
+          rename_one '*.rpm' nightcap-nightly-x86_64.rpm
+          rename_one '*.pkg.tar.zst' nightcap-nightly-x86_64.pkg.tar.zst
+          (
+            cd release
+            for asset in Nightcap-nightly-x86_64.AppImage nightcap-nightly_amd64.deb \
+                nightcap-nightly-x86_64.rpm nightcap-nightly-x86_64.pkg.tar.zst; do
+              sha256sum "$asset" > "$asset.sha256"
+            done
+          )
           find release -maxdepth 1 -type f -print
+
+      - name: Write release notes
+        shell: bash
+        env:
+          PREVIOUS: ${{ needs.probe.outputs.previous }}
+        run: |
+          set -Eeuo pipefail
+          {
+            printf 'Automated build of `main` at `%s` (%s).\n\n' \
+              "${GITHUB_SHA:0:8}" "$(date -u '+%Y-%m-%d %H:%M UTC')"
+            printf 'Untested and unreleased. Use a [tagged release](https://github.com/%s/releases/latest) for normal play.\n\n' \
+              "$GITHUB_REPOSITORY"
+            printf 'Packages are versioned `%s`.\n' "$(./scripts/package_version.sh --nightly)"
+            if [[ -n "$PREVIOUS" ]] &&
+                git merge-base --is-ancestor "$PREVIOUS" "$GITHUB_SHA" 2>/dev/null; then
+              commits="$(git log --no-merges --max-count=50 --format='- %s (`%h`)' "$PREVIOUS..$GITHUB_SHA")"
+              if [[ -n "$commits" ]]; then
+                printf '\n### Commits since the previous nightly\n\n%s\n' "$commits"
+              fi
+            fi
+            if unreleased="$(./scripts/release_notes.sh Unreleased 2>/dev/null)"; then
+              printf '\n### Unreleased changelog\n\n%s\n' \
+                "$(printf '%s\n' "$unreleased" | sed 's/^### /#### /')"
+            fi
+          } > notes.md
+          cat notes.md
 
       - name: Update continuous release
         shell: bash
@@ -202,22 +137,18 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git tag --force continuous "$GITHUB_SHA"
           git push origin refs/tags/continuous --force
-          notes="Automated build of main at ${GITHUB_SHA:0:8}. Untested and unreleased; use a tagged release for normal play."
           if ! gh release view continuous >/dev/null 2>&1; then
             gh release create continuous \
               --prerelease \
               --title "Nightcap continuous" \
-              --notes "$notes"
+              --notes-file notes.md
           fi
-          gh release edit continuous --title "Nightcap continuous" --notes "$notes"
+          gh release edit continuous --title "Nightcap continuous" --notes-file notes.md
           gh release upload continuous release/* --clobber
           # Drop assets left by earlier runs under other names.
+          published=" $(cd release && printf '%s ' *) "
           while IFS= read -r asset; do
-            case "$asset" in
-              Nightcap-nightly-x86_64.AppImage|Nightcap-nightly-x86_64.AppImage.zsync|Nightcap-nightly-x86_64.AppImage.sha256)
-                ;;
-              *)
-                gh release delete-asset continuous "$asset" --yes
-                ;;
-            esac
+            if [[ "$published" != *" $asset "* ]]; then
+              gh release delete-asset continuous "$asset" --yes
+            fi
           done < <(gh release view continuous --json assets --jq '.assets[].name')

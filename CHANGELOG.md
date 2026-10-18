@@ -34,6 +34,9 @@ Release notes on GitHub are taken from the matching section here.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 - Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
   maintains it.
+- The nightly `continuous` prerelease now has a `.deb`, `.rpm` and pacman package next to the AppImage,
+  each with a `.sha256`. They are versioned after the last release, such as `0.3.4+r29.g112f5ab`, so they
+  upgrade over it and over each other. The notes list the commits since the last nightly.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
 - `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
