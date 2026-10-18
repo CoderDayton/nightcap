@@ -35,6 +35,9 @@ constexpr std::string_view kPlayabilityKey =
 constexpr std::string_view kProxyKey = "network.proxy";
 constexpr std::string_view kProxyHostKey = "network.proxy_host";
 constexpr std::string_view kProxyPortKey = "network.proxy_port";
+constexpr std::string_view kProxySchemeKey = "network.proxy_scheme";
+constexpr std::string_view kProxyUsernameKey = "network.proxy_username";
+constexpr std::string_view kProxyPasswordKey = "network.proxy_password";
 
 runtime::RuntimeConfigValue Get(std::string_view text, std::string_view key) {
   return runtime::GetRuntimeConfigValue(text, key);
@@ -221,10 +224,15 @@ std::string ProxyValue(const Reader& file) {
 runtime::RuntimeConfigEdit SetProxy(std::string_view text,
                                     std::string_view value) {
   if (value.empty()) {
-    return Then(UnsetIfSet(text, kProxyHostKey),
-                [](std::string_view current) {
-                  return UnsetIfSet(current, kProxyPortKey);
-                });
+    runtime::RuntimeConfigEdit edit = Unchanged(text);
+    for (const std::string_view dropped :
+         {kProxyHostKey, kProxyPortKey, kProxySchemeKey, kProxyUsernameKey,
+          kProxyPasswordKey}) {
+      edit = Then(std::move(edit), [dropped](std::string_view current) {
+        return UnsetIfSet(current, dropped);
+      });
+    }
+    return edit;
   }
   const std::size_t colon = value.rfind(':');
   if (colon == std::string_view::npos || colon == 0 ||
@@ -236,6 +244,24 @@ runtime::RuntimeConfigEdit SetProxy(std::string_view text,
               [value, colon](std::string_view current) {
                 return runtime::SetRuntimeConfigString(
                     current, kProxyPortKey, value.substr(colon + 1));
+              });
+}
+
+runtime::RuntimeConfigEdit SetProxyLogin(std::string_view text,
+                                         std::string_view username) {
+  if (username.empty()) {
+    return Then(UnsetIfSet(text, kProxyUsernameKey),
+                [](std::string_view current) {
+                  return UnsetIfSet(current, kProxyPasswordKey);
+                });
+  }
+  return Then(runtime::SetRuntimeConfigString(text, kProxyUsernameKey,
+                                              username),
+              [](std::string_view current) {
+                return Get(current, kProxyPasswordKey).found
+                           ? Unchanged(current)
+                           : runtime::SetRuntimeConfigString(
+                                 current, kProxyPasswordKey, "");
               });
 }
 
@@ -669,6 +695,19 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}},
                 {kProxyKey, "Fixed proxy (host:port)", "", SettingKind::kText,
                  {}, "", {}},
+                {kProxySchemeKey,
+                 "Proxy type",
+                 "",
+                 SettingKind::kChoice,
+                 {{"http", "HTTP"}, {"socks5", "SOCKS5"}},
+                 "http",
+                 {{"https", "http"}, {"socks", "socks5"}, {"socks5h", "socks5"}}},
+                {kProxyUsernameKey, "Proxy username",
+                 "Leave empty if the proxy has no login.", SettingKind::kText,
+                 {}, "", {}},
+                {kProxyPasswordKey, "Proxy password",
+                 "Saved as plain text in config.yaml.",
+                 SettingKind::kPassword, {}, "", {}},
             }},
            {"Certificates",
             {
@@ -1098,6 +1137,13 @@ bool SettingsDocument::IsActive(std::string_view key) const {
       IsSwitchedOn("network.use_system_proxy")) {
     return false;
   }
+  if ((key == kProxySchemeKey || key == kProxyUsernameKey) &&
+      !IsSet(kProxyKey)) {
+    return false;
+  }
+  if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
+    return false;
+  }
   if (key == "integrations.fleasion.proxy_port" &&
       Value("integrations.fleasion.proxy_mode") == "hosts") {
     return false;
@@ -1137,6 +1183,7 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
       return std::strtod(value.c_str(), nullptr) !=
              std::strtod(fallback.c_str(), nullptr);
     case SettingKind::kText:
+    case SettingKind::kPassword:
     case SettingKind::kFile:
       return value != fallback;
     case SettingKind::kEditor:
@@ -1179,6 +1226,12 @@ runtime::RuntimeConfigEdit SettingsDocument::Edit(std::string_view key,
   }
   if (key == kProxyKey) {
     return SetProxy(text, value);
+  }
+  if (key == kProxyUsernameKey) {
+    return SetProxyLogin(text, value);
+  }
+  if (key == kProxyPasswordKey) {
+    return runtime::SetRuntimeConfigString(text, key, value);
   }
   if (value.empty() && empty_unsets) {
     return runtime::UnsetRuntimeConfigValue(text, key);

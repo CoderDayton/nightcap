@@ -229,6 +229,7 @@ void RefreshRow(Row* row, bool keep_edit) {
               nullptr));
       break;
     case SettingKind::kText:
+    case SettingKind::kPassword:
     case SettingKind::kFile: {
       const bool is_set = row->window->document.IsSet(setting.key);
       const std::string text = is_set ? value : Text(setting.default_value);
@@ -917,8 +918,11 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       }
       break;
     case SettingKind::kText:
+    case SettingKind::kPassword:
     case SettingKind::kFile:
-      row.widget = adw_entry_row_new();
+      row.widget = setting.kind == SettingKind::kPassword
+                       ? adw_password_entry_row_new()
+                       : adw_entry_row_new();
       adw_entry_row_set_show_apply_button(ADW_ENTRY_ROW(row.widget), TRUE);
       row.reset = NewResetButton(&row);
       adw_entry_row_add_suffix(ADW_ENTRY_ROW(row.widget), row.reset);
@@ -1235,6 +1239,7 @@ gboolean OnCloseRequest(GtkWindow*, gpointer user_data) {
   const Row* edited = nullptr;
   for (const Row& row : window->rows) {
     if ((row.setting->kind == SettingKind::kText ||
+         row.setting->kind == SettingKind::kPassword ||
          row.setting->kind == SettingKind::kFile) &&
         row.shown != gtk_editable_get_text(GTK_EDITABLE(row.widget))) {
       edited = &row;

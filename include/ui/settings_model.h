@@ -26,6 +26,7 @@ enum class SettingKind {
   kFrameRate,
   kNumber,
   kText,
+  kPassword,
   // A text row that holds an absolute file path, with a file picker.
   kFile,
   // A drop-down of the setting's choices and the audio devices found.

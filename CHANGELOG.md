@@ -41,6 +41,9 @@ Release notes on GitHub are taken from the matching section here.
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
 - `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
   and `compressed texture (MB)` counters. `scripts/summarize_profile_trace.py` prints the peak of each.
+- A fixed proxy can be SOCKS5 and can have a login: `network.proxy_scheme`, `network.proxy_username` and
+  `network.proxy_password` in `config.yaml`, or the Proxy rows in the settings window, where the password
+  is hidden as you type. It is saved as plain text in `config.yaml`. From upstream mocktail.
 
 ### Fixed
 
@@ -53,6 +56,11 @@ Release notes on GitHub are taken from the matching section here.
   Roblox already saved, asks for one only when there is none, and keeps its cookie out of your sign-in file.
 - After you alt-tab away, moving the mouse over the game no longer turns the camera. Click in the game or
   press a key to take control again.
+- The `.deb` package now finds its sign-in, update and error helpers, which Debian installs under
+  `/usr/lib/x86_64-linux-gnu`. From upstream mocktail.
+- Nightcap no longer crashes at first launch when it cannot read the sign-in helper's path. Thanks to
+  @justacalico.
+- In the Flatpak, the sign-in window now registers on the desktop's accessibility bus. Thanks to @reqhald.
 
 ### Changed
 
