@@ -1,16 +1,23 @@
 #include "runtime/roblox_cursor_hook.h"
 
 #include <elf.h>
+#include <png.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <limits>
+#include <mutex>
+#include <set>
+#include <thread>
+#include <utility>
 
 namespace mocktail {
 namespace runtime {
@@ -35,6 +42,15 @@ constexpr std::size_t kMaxDrawSiteDistance = 0x2800;
 constexpr std::size_t kDrawSiteBytes = 18;
 constexpr std::size_t kDrawSiteCallOffset = 7;
 constexpr std::uint16_t kEmptyContentType = 2;
+
+// cvtsi2ss xmm,[rip+flag]: the first after the draw site reads
+// MaxCursorIconDimensions to shrink a large cursor.
+constexpr std::array<std::uint8_t, 3> kReadsLimit = {0xF3, 0x0F, 0x2A};
+// Larger pictures stay Roblox's: desktop cursors are small.
+constexpr std::uint32_t kMaxDesktopCursor = 256;
+constexpr std::size_t kMaxCachedCursors = 64;
+// Pictures asked for, kept so one that cannot be had is asked for once.
+constexpr std::size_t kMaxRequestedCursors = 1024;
 
 constexpr std::string_view kStockCursorDirectories[] = {
     "textures/",
@@ -108,9 +124,9 @@ const CursorHookSegment* SegmentContaining(
 }
 
 std::vector<std::uintptr_t> FindAnchorStrings(
-    const std::vector<CursorHookSegment>& segments) {
+    const std::vector<CursorHookSegment>& segments, std::string_view anchor) {
   std::vector<std::uintptr_t> found;
-  const std::string needle = std::string(kAnchor) + '\0';
+  const std::string needle = std::string(anchor) + '\0';
   for (const CursorHookSegment& segment : segments) {
     std::size_t offset = 0;
     while (offset + needle.size() <= segment.size) {
@@ -170,6 +186,64 @@ bool Fail(std::string* error, const char* message) {
   return false;
 }
 
+template <std::size_t N>
+bool BytesAt(const CursorHookSegment& code, std::size_t at,
+             const std::array<std::uint8_t, N>& bytes) {
+  return at + N <= code.size &&
+         std::memcmp(code.data + at, bytes.data(), N) == 0;
+}
+
+template <std::size_t N>
+std::vector<std::size_t> FindBytes(const CursorHookSegment& code,
+                                   std::size_t begin, std::size_t end,
+                                   const std::array<std::uint8_t, N>& bytes) {
+  std::vector<std::size_t> found;
+  for (std::size_t at = begin; at < end; ++at) {
+    if (BytesAt(code, at, bytes)) {
+      found.push_back(at);
+    }
+  }
+  return found;
+}
+
+// The one instruction that loads `anchor`, and the function it is in.
+struct AnchoredFunction {
+  const CursorHookSegment* code = nullptr;
+  std::size_t start = 0;
+  std::size_t anchor = 0;
+};
+
+std::optional<AnchoredFunction> FindAnchoredFunction(
+    const std::vector<CursorHookSegment>& segments, std::string_view anchor,
+    std::size_t max_distance, const char* no_prologue, std::string* error) {
+  const std::vector<std::uintptr_t> strings =
+      FindAnchorStrings(segments, anchor);
+  if (strings.size() != 1) {
+    Fail(error, "cursor cache message not found exactly once");
+    return std::nullopt;
+  }
+  const std::vector<std::uintptr_t> loads =
+      FindRipRelativeLoads(segments, strings.front());
+  if (loads.size() != 1) {
+    Fail(error, "cursor cache message not loaded exactly once");
+    return std::nullopt;
+  }
+  const CursorHookSegment* code = SegmentContaining(segments, loads.front());
+  if (code == nullptr) {
+    Fail(error, "cursor cache message load is outside the image");
+    return std::nullopt;
+  }
+  const std::size_t anchor_offset = loads.front() - code->address;
+  for (std::size_t back = 0; back <= std::min(anchor_offset, max_distance);
+       ++back) {
+    if (BytesAt(*code, anchor_offset - back, kPrologue)) {
+      return AnchoredFunction{code, anchor_offset - back, anchor_offset};
+    }
+  }
+  Fail(error, no_prologue);
+  return std::nullopt;
+}
+
 // Hook state. Roblox draws the cursor from one render thread, and the draw
 // function reaches the content-type call on that same thread.
 using ForwardFunction = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t,
@@ -181,9 +255,73 @@ RobloxCursorObserver g_observer = nullptr;
 std::atomic<bool> g_installed{false};
 bool g_in_render = false;
 RobloxCursorKind g_drawn = RobloxCursorKind::kOther;
+std::shared_ptr<const CursorImage> g_drawn_image;
 bool g_trace = false;
 std::string g_traced_content;
 std::string g_drawn_content;
+
+// Set before any Roblox code runs.
+bool g_system_theme = false;
+bool g_hardware_cursors = false;
+const int* g_max_dimension_flag = nullptr;
+RobloxCursorPictureFetcher g_fetch = nullptr;
+void* g_fetch_context = nullptr;
+bool (*g_desktop_shows_cursor)() = nullptr;
+// Cursor pictures by content ID, oldest first, filled by the picture worker
+// and read on Roblox's render thread. The worker takes requests in order.
+std::mutex& g_custom_mutex = *new std::mutex;
+std::condition_variable& g_custom_requested = *new std::condition_variable;
+std::vector<std::pair<std::string, std::shared_ptr<const CursorImage>>>&
+    g_custom_images = *new std::vector<
+        std::pair<std::string, std::shared_ptr<const CursorImage>>>;
+std::set<std::string, std::less<>>& g_requested_pictures =
+    *new std::set<std::string, std::less<>>;
+std::deque<std::string>& g_picture_queue = *new std::deque<std::string>;
+// The render thread's last lookup, so a cursor that stays put costs no lock.
+std::string g_last_custom_content;
+std::shared_ptr<const CursorImage> g_last_custom_image;
+
+std::shared_ptr<const CursorImage> FindCustomCursor(std::string_view content) {
+  if (g_last_custom_image != nullptr && content == g_last_custom_content) {
+    return g_last_custom_image;
+  }
+  std::shared_ptr<const CursorImage> image;
+  {
+    std::lock_guard<std::mutex> lock(g_custom_mutex);
+    for (const auto& entry : g_custom_images) {
+      if (entry.first == content) {
+        image = entry.second;
+        break;
+      }
+    }
+    // Roblox keeps drawing it until the worker has the picture.
+    if (image == nullptr &&
+        g_requested_pictures.find(content) == g_requested_pictures.end()) {
+      if (g_requested_pictures.size() >= kMaxRequestedCursors) {
+        g_requested_pictures.clear();
+      }
+      g_requested_pictures.emplace(content);
+      g_picture_queue.emplace_back(content);
+      g_custom_requested.notify_one();
+    }
+  }
+  g_last_custom_content.assign(content.data(), content.size());
+  g_last_custom_image = image;
+  return image;
+}
+
+void StoreCustomCursor(std::string content,
+                       std::shared_ptr<const CursorImage> image) {
+  std::lock_guard<std::mutex> lock(g_custom_mutex);
+  g_custom_images.erase(
+      std::remove_if(g_custom_images.begin(), g_custom_images.end(),
+                     [&](const auto& entry) { return entry.first == content; }),
+      g_custom_images.end());
+  if (g_custom_images.size() >= kMaxCachedCursors) {
+    g_custom_images.erase(g_custom_images.begin());
+  }
+  g_custom_images.emplace_back(std::move(content), std::move(image));
+}
 
 // The content is a 16-bit type followed by a libc++ std::string.
 std::string_view GuestContentId(std::uintptr_t content) {
@@ -212,30 +350,76 @@ std::uintptr_t ContentTypeHook(std::uintptr_t a, std::uintptr_t b,
   if (g_in_render &&
       static_cast<std::uint16_t>(type) != kEmptyContentType) {
     const std::string_view content = GuestContentId(a);
-    g_drawn = ClassifyRobloxCursorContent(content);
     if (g_trace) {
       g_drawn_content.assign(content.data(), content.size());
     }
+    const RobloxCursorKind stock = ClassifyRobloxCursorContent(content);
+    if (g_system_theme && stock != RobloxCursorKind::kOther) {
+      // Roblox draws a transparent texture under the themed cursor.
+      g_drawn = stock;
+    } else if (g_hardware_cursors && IsHardwareCursorContent(content)) {
+      g_drawn_image = FindCustomCursor(content);
+      // Where the desktop hides its cursor, as under shift lock on X11, a
+      // game's crosshair stays Roblox's to draw.
+      const bool desktop_shows =
+          g_desktop_shows_cursor == nullptr || g_desktop_shows_cursor();
+      if (g_drawn_image != nullptr && desktop_shows) {
+        // The desktop draws it, so Roblox skips its draw as for no cursor.
+        g_drawn = RobloxCursorKind::kCustom;
+        return kEmptyContentType;
+      }
+    }
   }
   return type;
+}
+
+// Fetches and decodes each requested picture, off Roblox's threads.
+void PictureWorker() {
+  for (;;) {
+    std::string content;
+    {
+      std::unique_lock<std::mutex> lock(g_custom_mutex);
+      g_custom_requested.wait(lock, [] { return !g_picture_queue.empty(); });
+      content = std::move(g_picture_queue.front());
+      g_picture_queue.pop_front();
+    }
+    const std::string bytes = g_fetch(g_fetch_context, content);
+    const int max_dimension =
+        g_max_dimension_flag != nullptr ? *g_max_dimension_flag : 0;
+    std::shared_ptr<CursorImage> image = DecodeCustomCursor(
+        reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(),
+        max_dimension);
+    if (g_trace) {
+      std::fprintf(stderr, "  [cursor] cursor picture %s: %s\n",
+                   content.c_str(),
+                   image != nullptr  ? "drawn by the desktop"
+                   : bytes.empty()   ? "left to Roblox, not found"
+                                     : "left to Roblox, not a usable PNG");
+    }
+    if (image != nullptr) {
+      StoreCustomCursor(std::move(content), std::move(image));
+    }
+  }
 }
 
 std::uintptr_t RenderHook(std::uintptr_t a, std::uintptr_t b, std::uintptr_t c,
                           std::uintptr_t d, std::uintptr_t e,
                           std::uintptr_t f) {
   g_drawn = RobloxCursorKind::kOther;
+  g_drawn_image.reset();
   g_drawn_content.clear();
   g_in_render = true;
   const std::uintptr_t result = g_original_render(a, b, c, d, e, f);
   g_in_render = false;
   if (g_trace && g_drawn_content != g_traced_content) {
     g_traced_content = g_drawn_content;
-    std::fprintf(stderr, "  [cursor] Roblox draws %s\n",
+    std::fprintf(stderr, "  [cursor] Roblox draws %s%s\n",
                  g_traced_content.empty() ? "no cursor"
-                                          : g_traced_content.c_str());
+                                          : g_traced_content.c_str(),
+                 g_drawn == RobloxCursorKind::kCustom ? " (desktop)" : "");
   }
   if (g_observer != nullptr) {
-    g_observer(g_drawn);
+    g_observer(g_drawn, g_drawn_image);
   }
   return result;
 }
@@ -345,6 +529,88 @@ RobloxCursorKind ClassifyRobloxCursorContent(std::string_view content) {
   return RobloxCursorKind::kOther;
 }
 
+bool IsHardwareCursorContent(std::string_view content) {
+  return !content.empty() &&
+         content.find("MouseLockedCursor") == std::string_view::npos;
+}
+
+std::shared_ptr<CursorImage> DecodeCustomCursor(const std::uint8_t* data,
+                                                std::size_t size,
+                                                int max_dimension) {
+  if (data == nullptr || size == 0) {
+    return nullptr;
+  }
+  png_image png{};
+  png.version = PNG_IMAGE_VERSION;
+  if (png_image_begin_read_from_memory(&png, data, size) == 0) {
+    return nullptr;
+  }
+  png.format = PNG_FORMAT_RGBA;
+  if (png.width == 0 || png.height == 0 || png.width > 4096 ||
+      png.height > 4096) {
+    png_image_free(&png);
+    return nullptr;
+  }
+  std::vector<std::uint8_t> pixels(PNG_IMAGE_SIZE(png));
+  if (png_image_finish_read(&png, nullptr, pixels.data(), 0, nullptr) == 0) {
+    png_image_free(&png);
+    return nullptr;
+  }
+
+  // Roblox shrinks each side of a larger picture to its limit.
+  std::uint32_t width = png.width;
+  std::uint32_t height = png.height;
+  if (max_dimension > 0) {
+    const auto limit = static_cast<std::uint32_t>(max_dimension);
+    width = std::min(width, limit);
+    height = std::min(height, limit);
+  }
+  if (width > kMaxDesktopCursor || height > kMaxDesktopCursor) {
+    return nullptr;
+  }
+  auto image = std::make_shared<CursorImage>();
+  image->width = width;
+  image->height = height;
+  // Roblox centers the picture on the pointer.
+  image->hot_x = width / 2;
+  image->hot_y = height / 2;
+  image->rgba.resize(static_cast<std::size_t>(width) * height * 4);
+  // Each pixel averages the source box it covers, weighted by alpha so
+  // transparent pixels do not darken the edges.
+  for (std::uint32_t y = 0; y < height; ++y) {
+    const std::uint32_t top = y * png.height / height;
+    const std::uint32_t bottom =
+        std::max(top + 1, (y + 1) * png.height / height);
+    for (std::uint32_t x = 0; x < width; ++x) {
+      const std::uint32_t left = x * png.width / width;
+      const std::uint32_t right =
+          std::max(left + 1, (x + 1) * png.width / width);
+      std::uint64_t sum[4] = {};
+      for (std::uint32_t sy = top; sy < bottom; ++sy) {
+        const std::uint8_t* row =
+            pixels.data() + static_cast<std::size_t>(sy) * png.width * 4;
+        for (std::uint32_t sx = left; sx < right; ++sx) {
+          const std::uint8_t* pixel = row + static_cast<std::size_t>(sx) * 4;
+          for (int channel = 0; channel < 3; ++channel) {
+            sum[channel] += static_cast<std::uint64_t>(pixel[channel]) * pixel[3];
+          }
+          sum[3] += pixel[3];
+        }
+      }
+      const std::uint64_t count =
+          static_cast<std::uint64_t>(bottom - top) * (right - left);
+      std::uint8_t* out =
+          image->rgba.data() + (static_cast<std::size_t>(y) * width + x) * 4;
+      for (int channel = 0; channel < 3; ++channel) {
+        out[channel] = static_cast<std::uint8_t>(
+            sum[3] != 0 ? (sum[channel] + sum[3] / 2) / sum[3] : 0);
+      }
+      out[3] = static_cast<std::uint8_t>((sum[3] + count / 2) / count);
+    }
+  }
+  return image;
+}
+
 bool IsStockSystemCursorAsset(std::string_view path) {
   for (const std::string_view directory : kStockCursorDirectories) {
     for (const StockCursor& cursor : kStockCursors) {
@@ -378,40 +644,15 @@ const std::uint8_t* TransparentCursorPng(std::size_t* size) {
 
 std::optional<CursorRenderSite> LocateCursorRenderSite(
     const std::vector<CursorHookSegment>& segments, std::string* error) {
-  const std::vector<std::uintptr_t> strings = FindAnchorStrings(segments);
-  if (strings.size() != 1) {
-    Fail(error, "cursor cache message not found exactly once");
+  const std::optional<AnchoredFunction> function =
+      FindAnchoredFunction(segments, kAnchor, kMaxAnchorDistance,
+                           "cursor draw function prologue not found", error);
+  if (!function.has_value()) {
     return std::nullopt;
   }
-  const std::vector<std::uintptr_t> loads =
-      FindRipRelativeLoads(segments, strings.front());
-  if (loads.size() != 1) {
-    Fail(error, "cursor cache message not loaded exactly once");
-    return std::nullopt;
-  }
-  const std::uintptr_t anchor = loads.front();
-  const CursorHookSegment* code = SegmentContaining(segments, anchor);
-  if (code == nullptr) {
-    Fail(error, "cursor cache message load is outside the image");
-    return std::nullopt;
-  }
-
-  const std::size_t anchor_offset = anchor - code->address;
-  std::optional<std::size_t> start;
-  for (std::size_t back = 0;
-       back <= std::min(anchor_offset, kMaxAnchorDistance); ++back) {
-    const std::size_t at = anchor_offset - back;
-    if (at + kPrologue.size() <= code->size &&
-        std::memcmp(code->data + at, kPrologue.data(), kPrologue.size()) ==
-            0) {
-      start = at;
-      break;
-    }
-  }
-  if (!start.has_value()) {
-    Fail(error, "cursor draw function prologue not found");
-    return std::nullopt;
-  }
+  const CursorHookSegment* code = function->code;
+  const std::optional<std::size_t> start = function->start;
+  const std::size_t anchor_offset = function->anchor;
 
   const std::size_t end =
       std::min(code->size, *start + kMaxDrawSiteDistance) - kDrawSiteBytes;
@@ -447,14 +688,29 @@ std::optional<CursorRenderSite> LocateCursorRenderSite(
     Fail(error, "cursor content type call leaves the code");
     return std::nullopt;
   }
+  for (const std::size_t at :
+       FindBytes(*code, *site + kDrawSiteBytes,
+                 std::min(code->size, *start + kMaxDrawSiteDistance),
+                 kReadsLimit)) {
+    if (at + 8 <= code->size && (code->data[at + 3] & 0xC7) == 0x05) {
+      result.max_dimension_flag =
+          code->address + at + 8 +
+          static_cast<std::intptr_t>(ReadInt32(code->data + at + 4));
+      break;
+    }
+  }
   return result;
 }
 
 bool InstallRobloxCursorHooks(std::uintptr_t image_base,
+                              RobloxCursorOptions options,
                               RobloxCursorObserver observer,
                               std::string* error) {
   if (image_base == 0 || observer == nullptr) {
     return Fail(error, "no image or observer");
+  }
+  if (!options.system_theme && !options.hardware) {
+    return Fail(error, "nothing requested");
   }
   if (g_installed.load(std::memory_order_acquire)) {
     return Fail(error, "already installed");
@@ -521,6 +777,15 @@ bool InstallRobloxCursorHooks(std::uintptr_t image_base,
   g_original_content_type =
       reinterpret_cast<ForwardFunction>(site->content_type_function);
   g_observer = observer;
+  g_system_theme = options.system_theme;
+  g_hardware_cursors = options.hardware && options.fetch != nullptr;
+  g_fetch = options.fetch;
+  g_fetch_context = options.fetch_context;
+  g_desktop_shows_cursor = options.desktop_shows_cursor;
+  g_max_dimension_flag =
+      site->max_dimension_flag != 0
+          ? reinterpret_cast<const int*>(site->max_dimension_flag)
+          : nullptr;
   g_trace = std::getenv("MOCKTAIL_CURSOR_TRACE") != nullptr;
 
   std::uint8_t call[5];
@@ -538,18 +803,27 @@ bool InstallRobloxCursorHooks(std::uintptr_t image_base,
     // hook nothing reads it or reports it.
     return Fail(error, "could not patch the draw function");
   }
+  if (g_hardware_cursors) {
+    std::thread(&PictureWorker).detach();
+  }
   g_installed.store(true, std::memory_order_release);
   std::fprintf(stderr,
-               "  [cursor] system cursor hooks installed: draw @+0x%lx, "
-               "content @+0x%lx\n",
+               "  [cursor] cursor hooks installed: draw @+0x%lx, "
+               "content @+0x%lx%s%s\n",
                static_cast<unsigned long>(site->render_function - image_base),
                static_cast<unsigned long>(site->content_type_call -
-                                          image_base));
+                                          image_base),
+               g_system_theme ? ", system theme" : "",
+               g_hardware_cursors ? ", hardware cursor" : "");
   return true;
 }
 
 bool RobloxCursorHooksInstalled() {
   return g_installed.load(std::memory_order_acquire);
+}
+
+bool RobloxCursorThemeActive() {
+  return RobloxCursorHooksInstalled() && g_system_theme;
 }
 
 }  // namespace runtime
@@ -561,7 +835,7 @@ bool RobloxCursorHooksInstalled() {
 extern "C" __attribute__((visibility("default"))) const unsigned char*
 mocktail_system_cursor_asset(const char* path, std::size_t* size) {
   if (path == nullptr || size == nullptr ||
-      !mocktail::runtime::RobloxCursorHooksInstalled() ||
+      !mocktail::runtime::RobloxCursorThemeActive() ||
       !mocktail::runtime::IsStockSystemCursorAsset(path)) {
     return nullptr;
   }

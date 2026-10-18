@@ -245,6 +245,11 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       system_cursor.has_value()) {
     config.input_capabilities_.system_cursor = *system_cursor;
   }
+  if (const std::optional<bool> hardware_cursor =
+          InputEnabled(environment, "MOCKTAIL_HARDWARE_CURSOR");
+      hardware_cursor.has_value()) {
+    config.input_capabilities_.hardware_cursor = *hardware_cursor;
+  }
   bool customized_device = false;
   config.device_profile_valid_ =
       config.device_profile_valid_ &&
