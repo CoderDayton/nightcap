@@ -407,7 +407,9 @@ int main(int argc, char* argv[]) {
     if (!system_proxy ||
         setenv("MOCKTAIL_HTTP_PROXY_HOST", proxy_host.c_str(), 1) != 0 ||
         setenv("MOCKTAIL_HTTP_PROXY_PORT", proxy_port.c_str(), 1) != 0 ||
-        setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy_scheme.c_str(), 1) != 0) {
+        setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy_scheme.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_HTTP_PROXY_USERNAME", "", 1) != 0 ||
+        setenv("MOCKTAIL_HTTP_PROXY_PASSWORD", "", 1) != 0) {
       std::cerr << "[FATAL] Cannot resolve host system proxy";
       if (!system_proxy.error.empty()) {
         std::cerr << ": " << system_proxy.error;
@@ -506,6 +508,11 @@ int main(int argc, char* argv[]) {
       std::cout << "  [fleasion] proxy=" << mocktail::runtime::BuildNetworkProxyUrl(
           *runtime_config.config.network_proxy()) << "; start Fleasion before Roblox\n";
     }
+  }
+  if (!mocktail::runtime::ExportNetworkProxyEnvironment(
+          runtime_config.config, &command_line_error)) {
+    std::cerr << "[FATAL] " << command_line_error << '\n';
+    return EXIT_FAILURE;
   }
   if (config_bootstrap.created()) {
     std::cout << "  [runtime] created first-run configuration: "

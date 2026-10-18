@@ -143,12 +143,15 @@ network:
   # Boolean (default: false): follow the host HTTP/SOCKS5 proxy and
   # automatically use its current port. Do not combine with a fixed proxy.
   use_system_proxy: false
-  # Optional fixed HTTP proxy. Uncomment both values together. The host must
-  # not contain a scheme such as http://.
+  # Optional fixed HTTP/SOCKS5 proxy. Uncomment host and port together.
+  # The host must not contain a scheme such as http://.
+  # proxy_scheme: http
   # String (optional, default: disabled): proxy host name or IP address.
   # proxy_host: 127.0.0.1
   # Integer (optional, default: disabled): proxy TCP port from 1 to 65535.
   # proxy_port: 8080
+  # proxy_username: "user"
+  # proxy_password: "password"
   # Absolute path (optional): custom PEM CA bundle. Mocktail reads this file
   # directly and does not replace it during Roblox payload updates.
   # ca_bundle: /home/user/.config/mocktail/cacert.pem

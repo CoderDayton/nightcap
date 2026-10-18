@@ -187,6 +187,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "network.use_system_proxy",
       "network.proxy_host",
       "network.proxy_port",
+      "network.proxy_scheme",
+      "network.proxy_username",
+      "network.proxy_password",
       "network.ca_bundle",
       "integrations.fleasion.enabled",
       "integrations.fleasion.proxy_mode",
@@ -445,6 +448,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   }
   const auto proxy_host = value("network.proxy_host");
   const auto proxy_port = value("network.proxy_port");
+  const auto proxy_scheme = value("network.proxy_scheme");
+  const auto proxy_username = value("network.proxy_username");
+  const auto proxy_password = value("network.proxy_password");
   bool use_system_proxy = false;
   if (const auto system_proxy = value("network.use_system_proxy");
       system_proxy.has_value()) {
@@ -455,7 +461,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     (*environment)["MOCKTAIL_USE_SYSTEM_PROXY"] =
         use_system_proxy ? "1" : "0";
   }
-  if (proxy_host.has_value() != proxy_port.has_value()) {
+  if (proxy_host.has_value() != proxy_port.has_value() ||
+      (proxy_scheme.has_value() && !proxy_host.has_value())) {
     *error =
         "network.proxy_host and network.proxy_port must be configured together";
     return false;
@@ -464,15 +471,28 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     *error = "network.use_system_proxy cannot be combined with a fixed proxy";
     return false;
   }
+  if (proxy_username.has_value() != proxy_password.has_value() ||
+      (proxy_username.has_value() &&
+       (!proxy_host.has_value() || proxy_username->empty()))) {
+    *error = "proxy_username and proxy_password require a fixed proxy "
+             "and must be configured together with a nonempty username";
+    return false;
+  }
   if (proxy_host.has_value()) {
-    if (!ParseNetworkProxyConfig(*proxy_host, *proxy_port).has_value()) {
+    const auto proxy = ParseNetworkProxyConfig(
+        *proxy_host, *proxy_port, proxy_scheme.value_or("http"),
+        proxy_username.value_or(""), proxy_password.value_or(""));
+    if (!proxy.has_value()) {
       *error =
-          "network proxy must use a valid host without a scheme and a port "
-          "from 1 to 65535";
+          "network proxy must use a valid host without a scheme, a port "
+          "from 1 to 65535, an HTTP or SOCKS5 scheme, and valid credentials";
       return false;
     }
     (*environment)["MOCKTAIL_HTTP_PROXY_HOST"] = *proxy_host;
     (*environment)["MOCKTAIL_HTTP_PROXY_PORT"] = *proxy_port;
+    (*environment)["MOCKTAIL_HTTP_PROXY_SCHEME"] = proxy->scheme;
+    (*environment)["MOCKTAIL_HTTP_PROXY_USERNAME"] = proxy->username;
+    (*environment)["MOCKTAIL_HTTP_PROXY_PASSWORD"] = proxy->password;
   }
   if (const auto ca_bundle = value("network.ca_bundle");
       ca_bundle.has_value()) {
@@ -963,9 +983,16 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       !UnsetEnvironmentValue("MOCKTAIL_USER_AGENT", error)) {
     return false;
   }
-  if (!config.network_proxy().has_value()) {
-    return base_exported;
-  }
+  return base_exported && ExportNetworkProxyEnvironment(config, error);
+}
+
+bool ExportNetworkProxyEnvironment(const RuntimeConfig& config,
+                                   std::string* error) {
+  if (!config.network_proxy().has_value()) return true;
+  const std::string proxy_url =
+      BuildNetworkProxyUrl(*config.network_proxy(), true);
+  const bool native_proxy = config.network_proxy()->scheme == "http" &&
+                            config.network_proxy()->username.empty();
   return SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_HOST",
                              config.network_proxy()->host, error) &&
          SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_PORT",
@@ -973,8 +1000,17 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                              error) &&
          SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_SCHEME",
                              config.network_proxy()->scheme, error) &&
-         SetEnvironmentValue("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY", "1",
-                             error);
+         SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_USERNAME",
+                             config.network_proxy()->username, error) &&
+         SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_PASSWORD",
+                             config.network_proxy()->password, error) &&
+         SetEnvironmentValue("http_proxy", proxy_url, error) &&
+         SetEnvironmentValue("https_proxy", proxy_url, error) &&
+         SetEnvironmentValue("all_proxy", proxy_url, error) &&
+         SetEnvironmentValue("no_proxy", "", error) &&
+         SetEnvironmentValue("NO_PROXY", "", error) &&
+         SetEnvironmentValue("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY",
+                             native_proxy ? "1" : "0", error);
 }
 
 }  // namespace runtime

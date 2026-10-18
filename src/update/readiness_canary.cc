@@ -342,6 +342,11 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            "GSETTINGS_SCHEMA_DIR",
            "GIO_EXTRA_MODULES",
            "GTK_PATH",
+           "http_proxy",
+           "https_proxy",
+           "all_proxy",
+           "no_proxy",
+           "NO_PROXY",
        }) {
     AddInherited(name, &environment);
   }
