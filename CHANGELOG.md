@@ -38,6 +38,8 @@ Release notes on GitHub are taken from the matching section here.
 
 - Joining a game from a website link while already in a game no longer freezes Nightcap. It leaves the
   current game and joins the new one, and leaving that game returns to the home screen.
+- Game links opened from a browser are no longer rejected when they ask for any public server, or when
+  they carry an unencoded `referralPage` address.
 - The loading window no longer gets a dock icon of its own. It now shows under Nightcap's icon.
 - The browser tracker ID no longer fails with HTTP 500 on almost every launch. Nightcap reuses the ID
   Roblox already saved, asks for one only when there is none, and keeps its cookie out of your sign-in file.
