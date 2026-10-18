@@ -148,7 +148,8 @@ void PromptFirstLaunchSignIn(
       helper = executable.parent_path() / "mocktail_webview_helper";
     }
   }
-  if (helper.empty() || !std::filesystem::exists(helper)) {
+  std::error_code exists_error;
+  if (helper.empty() || !std::filesystem::exists(helper, exists_error)) {
     return;
   }
 
