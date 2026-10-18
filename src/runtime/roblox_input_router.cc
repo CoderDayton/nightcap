@@ -461,6 +461,9 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
                   Unsupported("platform event has no Roblox input route"));
   }
   if (!snapshot_.focused) {
+    if (kind == RobloxInputEventKind::kMouseMotion) {
+      return Result(RobloxInputDispatchState::kIgnoredUnfocused, kind);
+    }
     snapshot_.focused = true;
   }
 

@@ -650,10 +650,21 @@ TEST_F(RobloxInputRouterTest, FocusLossReleasesAllPressedInputs) {
   EXPECT_EQ(router_.Snapshot().active_touches, 0U);
   EXPECT_EQ(router_.Snapshot().active_keys, 0U);
 
-  const auto motion = router_.HandleEvent(
+  const std::size_t motions_before = probe_.mouse_moves.size();
+  const auto hover = router_.HandleEvent(
       Event(platform::MouseMotionEvent{1.0f, 2.0f, 1.0f, 1.0f, 0}));
-  EXPECT_EQ(motion.state, RobloxInputDispatchState::kDispatched);
+  EXPECT_EQ(hover.state, RobloxInputDispatchState::kIgnoredUnfocused);
+  EXPECT_EQ(probe_.mouse_moves.size(), motions_before);
+  EXPECT_FALSE(router_.Snapshot().focused);
+
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_LEFT, 1, 1.0f, 2.0f}))
+                  .dispatched());
   EXPECT_TRUE(router_.Snapshot().focused);
+  const auto motion = router_.HandleEvent(
+      Event(platform::MouseMotionEvent{3.0f, 4.0f, 2.0f, 2.0f, 0}));
+  EXPECT_EQ(motion.state, RobloxInputDispatchState::kDispatched);
 }
 
 TEST_F(RobloxInputRouterTest, TextFailsClosedWithoutTextboxHandle) {

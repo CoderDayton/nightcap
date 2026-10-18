@@ -51,6 +51,8 @@ Release notes on GitHub are taken from the matching section here.
 - The loading window no longer gets a dock icon of its own. It now shows under Nightcap's icon.
 - The browser tracker ID no longer fails with HTTP 500 on almost every launch. Nightcap reuses the ID
   Roblox already saved, asks for one only when there is none, and keeps its cookie out of your sign-in file.
+- After you alt-tab away, moving the mouse over the game no longer turns the camera. Click in the game or
+  press a key to take control again.
 
 ### Changed
 
