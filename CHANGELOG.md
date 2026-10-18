@@ -29,7 +29,8 @@ Release notes on GitHub are taken from the matching section here.
   cursors and a game's own cursor is still drawn by the desktop. The shift lock cursor stays Roblox's. If a
   Roblox update changes the code these rely on, Nightcap logs that and Roblox keeps drawing its cursors.
   `MOCKTAIL_CURSOR_TRACE=1` prints each cursor Roblox draws. On Wayland, a desktop-drawn cursor also stays
-  at the press point while you hold the right mouse button to turn the camera.
+  at the press point while you hold the right mouse button to turn the camera, and sits at the center of the
+  window in first person and shift lock, where Roblox draws its cursor.
 - `MOCKTAIL_ASSET_TRACE=1` now also prints the files Roblox asks for and does not get, as `[asset] miss`.
 - Arch Linux: `nightcap-git` is on the AUR and builds the current `main` branch. Thanks to @dim-ghub, who
   maintains it.

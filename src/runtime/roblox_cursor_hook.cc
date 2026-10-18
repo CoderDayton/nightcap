@@ -357,8 +357,8 @@ std::uintptr_t ContentTypeHook(std::uintptr_t a, std::uintptr_t b,
       g_drawn = stock;
     } else if (g_hardware_cursors && IsHardwareCursorContent(content)) {
       g_drawn_image = FindCustomCursor(content);
-      // Under shift lock the desktop hides its cursor, so a game's crosshair
-      // stays Roblox's to draw.
+      // Where the desktop hides its cursor, as under shift lock on X11, a
+      // game's crosshair stays Roblox's to draw.
       const bool desktop_shows =
           g_desktop_shows_cursor == nullptr || g_desktop_shows_cursor();
       if (g_drawn_image != nullptr && desktop_shows) {

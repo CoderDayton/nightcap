@@ -35,8 +35,10 @@ class PointerCaptureBackend {
  public:
   virtual ~PointerCaptureBackend() = default;
   // `image` is set for kCustom only.
+  // `center_pointer` moves the pointer to the middle of the window as
+  // relative mode starts, where Roblox draws its cursor under its own lock.
   virtual bool Apply(bool relative_mode, CursorShape cursor,
-                     const CursorImagePtr& image) = 0;
+                     const CursorImagePtr& image, bool center_pointer) = 0;
   // True when a cursor shown during relative mode stays where the capture
   // began, instead of following the hidden pointer.
   virtual bool ShowsCursorWhileCaptured() const { return false; }
@@ -110,7 +112,8 @@ class WindowPointerCaptureOwner final {
 
   std::uint64_t PresentedFrames() const;
 
-  bool Apply(bool capture, CursorShape cursor, CursorImagePtr image = nullptr);
+  bool Apply(bool capture, CursorShape cursor, CursorImagePtr image = nullptr,
+             bool center_pointer = false);
   std::pair<CursorShape, CursorImagePtr> CurrentRobloxCursor();
 
   PointerCaptureBackend* backend_ = nullptr;
@@ -132,6 +135,7 @@ class WindowPointerCaptureOwner final {
   bool captured_ = false;
   CursorShape cursor_ = CursorShape::kArrow;
   CursorImagePtr cursor_image_;
+  bool pointer_centered_ = false;
   // What showed when the current capture began. An RMB camera drag keeps it
   // on screen at the press point; kHidden leaves the drag to Roblox.
   CursorShape capture_cursor_ = CursorShape::kHidden;
@@ -152,7 +156,7 @@ class SdlPointerCaptureBackend final : public PointerCaptureBackend {
   explicit SdlPointerCaptureBackend(void* window) : window_(window) {}
 
   bool Apply(bool relative_mode, CursorShape cursor,
-             const CursorImagePtr& image) override;
+             const CursorImagePtr& image, bool center_pointer) override;
   bool ShowsCursorWhileCaptured() const override;
 
  private:
@@ -169,6 +173,7 @@ class SdlPointerCaptureBackend final : public PointerCaptureBackend {
   float capture_anchor_x_ = 0.0f;
   float capture_anchor_y_ = 0.0f;
   bool relative_mode_ = false;
+  bool pointer_centered_ = false;
   bool capture_anchor_valid_ = false;
 };
 

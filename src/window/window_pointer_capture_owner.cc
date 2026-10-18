@@ -143,6 +143,7 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   CursorShape cursor = CursorShape::kHidden;
   CursorImagePtr image;
   bool shows_roblox_cursor = false;
+  bool center_pointer = false;
   if (!capture_requested) {
     std::tie(cursor, image) = uncaptured_cursor;
     shows_roblox_cursor = client_active;
@@ -151,17 +152,23 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     if (!captured_) {
       std::tie(capture_cursor_, capture_cursor_image_) = uncaptured_cursor;
     }
-    // An RMB drag keeps a desktop cursor that was already showing.
-    if (!native_capture_active && backend_ != nullptr &&
-        backend_->ShowsCursorWhileCaptured()) {
-      cursor = capture_cursor_;
-      image = capture_cursor_image_;
+    if (backend_ != nullptr && backend_->ShowsCursorWhileCaptured()) {
+      if (native_capture_active) {
+        // First person and shift lock draw the cursor at the center, so the
+        // desktop one goes there and follows what Roblox reports.
+        std::tie(cursor, image) = uncaptured_cursor;
+        center_pointer = true;
+      } else {
+        // An RMB drag keeps a desktop cursor that was already showing.
+        cursor = capture_cursor_;
+        image = capture_cursor_image_;
+      }
       shows_roblox_cursor = client_active;
     }
   }
   desktop_shows_roblox_cursor_.store(shows_roblox_cursor,
                                      std::memory_order_relaxed);
-  return Apply(capture_requested, cursor, std::move(image));
+  return Apply(capture_requested, cursor, std::move(image), center_pointer);
 }
 
 void WindowPointerCaptureOwner::PublishRobloxCursor(CursorShape shape,
@@ -249,9 +256,12 @@ bool WindowPointerCaptureOwner::Shutdown() {
 }
 
 bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
-                                      CursorImagePtr image) {
+                                      CursorImagePtr image,
+                                      bool center_pointer) {
+  center_pointer = center_pointer && capture;
   if (capture == captured_ && cursor == cursor_ &&
-      image.get() == cursor_image_.get()) {
+      image.get() == cursor_image_.get() &&
+      center_pointer == pointer_centered_) {
     return true;
   }
   if (backend_ == nullptr) {
@@ -260,13 +270,14 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
     cursor_image_.reset();
     return !capture && cursor == CursorShape::kArrow;
   }
-  if (backend_->Apply(capture, cursor, image)) {
+  if (backend_->Apply(capture, cursor, image, center_pointer)) {
     const bool capture_changed = capture != captured_;
     const bool visibility_changed =
         (cursor == CursorShape::kHidden) != (cursor_ == CursorShape::kHidden);
     captured_ = capture;
     cursor_ = cursor;
     cursor_image_ = std::move(image);
+    pointer_centered_ = center_pointer;
     if (capture_changed && capture) {
       std::fprintf(stderr, "  [input] SDL relative pointer capture enabled\n");
     } else if (capture_changed) {
@@ -279,10 +290,11 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
     }
     return true;
   }
-  backend_->Apply(false, CursorShape::kArrow, nullptr);
+  backend_->Apply(false, CursorShape::kArrow, nullptr, false);
   captured_ = false;
   cursor_ = CursorShape::kArrow;
   cursor_image_.reset();
+  pointer_centered_ = false;
   return false;
 }
 
@@ -342,7 +354,8 @@ void* SdlPointerCaptureBackend::CursorFor(CursorShape cursor,
 }
 
 bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
-                                     const CursorImagePtr& image) {
+                                     const CursorImagePtr& image,
+                                     bool center_pointer) {
   auto* window = static_cast<SDL_Window*>(window_);
   if (window == nullptr) {
     return false;
@@ -360,6 +373,15 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
     capture_anchor_valid_ = true;
     SDL_SetWindowMouseGrab(window, true);
   }
+  // Before relative mode starts: Wayland then locks the pointer where it is.
+  if (relative_mode && center_pointer && !pointer_centered_) {
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowSize(window, &width, &height)) {
+      SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
+    }
+  }
+  pointer_centered_ = relative_mode && center_pointer;
   if (!relative_mode && relative_mode_ && capture_anchor_valid_) {
     // SDL requires the warp before relative mode is disabled. This preserves
     // the desktop pointer position across Roblox's transient RMB camera drag.
