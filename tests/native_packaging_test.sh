@@ -185,7 +185,6 @@ for expected in \
     'nightcap-nightly_amd64.deb' \
     'nightcap-nightly-x86_64.rpm' \
     'nightcap-nightly-x86_64.pkg.tar.zst' \
-    'release_notes.sh Unreleased' \
     'github-actions[bot]' \
     'gh release upload continuous'; do
   grep -Fq -- "${expected}" "${WORKFLOW}" ||

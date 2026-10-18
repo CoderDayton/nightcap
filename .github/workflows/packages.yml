@@ -120,10 +120,6 @@ jobs:
                 printf '\n### Commits since the previous nightly\n\n%s\n' "$commits"
               fi
             fi
-            if unreleased="$(./scripts/release_notes.sh Unreleased 2>/dev/null)"; then
-              printf '\n### Unreleased changelog\n\n%s\n' \
-                "$(printf '%s\n' "$unreleased" | sed 's/^### /#### /')"
-            fi
           } > notes.md
           cat notes.md
 
