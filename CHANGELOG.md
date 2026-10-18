@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-18
+
 ### Added
 
 - Added a settings window. Open it from the app menu (right-click Nightcap, then Settings) or with
@@ -340,7 +342,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.4.0
 [0.3.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.4
 [0.3.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.3
 [0.3.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.2
