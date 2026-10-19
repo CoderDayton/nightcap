@@ -187,6 +187,10 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.system_cursor",
        "input.hardware_cursor",
       "overlay.server_info",
+      "overlay.location",
+      "overlay.location_offset",
+      "overlay.fps",
+      "overlay.ping",
       "overlay.position",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
@@ -325,12 +329,27 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_THEME"] = *theme;
   }
-  if (const auto mode = value("overlay.server_info"); mode.has_value()) {
-    if (!ParseServerInfoMode(*mode).has_value()) {
+  if (const auto legacy = value("overlay.server_info"); legacy.has_value()) {
+    if (*legacy != "off" && *legacy != "notice" && *legacy != "always") {
       *error = "overlay.server_info must be off, notice, or always";
       return false;
     }
-    (*environment)["MOCKTAIL_SERVER_INFO"] = *mode;
+    if (*legacy != "off" && !value("overlay.location").has_value()) {
+      (*environment)["MOCKTAIL_OVERLAY_LOCATION"] = "on";
+    }
+  }
+  for (const auto& [key, variable] :
+       {std::pair{"overlay.location", "MOCKTAIL_OVERLAY_LOCATION"},
+        std::pair{"overlay.fps", "MOCKTAIL_OVERLAY_FPS"},
+        std::pair{"overlay.ping", "MOCKTAIL_OVERLAY_PING"}}) {
+    if (const auto shown = value(key); shown.has_value()) {
+      bool parsed = false;
+      if (!ParseBoolean(*shown, &parsed)) {
+        *error = std::string(key) + " must be true or false";
+        return false;
+      }
+      (*environment)[variable] = parsed ? "on" : "off";
+    }
   }
   if (const auto position = value("overlay.position"); position.has_value()) {
     if (!ParseOverlayPosition(*position).has_value()) {
@@ -340,6 +359,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_OVERLAY_POSITION"] = *position;
+  }
+  if (const auto offset = value("overlay.location_offset"); offset.has_value()) {
+    if (!ParseOverlayLocationOffset(*offset).has_value()) {
+      *error = "overlay.location_offset must be a whole number from 0 to " +
+               std::to_string(kMaximumOverlayLocationOffset);
+      return false;
+    }
+    (*environment)["MOCKTAIL_OVERLAY_LOCATION_OFFSET"] = *offset;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -851,7 +878,7 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
   } else if (!result.config.theme_mode_valid()) {
     result.error = "theme mode is invalid";
   } else if (!result.config.overlay().valid) {
-    result.error = "server info overlay policy is invalid";
+    result.error = "overlay settings are invalid";
   } else if (!result.config.window().high_dpi_valid) {
     result.error = "window high-DPI policy is invalid";
   } else if (result.config.vsync_mode() != "auto" &&
@@ -964,10 +991,15 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_GRAPHICS_BACKEND",
                           config.graphics_backend_name(), error) &&
       SetEnvironmentValue("MOCKTAIL_THEME", config.theme_mode(), error) &&
-      SetEnvironmentValue("MOCKTAIL_SERVER_INFO",
-                          std::string(ServerInfoModeName(
-                              config.overlay().server_info)),
-                          error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_LOCATION",
+                          config.overlay().location ? "on" : "off", error) &&
+      SetEnvironmentValue(
+          "MOCKTAIL_OVERLAY_LOCATION_OFFSET",
+          std::to_string(config.overlay().location_offset), error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_FPS",
+                          config.overlay().fps ? "on" : "off", error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_PING",
+                          config.overlay().ping ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_OVERLAY_POSITION",
                           std::string(OverlayPositionName(
                               config.overlay().position)),

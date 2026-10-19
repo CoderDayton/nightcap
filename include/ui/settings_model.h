@@ -59,6 +59,7 @@ struct Setting {
   double step = 256;
   // What a kNumber row shows in place of 0, when 0 turns the setting off.
   std::string_view zero_label = {};
+  bool live = false;
 };
 
 struct SettingsGroup {

@@ -113,8 +113,19 @@ input:
   hardware_cursor: false
 
 overlay:
-  server_info: off
-  position: top_center
+  # Boolean (default: false): show the game server's location for a few
+  # seconds after each join, at the top center. Looks the server up at
+  # ipinfo.io only while this is on.
+  location: false
+  # Integer (default: 12, 0-200): the location popup's distance from the top,
+  # in pixels. 12 lines it up with Roblox's top bar.
+  location_offset: 12
+  # Booleans (default: false): keep the frame rate and ping on screen in game.
+  fps: false
+  ping: false
+  # String (default: bottom_left): where the frame rate and ping go:
+  # top_center, top_right, bottom_left, bottom_center, or bottom_right.
+  position: bottom_left
 
 integrations:
   fleasion:

@@ -51,8 +51,6 @@ struct InputCapabilityConfig {
   bool hardware_cursor = false;
 };
 
-enum class ServerInfoMode { kOff, kNotice, kAlways };
-
 enum class OverlayPosition {
   kTopCenter,
   kTopRight,
@@ -61,15 +59,20 @@ enum class OverlayPosition {
   kBottomRight,
 };
 
+inline constexpr int kMaximumOverlayLocationOffset = 200;
+
 struct OverlayConfig {
-  ServerInfoMode server_info = ServerInfoMode::kOff;
-  OverlayPosition position = OverlayPosition::kTopCenter;
+  bool location = false;
+  int location_offset = 12;
+  bool fps = false;
+  bool ping = false;
+  OverlayPosition position = OverlayPosition::kBottomLeft;
   bool valid = true;
 };
 
-std::optional<ServerInfoMode> ParseServerInfoMode(std::string_view name);
+std::optional<int> ParseOverlayLocationOffset(std::string_view value);
+
 std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name);
-std::string_view ServerInfoModeName(ServerInfoMode mode);
 std::string_view OverlayPositionName(OverlayPosition position);
 
 struct NetworkProxyConfig {
