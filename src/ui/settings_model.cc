@@ -19,6 +19,11 @@ namespace mocktail {
 namespace ui {
 namespace {
 
+Setting Live(Setting setting) {
+  setting.live = true;
+  return setting;
+}
+
 // The touch switch. The file holds it inside the device block, which the
 // loader does not let input.touch_enabled be combined with.
 constexpr std::string_view kTouchKey = "device.touch";
@@ -526,43 +531,45 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "roblox",
                  {}},
             }},
-           {"Server info",
+           {"Server location",
             {
-                {"overlay.server_info",
-                 "Show server info",
-                 "Server location and ping.",
-                 SettingKind::kChoice,
-                 {
-                     {"off", "Off"},
-                     {"notice", "After joining"},
-                     {"always", "Always"},
-                 },
-                 "off",
-                 {}},
-                {"overlay.fps",
-                 "Show frame rate",
-                 "Frame rate, in its own bubble.",
-                 SettingKind::kChoice,
-                 {
-                     {"off", "Off"},
-                     {"notice", "After joining"},
-                     {"always", "Always"},
-                 },
-                 "off",
-                 {}},
-                {"overlay.position",
-                 "Position",
-                 "",
-                 SettingKind::kChoice,
-                 {
-                     {"top_center", "Top center"},
-                     {"top_right", "Top right"},
-                     {"bottom_left", "Bottom left"},
-                     {"bottom_center", "Bottom center"},
-                     {"bottom_right", "Bottom right"},
-                 },
-                 "top_center",
-                 {}},
+                Live({"overlay.location",
+                      "Show after joining",
+                      "A popup at the top center.",
+                      SettingKind::kToggle,
+                      {},
+                      "false",
+                      {}}),
+            }},
+           {"Performance overlay",
+            {
+                Live({"overlay.fps",
+                      "Frame rate",
+                      "",
+                      SettingKind::kToggle,
+                      {},
+                      "false",
+                      {}}),
+                Live({"overlay.ping",
+                      "Ping",
+                      "",
+                      SettingKind::kToggle,
+                      {},
+                      "false",
+                      {}}),
+                Live({"overlay.position",
+                      "Position",
+                      "",
+                      SettingKind::kChoice,
+                      {
+                          {"top_center", "Top center"},
+                          {"top_right", "Top right"},
+                          {"bottom_left", "Bottom left"},
+                          {"bottom_center", "Bottom center"},
+                          {"bottom_right", "Bottom right"},
+                      },
+                      "bottom_left",
+                      {}}),
             }},
            {"Window",
             {
@@ -1128,6 +1135,13 @@ std::string SettingsDocument::Value(std::string_view key) const {
   if (key == kProxyKey) {
     return ProxyValue(file);
   }
+  if (key == "overlay.location" && !file.Get(key).found) {
+    const auto legacy = file.Get("overlay.server_info");
+    if (legacy.found) {
+      return legacy.value == "notice" || legacy.value == "always" ? "true"
+                                                                  : "false";
+    }
+  }
   return file.Get(key).value;
 }
 
@@ -1182,8 +1196,8 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
-  if (key == "overlay.position" && Value("overlay.server_info") == "off" &&
-      Value("overlay.fps") == "off") {
+  if (key == "overlay.position" && !IsSwitchedOn("overlay.fps") &&
+      !IsSwitchedOn("overlay.ping")) {
     return false;
   }
   if (key == "integrations.fleasion.proxy_port" &&

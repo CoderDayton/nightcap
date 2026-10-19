@@ -4727,7 +4727,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                 << "; continuing without Rich Presence\n";
     }
   }
-  mocktail::runtime::ServerInfoOverlay server_info(runtime_config.overlay());
+  mocktail::runtime::ServerInfoOverlay server_info(
+      runtime_config.overlay(), CurrentRuntimePaths().config_file());
   if (!runtime_config.headless()) {
     server_info.Start();
   }

@@ -7,11 +7,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
-- An optional server info badge shows the game server's location and your ping, and a second bubble
-  shows the frame rate. Set `overlay.server_info` and `overlay.fps` each to `notice` to show it after
-  each join, or `always` to keep it on screen. When one is `always` and the other `notice`, the
-  always-on bubble stays put and the other appears beside it. `overlay.position` moves both from
-  the top center to another corner or edge. All three are in the settings window under Graphics.
+- An optional popup shows the game server's location for a few seconds after each join
+  (`overlay.location`). A separate performance overlay keeps your frame rate (`overlay.fps`) and ping
+  (`overlay.ping`) on screen, and `overlay.position` moves it to a corner or edge. All are in the
+  settings window under Graphics, and changes apply while you play, without a restart.
 
 ## [0.4.0] - 2026-10-18
 

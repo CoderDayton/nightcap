@@ -140,7 +140,8 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "performance.gamemode", "audio.output_device", "audio.input_device",
            "window.width", "window.height", "window.title", "window.high_dpi",
            "input.raw_mouse", "input.system_cursor", "input.hardware_cursor",
-           "overlay.server_info", "overlay.fps", "overlay.position",
+           "overlay.location", "overlay.fps", "overlay.ping",
+           "overlay.position",
            "network.use_system_proxy", "network.proxy_scheme",
            "network.proxy_username", "network.proxy_password",
            "network.ca_bundle",
@@ -960,38 +961,99 @@ TEST_F(SettingsModelTest, TheFixedProxyIsOneHostAndPortRow) {
   EXPECT_FALSE(loaded.config.network_proxy().has_value());
 }
 
-TEST_F(SettingsModelTest, ServerInfoPositionNeedsTheServerInfoShown) {
-  EXPECT_EQ(Find("overlay.server_info").kind, SettingKind::kChoice);
+TEST_F(SettingsModelTest, LocationAndPerformanceOverlayAreSeparateGroups) {
+  const SettingsGroup* location = nullptr;
+  const SettingsGroup* performance = nullptr;
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        if (setting.key == "overlay.location") {
+          location = &group;
+        }
+        if (setting.key == "overlay.position") {
+          performance = &group;
+        }
+      }
+    }
+  }
+  ASSERT_NE(location, nullptr);
+  ASSERT_NE(performance, nullptr);
+  EXPECT_EQ(location->title, "Server location");
+  EXPECT_EQ(location->settings.size(), 1U);
+  EXPECT_EQ(performance->title, "Performance overlay");
+  ASSERT_EQ(performance->settings.size(), 3U);
+  EXPECT_EQ(performance->settings[0].key, "overlay.fps");
+  EXPECT_EQ(performance->settings[1].key, "overlay.ping");
+  EXPECT_EQ(performance->settings[2].key, "overlay.position");
+}
+
+TEST_F(SettingsModelTest, OnlyOverlaySettingsApplyWithoutARestart) {
+  std::set<std::string_view> live;
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        if (setting.live) {
+          live.insert(setting.key);
+        }
+      }
+    }
+  }
+  EXPECT_EQ(live, (std::set<std::string_view>{"overlay.location", "overlay.fps",
+                                              "overlay.ping",
+                                              "overlay.position"}));
+}
+
+TEST_F(SettingsModelTest, LocationSwitchReadsTheOldServerInfoKey) {
+  std::string error;
+  Write("version: 1\noverlay:\n  server_info: notice\n");
+  SettingsDocument on(file_);
+  ASSERT_TRUE(on.Load(&error)) << error;
+  EXPECT_EQ(on.Value("overlay.location"), "true");
+
+  Write("version: 1\noverlay:\n  server_info: off\n");
+  SettingsDocument off(file_);
+  ASSERT_TRUE(off.Load(&error)) << error;
+  EXPECT_EQ(off.Value("overlay.location"), "false");
+
+  Write("version: 1\noverlay:\n  server_info: always\n  location: false\n");
+  SettingsDocument both(file_);
+  ASSERT_TRUE(both.Load(&error)) << error;
+  EXPECT_EQ(both.Value("overlay.location"), "false");
+
+  ASSERT_TRUE(both.Set("overlay.location", "true", &error)) << error;
+  EXPECT_EQ(both.Value("overlay.location"), "true");
+}
+
+TEST_F(SettingsModelTest, OverlayPositionNeedsAStatShown) {
+  EXPECT_EQ(Find("overlay.location").kind, SettingKind::kToggle);
+  EXPECT_EQ(Find("overlay.fps").kind, SettingKind::kToggle);
+  EXPECT_EQ(Find("overlay.ping").kind, SettingKind::kToggle);
   EXPECT_EQ(Find("overlay.position").kind, SettingKind::kChoice);
-  EXPECT_EQ(Find("overlay.fps").kind, SettingKind::kChoice);
   SettingsDocument document(file_);
   std::string error;
   ASSERT_TRUE(document.Load(&error)) << error;
-  EXPECT_EQ(document.Value("overlay.server_info"), "off");
-  EXPECT_EQ(document.Value("overlay.position"), "top_center");
+  EXPECT_EQ(document.Value("overlay.location"), "false");
+  EXPECT_EQ(document.Value("overlay.position"), "bottom_left");
   EXPECT_FALSE(document.Set("overlay.position", "top_left", &error));
   EXPECT_FALSE(document.IsActive("overlay.position"));
-  EXPECT_TRUE(document.IsActive("overlay.fps"));
 
-  ASSERT_TRUE(document.Set("overlay.fps", "always", &error)) << error;
-  EXPECT_TRUE(document.IsActive("overlay.position"));
-  ASSERT_TRUE(document.Set("overlay.fps", "off", &error)) << error;
+  ASSERT_TRUE(document.Set("overlay.location", "true", &error)) << error;
   EXPECT_FALSE(document.IsActive("overlay.position"));
-
-  ASSERT_TRUE(document.Set("overlay.server_info", "notice", &error)) << error;
+  ASSERT_TRUE(document.Set("overlay.ping", "true", &error)) << error;
+  EXPECT_TRUE(document.IsActive("overlay.position"));
+  ASSERT_TRUE(document.Set("overlay.ping", "false", &error)) << error;
+  ASSERT_TRUE(document.Set("overlay.fps", "true", &error)) << error;
   EXPECT_TRUE(document.IsActive("overlay.position"));
 
-  ASSERT_TRUE(document.Set("overlay.server_info", "always", &error)) << error;
   ASSERT_TRUE(document.Set("overlay.position", "bottom_right", &error))
       << error;
-  ASSERT_TRUE(document.Set("overlay.fps", "notice", &error)) << error;
   runtime::RuntimeConfigLoadResult loaded = LoadFile();
   ASSERT_TRUE(loaded) << loaded.error;
-  EXPECT_EQ(loaded.config.overlay().server_info,
-            runtime::ServerInfoMode::kAlways);
+  EXPECT_TRUE(loaded.config.overlay().location);
+  EXPECT_TRUE(loaded.config.overlay().fps);
+  EXPECT_FALSE(loaded.config.overlay().ping);
   EXPECT_EQ(loaded.config.overlay().position,
             runtime::OverlayPosition::kBottomRight);
-  EXPECT_EQ(loaded.config.overlay().fps, runtime::ServerInfoMode::kNotice);
 }
 
 TEST_F(SettingsModelTest, ProxyTypeAndLoginNeedAFixedProxy) {

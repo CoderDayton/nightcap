@@ -95,6 +95,7 @@ struct SettingsWindow {
   bool restarting = false;
   // A change saved while the restart ran may not reach the new Nightcap.
   bool saved_while_restarting = false;
+  bool needs_restart = false;
   // Set once the window is destroyed, after which its widgets are gone.
   bool closed = false;
   // The button on that card that takes the last saved change back.
@@ -288,6 +289,7 @@ constexpr char kSavedText[] =
     "Saved. Changes apply the next time Nightcap starts.";
 constexpr char kRestartToApplyText[] =
     "Saved. Restart Nightcap to apply the changes.";
+constexpr char kAppliedText[] = "Saved and applied.";
 
 struct RestartJob {
   std::filesystem::path instance_lock;
@@ -318,6 +320,7 @@ void OnRestartDone(GObject*, GAsyncResult* result, gpointer user_data) {
     return;
   }
   if (restarted && !window->saved_while_restarting) {
+    window->needs_restart = false;
     gtk_label_set_text(window->notice_label, "Saved. Nightcap restarted.");
     gtk_widget_set_visible(window->restart, FALSE);
     return;
@@ -380,7 +383,7 @@ void AskRestart(SettingsWindow* window) {
 }
 
 // Shows the saved card, and while Nightcap runs, offers to restart it.
-void OnChangeSaved(SettingsWindow* window) {
+void OnChangeSaved(SettingsWindow* window, bool live) {
   gtk_revealer_set_reveal_child(window->notice, TRUE);
   if (window->restarting) {
     window->saved_while_restarting = true;
@@ -389,6 +392,12 @@ void OnChangeSaved(SettingsWindow* window) {
   // An empty lock path finds nothing running.
   const mocktail::runtime::RunningInstance instance =
       mocktail::runtime::FindRunningInstance(window->instance_lock);
+  if (live && instance.running && !window->needs_restart) {
+    gtk_label_set_text(window->notice_label, kAppliedText);
+    gtk_widget_set_visible(window->restart, FALSE);
+    return;
+  }
+  window->needs_restart = window->needs_restart || instance.running;
   const bool can_restart = instance.running && instance.pid > 0 &&
                            !window->restart_program.empty();
   gtk_label_set_text(window->notice_label,
@@ -409,7 +418,7 @@ void ShowSaved(Row* row, std::size_t before, bool saved,
   if (!saved) {
     ShowError(window, error);
   } else if (window->document.saved_changes() != before) {
-    OnChangeSaved(window);
+    OnChangeSaved(window, row->setting->live);
   }
   gtk_widget_set_visible(window->undo, window->document.CanUndo());
   // On failure the rows go back to what the file holds. A text that was
@@ -447,7 +456,7 @@ void SaveStepped(SettingsWindow* window) {
     return;
   }
   if (window->document.saved_changes() != before) {
-    OnChangeSaved(window);
+    OnChangeSaved(window, row->setting->live);
   }
   gtk_widget_set_visible(window->undo, window->document.CanUndo());
   ShowChanged(window);
@@ -662,7 +671,7 @@ void SaveFFlags(FFlagsEditor* editor) {
     SettingsWindow* window = editor->window;
     // The dialog owns `editor` and may free it on close.
     adw_dialog_force_close(editor->dialog);
-    OnChangeSaved(window);
+    OnChangeSaved(window, false);
     return;
   }
   // The dialog stays open with the text, so nothing typed is lost.

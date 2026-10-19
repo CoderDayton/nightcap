@@ -94,9 +94,16 @@ input:
   hardware_cursor: false
 
 overlay:
-  server_info: off
-  position: top_center
-  fps: off
+  # Boolean (default: false): show the game server's location for a few
+  # seconds after each join, at the top center. Looks the server up at
+  # ipinfo.io only while this is on.
+  location: false
+  # Booleans (default: false): keep the frame rate and ping on screen in game.
+  fps: false
+  ping: false
+  # String (default: bottom_left): where the frame rate and ping go:
+  # top_center, top_right, bottom_left, bottom_center, or bottom_right.
+  position: bottom_left
 
 integrations:
   fleasion:
