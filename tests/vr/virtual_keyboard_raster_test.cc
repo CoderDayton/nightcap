@@ -88,9 +88,15 @@ TEST(VirtualKeyboardRasterTest, RoundsThePanelAndKeepsKeysOpaque) {
   // The corners are cut away; the panel lets a little of the game through.
   EXPECT_EQ(at(0, 0)[3], 0);
   EXPECT_EQ(at(width - 1, height - 1)[3], 0);
-  const std::uint8_t* panel = at(width / 2, height - 2);
+  const int body_bottom =
+      static_cast<int>(VirtualKeyboard::kBodyFraction * height);
+  const std::uint8_t* panel = at(width / 2, body_bottom - 2);
   EXPECT_GT(panel[3], 200);
   EXPECT_LT(panel[3], 255);
+  // Below the body only the drag bar is drawn.
+  const int strip_middle = (body_bottom + height) / 2;
+  EXPECT_EQ(at(width / 10, strip_middle)[3], 0);
+  EXPECT_GT(at(width / 2, strip_middle)[3], 100);
   // A key is opaque and lighter than the panel behind it.
   const auto& q = keyboard.keys()[FindKey(keyboard, "q")];
   const std::uint8_t* key =

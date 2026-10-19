@@ -112,7 +112,7 @@ bool RequestHideTextInput(uint64_t generation);
 // produces, so the focused TextBox edits them identically.
 bool TextInputRequested();
 void QueueVirtualTextInput(const char* utf8);
-void QueueVirtualKeyPress(uint32_t scancode);
+void QueueVirtualKeyPress(uint32_t scancode, bool ctrl = false);
 
 void* GetEGLDisplay();
 

@@ -46,6 +46,12 @@ constexpr float kRingWidth = 3.f;
 constexpr float kLetterPoints = 40.f;
 constexpr float kSpecialPoints = 28.f;
 constexpr float kIconPoints = 44.f;
+constexpr float kPreviewPoints = 60.f;
+// Raised surfaces over the keys: the press preview and the accent row.
+constexpr Rgb kRaised{70, 74, 84};
+// The drag bar under the panel, like Roblox's spatial UI handle.
+constexpr Rgb kHandle{213, 215, 221};
+constexpr std::uint8_t kHandleAlpha = 140;
 
 std::string ResolveFontconfigSans() {
   std::string file;
@@ -104,9 +110,9 @@ std::string ResolveSansFont() {
 std::string ResolveIconFont() {
   const std::filesystem::path content = PayloadContent();
   if (content.empty()) return {};
-  return ExistingFile(content.parent_path() / "ExtraContent/LuaPackages/Packages/_Index/"
-                               "BuilderIcons/BuilderIcons/Font/"
-                               "BuilderIcons-Regular.ttf");
+  return ExistingFile(content.parent_path() /
+                      "ExtraContent/LuaPackages/Packages/_Index/BuilderIcons/"
+                      "BuilderIcons/Font/BuilderIcons-Regular.ttf");
 }
 
 const char* IconName(VirtualKeyAction action) {
@@ -121,11 +127,17 @@ const char* IconName(VirtualKeyAction action) {
       return "key-shift";
     case VirtualKeyAction::kCapsLock:
       return "key-caps-lock";
+    case VirtualKeyAction::kLeft:
+      return "key-arrow-left";
+    case VirtualKeyAction::kRight:
+      return "key-arrow-right";
     case VirtualKeyAction::kSpace:
       return "key-space";
     case VirtualKeyAction::kClose:
       return "keyboard";
     case VirtualKeyAction::kText:
+    case VirtualKeyAction::kSelectAll:
+    case VirtualKeyAction::kPaste:
       break;
   }
   return nullptr;
@@ -196,6 +208,7 @@ struct VirtualKeyboardRasterizer::Impl {
   TTF_Font* letter_font = nullptr;
   TTF_Font* special_font = nullptr;
   TTF_Font* icon_font = nullptr;
+  TTF_Font* preview_font = nullptr;
   std::map<std::pair<std::string, int>, AlphaMask> masks;
   // Last rendered field text; not cached by content, since it is sensitive.
   AlphaMask field;
@@ -205,6 +218,7 @@ struct VirtualKeyboardRasterizer::Impl {
     if (letter_font != nullptr) TTF_CloseFont(letter_font);
     if (special_font != nullptr) TTF_CloseFont(special_font);
     if (icon_font != nullptr) TTF_CloseFont(icon_font);
+    if (preview_font != nullptr) TTF_CloseFont(preview_font);
     if (ttf_initialized) TTF_Quit();
   }
 
@@ -221,6 +235,7 @@ struct VirtualKeyboardRasterizer::Impl {
     if (!file.empty()) {
       letter_font = TTF_OpenFont(file.c_str(), kLetterPoints);
       special_font = TTF_OpenFont(file.c_str(), kSpecialPoints);
+      preview_font = TTF_OpenFont(file.c_str(), kPreviewPoints);
     }
     if (letter_font == nullptr || special_font == nullptr) {
       std::fprintf(stderr,
@@ -260,12 +275,13 @@ struct VirtualKeyboardRasterizer::Impl {
     return mask;
   }
 
-  enum Face { kLetter = 0, kSpecial = 1, kIcon = 2 };
+  enum Face { kLetter = 0, kSpecial = 1, kIcon = 2, kPreview = 3 };
 
   const AlphaMask* Mask(const std::string& label, Face face) {
     if (label.empty() || !EnsureFonts()) return nullptr;
     TTF_Font* font = face == kIcon      ? icon_font
                      : face == kSpecial ? special_font
+                     : face == kPreview ? preview_font
                                         : letter_font;
     if (font == nullptr) return nullptr;
     const auto key = std::make_pair(label, static_cast<int>(face));
@@ -351,7 +367,8 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
       }
   };
 
-  fill_rounded(0.f, 0.f, width, height, kPanelRadius, kBackground,
+  const float body_bottom = VirtualKeyboard::kBodyFraction * height;
+  fill_rounded(0.f, 0.f, width, body_bottom, kPanelRadius, kBackground,
                kBackgroundAlpha);
 
   // Text field: the focused TextBox's contents and caret, scrolled so the
@@ -436,6 +453,65 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
         static_cast<int>(std::lround((top + bottom - mask->height) / 2.f));
     blit(*mask, origin_x, origin_y,
          special && !emphasis ? kSpecialLabel : kLabel, 0, width);
+  }
+
+  auto label_at = [&](const AlphaMask* mask, float left, float top,
+                      float right, float bottom, Rgb color) {
+    if (mask == nullptr) return;
+    blit(*mask, static_cast<int>(std::lround((left + right - mask->width) / 2.f)),
+         static_cast<int>(std::lround((top + bottom - mask->height) / 2.f)),
+         color, 0, width);
+  };
+
+  // Long-press accents: a raised row above the held key; the one under the
+  // pointer is lit.
+  const VirtualKeyboardAccents& accents = keyboard.accents();
+  if (accents.hand >= 0 && !accents.cells.empty()) {
+    const VirtualKey& first = accents.cells.front();
+    const VirtualKey& last = accents.cells.back();
+    fill_rounded(first.u0 * width, first.v0 * height + kGap / 2.f,
+                 last.u1 * width, first.v1 * height, kRadius, kRaised, 255);
+    for (std::size_t cell = 0; cell < accents.cells.size(); ++cell) {
+      const VirtualKey& key = accents.cells[cell];
+      const float left = key.u0 * width + kGap / 2.f;
+      const float right = key.u1 * width - kGap / 2.f;
+      const float top = key.v0 * height + kGap;
+      const float bottom = key.v1 * height - kGap / 2.f;
+      if (static_cast<int>(cell) == accents.selected)
+        fill_rounded(left, top, right, bottom, kRadius, kEmphasis, 255);
+      label_at(impl_->Mask(key.label, Impl::kLetter), left, top, right, bottom,
+               kLabel);
+    }
+  }
+
+  // Press preview: the held character, enlarged above its key.
+  for (int hand = 0; hand < 2; ++hand) {
+    const int pressed = keyboard.pressed_key(hand);
+    if (pressed < 0 || accents.hand == hand) continue;
+    const VirtualKey& key = keys[pressed];
+    if (key.action != VirtualKeyAction::kText) continue;
+    const float key_width = (key.u1 - key.u0) * width - kGap;
+    const float key_height = (key.v1 - key.v0) * height - kGap;
+    const float centre = (key.u0 + key.u1) / 2.f * width;
+    const float bubble_width = key_width + 24.f;
+    const float bubble_height = key_height * 1.1f;
+    const float left = std::clamp(centre - bubble_width / 2.f, 0.f,
+                                  width - bubble_width);
+    const float bottom = key.v0 * height + kGap / 2.f + key_height * 0.25f;
+    const float top = std::max(0.f, bottom - bubble_height);
+    fill_rounded(left, top, left + bubble_width, bottom, kRadius, kRaised, 255);
+    label_at(impl_->Mask(key.label, Impl::kPreview), left, top,
+             left + bubble_width, bottom, kLabel);
+  }
+
+  // Drag bar under the panel; it brightens while hovered or dragging.
+  {
+    const bool active = keyboard.handle_hovered() || keyboard.dragging();
+    const float bar_width = active ? 220.f : 180.f;
+    const float strip_middle = (body_bottom + height) / 2.f;
+    fill_rounded(width / 2.f - bar_width / 2.f, strip_middle - 7.f,
+                 width / 2.f + bar_width / 2.f, strip_middle + 7.f, 7.f,
+                 active ? kWhite : kHandle, active ? 255 : kHandleAlpha);
   }
 
   // Pointer dots, one per hand over the panel.

@@ -2996,20 +2996,32 @@ void OpenXrBackend::UpdateVirtualKeyboardLocked() {
              pose.aim_orientation[2], pose.aim_orientation[3]};
     pointers[hand].trigger =
         state.axes[static_cast<std::size_t>(ControllerAxis::kTrigger)];
+    pointers[hand].thumbstick_x =
+        state.axes[static_cast<std::size_t>(ControllerAxis::kThumbstickX)];
   }
+  // A dragged panel turns to face the head.
+  if (keyboard_head_valid_) keyboard_.SetHead(keyboard_head_);
   const VirtualKeyboardOutput output =
       keyboard_.Update(perf::NowNs(), pointers);
   for (const std::string& text : output.text) {
     if (host.commit_text != nullptr) host.commit_text(host.context, text.c_str());
   }
-  for (const std::uint32_t scancode : output.scancodes) {
-    if (host.press_key != nullptr) host.press_key(host.context, scancode);
+  for (const VirtualKeyPress& key : output.keys) {
+    if (host.press_key != nullptr)
+      host.press_key(host.context, key.scancode, key.ctrl);
   }
-  // A trigger aimed at the panel types; withhold it from Roblox so it is not
-  // also a click on whatever UI sits behind the keyboard.
   for (int hand = 0; hand < 2; ++hand) {
+    // A short, light tick for each key, like a phone's key feedback.
+    if (output.haptic[hand]) actions_.RequestHaptics(hand, 0.3f, 12'000'000ULL, 0.f);
+    // A trigger aimed at the panel types; withhold it from Roblox so it is
+    // not also a click on whatever UI sits behind the keyboard.
     if (keyboard_.CapturesTrigger(hand)) {
       published_pose_.controller_channels[hand * 9 + 3] = 0.f;
+    }
+    // So does a thumbstick moving the caret; the avatar stays put.
+    if (keyboard_.CapturesThumbstick(hand)) {
+      published_pose_.controller_channels[hand * 9 + 1] = 0.f;
+      published_pose_.controller_channels[hand * 9 + 2] = 0.f;
     }
   }
 }

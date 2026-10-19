@@ -28,12 +28,24 @@ drag it. Roblox only turns that toolbar on for Quest, so Nightcap sets
 `vr.spatial_toolbar: false` in `config.yaml`.
 
 When a text box takes focus (chat, search), a keyboard opens in front of you,
-below eye level. It is a full US layout without the function row or
-Ctrl/Alt. Point at a key and pull the trigger. While you point at the keyboard,
-the trigger types and does not click the game behind it. Hold Backspace to
-delete repeatedly. Shift applies to the next key and selects its upper symbol;
-Caps Lock stays on until you tap it again. Close dismisses the keyboard and
-leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
+below eye level. Point at a key and pull the trigger; a letter types when you
+let go, and each key gives a short buzz. While you point at the keyboard, the
+trigger types and does not click the game behind it.
+
+- **Layout.** A full US layout without the function row or Ctrl/Alt. Shift
+  applies to the next key and selects its upper symbol; Caps Lock stays on
+  until you tap it again.
+- **Accents.** Hold a letter such as `e`, `a` or `n` for a moment, slide onto
+  the accent you want and let go. Letting go on the key types the first one.
+  `.`, `-`, `$`, `!`, `?` and quotes have alternates too.
+- **Editing.** `Left` and `Right` move the cursor, and so does the thumbstick
+  while you point at the keyboard. **Select all** and **Paste** work like
+  Ctrl+A and Ctrl+V. Hold Backspace or an arrow to repeat it.
+- **Moving it.** Grab the bar under the keyboard with the trigger and move
+  it; it turns to face you. It opens in its usual spot the next time.
+
+The keyboard icon closes the keyboard and leaves the text box. Set
+`MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
 
 ## Environment variables
 

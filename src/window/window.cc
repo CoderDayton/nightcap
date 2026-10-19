@@ -176,6 +176,7 @@ static std::atomic<uint64_t> g_text_input_requested_generation{0};
 struct VirtualInput {
   std::string text;      // committed text when non-empty
   uint32_t scancode = 0; // otherwise one key press
+  bool ctrl = false;     // with Ctrl held, for Ctrl+A and Ctrl+V
 };
 static std::mutex g_virtual_input_mutex;
 static std::deque<VirtualInput> g_virtual_input;
@@ -1728,12 +1729,12 @@ void QueueVirtualTextInput(const char* utf8) {
   g_virtual_input.push_back(VirtualInput{utf8, 0});
   g_virtual_input_pending.store(true, std::memory_order_release);
 }
-void QueueVirtualKeyPress(uint32_t scancode) {
+void QueueVirtualKeyPress(uint32_t scancode, bool ctrl) {
   if (scancode == 0) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_virtual_input_mutex);
-  g_virtual_input.push_back(VirtualInput{{}, scancode});
+  g_virtual_input.push_back(VirtualInput{{}, scancode, ctrl});
   g_virtual_input_pending.store(true, std::memory_order_release);
 }
 void* GetGLProcAddress(const char* name) {
@@ -2371,11 +2372,13 @@ bool PumpEvents() {
       const auto scancode = static_cast<SDL_Scancode>(input.scancode);
       const auto keycode = static_cast<uint32_t>(
           SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, false));
+      const uint32_t modifiers =
+          input.ctrl ? static_cast<uint32_t>(SDL_KMOD_LCTRL) : 0U;
       event.payload = platform::KeyEvent{true, false, input.scancode, keycode,
-                                         0};
+                                         modifiers};
       g_platform_event_observer.Notify(event);
       event.payload = platform::KeyEvent{false, false, input.scancode, keycode,
-                                         0};
+                                         modifiers};
       g_platform_event_observer.Notify(event);
     }
   }

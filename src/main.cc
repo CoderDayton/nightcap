@@ -1168,8 +1168,9 @@ int main(int argc, char* argv[]) {
         keyboard_host.commit_text = [](void*, const char* utf8) {
           mocktail::window::QueueVirtualTextInput(utf8);
         };
-        keyboard_host.press_key = [](void*, std::uint32_t scancode) {
-          mocktail::window::QueueVirtualKeyPress(scancode);
+        keyboard_host.press_key = [](void*, std::uint32_t scancode,
+                                     bool ctrl) {
+          mocktail::window::QueueVirtualKeyPress(scancode, ctrl);
         };
         mocktail::vr::SetVirtualKeyboardHost(&keyboard_host);
         // TextBox text is drawn as a desktop window overlay that never reaches

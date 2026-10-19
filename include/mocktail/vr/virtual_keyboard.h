@@ -19,8 +19,9 @@ struct VirtualKeyboardHost {
   bool (*input_requested)(void* context) = nullptr;
   // Commits UTF-8 text exactly like an SDL_EVENT_TEXT_INPUT.
   void (*commit_text)(void* context, const char* utf8) = nullptr;
-  // Presses and releases one SDL scancode exactly like a physical key.
-  void (*press_key)(void* context, std::uint32_t scancode) = nullptr;
+  // Presses and releases one SDL scancode exactly like a physical key, with
+  // Ctrl held when `ctrl` is set (Ctrl+A, Ctrl+V).
+  void (*press_key)(void* context, std::uint32_t scancode, bool ctrl) = nullptr;
 };
 
 // Installs the process-wide host. Passing nullptr clears it.
@@ -51,6 +52,10 @@ enum class VirtualKeyAction {
   kCapsLock,
   kSpace,
   kClose,      // Escape: leaves the TextBox and hides the panel
+  kLeft,       // moves the TextBox caret
+  kRight,
+  kSelectAll,  // Ctrl+A
+  kPaste,      // Ctrl+V
 };
 
 struct VirtualKey {
@@ -67,13 +72,31 @@ struct VirtualKey {
 struct VirtualKeyboardPointer {
   bool valid = false;
   pose::Pose aim{};
-  float trigger = 0.f;  // 0..1
+  float trigger = 0.f;      // 0..1
+  float thumbstick_x = 0.f;  // -1..1; moves the caret while aimed at the panel
+};
+
+struct VirtualKeyPress {
+  std::uint32_t scancode = 0;
+  bool ctrl = false;
+  bool operator==(const VirtualKeyPress& other) const {
+    return scancode == other.scancode && ctrl == other.ctrl;
+  }
 };
 
 // What the keyboard asks the host to do after an Update.
 struct VirtualKeyboardOutput {
-  std::vector<std::string> text;          // committed in order
-  std::vector<std::uint32_t> scancodes;   // pressed in order, after text
+  std::vector<std::string> text;       // committed in order
+  std::vector<VirtualKeyPress> keys;   // pressed in order, after text
+  bool haptic[2] = {false, false};     // a short tick on that hand
+};
+
+// Long-press alternates (accents) for one held key, drawn above it.
+struct VirtualKeyboardAccents {
+  int hand = -1;              // -1 when closed
+  int key = -1;               // the held key
+  std::vector<VirtualKey> cells;
+  int selected = -1;          // cell under the pointer, -1 for none
 };
 
 // Ray/quad intersection. The quad is centred on `quad` with its face along
@@ -88,14 +111,23 @@ bool IntersectVirtualKeyboardPanel(const pose::Pose& quad, float width,
 // directly.
 class VirtualKeyboard {
  public:
-  // A text field over 15 x 5 normal-key units, 4 cm per unit.
-  static constexpr float kPanelWidthMetres = 0.60f;
-  static constexpr float kPanelHeightMetres = 0.248f;
-  // Texture aspect matches the panel so keys are not stretched.
+  // A text field over 15 x 5 normal-key units, 4 cm per unit, and a drag
+  // bar strip below them.
   static constexpr int kTextureWidth = 1500;
-  static constexpr int kTextureHeight = 620;
-  // Top share of the panel holding the text field; keys fill the rest.
-  static constexpr float kFieldFraction = 120.f / 620.f;
+  static constexpr int kTextureHeight = 684;
+  static constexpr float kPanelWidthMetres = 0.60f;
+  // Texture aspect matches the panel so keys are not stretched.
+  static constexpr float kPanelHeightMetres =
+      kPanelWidthMetres * kTextureHeight / kTextureWidth;
+  // Top share of the panel holding the text field; keys fill the rest of the
+  // body, which ends at kBodyFraction. Below it sits the drag bar.
+  static constexpr float kFieldFraction = 120.f / 684.f;
+  static constexpr float kBodyFraction = 620.f / 684.f;
+  // The drag bar's hit area, centred under the body.
+  static constexpr float kHandleU0 = 0.38f;
+  static constexpr float kHandleU1 = 0.62f;
+  static constexpr int kColumns = 15;
+  static constexpr int kRows = 5;
 
   VirtualKeyboard();
 
@@ -105,6 +137,11 @@ class VirtualKeyboard {
   void Hide();
   bool visible() const { return visible_; }
   const pose::Pose& panel_pose() const { return panel_; }
+  // Latest head pose; a dragged panel turns to face it.
+  void SetHead(const pose::Pose& head) {
+    head_ = head;
+    head_valid_ = true;
+  }
 
   // Text shown in the field. Bumps the revision only when it changed.
   void SetText(const VirtualKeyboardText& text);
@@ -121,12 +158,18 @@ class VirtualKeyboard {
   // the panel hid mid-press). The backend withholds that trigger from Roblox
   // so a key press is not also a click.
   bool CapturesTrigger(int hand) const;
+  // True while this hand's thumbstick moves the caret instead of the avatar.
+  bool CapturesThumbstick(int hand) const;
 
   // Current layout, with Shift/Caps Lock applied to the labels.
   const std::vector<VirtualKey>& keys() const;
   // -1 when the hand is not over a key.
   int hovered_key(int hand) const { return hands_[hand & 1].hovered; }
   int pressed_key(int hand) const { return hands_[hand & 1].pressed; }
+  const VirtualKeyboardAccents& accents() const { return accents_; }
+  // Drag bar state, for drawing.
+  bool handle_hovered() const;
+  bool dragging() const { return hands_[0].dragging || hands_[1].dragging; }
   // Pointer position on the panel, when the hand is over it.
   bool cursor(int hand, float* u, float* v) const;
   bool shifted() const { return shift_; }
@@ -143,26 +186,43 @@ class VirtualKeyboard {
     bool trigger_down = false;
     bool captured = false;
     bool over_panel = false;
+    bool over_handle = false;
+    bool dragging = false;
+    float drag_distance = 0.f;
+    pose::Vec3 drag_offset{};  // grab point from the panel centre, panel-local
     float u = 0.f, v = 0.f;
+    std::uint64_t pressed_at_ns = 0;
     std::uint64_t repeat_at_ns = 0;
+    int stick_direction = 0;  // -1 left, 1 right, 0 centred
+    std::uint64_t stick_repeat_at_ns = 0;
   };
 
   void RebuildLayout();
   int KeyAt(float u, float v) const;
+  bool OverPanelBody(float u, float v) const;
+  static bool OverHandle(float u, float v);
   std::string Output(const VirtualKey& key) const;
+  // Runs a key's action when it is pressed; text keys wait for the release.
   void Activate(const VirtualKey& key, VirtualKeyboardOutput* output);
+  void Commit(const std::string& text, VirtualKeyboardOutput* output);
+  void OpenAccents(int hand, int key);
+  void CloseAccents();
+  void Drag(Hand* hand, const VirtualKeyboardPointer& pointer);
   void Touch() { ++revision_; }
 
   bool visible_ = false;
   bool shift_ = false;
   bool caps_lock_ = false;
   pose::Pose panel_{};
+  pose::Pose head_{};
+  bool head_valid_ = false;
   VirtualKeyboardText text_;
   Hand hands_[2];
   // A press the keyboard owned when it hid; held until that trigger releases.
   bool release_pending_[2] = {false, false};
   std::uint64_t cursor_drawn_ns_ = 0;
   std::vector<VirtualKey> keys_;
+  VirtualKeyboardAccents accents_;
   std::uint64_t revision_ = 1;
 };
 
