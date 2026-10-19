@@ -167,9 +167,12 @@ class VirtualKeyboard {
 };
 
 // Draws the keyboard into a tightly packed RGBA8 buffer
-// (VirtualKeyboard::kTextureWidth x kTextureHeight, sRGB-encoded, opaque).
-// Glyphs come from SDL3_ttf with fontconfig's sans fallback chain and are
-// cached per label, so redraws after the first are plain fills and blits.
+// (VirtualKeyboard::kTextureWidth x kTextureHeight, sRGB-encoded, straight
+// alpha), styled like Roblox's in-experience menu. The panel is slightly
+// see-through with rounded corners; keys are opaque. Labels use Roblox's
+// Builder Sans and special keys its BuilderIcons when the payload has them,
+// else fontconfig's sans face. Glyphs are cached per label, so redraws after
+// the first are plain fills and blits.
 class VirtualKeyboardRasterizer {
  public:
   VirtualKeyboardRasterizer();

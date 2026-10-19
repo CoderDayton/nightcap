@@ -73,23 +73,64 @@ TEST(VirtualKeyboardRasterTest, PasswordPictureDoesNotDependOnItsLetters) {
   EXPECT_EQ(first, second);
 }
 
-TEST(VirtualKeyboardRasterTest, FillsAnOpaqueTexture) {
+TEST(VirtualKeyboardRasterTest, RoundsThePanelAndKeepsKeysOpaque) {
   VirtualKeyboard keyboard;
   keyboard.Show(Head());
   VirtualKeyboardRasterizer rasterizer;
   std::vector<std::uint8_t> rgba;
   (void)rasterizer.Draw(keyboard, &rgba);  // labels depend on host fonts
-  ASSERT_EQ(rgba.size(), static_cast<std::size_t>(
-                             VirtualKeyboard::kTextureWidth) *
-                             VirtualKeyboard::kTextureHeight * 4);
-  for (std::size_t i = 3; i < rgba.size(); i += 4) ASSERT_EQ(rgba[i], 255);
-  // A key is lighter than the background behind it.
+  constexpr int width = VirtualKeyboard::kTextureWidth;
+  constexpr int height = VirtualKeyboard::kTextureHeight;
+  ASSERT_EQ(rgba.size(), static_cast<std::size_t>(width) * height * 4);
+  auto at = [&](int x, int y) {
+    return rgba.data() + (static_cast<std::size_t>(y) * width + x) * 4;
+  };
+  // The corners are cut away; the panel lets a little of the game through.
+  EXPECT_EQ(at(0, 0)[3], 0);
+  EXPECT_EQ(at(width - 1, height - 1)[3], 0);
+  const std::uint8_t* panel = at(width / 2, height - 2);
+  EXPECT_GT(panel[3], 200);
+  EXPECT_LT(panel[3], 255);
+  // A key is opaque and lighter than the panel behind it.
   const auto& q = keyboard.keys()[FindKey(keyboard, "q")];
-  const int x = static_cast<int>(q.u0 * VirtualKeyboard::kTextureWidth) + 20;
-  const int y = static_cast<int>(q.v0 * VirtualKeyboard::kTextureHeight) + 20;
-  const std::size_t key_px =
-      (static_cast<std::size_t>(y) * VirtualKeyboard::kTextureWidth + x) * 4;
-  EXPECT_GT(rgba[key_px], rgba[0]);
+  const std::uint8_t* key =
+      at(static_cast<int>(q.u0 * width) + 20, static_cast<int>(q.v0 * height) + 20);
+  EXPECT_EQ(key[3], 255);
+  EXPECT_GT(key[0], panel[0]);
+}
+
+TEST(VirtualKeyboardRasterTest, HoverDrawsTheSelectionRing) {
+  VirtualKeyboard keyboard;
+  keyboard.Show(Head());
+  VirtualKeyboardRasterizer rasterizer;
+  std::vector<std::uint8_t> idle, hovered;
+  (void)rasterizer.Draw(keyboard, &idle);
+  const int g = FindKey(keyboard, "g");
+  const VirtualKey& key = keyboard.keys()[g];
+  // Aim straight at the key's centre from in front of the panel.
+  const Pose& panel = keyboard.panel_pose();
+  const float u = (key.u0 + key.u1) / 2.f;
+  const float v = (key.v0 + key.v1) / 2.f;
+  const Vec3 offset = pose::QuatRotate(
+      panel.orientation,
+      Vec3{(u - 0.5f) * VirtualKeyboard::kPanelWidthMetres,
+           (0.5f - v) * VirtualKeyboard::kPanelHeightMetres, 0.3f});
+  VirtualKeyboardPointer pointers[2];
+  pointers[0].valid = true;
+  pointers[0].aim.orientation = panel.orientation;
+  pointers[0].aim.position = Vec3{panel.position.x + offset.x,
+                                  panel.position.y + offset.y,
+                                  panel.position.z + offset.z};
+  (void)keyboard.Update(1'000'000'000ULL, pointers);
+  ASSERT_EQ(keyboard.hovered_key(0), g);
+  (void)rasterizer.Draw(keyboard, &hovered);
+  // Just outside the key's left edge, halfway down: white ring.
+  constexpr int width = VirtualKeyboard::kTextureWidth;
+  const int x = static_cast<int>(key.u0 * width) + 5 - 3;
+  const int y = static_cast<int>(v * VirtualKeyboard::kTextureHeight);
+  const std::size_t px = (static_cast<std::size_t>(y) * width + x) * 4;
+  EXPECT_GT(hovered[px], 240);
+  EXPECT_LT(idle[px], 60);
 }
 
 }  // namespace

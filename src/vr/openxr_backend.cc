@@ -2651,6 +2651,11 @@ void OpenXrBackend::RunFrameCycle(VkQueue queue, VkDevice device) {
           const Pose &panel = keyboard_.panel_pose();
           keyboard_layer.space = static_cast<XrSpace>(xr_local_space_);
           keyboard_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+          // Rounded corners and the see-through panel need the texture's
+          // alpha; the rasterizer writes straight (unpremultiplied) alpha.
+          keyboard_layer.layerFlags =
+              XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+              XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
           keyboard_layer.subImage.swapchain =
               static_cast<XrSwapchain>(keyboard_swapchain_.swapchain);
           keyboard_layer.subImage.imageRect.extent = {
