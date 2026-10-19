@@ -40,9 +40,10 @@ that.
 
 ## Where does the server location come from?
 
-When the server info badge is on, Nightcap looks up the game server's
+When the server location popup is on, Nightcap looks up the game server's
 address at ipinfo.io once per new server. Only the server's address is sent.
-With the badge off, nothing is looked up.
+With the popup off, nothing is looked up, even with the frame rate or ping
+shown.
 
 ## Where can I find logs for a bug report?
 

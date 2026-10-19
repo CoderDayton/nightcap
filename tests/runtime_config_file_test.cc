@@ -346,50 +346,96 @@ input:
   EXPECT_NE(invalid.error.find("input.system_cursor"), std::string::npos);
 }
 
-TEST(RuntimeConfigFileTest, ServerInfoIsOffByDefaultAtTheTopCenter) {
+TEST(RuntimeConfigFileTest, OverlayIsOffByDefaultAtTheBottomLeft) {
   TemporaryDirectory defaulted_directory;
   const RuntimeConfigLoadResult defaulted = LoadRuntimeConfig(
       MapEnvironment(), defaulted_directory.Write(R"yaml(
 version: 1
 )yaml"));
   ASSERT_TRUE(defaulted) << defaulted.error;
-  EXPECT_EQ(defaulted.config.overlay().server_info, ServerInfoMode::kOff);
-  EXPECT_EQ(defaulted.config.overlay().position, OverlayPosition::kTopCenter);
-  EXPECT_EQ(defaulted.config.overlay().fps, ServerInfoMode::kOff);
+  EXPECT_FALSE(defaulted.config.overlay().location);
+  EXPECT_FALSE(defaulted.config.overlay().fps);
+  EXPECT_FALSE(defaulted.config.overlay().ping);
+  EXPECT_EQ(defaulted.config.overlay().position, OverlayPosition::kBottomLeft);
 
   TemporaryDirectory configured_directory;
   const RuntimeConfigLoadResult configured = LoadRuntimeConfig(
       MapEnvironment(), configured_directory.Write(R"yaml(
 version: 1
 overlay:
-  server_info: always
+  location: true
+  fps: true
+  ping: false
   position: top_right
-  fps: notice
 )yaml"));
   ASSERT_TRUE(configured) << configured.error;
-  EXPECT_EQ(configured.config.overlay().server_info, ServerInfoMode::kAlways);
+  EXPECT_TRUE(configured.config.overlay().location);
+  EXPECT_TRUE(configured.config.overlay().fps);
+  EXPECT_FALSE(configured.config.overlay().ping);
   EXPECT_EQ(configured.config.overlay().position, OverlayPosition::kTopRight);
-  EXPECT_EQ(configured.config.overlay().fps, ServerInfoMode::kNotice);
 
-  TemporaryDirectory off_directory;
-  const RuntimeConfigLoadResult off = LoadRuntimeConfig(
-      MapEnvironment(), off_directory.Write(R"yaml(
+  TemporaryDirectory ping_directory;
+  const RuntimeConfigLoadResult ping = LoadRuntimeConfig(
+      MapEnvironment(), ping_directory.Write(R"yaml(
+version: 1
+overlay:
+  ping: true
+)yaml"));
+  ASSERT_TRUE(ping) << ping.error;
+  EXPECT_TRUE(ping.config.overlay().ping);
+  EXPECT_FALSE(ping.config.overlay().fps);
+
+  TemporaryDirectory bad_location_directory;
+  const RuntimeConfigLoadResult bad_location = LoadRuntimeConfig(
+      MapEnvironment(), bad_location_directory.Write(R"yaml(
+version: 1
+overlay:
+  location: notice
+)yaml"));
+  EXPECT_FALSE(bad_location);
+  EXPECT_NE(bad_location.error.find("overlay.location"), std::string::npos);
+
+  TemporaryDirectory old_off_directory;
+  const RuntimeConfigLoadResult old_off = LoadRuntimeConfig(
+      MapEnvironment(), old_off_directory.Write(R"yaml(
 version: 1
 overlay:
   server_info: off
+  position: top_center
 )yaml"));
-  ASSERT_TRUE(off) << off.error;
-  EXPECT_EQ(off.config.overlay().server_info, ServerInfoMode::kOff);
+  ASSERT_TRUE(old_off) << old_off.error;
+  EXPECT_FALSE(old_off.config.overlay().location);
 
-  TemporaryDirectory bad_mode_directory;
-  const RuntimeConfigLoadResult bad_mode = LoadRuntimeConfig(
-      MapEnvironment(), bad_mode_directory.Write(R"yaml(
+  TemporaryDirectory old_on_directory;
+  const RuntimeConfigLoadResult old_on = LoadRuntimeConfig(
+      MapEnvironment(), old_on_directory.Write(R"yaml(
 version: 1
 overlay:
-  server_info: sometimes
+  server_info: notice
 )yaml"));
-  EXPECT_FALSE(bad_mode);
-  EXPECT_NE(bad_mode.error.find("overlay.server_info"), std::string::npos);
+  ASSERT_TRUE(old_on) << old_on.error;
+  EXPECT_TRUE(old_on.config.overlay().location);
+
+  TemporaryDirectory both_directory;
+  const RuntimeConfigLoadResult both = LoadRuntimeConfig(
+      MapEnvironment(), both_directory.Write(R"yaml(
+version: 1
+overlay:
+  server_info: always
+  location: false
+)yaml"));
+  ASSERT_TRUE(both) << both.error;
+  EXPECT_FALSE(both.config.overlay().location);
+
+  TemporaryDirectory old_bad_directory;
+  const RuntimeConfigLoadResult old_bad = LoadRuntimeConfig(
+      MapEnvironment(), old_bad_directory.Write(R"yaml(
+version: 1
+overlay:
+  server_info: banana
+)yaml"));
+  EXPECT_FALSE(old_bad);
+  EXPECT_NE(old_bad.error.find("overlay.server_info"), std::string::npos);
 
   TemporaryDirectory bad_position_directory;
   const RuntimeConfigLoadResult bad_position = LoadRuntimeConfig(
@@ -416,7 +462,7 @@ overlay:
       MapEnvironment(), bad_fps_directory.Write(R"yaml(
 version: 1
 overlay:
-  fps: true
+  fps: always
 )yaml"));
   EXPECT_FALSE(bad_fps);
   EXPECT_NE(bad_fps.error.find("overlay.fps"), std::string::npos);

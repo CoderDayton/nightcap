@@ -157,12 +157,6 @@ std::optional<NetworkProxyConfig> ReadNetworkProxy(
 
 namespace {
 
-constexpr std::pair<ServerInfoMode, std::string_view> kServerInfoModes[] = {
-    {ServerInfoMode::kOff, "off"},
-    {ServerInfoMode::kNotice, "notice"},
-    {ServerInfoMode::kAlways, "always"},
-};
-
 constexpr std::pair<OverlayPosition, std::string_view> kOverlayPositions[] = {
     {OverlayPosition::kTopCenter, "top_center"},
     {OverlayPosition::kTopRight, "top_right"},
@@ -171,15 +165,6 @@ constexpr std::pair<OverlayPosition, std::string_view> kOverlayPositions[] = {
     {OverlayPosition::kBottomRight, "bottom_right"},
 };
 
-}
-
-std::optional<ServerInfoMode> ParseServerInfoMode(std::string_view name) {
-  for (const auto& [mode, mode_name] : kServerInfoModes) {
-    if (mode_name == name) {
-      return mode;
-    }
-  }
-  return std::nullopt;
 }
 
 std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name) {
@@ -191,22 +176,13 @@ std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name) {
   return std::nullopt;
 }
 
-std::string_view ServerInfoModeName(ServerInfoMode mode) {
-  for (const auto& [candidate, name] : kServerInfoModes) {
-    if (candidate == mode) {
-      return name;
-    }
-  }
-  return "off";
-}
-
 std::string_view OverlayPositionName(OverlayPosition position) {
   for (const auto& [candidate, name] : kOverlayPositions) {
     if (candidate == position) {
       return name;
     }
   }
-  return "top_center";
+  return "bottom_left";
 }
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
@@ -283,23 +259,19 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
                                         &config.window_.high_dpi_valid);
   config.theme_mode_ =
       environment.GetOr("MOCKTAIL_THEME", config.theme_mode_);
-  if (const auto mode = environment.Get("MOCKTAIL_SERVER_INFO");
-      mode.has_value()) {
-    const auto parsed = ParseServerInfoMode(*mode);
-    config.overlay_.valid = parsed.has_value();
-    config.overlay_.server_info = parsed.value_or(ServerInfoMode::kOff);
+  for (const auto& [name, field] :
+       {std::pair{"MOCKTAIL_OVERLAY_LOCATION", &config.overlay_.location},
+        std::pair{"MOCKTAIL_OVERLAY_FPS", &config.overlay_.fps},
+        std::pair{"MOCKTAIL_OVERLAY_PING", &config.overlay_.ping}}) {
+    if (const std::optional<bool> shown = InputEnabled(environment, name)) {
+      *field = *shown;
+    }
   }
   if (const auto position = environment.Get("MOCKTAIL_OVERLAY_POSITION");
       position.has_value()) {
     const auto parsed = ParseOverlayPosition(*position);
     config.overlay_.valid = config.overlay_.valid && parsed.has_value();
-    config.overlay_.position = parsed.value_or(OverlayPosition::kTopCenter);
-  }
-  if (const auto fps = environment.Get("MOCKTAIL_OVERLAY_FPS");
-      fps.has_value()) {
-    const auto parsed = ParseServerInfoMode(*fps);
-    config.overlay_.valid = config.overlay_.valid && parsed.has_value();
-    config.overlay_.fps = parsed.value_or(ServerInfoMode::kOff);
+    config.overlay_.position = parsed.value_or(OverlayPosition::kBottomLeft);
   }
   const std::optional<std::string> configured_device =
       environment.Get("MOCKTAIL_DEVICE_PROFILE");

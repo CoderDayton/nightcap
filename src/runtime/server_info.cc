@@ -1,11 +1,17 @@
 #include "runtime/server_info.h"
 
 #include <arpa/inet.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
+#include <utility>
 
 #include <nlohmann/json.hpp>
+
+#include "runtime/environment.h"
+#include "runtime/runtime_config_file.h"
 
 namespace mocktail::runtime {
 
@@ -175,14 +181,61 @@ OverlayPoint PlaceOverlay(OverlayPosition position, int view_width,
   return {x, y};
 }
 
-SteadyBubble FindSteadyBubble(ServerInfoMode server_info, ServerInfoMode fps) {
-  if (server_info == ServerInfoMode::kAlways && fps == ServerInfoMode::kNotice) {
-    return SteadyBubble::kServerInfo;
+OverlayLayout LayOutOverlay(OverlayPosition hud_position, int view_width,
+                            int view_height, OverlaySize popup,
+                            OverlaySize hud, float scale,
+                            float popup_presence) {
+  constexpr float kTopBarMargin = 12.0F;
+  constexpr float kBelowTopBarMargin = 64.0F;
+  constexpr float kEdgeMargin = 24.0F;
+  const auto scaled = [scale](float value) {
+    return static_cast<int>(std::lround(value * scale));
+  };
+  const auto place = [&](OverlayPosition position, OverlaySize size,
+                         float top_margin) {
+    if (size.width <= 0 || size.height <= 0) {
+      return OverlayRect{};
+    }
+    const OverlayPoint at =
+        PlaceOverlay(position, view_width, view_height, size.width,
+                     size.height, scaled(top_margin), scaled(kEdgeMargin));
+    return OverlayRect{at.x, at.y, size.width, size.height};
+  };
+  constexpr float kBesideGap = 8.0F;
+  const bool shares_row = hud_position == OverlayPosition::kTopCenter;
+  OverlayLayout layout;
+  layout.popup = place(OverlayPosition::kTopCenter, popup, kTopBarMargin);
+  layout.hud = place(hud_position, hud,
+                     shares_row ? kTopBarMargin : kBelowTopBarMargin);
+  const OverlayRect empty{};
+  if (shares_row && !(layout.popup == empty) && !(layout.hud == empty)) {
+    const int gap = scaled(kBesideGap);
+    const int claimed = static_cast<int>(std::lround(
+        (layout.popup.width + gap) * std::clamp(popup_presence, 0.0F, 1.0F)));
+    const int left = std::max(0, (view_width - claimed - hud.width) / 2);
+    layout.hud.x = left + claimed;
+    layout.popup.x = layout.hud.x - gap - layout.popup.width;
   }
-  if (fps == ServerInfoMode::kAlways && server_info == ServerInfoMode::kNotice) {
-    return SteadyBubble::kFps;
+  if (layout.popup == empty) {
+    layout.bounds = layout.hud;
+  } else if (layout.hud == empty) {
+    layout.bounds = layout.popup;
+  } else {
+    const int left = std::min(layout.popup.x, layout.hud.x);
+    const int top = std::min(layout.popup.y, layout.hud.y);
+    const int right = std::max(layout.popup.x + layout.popup.width,
+                               layout.hud.x + layout.hud.width);
+    const int bottom = std::max(layout.popup.y + layout.popup.height,
+                                layout.hud.y + layout.hud.height);
+    layout.bounds = {left, top, right - left, bottom - top};
+    constexpr std::int64_t kMaximumPixels = 16LL * 1024 * 1024;
+    if (static_cast<std::int64_t>(layout.bounds.width) * layout.bounds.height >
+        kMaximumPixels) {
+      layout.popup = empty;
+      layout.bounds = layout.hud;
+    }
   }
-  return SteadyBubble::kBoth;
+  return layout;
 }
 
 float StepFade(float opacity, bool shown, std::int64_t elapsed_us,
@@ -194,21 +247,77 @@ float StepFade(float opacity, bool shown, std::int64_t elapsed_us,
   return std::clamp(opacity + (shown ? step : -step), 0.0F, 1.0F);
 }
 
-bool FpsBubbleFirst(OverlayPosition position, SteadyBubble steady) {
-  if (steady == SteadyBubble::kBoth) {
-    return true;
+namespace {
+
+class NoEnvironment final : public Environment {
+ public:
+  std::optional<std::string> Get(std::string_view) const override {
+    return std::nullopt;
   }
-  switch (position) {
-    case OverlayPosition::kBottomLeft:
-      return steady == SteadyBubble::kFps;
-    case OverlayPosition::kTopRight:
-    case OverlayPosition::kBottomRight:
-      return steady == SteadyBubble::kServerInfo;
-    case OverlayPosition::kTopCenter:
-    case OverlayPosition::kBottomCenter:
-      break;
+};
+
+OverlayConfigReloader::Stamp StampOf(const std::filesystem::path& file) {
+  struct stat status {};
+  if (stat(file.c_str(), &status) != 0) {
+    return {};
   }
-  return true;
+  return {static_cast<std::int64_t>(status.st_mtim.tv_sec),
+          static_cast<std::int64_t>(status.st_mtim.tv_nsec),
+          static_cast<std::int64_t>(status.st_size),
+          static_cast<std::uint64_t>(status.st_ino)};
+}
+
+bool SameOverlay(const OverlayConfig& a, const OverlayConfig& b) {
+  return a.location == b.location && a.fps == b.fps && a.ping == b.ping &&
+         a.position == b.position;
+}
+
+}
+
+OverlayConfigReloader::OverlayConfigReloader(std::filesystem::path file,
+                                             const OverlayConfig& launched)
+    : file_(std::move(file)),
+      written_(StampOf(file_)),
+      seen_(Read(nullptr).value_or(launched)) {}
+
+std::optional<OverlayConfig> OverlayConfigReloader::Read(std::string* error) {
+  RuntimeConfigLoadResult loaded = LoadRuntimeConfig(NoEnvironment(), file_);
+  if (!loaded) {
+    if (error != nullptr) {
+      *error = std::move(loaded.error);
+    }
+    return std::nullopt;
+  }
+  return loaded.config.overlay();
+}
+
+std::optional<OverlayConfig> OverlayConfigReloader::Reload(
+    const OverlayConfig& current, std::string* error) {
+  error->clear();
+  const Stamp written = StampOf(file_);
+  if (written == written_) {
+    return std::nullopt;
+  }
+  written_ = written;
+  const std::optional<OverlayConfig> read = Read(error);
+  if (!read.has_value()) {
+    return std::nullopt;
+  }
+  OverlayConfig next = current;
+  const auto take_changed = [&](auto OverlayConfig::*field) {
+    if (*read.*field != seen_.*field) {
+      next.*field = *read.*field;
+    }
+  };
+  take_changed(&OverlayConfig::location);
+  take_changed(&OverlayConfig::fps);
+  take_changed(&OverlayConfig::ping);
+  take_changed(&OverlayConfig::position);
+  seen_ = *read;
+  if (SameOverlay(next, current)) {
+    return std::nullopt;
+  }
+  return next;
 }
 
 }

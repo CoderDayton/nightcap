@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -17,7 +18,7 @@ namespace mocktail::runtime {
 
 class ServerInfoOverlay final {
  public:
-  explicit ServerInfoOverlay(OverlayConfig config);
+  ServerInfoOverlay(OverlayConfig config, std::filesystem::path config_file);
   ~ServerInfoOverlay();
 
   ServerInfoOverlay(const ServerInfoOverlay&) = delete;
@@ -36,14 +37,16 @@ class ServerInfoOverlay final {
  private:
   struct Content {
     bool visible = false;
-    bool show_info = false;
-    bool show_fps = false;
-    // Bubble opacity from 0 to 255 while it fades in or out.
-    int info_alpha = 0;
-    int fps_alpha = 0;
+    bool show_popup = false;
+    bool show_hud = false;
+    int popup_alpha = 0;
+    int hud_alpha = 0;
     std::string place;
     int ping_ms = -1;
     int fps = -1;
+    bool show_fps = false;
+    bool show_ping = false;
+    OverlayPosition position = OverlayPosition::kBottomLeft;
     int pixel_width = 0;
     int pixel_height = 0;
     float scale = 1.0F;
@@ -54,6 +57,7 @@ class ServerInfoOverlay final {
   void Hide(const Content& content);
 
   OverlayConfig config_;
+  std::filesystem::path config_file_;
   std::thread worker_;
   std::mutex wait_mutex_;
   std::condition_variable wake_;

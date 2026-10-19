@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <map>
 #include <optional>
@@ -36,10 +37,6 @@ constexpr std::int64_t kStatsLogUs = 30 * kSecondUs;
 constexpr auto kTick = std::chrono::milliseconds(250);
 constexpr auto kFadeTick = std::chrono::milliseconds(16);
 constexpr std::int64_t kFadeUs = 200000;
-// Lines the top positions up with Roblox's top bar buttons, which sit 12 pt
-// below the top of the window.
-constexpr float kTopMargin = 12.0F;
-constexpr float kEdgeMargin = 24.0F;
 
 struct Color {
   float r;
@@ -55,7 +52,7 @@ constexpr Color Hex(std::uint32_t rgb, float alpha = 1.0F) {
 }
 
 // Matches the Roblox top bar capsule.
-constexpr Color kPanel = Hex(0x121215, 0.92F);
+constexpr Color kPanel = Hex(0x121215, 0.75F);
 constexpr Color kInk = Hex(0xFFFFFF);
 constexpr Color kMuted = Hex(0xFFFFFF, 0.72F);
 constexpr Color kBarOff = Hex(0xFFFFFF, 0.25F);
@@ -234,19 +231,14 @@ float Triangle(float x, float y, const float (&points)[3][2]) {
 }
 
 struct Fonts {
-  TTF_Font* title = nullptr;
-  TTF_Font* detail = nullptr;
+  TTF_Font* bold = nullptr;
   float scale = 0.0F;
 
   void Close() {
-    if (title != nullptr) {
-      TTF_CloseFont(title);
+    if (bold != nullptr) {
+      TTF_CloseFont(bold);
     }
-    if (detail != nullptr) {
-      TTF_CloseFont(detail);
-    }
-    title = nullptr;
-    detail = nullptr;
+    bold = nullptr;
     scale = 0.0F;
   }
 };
@@ -289,21 +281,17 @@ std::string RobloxFont(const char* file, int fallback_weight) {
 }
 
 bool OpenFonts(Fonts* fonts, float scale) {
-  if (fonts->title != nullptr && fonts->scale == scale) {
+  if (fonts->bold != nullptr && fonts->scale == scale) {
     return true;
   }
   fonts->Close();
-  static const std::string title_file =
+  static const std::string bold_file =
       RobloxFont("BuilderSans-Bold.otf", FC_WEIGHT_BOLD);
-  static const std::string detail_file =
-      RobloxFont("BuilderSans-Medium.otf", FC_WEIGHT_MEDIUM);
-  if (title_file.empty() || detail_file.empty()) {
+  if (bold_file.empty()) {
     return false;
   }
-  fonts->title = TTF_OpenFont(title_file.c_str(), 15.0F * scale);
-  fonts->detail = TTF_OpenFont(detail_file.c_str(), 15.0F * scale);
-  if (fonts->title == nullptr || fonts->detail == nullptr) {
-    fonts->Close();
+  fonts->bold = TTF_OpenFont(bold_file.c_str(), 15.0F * scale);
+  if (fonts->bold == nullptr) {
     return false;
   }
   fonts->scale = scale;
@@ -347,93 +335,45 @@ struct Card {
   std::vector<std::uint8_t> rgba;
   int width = 0;
   int height = 0;
-  // Where each bubble sits in the card; zero width when it is not drawn.
-  int info_left = 0;
-  int info_width = 0;
-  int fps_left = 0;
-  int fps_width = 0;
 };
 
-// Draws the server info capsule when show_info is set and the frame rate
-// capsule when fps is, side by side in the order fps_first gives.
-std::optional<Card> DrawCard(Fonts* fonts, float scale, bool show_info,
-                             const std::string& place, int ping_ms,
-                             std::optional<int> fps, bool fps_first) {
+Card Finish(const Canvas& canvas) {
+  return {canvas.StraightRgba(), canvas.width(), canvas.height()};
+}
+
+void DrawCapsule(Canvas* canvas, float width, float height,
+                 const Color& panel) {
+  const float center_y = height / 2.0F;
+  canvas->Fill(0, 0, width, height, panel, [&](float x, float y) {
+    return RoundedBox(x, y, width / 2.0F, center_y, width / 2.0F,
+                      height / 2.0F, height / 2.0F);
+  });
+}
+
+std::string ReadingText(int value, const char* unit) {
+  return (value >= 0 ? std::to_string(value) : std::string("--")) + unit;
+}
+
+std::optional<Card> DrawPopup(Fonts* fonts, float scale,
+                              const std::string& place) {
   if (!OpenFonts(fonts, scale)) {
     return std::nullopt;
   }
-  const std::string title = place.empty() ? "Unknown location" : place;
-  const std::string ping_text =
-      (ping_ms >= 0 ? std::to_string(ping_ms) : std::string("--")) + " ms";
-  const std::string fps_text =
-      (fps.value_or(-1) >= 0 ? std::to_string(*fps) : std::string("--")) +
-      " fps";
   const float unit = scale;
   const float height = std::round(44.0F * unit);
   const float pad_left = 14.0F * unit;
   const float pad_right = 18.0F * unit;
   const float pin_width = 20.0F * unit;
   const float pin_gap = 6.0F * unit;
-  const float group_gap = 18.0F * unit;
-  const float bars_width = 14.0F * unit;
-  const float bars_gap = 6.0F * unit;
-  const float fps_pad = 16.0F * unit;
-  const float bubble_gap = 8.0F * unit;
-
-  const float ping_text_width =
-      static_cast<float>(TextWidth(fonts->detail, ping_text));
-  const float fps_text_width =
-      static_cast<float>(TextWidth(fonts->detail, fps_text));
-  // Reserve room for three digits so the capsule does not resize as the
-  // numbers change.
-  const float ping_width = std::max(
-      ping_text_width, static_cast<float>(TextWidth(fonts->detail, "999 ms")));
-  const float fps_width = std::max(
-      fps_text_width, static_cast<float>(TextWidth(fonts->detail, "999 fps")));
   const float title_width =
-      static_cast<float>(TextWidth(fonts->title, title));
-  const float info_width =
-      std::ceil(pad_left + pin_width + pin_gap + title_width + group_gap +
-                bars_width + bars_gap + ping_width + pad_right);
-  const float fps_bubble_width = std::ceil(fps_pad + fps_width + fps_pad);
-  const bool both = show_info && fps.has_value();
-  const float info_left =
-      both && fps_first ? fps_bubble_width + bubble_gap : 0.0F;
-  const float fps_left = both && !fps_first ? info_width + bubble_gap : 0.0F;
-  const float width = std::max(show_info ? info_left + info_width : 0.0F,
-                               fps.has_value() ? fps_left + fps_bubble_width
-                                               : 0.0F);
-  Canvas canvas(static_cast<int>(std::ceil(width)),
-                static_cast<int>(std::ceil(height)));
+      static_cast<float>(TextWidth(fonts->bold, place));
+  const float width =
+      std::ceil(pad_left + pin_width + pin_gap + title_width + pad_right);
+  Canvas canvas(static_cast<int>(width), static_cast<int>(height));
   const float center_y = height / 2.0F;
-  const auto draw_capsule = [&](float left, float capsule_width) {
-    canvas.Fill(left, 0, left + capsule_width, height, kPanel,
-                [&](float x, float y) {
-                  return RoundedBox(x, y, left + capsule_width / 2.0F,
-                                    center_y, capsule_width / 2.0F,
-                                    height / 2.0F, height / 2.0F);
-                });
-  };
-  Card card;
-  if (fps.has_value()) {
-    draw_capsule(fps_left, fps_bubble_width);
-    DrawText(&canvas, fonts->detail, fps_text,
-             fps_left + (fps_bubble_width - fps_text_width) / 2.0F, center_y,
-             kInk);
-    card.fps_left = static_cast<int>(fps_left);
-    card.fps_width = static_cast<int>(fps_bubble_width);
-  }
-  if (!show_info) {
-    card.width = canvas.width();
-    card.height = canvas.height();
-    card.rgba = canvas.StraightRgba();
-    return card;
-  }
-  draw_capsule(info_left, info_width);
-  card.info_left = static_cast<int>(info_left);
-  card.info_width = static_cast<int>(info_width);
+  DrawCapsule(&canvas, width, height, kPanel);
 
-  float cursor = info_left + pad_left;
+  float cursor = pad_left;
   const float pin_x = cursor + pin_width / 2.0F;
   const float head_y = center_y - 2.5F * unit;
   const float tip[3][2] = {{pin_x - 5.0F * unit, head_y + 2.2F * unit},
@@ -448,8 +388,55 @@ std::optional<Card> DrawCard(Fonts* fonts, float scale, bool show_info,
                                 -Circle(x, y, pin_x, head_y, 2.2F * unit));
               });
   cursor += pin_width + pin_gap;
-  DrawText(&canvas, fonts->title, title, cursor, center_y, kInk);
-  cursor += title_width + group_gap;
+  DrawText(&canvas, fonts->bold, place, cursor, center_y, kInk);
+  return Finish(canvas);
+}
+
+std::optional<Card> DrawHud(Fonts* fonts, float scale, bool show_fps, int fps,
+                            bool show_ping, int ping_ms) {
+  if (!OpenFonts(fonts, scale)) {
+    return std::nullopt;
+  }
+  const float unit = scale;
+  const float height = std::round(44.0F * unit);
+  const float pad = 16.0F * unit;
+  const float group_gap = 16.0F * unit;
+  const float bars_width = 14.0F * unit;
+  const float bars_gap = 6.0F * unit;
+  const std::string fps_text = ReadingText(fps, " fps");
+  const std::string ping_text = ReadingText(ping_ms, " ms");
+  const float fps_text_width =
+      static_cast<float>(TextWidth(fonts->bold, fps_text));
+  const float ping_text_width =
+      static_cast<float>(TextWidth(fonts->bold, ping_text));
+  const float fps_width = std::max(
+      fps_text_width, static_cast<float>(TextWidth(fonts->bold, "999 fps")));
+  const float ping_width = std::max(
+      ping_text_width, static_cast<float>(TextWidth(fonts->bold, "999 ms")));
+  float width = pad * 2.0F;
+  if (show_fps) {
+    width += fps_width;
+  }
+  if (show_ping) {
+    width += bars_width + bars_gap + ping_width;
+  }
+  if (show_fps && show_ping) {
+    width += group_gap;
+  }
+  width = std::ceil(width);
+  Canvas canvas(static_cast<int>(width), static_cast<int>(height));
+  const float center_y = height / 2.0F;
+  DrawCapsule(&canvas, width, height, kPanel);
+
+  float cursor = pad;
+  if (show_fps) {
+    DrawText(&canvas, fonts->bold, fps_text,
+             cursor + (fps_width - fps_text_width) / 2.0F, center_y, kInk);
+    cursor += fps_width + group_gap;
+  }
+  if (!show_ping) {
+    return Finish(canvas);
+  }
 
   Color ping_color = kMuted;
   int lit_bars = 0;
@@ -487,28 +474,35 @@ std::optional<Card> DrawCard(Fonts* fonts, float scale, bool show_info,
                 });
   }
   cursor += bars_width + bars_gap;
-  DrawText(&canvas, fonts->detail, ping_text, cursor, center_y, kInk);
-
-  card.width = canvas.width();
-  card.height = canvas.height();
-  card.rgba = canvas.StraightRgba();
-  return card;
+  DrawText(&canvas, fonts->bold, ping_text, cursor, center_y, kInk);
+  return Finish(canvas);
 }
 
-// Scales the alpha of the columns [left, left + span) by opacity, eased so
-// the fade starts and ends gently.
-void FadeColumns(Card* card, int left, int span, float opacity) {
-  if (span <= 0 || opacity >= 1.0F) {
-    return;
-  }
-  const float eased = opacity * opacity * (3.0F - 2.0F * opacity);
-  const int end = std::min(card->width, left + span);
-  for (int y = 0; y < card->height; ++y) {
-    std::uint8_t* row =
-        card->rgba.data() + static_cast<std::size_t>(y) * card->width * 4;
-    for (int x = std::max(0, left); x < end; ++x) {
-      row[x * 4 + 3] =
-          static_cast<std::uint8_t>(std::lround(row[x * 4 + 3] * eased));
+float Eased(float progress) {
+  return progress * progress * (3.0F - 2.0F * progress);
+}
+
+void Blit(const Card& card, const OverlayRect& at, const OverlayRect& bounds,
+          float opacity, std::vector<std::uint8_t>* rgba) {
+  const float eased = Eased(opacity);
+  const int left = at.x - bounds.x;
+  const int top = at.y - bounds.y;
+  for (int y = 0; y < card.height; ++y) {
+    const int row = top + y;
+    if (row < 0 || row >= bounds.height) {
+      continue;
+    }
+    for (int x = 0; x < card.width; ++x) {
+      const int column = left + x;
+      if (column < 0 || column >= bounds.width) {
+        continue;
+      }
+      const std::uint8_t* source =
+          &card.rgba[(static_cast<std::size_t>(y) * card.width + x) * 4];
+      std::uint8_t* target =
+          &(*rgba)[(static_cast<std::size_t>(row) * bounds.width + column) * 4];
+      std::memcpy(target, source, 3);
+      target[3] = static_cast<std::uint8_t>(std::lround(source[3] * eased));
     }
   }
 }
@@ -522,22 +516,36 @@ std::string LookupPlace(const std::string& address,
 
 }
 
+namespace {
+
+void LogSettings(const OverlayConfig& config) {
+  std::fprintf(stderr,
+               "  [server-info] location %s, fps %s, ping %s, stats at %s\n",
+               config.location ? "on" : "off", config.fps ? "on" : "off",
+               config.ping ? "on" : "off",
+               std::string(OverlayPositionName(config.position)).c_str());
+}
+
+}
+
 bool ServerInfoOverlay::Content::operator==(const Content& other) const {
-  return visible == other.visible && show_info == other.show_info &&
-         show_fps == other.show_fps && info_alpha == other.info_alpha &&
-         fps_alpha == other.fps_alpha && place == other.place &&
+  return visible == other.visible && show_popup == other.show_popup &&
+         show_hud == other.show_hud && popup_alpha == other.popup_alpha &&
+         hud_alpha == other.hud_alpha && place == other.place &&
          ping_ms == other.ping_ms && fps == other.fps &&
-         pixel_width == other.pixel_width &&
+         show_fps == other.show_fps && show_ping == other.show_ping &&
+         position == other.position && pixel_width == other.pixel_width &&
          pixel_height == other.pixel_height && scale == other.scale;
 }
 
-ServerInfoOverlay::ServerInfoOverlay(OverlayConfig config) : config_(config) {}
+ServerInfoOverlay::ServerInfoOverlay(OverlayConfig config,
+                                     std::filesystem::path config_file)
+    : config_(config), config_file_(std::move(config_file)) {}
 
 ServerInfoOverlay::~ServerInfoOverlay() { Stop(); }
 
 void ServerInfoOverlay::Start() {
-  if (started_ || (config_.server_info == ServerInfoMode::kOff &&
-                   config_.fps == ServerInfoMode::kOff)) {
+  if (started_) {
     return;
   }
   {
@@ -553,10 +561,7 @@ void ServerInfoOverlay::Start() {
   (void)mocktail_android_log_add_observer(&ObserveLog);
   mocktail_bionic_set_datagram_observer(&ObserveDatagram);
   worker_ = std::thread(&ServerInfoOverlay::Run, this);
-  std::fprintf(stderr, "  [server-info] server info %s, fps %s at %s\n",
-               std::string(ServerInfoModeName(config_.server_info)).c_str(),
-               std::string(ServerInfoModeName(config_.fps)).c_str(),
-               std::string(OverlayPositionName(config_.position)).c_str());
+  LogSettings(config_);
 }
 
 void ServerInfoOverlay::Stop() {
@@ -594,19 +599,24 @@ void ServerInfoOverlay::Run() {
   std::int64_t notice_until = 0;
   bool notice_armed = false;
   bool place_pending = false;
+  std::future<std::string> lookup;
+  std::string lookup_address;
   std::uint64_t frames_before = window::PresentedFrameCount();
   std::int64_t frames_at = MonotonicMicros();
   int fps = -1;
   std::int64_t logged_at = 0;
-  const SteadyBubble steady = FindSteadyBubble(config_.server_info, config_.fps);
-  const bool fps_first = FpsBubbleFirst(config_.position, steady);
-  float info_opacity = 0.0F;
-  float fps_opacity = 0.0F;
+  OverlayConfig config = config_;
+  OverlayConfigReloader reloader(config_file_, config);
+  bool hud_fps = config.fps;
+  bool hud_ping = config.ping;
+  float popup_opacity = 0.0F;
+  float hud_opacity = 0.0F;
   bool fading = false;
   std::int64_t faded_at = MonotonicMicros();
-  // The last card drawn at full opacity, reused while only the fade changes.
-  Content drawn;
-  std::optional<Card> drawn_card;
+  Content popup_drawn;
+  std::optional<Card> popup_card;
+  Content hud_drawn;
+  std::optional<Card> hud_card;
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(wait_mutex_);
@@ -616,6 +626,21 @@ void ServerInfoOverlay::Run() {
       }
     }
     std::int64_t now = MonotonicMicros();
+    std::string reload_error;
+    if (const std::optional<OverlayConfig> changed =
+            reloader.Reload(config, &reload_error)) {
+      config = *changed;
+      LogSettings(config);
+    } else if (!reload_error.empty()) {
+      std::fprintf(stderr, "  [server-info] config not applied: %s\n",
+                   reload_error.c_str());
+    }
+    const bool looks_up = config.location;
+    const bool shows_hud = config.fps || config.ping;
+    if (shows_hud) {
+      hud_fps = config.fps;
+      hud_ping = config.ping;
+    }
     {
       std::lock_guard<std::mutex> lock(shared.join_mutex);
       if (shared.join_generation != seen_generation) {
@@ -623,28 +648,36 @@ void ServerInfoOverlay::Run() {
         address = shared.join_address;
         joined_at = now;
         notice_armed = true;
-        place_pending = !address.empty();
+        place_pending = !address.empty() && looks_up;
         place.clear();
       }
     }
-    if (place_pending) {
+    if (lookup.valid() && lookup.wait_for(std::chrono::seconds(0)) ==
+                              std::future_status::ready) {
+      const std::string found = lookup.get();
+      if (cancel_lookup_.load(std::memory_order_relaxed)) {
+        break;
+      }
+      if (!found.empty()) {
+        places.emplace(lookup_address, found);
+      }
+      std::fprintf(stderr, "  [server-info] server=%s location=%s\n",
+                   lookup_address.c_str(),
+                   found.empty() ? "unknown" : found.c_str());
+      if (lookup_address == address) {
+        place = found;
+      }
+    }
+    if (place_pending && !lookup.valid()) {
       place_pending = false;
       const auto cached = places.find(address);
       if (cached != places.end()) {
         place = cached->second;
       } else {
-        place = LookupPlace(address, &cancel_lookup_);
-        if (cancel_lookup_.load(std::memory_order_relaxed)) {
-          break;
-        }
-        if (!place.empty()) {
-          places.emplace(address, place);
-        }
-        std::fprintf(stderr, "  [server-info] server=%s location=%s\n",
-                     address.c_str(),
-                     place.empty() ? "unknown" : place.c_str());
+        lookup_address = address;
+        lookup = std::async(std::launch::async, LookupPlace, address,
+                            &cancel_lookup_);
       }
-      now = MonotonicMicros();
     }
     if (now - frames_at >= kSecondUs) {
       const std::uint64_t frames = window::PresentedFrameCount();
@@ -658,36 +691,27 @@ void ServerInfoOverlay::Run() {
         shared.last_packet_us.load(std::memory_order_relaxed);
     const bool in_game = last_packet != 0 && now - last_packet < kInGameSilenceUs;
     const std::optional<int> ping = shared.ping.EstimateMs(now);
-    if (notice_armed && in_game &&
+    if (notice_armed && in_game && looks_up &&
         (!place.empty() || now - joined_at >= kNoticeWaitForPlaceUs)) {
       notice_armed = false;
-      notice_until = now + kNoticeUs;
+      if (!place.empty()) {
+        notice_until = now + kNoticeUs;
+      }
     }
-    if (in_game && now - logged_at >= kStatsLogUs) {
+    if (in_game && (looks_up || shows_hud) && now - logged_at >= kStatsLogUs) {
       logged_at = now;
       std::fprintf(stderr, "  [server-info] ping=%d ms fps=%d\n",
                    ping.value_or(-1), fps);
     }
 
-    const auto shown = [&](ServerInfoMode mode) {
-      switch (mode) {
-        case ServerInfoMode::kOff:
-          return false;
-        case ServerInfoMode::kNotice:
-          return now < notice_until;
-        case ServerInfoMode::kAlways:
-          return in_game;
-      }
-      return false;
-    };
     const window::WindowViewportSnapshot viewport =
         window::GetWindowViewportSnapshot();
     const bool can_show = ttf_ready && viewport.valid();
-    const bool want_info = can_show && shown(config_.server_info);
-    const bool want_fps = can_show && shown(config_.fps);
+    const bool want_popup = can_show && looks_up && now < notice_until;
+    const bool want_hud = can_show && shows_hud && in_game;
     if (!can_show) {
-      info_opacity = 0.0F;
-      fps_opacity = 0.0F;
+      popup_opacity = 0.0F;
+      hud_opacity = 0.0F;
     }
     // A fade that starts after an idle tick advances by one fade frame, not
     // by the whole idle wait.
@@ -696,24 +720,30 @@ void ServerInfoOverlay::Run() {
                : std::chrono::duration_cast<std::chrono::microseconds>(
                      kFadeTick)
                      .count();
-    info_opacity = StepFade(info_opacity, want_info, elapsed, kFadeUs);
-    fps_opacity = StepFade(fps_opacity, want_fps, elapsed, kFadeUs);
+    popup_opacity = StepFade(popup_opacity, want_popup, elapsed, kFadeUs);
+    hud_opacity = StepFade(hud_opacity, want_hud, elapsed, kFadeUs);
     faded_at = now;
-    fading = info_opacity != (want_info ? 1.0F : 0.0F) ||
-             fps_opacity != (want_fps ? 1.0F : 0.0F);
+    fading = popup_opacity != (want_popup ? 1.0F : 0.0F) ||
+             hud_opacity != (want_hud ? 1.0F : 0.0F);
 
     Content content;
-    content.show_info = info_opacity > 0.0F;
-    content.show_fps = fps_opacity > 0.0F;
-    content.info_alpha = static_cast<int>(std::lround(info_opacity * 255.0F));
-    content.fps_alpha = static_cast<int>(std::lround(fps_opacity * 255.0F));
-    content.visible = content.show_info || content.show_fps;
+    content.show_popup = popup_opacity > 0.0F;
+    content.show_hud = hud_opacity > 0.0F;
+    content.popup_alpha =
+        static_cast<int>(std::lround(popup_opacity * 255.0F));
+    content.hud_alpha = static_cast<int>(std::lround(hud_opacity * 255.0F));
+    content.visible = content.show_popup || content.show_hud;
     if (content.visible) {
-      if (content.show_info) {
+      if (content.show_popup) {
         content.place = place;
-        content.ping_ms = ping.value_or(-1);
       }
-      content.fps = content.show_fps ? fps : -1;
+      if (content.show_hud) {
+        content.show_fps = hud_fps;
+        content.show_ping = hud_ping;
+        content.fps = hud_fps ? fps : -1;
+        content.ping_ms = hud_ping ? ping.value_or(-1) : -1;
+        content.position = config.position;
+      }
       content.pixel_width = viewport.pixel_width;
       content.pixel_height = viewport.pixel_height;
       content.scale = static_cast<float>(viewport.pixel_width) /
@@ -729,49 +759,53 @@ void ServerInfoOverlay::Run() {
       Hide(content);
       continue;
     }
-    Content opaque = content;
-    opaque.info_alpha = 0;
-    opaque.fps_alpha = 0;
-    if (!drawn_card.has_value() || !(opaque == drawn)) {
-      drawn_card = DrawCard(
-          &fonts, content.scale, content.show_info, content.place,
-          content.ping_ms,
-          content.show_fps ? std::optional<int>(content.fps) : std::nullopt,
-          fps_first);
-      drawn = opaque;
+    if (content.show_popup &&
+        (!popup_card.has_value() || popup_drawn.place != content.place ||
+         popup_drawn.scale != content.scale)) {
+      popup_card = DrawPopup(&fonts, content.scale, content.place);
+      popup_drawn = content;
     }
-    if (!drawn_card.has_value()) {
+    if (content.show_hud &&
+        (!hud_card.has_value() || hud_drawn.fps != content.fps ||
+         hud_drawn.ping_ms != content.ping_ms ||
+         hud_drawn.show_fps != content.show_fps ||
+         hud_drawn.show_ping != content.show_ping ||
+         hud_drawn.scale != content.scale)) {
+      hud_card = DrawHud(&fonts, content.scale, content.show_fps, content.fps,
+                         content.show_ping, content.ping_ms);
+      hud_drawn = content;
+    }
+    if ((content.show_popup && !popup_card.has_value()) ||
+        (content.show_hud && !hud_card.has_value())) {
       content.visible = false;
-      info_opacity = 0.0F;
-      fps_opacity = 0.0F;
+      popup_opacity = 0.0F;
+      hud_opacity = 0.0F;
       fading = false;
       Hide(content);
       continue;
     }
-    std::optional<Card> card = drawn_card;
-    FadeColumns(&*card, card->info_left, card->info_width, info_opacity);
-    FadeColumns(&*card, card->fps_left, card->fps_width, fps_opacity);
-    // Place the steady bubble where it would sit alone, so it does not move
-    // when the other bubble appears or goes away.
-    int anchor_left = 0;
-    int anchor_width = card->width;
-    if (steady == SteadyBubble::kServerInfo && card->info_width > 0) {
-      anchor_left = card->info_left;
-      anchor_width = card->info_width;
-    } else if (steady == SteadyBubble::kFps && card->fps_width > 0) {
-      anchor_left = card->fps_left;
-      anchor_width = card->fps_width;
+    const OverlayLayout layout = LayOutOverlay(
+        content.position, content.pixel_width, content.pixel_height,
+        content.show_popup ? OverlaySize{popup_card->width, popup_card->height}
+                           : OverlaySize{},
+        content.show_hud ? OverlaySize{hud_card->width, hud_card->height}
+                         : OverlaySize{},
+        content.scale,
+        Eased(popup_opacity));
+    std::vector<std::uint8_t> rgba(
+        static_cast<std::size_t>(layout.bounds.width) * layout.bounds.height *
+            4,
+        0);
+    if (content.show_popup) {
+      Blit(*popup_card, layout.popup, layout.bounds, popup_opacity, &rgba);
     }
-    OverlayPoint at = PlaceOverlay(
-        config_.position, content.pixel_width, content.pixel_height,
-        anchor_width, card->height,
-        static_cast<int>(std::lround(kTopMargin * content.scale)),
-        static_cast<int>(std::lround(kEdgeMargin * content.scale)));
-    at.x = std::clamp(at.x - anchor_left, 0,
-                      std::max(0, content.pixel_width - card->width));
+    if (content.show_hud) {
+      Blit(*hud_card, layout.hud, layout.bounds, hud_opacity, &rgba);
+    }
+    const OverlayRect at = layout.bounds;
     std::lock_guard<std::mutex> lock(frame_mutex_);
     shown_ = content;
-    rgba_ = std::move(card->rgba);
+    rgba_ = std::move(rgba);
     ++revision_;
     frame_ = {};
     frame_.visible = 1;
@@ -780,8 +814,8 @@ void ServerInfoOverlay::Run() {
     frame_.coordinate_height = static_cast<std::uint32_t>(content.pixel_height);
     frame_.x = at.x;
     frame_.y = at.y;
-    frame_.width = static_cast<std::uint32_t>(card->width);
-    frame_.height = static_cast<std::uint32_t>(card->height);
+    frame_.width = static_cast<std::uint32_t>(at.width);
+    frame_.height = static_cast<std::uint32_t>(at.height);
     frame_.row_bytes = frame_.width * 4U;
     frame_.rgba_bytes = static_cast<std::uint64_t>(frame_.row_bytes) *
                         frame_.height;

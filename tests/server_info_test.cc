@@ -3,10 +3,16 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <stdlib.h>
+
+#include <chrono>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <random>
+#include <string>
 
 namespace mocktail::runtime {
 namespace {
@@ -125,14 +131,141 @@ TEST(ServerInfoTest, KeepsTheHudInsideASmallWindow) {
             (OverlayPoint{0, 0}));
 }
 
-TEST(ServerInfoTest, KeepsTheAlwaysShownBubbleSteady) {
-  using Mode = ServerInfoMode;
-  EXPECT_EQ(FindSteadyBubble(Mode::kAlways, Mode::kNotice),
-            SteadyBubble::kServerInfo);
-  EXPECT_EQ(FindSteadyBubble(Mode::kNotice, Mode::kAlways), SteadyBubble::kFps);
-  EXPECT_EQ(FindSteadyBubble(Mode::kAlways, Mode::kAlways), SteadyBubble::kBoth);
-  EXPECT_EQ(FindSteadyBubble(Mode::kNotice, Mode::kNotice), SteadyBubble::kBoth);
-  EXPECT_EQ(FindSteadyBubble(Mode::kAlways, Mode::kOff), SteadyBubble::kBoth);
+TEST(ServerInfoTest, CentersThePopupAndATopCenterHudAsOneRow) {
+  const OverlayLayout layout = LayOutOverlay(
+      OverlayPosition::kTopCenter, 1000, 600, OverlaySize{200, 44},
+      OverlaySize{120, 44}, 1.0F);
+  EXPECT_EQ(layout.popup, (OverlayRect{336, 12, 200, 44}));
+  EXPECT_EQ(layout.hud, (OverlayRect{544, 12, 120, 44}));
+  EXPECT_EQ(layout.bounds, (OverlayRect{336, 12, 328, 44}));
+
+  const OverlayLayout hud_only = LayOutOverlay(
+      OverlayPosition::kTopCenter, 1000, 600, OverlaySize{},
+      OverlaySize{120, 44}, 1.0F);
+  EXPECT_EQ(hud_only.hud, (OverlayRect{440, 12, 120, 44}));
+}
+
+TEST(ServerInfoTest, SlidesTheHudBackToTheCenterAsThePopupLeaves) {
+  const OverlayLayout half = LayOutOverlay(
+      OverlayPosition::kTopCenter, 1000, 600, OverlaySize{200, 44},
+      OverlaySize{120, 44}, 1.0F, 0.5F);
+  EXPECT_EQ(half.hud, (OverlayRect{492, 12, 120, 44}));
+  EXPECT_EQ(half.popup, (OverlayRect{284, 12, 200, 44}));
+
+  const OverlayLayout gone = LayOutOverlay(
+      OverlayPosition::kTopCenter, 1000, 600, OverlaySize{200, 44},
+      OverlaySize{120, 44}, 1.0F, 0.0F);
+  EXPECT_EQ(gone.hud, (OverlayRect{440, 12, 120, 44}));
+}
+
+class ConfigFile {
+ public:
+  ConfigFile() {
+    char pattern[] = "/tmp/mocktail_server_info_XXXXXX";
+    directory_ = mkdtemp(pattern);
+    path_ = directory_ / "config.yaml";
+  }
+  ~ConfigFile() { std::filesystem::remove_all(directory_); }
+
+  void Write(const std::string& overlay) {
+    stamp_ += std::chrono::seconds(1);
+    WriteInSameSecond(overlay);
+  }
+  void WriteInSameSecond(const std::string& overlay) {
+    std::ofstream(path_, std::ios::binary) << "version: 1\noverlay:\n"
+                                           << overlay;
+    std::filesystem::last_write_time(path_, stamp_);
+  }
+  const std::filesystem::path& path() const { return path_; }
+
+ private:
+  std::filesystem::path directory_;
+  std::filesystem::path path_;
+  std::filesystem::file_time_type stamp_ =
+      std::filesystem::file_time_type::clock::now();
+};
+
+TEST(ServerInfoTest, ReloadAppliesOnlyTheOverlaySettingsTheFileChanged) {
+  ConfigFile file;
+  file.Write("  fps: false\n  position: bottom_left\n");
+  OverlayConfig launched;
+  launched.ping = true;
+  OverlayConfigReloader reloader(file.path(), launched);
+  std::string error;
+  EXPECT_FALSE(reloader.Reload(launched, &error).has_value());
+
+  file.Write("  fps: false\n  position: top_right\n");
+  const std::optional<OverlayConfig> moved = reloader.Reload(launched, &error);
+  ASSERT_TRUE(moved.has_value());
+  EXPECT_EQ(moved->position, OverlayPosition::kTopRight);
+  EXPECT_TRUE(moved->ping);
+  EXPECT_FALSE(moved->fps);
+  EXPECT_FALSE(reloader.Reload(*moved, &error).has_value());
+  EXPECT_TRUE(error.empty());
+
+  file.Write("  fps: banana\n  position: top_right\n");
+  EXPECT_FALSE(reloader.Reload(*moved, &error).has_value());
+  EXPECT_NE(error.find("overlay.fps"), std::string::npos);
+
+  file.Write("  fps: true\n  position: top_right\n");
+  const std::optional<OverlayConfig> shown = reloader.Reload(*moved, &error);
+  ASSERT_TRUE(shown.has_value());
+  EXPECT_TRUE(error.empty());
+  EXPECT_TRUE(shown->fps);
+  EXPECT_TRUE(shown->ping);
+  EXPECT_EQ(shown->position, OverlayPosition::kTopRight);
+
+  file.WriteInSameSecond("  fps: true\n  position: top_center\n");
+  const std::optional<OverlayConfig> same_second =
+      reloader.Reload(*shown, &error);
+  ASSERT_TRUE(same_second.has_value());
+  EXPECT_EQ(same_second->position, OverlayPosition::kTopCenter);
+}
+
+TEST(ServerInfoTest, DropsThePopupWhenTheCombinedImageIsTooLarge) {
+  const OverlayLayout layout = LayOutOverlay(
+      OverlayPosition::kBottomRight, 7680, 4320, OverlaySize{400, 88},
+      OverlaySize{240, 88}, 2.0F);
+  EXPECT_EQ(layout.popup, OverlayRect{});
+  EXPECT_EQ(layout.hud, (OverlayRect{7392, 4184, 240, 88}));
+  EXPECT_EQ(layout.bounds, layout.hud);
+
+  const OverlayLayout uhd = LayOutOverlay(
+      OverlayPosition::kBottomRight, 3840, 2160, OverlaySize{400, 88},
+      OverlaySize{240, 88}, 2.0F);
+  EXPECT_FALSE(uhd.popup == OverlayRect{});
+}
+
+TEST(ServerInfoTest, PutsATopRightHudBelowTheTopBarButtons) {
+  const OverlayLayout layout = LayOutOverlay(
+      OverlayPosition::kTopRight, 1000, 600, OverlaySize{200, 44},
+      OverlaySize{120, 44}, 1.0F);
+  EXPECT_EQ(layout.popup, (OverlayRect{400, 12, 200, 44}));
+  EXPECT_EQ(layout.hud, (OverlayRect{856, 64, 120, 44}));
+}
+
+TEST(ServerInfoTest, BoundsCoverThePopupAndAHudInACorner) {
+  const OverlayLayout layout = LayOutOverlay(
+      OverlayPosition::kBottomRight, 1000, 600, OverlaySize{200, 44},
+      OverlaySize{120, 44}, 2.0F);
+  EXPECT_EQ(layout.popup, (OverlayRect{400, 24, 200, 44}));
+  EXPECT_EQ(layout.hud, (OverlayRect{832, 508, 120, 44}));
+  EXPECT_EQ(layout.bounds, (OverlayRect{400, 24, 552, 528}));
+}
+
+TEST(ServerInfoTest, LaysOutOnlyWhatIsShown) {
+  const OverlayLayout hud_only = LayOutOverlay(
+      OverlayPosition::kBottomLeft, 1000, 600, OverlaySize{},
+      OverlaySize{120, 44}, 1.0F);
+  EXPECT_EQ(hud_only.popup, (OverlayRect{}));
+  EXPECT_EQ(hud_only.hud, (OverlayRect{24, 532, 120, 44}));
+  EXPECT_EQ(hud_only.bounds, hud_only.hud);
+
+  const OverlayLayout popup_only = LayOutOverlay(
+      OverlayPosition::kBottomLeft, 1000, 600, OverlaySize{200, 44},
+      OverlaySize{}, 1.0F);
+  EXPECT_EQ(popup_only.hud, (OverlayRect{}));
+  EXPECT_EQ(popup_only.bounds, popup_only.popup);
 }
 
 TEST(ServerInfoTest, FadesOverTheFadeTime) {
@@ -141,22 +274,6 @@ TEST(ServerInfoTest, FadesOverTheFadeTime) {
   EXPECT_FLOAT_EQ(StepFade(1.0F, false, 100000, 200000), 0.5F);
   EXPECT_FLOAT_EQ(StepFade(0.1F, false, 50000, 200000), 0.0F);
   EXPECT_FLOAT_EQ(StepFade(0.5F, true, -10, 200000), 0.5F);
-}
-
-TEST(ServerInfoTest, PutsTheSteadyBubbleOnTheAnchoredSide) {
-  // Left-anchored: the steady bubble is on the left.
-  EXPECT_FALSE(FpsBubbleFirst(OverlayPosition::kBottomLeft,
-                              SteadyBubble::kServerInfo));
-  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kBottomLeft, SteadyBubble::kFps));
-  // Right-anchored: the steady bubble is on the right.
-  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kTopRight,
-                             SteadyBubble::kServerInfo));
-  EXPECT_FALSE(FpsBubbleFirst(OverlayPosition::kBottomRight,
-                              SteadyBubble::kFps));
-  // Centered, or nothing steady: the frame rate goes first.
-  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kTopCenter, SteadyBubble::kFps));
-  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kBottomLeft, SteadyBubble::kBoth));
-  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kTopRight, SteadyBubble::kBoth));
 }
 
 }

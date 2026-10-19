@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -67,20 +68,64 @@ OverlayPoint PlaceOverlay(OverlayPosition position, int view_width,
                           int view_height, int width, int height,
                           int top_margin, int margin);
 
-// The bubble that stays on screen while the other one comes and goes after a
-// join, or kBoth when they show and hide together.
-enum class SteadyBubble { kBoth, kServerInfo, kFps };
-SteadyBubble FindSteadyBubble(ServerInfoMode server_info, ServerInfoMode fps);
+struct OverlaySize {
+  int width = 0;
+  int height = 0;
+};
 
-// Whether the frame rate bubble sits left of the server info bubble. The
-// steady bubble goes on the side the position is anchored to, so the other
-// one comes and goes on the outside. Otherwise the frame rate goes first.
-bool FpsBubbleFirst(OverlayPosition position, SteadyBubble steady);
+struct OverlayRect {
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+  bool operator==(const OverlayRect& other) const {
+    return x == other.x && y == other.y && width == other.width &&
+           height == other.height;
+  }
+};
+
+struct OverlayLayout {
+  OverlayRect popup;
+  OverlayRect hud;
+  OverlayRect bounds;
+};
+
+OverlayLayout LayOutOverlay(OverlayPosition hud_position, int view_width,
+                            int view_height, OverlaySize popup,
+                            OverlaySize hud, float scale,
+                            float popup_presence = 1.0F);
 
 // Moves a bubble's opacity toward 1 when it should show and toward 0 when it
 // should not, covering the full range in fade_us.
 float StepFade(float opacity, bool shown, std::int64_t elapsed_us,
                std::int64_t fade_us);
+
+class OverlayConfigReloader final {
+ public:
+  struct Stamp {
+    std::int64_t seconds = 0;
+    std::int64_t nanoseconds = 0;
+    std::int64_t size = -1;
+    std::uint64_t inode = 0;
+    bool operator==(const Stamp& other) const {
+      return seconds == other.seconds && nanoseconds == other.nanoseconds &&
+             size == other.size && inode == other.inode;
+    }
+  };
+
+  OverlayConfigReloader(std::filesystem::path file,
+                        const OverlayConfig& launched);
+
+  std::optional<OverlayConfig> Reload(const OverlayConfig& current,
+                                      std::string* error);
+
+ private:
+  std::optional<OverlayConfig> Read(std::string* error);
+
+  std::filesystem::path file_;
+  Stamp written_;
+  OverlayConfig seen_;
+};
 
 }
 
