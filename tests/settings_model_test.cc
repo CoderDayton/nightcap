@@ -140,7 +140,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "performance.gamemode", "audio.output_device", "audio.input_device",
            "window.width", "window.height", "window.title", "window.high_dpi",
            "input.raw_mouse", "input.system_cursor", "input.hardware_cursor",
-           "overlay.server_info", "overlay.position",
+           "overlay.server_info", "overlay.fps", "overlay.position",
            "network.use_system_proxy", "network.proxy_scheme",
            "network.proxy_username", "network.proxy_password",
            "network.ca_bundle",
@@ -963,12 +963,19 @@ TEST_F(SettingsModelTest, TheFixedProxyIsOneHostAndPortRow) {
 TEST_F(SettingsModelTest, ServerInfoPositionNeedsTheServerInfoShown) {
   EXPECT_EQ(Find("overlay.server_info").kind, SettingKind::kChoice);
   EXPECT_EQ(Find("overlay.position").kind, SettingKind::kChoice);
+  EXPECT_EQ(Find("overlay.fps").kind, SettingKind::kChoice);
   SettingsDocument document(file_);
   std::string error;
   ASSERT_TRUE(document.Load(&error)) << error;
   EXPECT_EQ(document.Value("overlay.server_info"), "off");
   EXPECT_EQ(document.Value("overlay.position"), "top_center");
   EXPECT_FALSE(document.Set("overlay.position", "top_left", &error));
+  EXPECT_FALSE(document.IsActive("overlay.position"));
+  EXPECT_TRUE(document.IsActive("overlay.fps"));
+
+  ASSERT_TRUE(document.Set("overlay.fps", "always", &error)) << error;
+  EXPECT_TRUE(document.IsActive("overlay.position"));
+  ASSERT_TRUE(document.Set("overlay.fps", "off", &error)) << error;
   EXPECT_FALSE(document.IsActive("overlay.position"));
 
   ASSERT_TRUE(document.Set("overlay.server_info", "notice", &error)) << error;
@@ -977,12 +984,14 @@ TEST_F(SettingsModelTest, ServerInfoPositionNeedsTheServerInfoShown) {
   ASSERT_TRUE(document.Set("overlay.server_info", "always", &error)) << error;
   ASSERT_TRUE(document.Set("overlay.position", "bottom_right", &error))
       << error;
+  ASSERT_TRUE(document.Set("overlay.fps", "notice", &error)) << error;
   runtime::RuntimeConfigLoadResult loaded = LoadFile();
   ASSERT_TRUE(loaded) << loaded.error;
   EXPECT_EQ(loaded.config.overlay().server_info,
             runtime::ServerInfoMode::kAlways);
   EXPECT_EQ(loaded.config.overlay().position,
             runtime::OverlayPosition::kBottomRight);
+  EXPECT_EQ(loaded.config.overlay().fps, runtime::ServerInfoMode::kNotice);
 }
 
 TEST_F(SettingsModelTest, ProxyTypeAndLoginNeedAFixedProxy) {

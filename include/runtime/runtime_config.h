@@ -64,6 +64,7 @@ enum class OverlayPosition {
 struct OverlayConfig {
   ServerInfoMode server_info = ServerInfoMode::kOff;
   OverlayPosition position = OverlayPosition::kTopCenter;
+  ServerInfoMode fps = ServerInfoMode::kOff;
   bool valid = true;
 };
 

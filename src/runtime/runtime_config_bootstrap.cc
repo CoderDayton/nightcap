@@ -115,6 +115,7 @@ input:
 overlay:
   server_info: off
   position: top_center
+  fps: off
 
 integrations:
   fleasion:

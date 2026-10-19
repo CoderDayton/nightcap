@@ -67,6 +67,21 @@ OverlayPoint PlaceOverlay(OverlayPosition position, int view_width,
                           int view_height, int width, int height,
                           int top_margin, int margin);
 
+// The bubble that stays on screen while the other one comes and goes after a
+// join, or kBoth when they show and hide together.
+enum class SteadyBubble { kBoth, kServerInfo, kFps };
+SteadyBubble FindSteadyBubble(ServerInfoMode server_info, ServerInfoMode fps);
+
+// Whether the frame rate bubble sits left of the server info bubble. The
+// steady bubble goes on the side the position is anchored to, so the other
+// one comes and goes on the outside. Otherwise the frame rate goes first.
+bool FpsBubbleFirst(OverlayPosition position, SteadyBubble steady);
+
+// Moves a bubble's opacity toward 1 when it should show and toward 0 when it
+// should not, covering the full range in fade_us.
+float StepFade(float opacity, bool shown, std::int64_t elapsed_us,
+               std::int64_t fade_us);
+
 }
 
 #endif

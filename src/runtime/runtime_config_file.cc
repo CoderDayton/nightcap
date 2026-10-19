@@ -188,6 +188,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.hardware_cursor",
       "overlay.server_info",
       "overlay.position",
+      "overlay.fps",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
       "network.proxy_host",
@@ -340,6 +341,13 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_OVERLAY_POSITION"] = *position;
+  }
+  if (const auto fps = value("overlay.fps"); fps.has_value()) {
+    if (!ParseServerInfoMode(*fps).has_value()) {
+      *error = "overlay.fps must be off, notice, or always";
+      return false;
+    }
+    (*environment)["MOCKTAIL_OVERLAY_FPS"] = *fps;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -971,6 +979,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_OVERLAY_POSITION",
                           std::string(OverlayPositionName(
                               config.overlay().position)),
+                          error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_FPS",
+                          std::string(ServerInfoModeName(config.overlay().fps)),
                           error) &&
       SetEnvironmentValue("MOCKTAIL_WIN_WIDTH",
                           std::to_string(config.window().width), error) &&

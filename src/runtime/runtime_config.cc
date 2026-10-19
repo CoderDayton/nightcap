@@ -295,6 +295,12 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
     config.overlay_.valid = config.overlay_.valid && parsed.has_value();
     config.overlay_.position = parsed.value_or(OverlayPosition::kTopCenter);
   }
+  if (const auto fps = environment.Get("MOCKTAIL_OVERLAY_FPS");
+      fps.has_value()) {
+    const auto parsed = ParseServerInfoMode(*fps);
+    config.overlay_.valid = config.overlay_.valid && parsed.has_value();
+    config.overlay_.fps = parsed.value_or(ServerInfoMode::kOff);
+  }
   const std::optional<std::string> configured_device =
       environment.Get("MOCKTAIL_DEVICE_PROFILE");
   const bool has_explicit_device =

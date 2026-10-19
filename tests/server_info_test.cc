@@ -125,5 +125,39 @@ TEST(ServerInfoTest, KeepsTheHudInsideASmallWindow) {
             (OverlayPoint{0, 0}));
 }
 
+TEST(ServerInfoTest, KeepsTheAlwaysShownBubbleSteady) {
+  using Mode = ServerInfoMode;
+  EXPECT_EQ(FindSteadyBubble(Mode::kAlways, Mode::kNotice),
+            SteadyBubble::kServerInfo);
+  EXPECT_EQ(FindSteadyBubble(Mode::kNotice, Mode::kAlways), SteadyBubble::kFps);
+  EXPECT_EQ(FindSteadyBubble(Mode::kAlways, Mode::kAlways), SteadyBubble::kBoth);
+  EXPECT_EQ(FindSteadyBubble(Mode::kNotice, Mode::kNotice), SteadyBubble::kBoth);
+  EXPECT_EQ(FindSteadyBubble(Mode::kAlways, Mode::kOff), SteadyBubble::kBoth);
+}
+
+TEST(ServerInfoTest, FadesOverTheFadeTime) {
+  EXPECT_FLOAT_EQ(StepFade(0.0F, true, 50000, 200000), 0.25F);
+  EXPECT_FLOAT_EQ(StepFade(0.25F, true, 200000, 200000), 1.0F);
+  EXPECT_FLOAT_EQ(StepFade(1.0F, false, 100000, 200000), 0.5F);
+  EXPECT_FLOAT_EQ(StepFade(0.1F, false, 50000, 200000), 0.0F);
+  EXPECT_FLOAT_EQ(StepFade(0.5F, true, -10, 200000), 0.5F);
+}
+
+TEST(ServerInfoTest, PutsTheSteadyBubbleOnTheAnchoredSide) {
+  // Left-anchored: the steady bubble is on the left.
+  EXPECT_FALSE(FpsBubbleFirst(OverlayPosition::kBottomLeft,
+                              SteadyBubble::kServerInfo));
+  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kBottomLeft, SteadyBubble::kFps));
+  // Right-anchored: the steady bubble is on the right.
+  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kTopRight,
+                             SteadyBubble::kServerInfo));
+  EXPECT_FALSE(FpsBubbleFirst(OverlayPosition::kBottomRight,
+                              SteadyBubble::kFps));
+  // Centered, or nothing steady: the frame rate goes first.
+  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kTopCenter, SteadyBubble::kFps));
+  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kBottomLeft, SteadyBubble::kBoth));
+  EXPECT_TRUE(FpsBubbleFirst(OverlayPosition::kTopRight, SteadyBubble::kBoth));
+}
+
 }
 }

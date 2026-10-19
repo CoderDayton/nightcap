@@ -530,7 +530,18 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"overlay.server_info",
                  "Show server info",
-                 "Location, ping and frame rate.",
+                 "Server location and ping.",
+                 SettingKind::kChoice,
+                 {
+                     {"off", "Off"},
+                     {"notice", "After joining"},
+                     {"always", "Always"},
+                 },
+                 "off",
+                 {}},
+                {"overlay.fps",
+                 "Show frame rate",
+                 "Frame rate, in its own bubble.",
                  SettingKind::kChoice,
                  {
                      {"off", "Off"},
@@ -1171,7 +1182,8 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
-  if (key == "overlay.position" && Value("overlay.server_info") == "off") {
+  if (key == "overlay.position" && Value("overlay.server_info") == "off" &&
+      Value("overlay.fps") == "off") {
     return false;
   }
   if (key == "integrations.fleasion.proxy_port" &&

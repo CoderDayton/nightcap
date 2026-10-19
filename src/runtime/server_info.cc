@@ -175,4 +175,40 @@ OverlayPoint PlaceOverlay(OverlayPosition position, int view_width,
   return {x, y};
 }
 
+SteadyBubble FindSteadyBubble(ServerInfoMode server_info, ServerInfoMode fps) {
+  if (server_info == ServerInfoMode::kAlways && fps == ServerInfoMode::kNotice) {
+    return SteadyBubble::kServerInfo;
+  }
+  if (fps == ServerInfoMode::kAlways && server_info == ServerInfoMode::kNotice) {
+    return SteadyBubble::kFps;
+  }
+  return SteadyBubble::kBoth;
+}
+
+float StepFade(float opacity, bool shown, std::int64_t elapsed_us,
+               std::int64_t fade_us) {
+  const float step =
+      fade_us > 0 ? static_cast<float>(std::max<std::int64_t>(elapsed_us, 0)) /
+                        static_cast<float>(fade_us)
+                  : 1.0F;
+  return std::clamp(opacity + (shown ? step : -step), 0.0F, 1.0F);
+}
+
+bool FpsBubbleFirst(OverlayPosition position, SteadyBubble steady) {
+  if (steady == SteadyBubble::kBoth) {
+    return true;
+  }
+  switch (position) {
+    case OverlayPosition::kBottomLeft:
+      return steady == SteadyBubble::kFps;
+    case OverlayPosition::kTopRight:
+    case OverlayPosition::kBottomRight:
+      return steady == SteadyBubble::kServerInfo;
+    case OverlayPosition::kTopCenter:
+    case OverlayPosition::kBottomCenter:
+      break;
+  }
+  return true;
+}
+
 }

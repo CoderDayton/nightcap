@@ -355,6 +355,7 @@ version: 1
   ASSERT_TRUE(defaulted) << defaulted.error;
   EXPECT_EQ(defaulted.config.overlay().server_info, ServerInfoMode::kOff);
   EXPECT_EQ(defaulted.config.overlay().position, OverlayPosition::kTopCenter);
+  EXPECT_EQ(defaulted.config.overlay().fps, ServerInfoMode::kOff);
 
   TemporaryDirectory configured_directory;
   const RuntimeConfigLoadResult configured = LoadRuntimeConfig(
@@ -363,10 +364,12 @@ version: 1
 overlay:
   server_info: always
   position: top_right
+  fps: notice
 )yaml"));
   ASSERT_TRUE(configured) << configured.error;
   EXPECT_EQ(configured.config.overlay().server_info, ServerInfoMode::kAlways);
   EXPECT_EQ(configured.config.overlay().position, OverlayPosition::kTopRight);
+  EXPECT_EQ(configured.config.overlay().fps, ServerInfoMode::kNotice);
 
   TemporaryDirectory off_directory;
   const RuntimeConfigLoadResult off = LoadRuntimeConfig(
@@ -407,6 +410,16 @@ overlay:
 )yaml"));
   EXPECT_FALSE(top_left);
   EXPECT_NE(top_left.error.find("overlay.position"), std::string::npos);
+
+  TemporaryDirectory bad_fps_directory;
+  const RuntimeConfigLoadResult bad_fps = LoadRuntimeConfig(
+      MapEnvironment(), bad_fps_directory.Write(R"yaml(
+version: 1
+overlay:
+  fps: true
+)yaml"));
+  EXPECT_FALSE(bad_fps);
+  EXPECT_NE(bad_fps.error.find("overlay.fps"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, HardwareCursorIsSeparateFromTheSystemTheme) {

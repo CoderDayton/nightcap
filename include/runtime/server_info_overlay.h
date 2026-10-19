@@ -36,6 +36,11 @@ class ServerInfoOverlay final {
  private:
   struct Content {
     bool visible = false;
+    bool show_info = false;
+    bool show_fps = false;
+    // Bubble opacity from 0 to 255 while it fades in or out.
+    int info_alpha = 0;
+    int fps_alpha = 0;
     std::string place;
     int ping_ms = -1;
     int fps = -1;
