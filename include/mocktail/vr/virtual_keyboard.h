@@ -2,9 +2,11 @@
 #define MOCKTAIL_VR_VIRTUAL_KEYBOARD_H_
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#include "mocktail/vr/emoji_catalog.h"
 #include "mocktail/vr/vr_pose_math.h"
 
 namespace mocktail::vr {
@@ -23,6 +25,18 @@ struct VirtualKeyboardHost {
   // Ctrl held when `ctrl` is set (Ctrl+A, Ctrl+V).
   void (*press_key)(void* context, std::uint32_t scancode, bool ctrl) = nullptr;
 };
+
+// Where the keyboard remembers the spot it was last dragged to, across
+// launches. Empty (the default) keeps it for this run only.
+void SetVirtualKeyboardStateFile(const std::filesystem::path& file);
+std::filesystem::path VirtualKeyboardStateFile();
+
+// The remembered spot is the panel pose relative to the head, turned to face
+// the way the head faces (yaw only), so it follows the player around.
+bool LoadVirtualKeyboardPlacement(const std::filesystem::path& file,
+                                  pose::Pose* relative);
+bool SaveVirtualKeyboardPlacement(const std::filesystem::path& file,
+                                  const pose::Pose& relative);
 
 // Installs the process-wide host. Passing nullptr clears it.
 void SetVirtualKeyboardHost(const VirtualKeyboardHost* host);
@@ -56,6 +70,9 @@ enum class VirtualKeyAction {
   kRight,
   kSelectAll,  // Ctrl+A
   kPaste,      // Ctrl+V
+  kEmoji,      // shows the emoji picker
+  kLetters,    // goes back to the letters
+  kEmojiGroup, // shows emoji group VirtualKey::group
 };
 
 struct VirtualKey {
@@ -63,6 +80,10 @@ struct VirtualKey {
   std::string text;        // committed text for kText
   std::string shift_text;  // committed under Shift (Caps Lock for letters)
   VirtualKeyAction action = VirtualKeyAction::kText;
+  // Long-press choices, the key's own text first (emoji skin tones).
+  std::vector<std::string> alternates;
+  int group = -1;      // for kEmojiGroup
+  bool emoji = false;  // label is an emoji, drawn in colour
   // Panel UV rectangle, origin top-left, both axes 0..1.
   float u0 = 0.f, v0 = 0.f, u1 = 0.f, v1 = 0.f;
 };
@@ -74,6 +95,7 @@ struct VirtualKeyboardPointer {
   pose::Pose aim{};
   float trigger = 0.f;      // 0..1
   float thumbstick_x = 0.f;  // -1..1; moves the caret while aimed at the panel
+  float thumbstick_y = 0.f;  // -1..1, up positive; scrolls the emoji grid
 };
 
 struct VirtualKeyPress {
@@ -137,6 +159,20 @@ class VirtualKeyboard {
   void Hide();
   bool visible() const { return visible_; }
   const pose::Pose& panel_pose() const { return panel_; }
+  // The emoji the picker offers; empty hides the emoji key.
+  void SetEmojiCatalog(EmojiCatalog catalog);
+  bool emoji_mode() const { return emoji_mode_; }
+  int emoji_group() const { return emoji_group_; }
+  // First grid row shown, and how many rows the current group has.
+  int emoji_scroll() const { return emoji_scroll_; }
+  int emoji_rows() const;
+
+  // Where Show puts the panel, relative to the head (see
+  // LoadVirtualKeyboardPlacement). Dragging the panel replaces it.
+  void SetPlacement(const pose::Pose& relative);
+  // True once after a drag moved the panel; `relative` is the new spot.
+  bool TakePlacementChanged(pose::Pose* relative);
+
   // Latest head pose; a dragged panel turns to face it.
   void SetHead(const pose::Pose& head) {
     head_ = head;
@@ -195,6 +231,12 @@ class VirtualKeyboard {
     std::uint64_t repeat_at_ns = 0;
     int stick_direction = 0;  // -1 left, 1 right, 0 centred
     std::uint64_t stick_repeat_at_ns = 0;
+    int scroll_direction = 0;  // emoji grid: -1 up, 1 down
+    std::uint64_t scroll_repeat_at_ns = 0;
+    // Dragging the emoji grid with the trigger scrolls it.
+    bool scrolling = false;
+    float scroll_anchor_v = 0.f;
+    int scroll_anchor = 0;
   };
 
   void RebuildLayout();
@@ -208,6 +250,8 @@ class VirtualKeyboard {
   void OpenAccents(int hand, int key);
   void CloseAccents();
   void Drag(Hand* hand, const VirtualKeyboardPointer& pointer);
+  void ScrollEmoji(int row);
+  void RememberPlacement();
   void Touch() { ++revision_; }
 
   bool visible_ = false;
@@ -223,6 +267,13 @@ class VirtualKeyboard {
   std::uint64_t cursor_drawn_ns_ = 0;
   std::vector<VirtualKey> keys_;
   VirtualKeyboardAccents accents_;
+  EmojiCatalog emoji_;
+  bool emoji_mode_ = false;
+  int emoji_group_ = 0;
+  int emoji_scroll_ = 0;
+  bool placement_valid_ = false;
+  bool placement_changed_ = false;
+  pose::Pose placement_{};
   std::uint64_t revision_ = 1;
 };
 

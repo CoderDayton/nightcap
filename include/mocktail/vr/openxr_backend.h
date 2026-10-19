@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <future>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -515,6 +516,9 @@ class OpenXrBackend final {
   bool keyboard_armed_ = true;
   pose::Pose keyboard_head_{};
   bool keyboard_head_valid_ = false;
+  // Read off the frame thread on first use: the payload's emoji fonts.
+  std::future<EmojiCatalog> keyboard_emoji_;
+  bool keyboard_setup_done_ = false;
   std::vector<std::uint8_t> keyboard_pixels_;
   VkBuffer keyboard_staging_ = VK_NULL_HANDLE;
   VkDeviceMemory keyboard_staging_memory_ = VK_NULL_HANDLE;

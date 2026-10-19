@@ -1,5 +1,7 @@
 #include "mocktail/vr/virtual_keyboard.h"
 
+#include "mocktail/vr/emoji_catalog.h"
+
 #include <SDL3/SDL_pixels.h>
 #include <SDL3/SDL_surface.h>
 #include <SDL3_ttf/SDL_ttf.h>
@@ -135,18 +137,24 @@ const char* IconName(VirtualKeyAction action) {
       return "key-space";
     case VirtualKeyAction::kClose:
       return "keyboard";
+    case VirtualKeyAction::kEmoji:
+      return "circle-face-emoji";
     case VirtualKeyAction::kText:
     case VirtualKeyAction::kSelectAll:
     case VirtualKeyAction::kPaste:
+    case VirtualKeyAction::kLetters:
+    case VirtualKeyAction::kEmojiGroup:
       break;
   }
   return nullptr;
 }
 
-struct AlphaMask {
+// Rendered text, RGBA. Plain glyphs are white and take the colour they are
+// drawn with; emoji keep their own colours.
+struct Glyphs {
   int width = 0;
   int height = 0;
-  std::vector<std::uint8_t> alpha;
+  std::vector<std::uint8_t> rgba;
 };
 
 // Field text as drawn: password input shows one dot per code point.
@@ -209,16 +217,21 @@ struct VirtualKeyboardRasterizer::Impl {
   TTF_Font* special_font = nullptr;
   TTF_Font* icon_font = nullptr;
   TTF_Font* preview_font = nullptr;
-  std::map<std::pair<std::string, int>, AlphaMask> masks;
+  // Roblox's colour emoji fonts, for the picker and the field's fallback.
+  std::vector<TTF_Font*> emoji_fonts;
+  std::vector<TTF_Font*> emoji_preview_fonts;
+  std::map<std::pair<std::string, int>, Glyphs> masks;
   // Last rendered field text; not cached by content, since it is sensitive.
-  AlphaMask field;
+  Glyphs field;
 
   ~Impl() {
-    Scrub(&field.alpha);
+    Scrub(&field.rgba);
     if (letter_font != nullptr) TTF_CloseFont(letter_font);
     if (special_font != nullptr) TTF_CloseFont(special_font);
     if (icon_font != nullptr) TTF_CloseFont(icon_font);
     if (preview_font != nullptr) TTF_CloseFont(preview_font);
+    for (TTF_Font* font : emoji_fonts) TTF_CloseFont(font);
+    for (TTF_Font* font : emoji_preview_fonts) TTF_CloseFont(font);
     if (ttf_initialized) TTF_Quit();
   }
 
@@ -246,11 +259,30 @@ struct VirtualKeyboardRasterizer::Impl {
     std::fprintf(stderr, "  [vr-keyboard] labels use %s\n", file.c_str());
     const std::string icons = ResolveIconFont();
     if (!icons.empty()) icon_font = TTF_OpenFont(icons.c_str(), kIconPoints);
+    // The largest colour font draws emoji; the rest back it up, and all of
+    // them back up the field's text so typed emoji show there too.
+    for (const std::filesystem::path& path : PayloadEmojiFonts()) {
+      TTF_Font* font = TTF_OpenFont(path.c_str(), kLetterPoints);
+      TTF_Font* preview = TTF_OpenFont(path.c_str(), kPreviewPoints);
+      if (font == nullptr || preview == nullptr) {
+        if (font != nullptr) TTF_CloseFont(font);
+        if (preview != nullptr) TTF_CloseFont(preview);
+        continue;
+      }
+      if (!emoji_fonts.empty()) {
+        TTF_AddFallbackFont(emoji_fonts.front(), font);
+        TTF_AddFallbackFont(emoji_preview_fonts.front(), preview);
+      }
+      TTF_AddFallbackFont(letter_font, font);
+      TTF_AddFallbackFont(preview_font, preview);
+      emoji_fonts.push_back(font);
+      emoji_preview_fonts.push_back(preview);
+    }
     return true;
   }
 
-  static AlphaMask Render(TTF_Font* font, const std::string& text) {
-    AlphaMask mask;
+  static Glyphs Render(TTF_Font* font, const std::string& text) {
+    Glyphs mask;
     SDL_Surface* rendered = TTF_RenderText_Blended(
         font, text.c_str(), text.size(), SDL_Color{255, 255, 255, 255});
     if (rendered != nullptr) {
@@ -258,14 +290,13 @@ struct VirtualKeyboardRasterizer::Impl {
       if (rgba != nullptr && SDL_LockSurface(rgba)) {
         mask.width = rgba->w;
         mask.height = rgba->h;
-        mask.alpha.resize(static_cast<std::size_t>(mask.width) * mask.height);
+        mask.rgba.resize(static_cast<std::size_t>(mask.width) * mask.height * 4);
         for (int y = 0; y < mask.height; ++y) {
           const auto* row = static_cast<const std::uint8_t*>(rgba->pixels) +
                             static_cast<std::size_t>(y) * rgba->pitch;
-          for (int x = 0; x < mask.width; ++x) {
-            mask.alpha[static_cast<std::size_t>(y) * mask.width + x] =
-                row[x * 4 + 3];
-          }
+          std::copy(row, row + static_cast<std::size_t>(mask.width) * 4,
+                    mask.rgba.begin() +
+                        static_cast<std::ptrdiff_t>(y) * mask.width * 4);
         }
         SDL_UnlockSurface(rgba);
       }
@@ -275,31 +306,47 @@ struct VirtualKeyboardRasterizer::Impl {
     return mask;
   }
 
-  enum Face { kLetter = 0, kSpecial = 1, kIcon = 2, kPreview = 3 };
+  enum Face {
+    kLetter = 0,
+    kSpecial = 1,
+    kIcon = 2,
+    kPreview = 3,
+    kEmoji = 4,
+    kEmojiPreview = 5
+  };
 
-  const AlphaMask* Mask(const std::string& label, Face face) {
+  const Glyphs* Mask(const std::string& label, Face face) {
     if (label.empty() || !EnsureFonts()) return nullptr;
-    TTF_Font* font = face == kIcon      ? icon_font
-                     : face == kSpecial ? special_font
-                     : face == kPreview ? preview_font
-                                        : letter_font;
+    TTF_Font* emoji = emoji_fonts.empty() ? letter_font : emoji_fonts.front();
+    TTF_Font* emoji_preview = emoji_preview_fonts.empty()
+                                  ? preview_font
+                                  : emoji_preview_fonts.front();
+    TTF_Font* font = face == kIcon           ? icon_font
+                     : face == kSpecial      ? special_font
+                     : face == kPreview      ? preview_font
+                     : face == kEmoji        ? emoji
+                     : face == kEmojiPreview ? emoji_preview
+                                             : letter_font;
     if (font == nullptr) return nullptr;
     const auto key = std::make_pair(label, static_cast<int>(face));
     auto found = masks.find(key);
     if (found != masks.end()) return &found->second;
-    AlphaMask mask = Render(font, label);
+    // Scrolling through every emoji would otherwise keep them all.
+    if (masks.size() > 1200) masks.clear();
+    Glyphs mask = Render(font, label);
     // Without ligature shaping the name draws as a row of blank letters,
     // much wider than one icon; fall back to the text label then.
-    if (face == kIcon && mask.width > mask.height * 2) mask = AlphaMask{};
+    if (face == kIcon && mask.width > mask.height * 2) mask = Glyphs{};
     return &masks.emplace(key, std::move(mask)).first->second;
   }
 
   // An icon for special keys when Roblox's icon font is there, else text.
-  const AlphaMask* KeyMask(const VirtualKey& key) {
+  const Glyphs* KeyMask(const VirtualKey& key) {
+    if (key.emoji) return Mask(key.label, kEmoji);
     if (key.action == VirtualKeyAction::kText) return Mask(key.label, kLetter);
     if (const char* icon = IconName(key.action); icon != nullptr) {
-      const AlphaMask* mask = Mask(icon, kIcon);
-      if (mask != nullptr && !mask->alpha.empty()) return mask;
+      const Glyphs* mask = Mask(icon, kIcon);
+      if (mask != nullptr && !mask->rgba.empty()) return mask;
     }
     return Mask(key.label, kSpecial);
   }
@@ -356,14 +403,18 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
         blend(x, y, color, Coverage(band));
       }
   };
-  auto blit = [&](const AlphaMask& mask, int origin_x, int origin_y, Rgb color,
+  auto blit = [&](const Glyphs& mask, int origin_x, int origin_y, Rgb color,
                   int clip_left, int clip_right) {
     for (int y = 0; y < mask.height; ++y)
       for (int x = 0; x < mask.width; ++x) {
         const int px = origin_x + x;
         if (px < clip_left || px >= clip_right) continue;
-        blend(px, origin_y + y, color,
-              mask.alpha[static_cast<std::size_t>(y) * mask.width + x]);
+        const std::uint8_t* p =
+            mask.rgba.data() + (static_cast<std::size_t>(y) * mask.width + x) * 4;
+        const Rgb tinted{static_cast<std::uint8_t>(color.r * p[0] / 255),
+                         static_cast<std::uint8_t>(color.g * p[1] / 255),
+                         static_cast<std::uint8_t>(color.b * p[2] / 255)};
+        blend(px, origin_y + y, tinted, p[3]);
       }
   };
 
@@ -385,8 +436,8 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
     const int clip_right = right - kFieldPadding;
     const int inner = clip_right - clip_left;
     const std::string shown = DisplayText(keyboard);
-    Scrub(&impl_->field.alpha);
-    impl_->field = AlphaMask{};
+    Scrub(&impl_->field.rgba);
+    impl_->field = Glyphs{};
     int caret_x = 0;
     int line_height = static_cast<int>(kLetterPoints * 1.2f);
     if (impl_->EnsureFonts()) {
@@ -431,9 +482,16 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
     const bool latched =
         (key.action == VirtualKeyAction::kShift && keyboard.shifted()) ||
         (key.action == VirtualKeyAction::kCapsLock && keyboard.caps_lock());
-    const bool emphasis = latched || key.action == VirtualKeyAction::kEnter;
+    const bool current_tab = key.action == VirtualKeyAction::kEmojiGroup &&
+                             key.group == keyboard.emoji_group();
+    const bool emphasis =
+        latched || current_tab || key.action == VirtualKeyAction::kEnter;
     const Rgb fill = emphasis ? kEmphasis : special ? kSpecialKey : kKey;
-    fill_rounded(left, top, right, bottom, kRadius, fill, 255);
+    // Emoji in the grid sit straight on the panel, like Roblox's pickers;
+    // they get a key behind them only while pointed at.
+    const bool grid_emoji = key.emoji && !special;
+    if (!grid_emoji || hovered || pressed)
+      fill_rounded(left, top, right, bottom, kRadius, fill, 255);
     if (pressed)
       fill_rounded(left, top, right, bottom, kRadius, kBlack, kPressOverlay);
     else if (hovered)
@@ -441,8 +499,8 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
     if (hovered || pressed)
       ring(left, top, right, bottom, kRadius, kRingGap, kRingWidth, kWhite);
 
-    const AlphaMask* mask = impl_->KeyMask(key);
-    if (!key.label.empty() && (mask == nullptr || mask->alpha.empty())) {
+    const Glyphs* mask = impl_->KeyMask(key);
+    if (!key.label.empty() && (mask == nullptr || mask->rgba.empty())) {
       labelled = false;
       continue;
     }
@@ -455,7 +513,7 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
          special && !emphasis ? kSpecialLabel : kLabel, 0, width);
   }
 
-  auto label_at = [&](const AlphaMask* mask, float left, float top,
+  auto label_at = [&](const Glyphs* mask, float left, float top,
                       float right, float bottom, Rgb color) {
     if (mask == nullptr) return;
     blit(*mask, static_cast<int>(std::lround((left + right - mask->width) / 2.f)),
@@ -467,10 +525,15 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
   // pointer is lit.
   const VirtualKeyboardAccents& accents = keyboard.accents();
   if (accents.hand >= 0 && !accents.cells.empty()) {
-    const VirtualKey& first = accents.cells.front();
-    const VirtualKey& last = accents.cells.back();
-    fill_rounded(first.u0 * width, first.v0 * height + kGap / 2.f,
-                 last.u1 * width, first.v1 * height, kRadius, kRaised, 255);
+    float box_left = 1.f, box_top = 1.f, box_right = 0.f, box_bottom = 0.f;
+    for (const VirtualKey& cell : accents.cells) {
+      box_left = std::min(box_left, cell.u0);
+      box_top = std::min(box_top, cell.v0);
+      box_right = std::max(box_right, cell.u1);
+      box_bottom = std::max(box_bottom, cell.v1);
+    }
+    fill_rounded(box_left * width, box_top * height + kGap / 2.f,
+                 box_right * width, box_bottom * height, kRadius, kRaised, 255);
     for (std::size_t cell = 0; cell < accents.cells.size(); ++cell) {
       const VirtualKey& key = accents.cells[cell];
       const float left = key.u0 * width + kGap / 2.f;
@@ -479,8 +542,8 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
       const float bottom = key.v1 * height - kGap / 2.f;
       if (static_cast<int>(cell) == accents.selected)
         fill_rounded(left, top, right, bottom, kRadius, kEmphasis, 255);
-      label_at(impl_->Mask(key.label, Impl::kLetter), left, top, right, bottom,
-               kLabel);
+      label_at(impl_->Mask(key.label, key.emoji ? Impl::kEmoji : Impl::kLetter),
+               left, top, right, bottom, kLabel);
     }
   }
 
@@ -500,8 +563,28 @@ bool VirtualKeyboardRasterizer::Draw(const VirtualKeyboard& keyboard,
     const float bottom = key.v0 * height + kGap / 2.f + key_height * 0.25f;
     const float top = std::max(0.f, bottom - bubble_height);
     fill_rounded(left, top, left + bubble_width, bottom, kRadius, kRaised, 255);
-    label_at(impl_->Mask(key.label, Impl::kPreview), left, top,
-             left + bubble_width, bottom, kLabel);
+    label_at(impl_->Mask(key.label,
+                         key.emoji ? Impl::kEmojiPreview : Impl::kPreview),
+             left, top, left + bubble_width, bottom, kLabel);
+  }
+
+  // Emoji grid scrollbar, along the right edge of the grid rows.
+  if (keyboard.emoji_mode()) {
+    const int visible = VirtualKeyboard::kRows - 1;
+    const int rows = keyboard.emoji_rows();
+    if (rows > visible) {
+      const float track_top =
+          VirtualKeyboard::kFieldFraction * height + kGap / 2.f;
+      const float row_height =
+          (VirtualKeyboard::kBodyFraction - VirtualKeyboard::kFieldFraction) *
+          height / VirtualKeyboard::kRows;
+      const float track = row_height * visible - kGap;
+      const float thumb = std::max(24.f, track * visible / rows);
+      const float offset = (track - thumb) * keyboard.emoji_scroll() /
+                           static_cast<float>(rows - visible);
+      fill_rounded(width - 9.f, track_top + offset, width - 3.f,
+                   track_top + offset + thumb, 3.f, kHandle, kHandleAlpha);
+    }
   }
 
   // Drag bar under the panel; it brightens while hovered or dragging.

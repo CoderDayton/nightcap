@@ -3,7 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <fstream>
 #include <mutex>
+#include <system_error>
+
+#include <nlohmann/json.hpp>
 
 namespace mocktail::vr {
 namespace {
@@ -40,6 +44,12 @@ constexpr float kStickPress = 0.6f;
 constexpr float kStickRelease = 0.3f;
 constexpr std::uint64_t kStickRepeatDelayNs = 400'000'000ULL;
 constexpr std::uint64_t kStickRepeatIntervalNs = 80'000'000ULL;
+// The emoji grid scrolls a row per push, repeating a little slower.
+constexpr std::uint64_t kScrollRepeatIntervalNs = 150'000'000ULL;
+// Dragging the grid this far (in rows) turns a press into a scroll.
+constexpr float kScrollStartRows = 0.4f;
+// A remembered spot farther than this from the head is ignored.
+constexpr float kMaxPlacementMetres = 3.f;
 // Cursor moves smaller than this (in UV) do not force a redraw.
 constexpr float kCursorRedrawStep = 0.004f;
 // A moving cursor redraws the panel at most this often; each redraw is a
@@ -54,6 +64,8 @@ std::mutex g_host_mutex;
 VirtualKeyboardHost g_host;
 std::mutex g_text_mutex;
 VirtualKeyboardText g_text;
+std::mutex g_state_file_mutex;
+std::filesystem::path g_state_file;
 
 void ScrubText(std::string* text) {
   std::fill(text->begin(), text->end(), '\0');
@@ -79,8 +91,15 @@ KeySpec Special(const char* label, VirtualKeyAction action, float width) {
 
 // US QWERTY without the function row or Ctrl/Alt/Menu, in normal-key units.
 // Widths follow the desktop shell OSK (Tab 1.6, Shift 2.5, wide keys fill).
-// The bottom row adds caret editing around a shorter Space.
-std::vector<std::vector<KeySpec>> Rows() {
+// The bottom row adds caret editing and the emoji key around a shorter
+// Space.
+std::vector<std::vector<KeySpec>> Rows(bool with_emoji) {
+  std::vector<KeySpec> bottom = {
+      Special("Select all", A::kSelectAll, 2.f), Special("Left", A::kLeft, 1.f),
+      Special("Space", A::kSpace, with_emoji ? 6.5f : 7.5f),
+      Special("Right", A::kRight, 1.f), Special("Paste", A::kPaste, 2.f)};
+  if (with_emoji) bottom.push_back(Special("Emoji", A::kEmoji, 1.f));
+  bottom.push_back(Special("Close", A::kClose, 1.5f));
   return {
       {Char("`", "~"), Char("1", "!"), Char("2", "@"), Char("3", "#"),
        Char("4", "$"), Char("5", "%"), Char("6", "^"), Char("7", "&"),
@@ -98,9 +117,7 @@ std::vector<std::vector<KeySpec>> Rows() {
        Char("c", "C"), Char("v", "V"), Char("b", "B"), Char("n", "N"),
        Char("m", "M"), Char(",", "<"), Char(".", ">"), Char("/", "?"),
        Special("Shift", A::kShift, 2.5f)},
-      {Special("Select all", A::kSelectAll, 2.f), Special("Left", A::kLeft, 1.f),
-       Special("Space", A::kSpace, 7.5f), Special("Right", A::kRight, 1.f),
-       Special("Paste", A::kPaste, 2.f), Special("Close", A::kClose, 1.5f)},
+      bottom,
   };
 }
 
@@ -165,9 +182,32 @@ bool IsLetter(const std::string& text) {
 // Long-press alternates for a key that types `output` now. Letters keep
 // their key's accents in both cases; other keys follow what they type, so
 // Shift+4 offers the currency signs.
-const AccentSpec* AccentsFor(const VirtualKey& key, const std::string& output) {
-  if (key.action != A::kText) return nullptr;
-  return FindAccents(IsLetter(key.text) ? key.text : output);
+// The key's own alternates (emoji skin tones) come first.
+std::vector<std::string> AccentsFor(const VirtualKey& key,
+                                    const std::string& output, bool upper) {
+  if (key.action != A::kText) return {};
+  if (!key.alternates.empty()) return key.alternates;
+  const AccentSpec* spec = FindAccents(IsLetter(key.text) ? key.text : output);
+  if (spec == nullptr) return {};
+  const std::vector<const char*>& texts = upper ? spec->upper : spec->lower;
+  return std::vector<std::string>(texts.begin(), texts.end());
+}
+
+Quat YawOf(const Pose& head) {
+  Vec3 forward = QuatRotate(head.orientation, Vec3{0.f, 0.f, -1.f});
+  if (std::abs(forward.x) + std::abs(forward.z) < 1e-3f) return Quat{};
+  return QuatFromAxisAngle(Vec3{0.f, 1.f, 0.f},
+                           std::atan2(-forward.x, -forward.z));
+}
+
+bool Finite(const Pose& pose) {
+  const float values[] = {pose.position.x,    pose.position.y,
+                          pose.position.z,    pose.orientation.x,
+                          pose.orientation.y, pose.orientation.z,
+                          pose.orientation.w};
+  for (const float value : values)
+    if (!std::isfinite(value)) return false;
+  return true;
 }
 
 bool Repeats(VirtualKeyAction action) {
@@ -182,6 +222,80 @@ Vec3 Sub(const Vec3& a, const Vec3& b) {
 }
 
 }  // namespace
+
+void SetVirtualKeyboardStateFile(const std::filesystem::path& file) {
+  std::lock_guard<std::mutex> lock(g_state_file_mutex);
+  g_state_file = file;
+}
+
+std::filesystem::path VirtualKeyboardStateFile() {
+  std::lock_guard<std::mutex> lock(g_state_file_mutex);
+  return g_state_file;
+}
+
+bool LoadVirtualKeyboardPlacement(const std::filesystem::path& file,
+                                  Pose* relative) {
+  std::ifstream input(file, std::ios::binary);
+  if (!input) return false;
+  const nlohmann::json state = nlohmann::json::parse(input, nullptr, false);
+  if (!state.is_object() || state.value("version", 0) != 1) return false;
+  const auto position = state.find("position");
+  const auto orientation = state.find("orientation");
+  if (position == state.end() || orientation == state.end() ||
+      !position->is_array() || position->size() != 3 ||
+      !orientation->is_array() || orientation->size() != 4)
+    return false;
+  for (const auto& value : *position)
+    if (!value.is_number()) return false;
+  for (const auto& value : *orientation)
+    if (!value.is_number()) return false;
+  Pose pose;
+  pose.position = Vec3{(*position)[0].get<float>(), (*position)[1].get<float>(),
+                       (*position)[2].get<float>()};
+  pose.orientation =
+      Quat{(*orientation)[0].get<float>(), (*orientation)[1].get<float>(),
+           (*orientation)[2].get<float>(), (*orientation)[3].get<float>()};
+  const float length =
+      std::sqrt(Dot(pose.position, pose.position));
+  const Quat& q = pose.orientation;
+  const float norm = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (!Finite(pose) || length > kMaxPlacementMetres || norm < 0.5f)
+    return false;
+  pose.orientation = Quat{q.x / norm, q.y / norm, q.z / norm, q.w / norm};
+  *relative = pose;
+  return true;
+}
+
+bool SaveVirtualKeyboardPlacement(const std::filesystem::path& file,
+                                  const Pose& relative) {
+  if (file.empty() || !Finite(relative)) return false;
+  const nlohmann::json state = {
+      {"version", 1},
+      {"position",
+       {relative.position.x, relative.position.y, relative.position.z}},
+      {"orientation",
+       {relative.orientation.x, relative.orientation.y, relative.orientation.z,
+        relative.orientation.w}},
+  };
+  std::error_code error;
+  std::filesystem::create_directories(file.parent_path(), error);
+  // Written beside the file and renamed over it, so a crash never leaves a
+  // half-written spot behind.
+  std::filesystem::path temporary = file;
+  temporary += ".tmp";
+  {
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) return false;
+    output << state.dump() << '\n';
+    if (!output.flush()) return false;
+  }
+  std::filesystem::rename(temporary, file, error);
+  if (error) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+  return true;
+}
 
 void SetVirtualKeyboardHost(const VirtualKeyboardHost* host) {
   std::lock_guard<std::mutex> lock(g_host_mutex);
@@ -244,9 +358,64 @@ bool IntersectVirtualKeyboardPanel(const Pose& quad, float width, float height,
 VirtualKeyboard::VirtualKeyboard() { RebuildLayout(); }
 
 void VirtualKeyboard::RebuildLayout() {
-  const auto rows = Rows();
   keys_.clear();
   const float row_height = (kBodyFraction - kFieldFraction) / kRows;
+  auto place = [&](VirtualKey* key, float column, float width, int row) {
+    key->u0 = column / kColumns;
+    key->u1 = std::min(1.f, (column + width) / kColumns);
+    key->v0 = kFieldFraction + row_height * static_cast<float>(row);
+    key->v1 = kFieldFraction + row_height * static_cast<float>(row + 1);
+  };
+  if (emoji_mode_ && !emoji_.empty()) {
+    // The group's emoji fill the top rows, scrolled; the bottom row has the
+    // way back, a tab per group, Space and Backspace.
+    emoji_group_ = std::clamp(emoji_group_, 0,
+                              static_cast<int>(emoji_.groups.size()) - 1);
+    emoji_scroll_ = std::clamp(emoji_scroll_, 0,
+                               std::max(0, emoji_rows() - (kRows - 1)));
+    const std::vector<Emoji>& group = emoji_.groups[emoji_group_].emoji;
+    for (int row = 0; row < kRows - 1; ++row) {
+      for (int column = 0; column < kColumns; ++column) {
+        const std::size_t index =
+            static_cast<std::size_t>(emoji_scroll_ + row) * kColumns + column;
+        if (index >= group.size()) break;
+        VirtualKey key;
+        key.label = key.text = key.shift_text = group[index].utf8;
+        key.alternates = group[index].variants;
+        key.emoji = true;
+        place(&key, static_cast<float>(column), 1.f, row);
+        keys_.push_back(std::move(key));
+      }
+    }
+    float column = 0.f;
+    auto add = [&](VirtualKey key, float width) {
+      place(&key, column, width, kRows - 1);
+      keys_.push_back(std::move(key));
+      column += width;
+    };
+    VirtualKey letters;
+    letters.label = "ABC";
+    letters.action = A::kLetters;
+    add(letters, 1.5f);
+    const int groups = static_cast<int>(emoji_.groups.size());
+    for (int index = 0; index < groups; ++index) {
+      VirtualKey tab;
+      tab.label = emoji_.groups[index].emoji.front().utf8;
+      tab.action = A::kEmojiGroup;
+      tab.group = index;
+      tab.emoji = true;
+      add(tab, 1.f);
+    }
+    VirtualKey space;
+    space.label = "Space";
+    space.action = A::kSpace;
+    add(space, std::max(1.f, kColumns - 3.f - static_cast<float>(groups)));
+    VirtualKey backspace;
+    backspace.label = "Backspace";
+    backspace.action = A::kBackspace;
+    add(backspace, 1.5f);
+  } else {
+  const auto rows = Rows(!emoji_.empty());
   for (int row = 0; row < kRows && row < static_cast<int>(rows.size()); ++row) {
     float column = 0.f;
     for (const KeySpec& spec : rows[row]) {
@@ -255,13 +424,11 @@ void VirtualKeyboard::RebuildLayout() {
       key.text = spec.text;
       key.shift_text = spec.shift_text;
       key.label = spec.action == A::kText ? Output(key) : spec.label;
-      key.u0 = column / kColumns;
-      key.u1 = std::min(1.f, (column + spec.width) / kColumns);
-      key.v0 = kFieldFraction + row_height * static_cast<float>(row);
-      key.v1 = kFieldFraction + row_height * static_cast<float>(row + 1);
+      place(&key, column, spec.width, row);
       keys_.push_back(std::move(key));
       column += spec.width;
     }
+  }
   }
   for (Hand& hand : hands_) {
     hand.hovered = -1;
@@ -293,17 +460,71 @@ void VirtualKeyboard::Show(const Pose& head) {
     forward.z /= length;
   }
   const float yaw = std::atan2(-forward.x, -forward.z);
-  panel_.orientation =
-      QuatMultiply(QuatFromAxisAngle(Vec3{0.f, 1.f, 0.f}, yaw),
-                   QuatFromAxisAngle(Vec3{1.f, 0.f, 0.f}, -kPanelTiltRadians));
-  panel_.position =
-      Vec3{head.position.x + forward.x * kPanelDistanceMetres,
-           head.position.y - kPanelDropMetres,
-           head.position.z + forward.z * kPanelDistanceMetres};
+  const Quat facing = QuatFromAxisAngle(Vec3{0.f, 1.f, 0.f}, yaw);
+  if (placement_valid_) {
+    // The spot it was last dragged to, turned with the head.
+    const Vec3 offset = QuatRotate(facing, placement_.position);
+    panel_.position = Vec3{head.position.x + offset.x,
+                           head.position.y + offset.y,
+                           head.position.z + offset.z};
+    panel_.orientation = QuatMultiply(facing, placement_.orientation);
+  } else {
+    panel_.orientation = QuatMultiply(
+        facing, QuatFromAxisAngle(Vec3{1.f, 0.f, 0.f}, -kPanelTiltRadians));
+    panel_.position =
+        Vec3{head.position.x + forward.x * kPanelDistanceMetres,
+             head.position.y - kPanelDropMetres,
+             head.position.z + forward.z * kPanelDistanceMetres};
+  }
   visible_ = true;
   shift_ = false;
+  emoji_mode_ = false;
   for (Hand& hand : hands_) hand = Hand{};
   RebuildLayout();
+}
+
+void VirtualKeyboard::SetEmojiCatalog(EmojiCatalog catalog) {
+  emoji_ = std::move(catalog);
+  if (emoji_.empty()) emoji_mode_ = false;
+  emoji_group_ = 0;
+  emoji_scroll_ = 0;
+  RebuildLayout();
+}
+
+int VirtualKeyboard::emoji_rows() const {
+  if (emoji_.empty()) return 0;
+  const std::size_t count = emoji_.groups[emoji_group_].emoji.size();
+  return static_cast<int>((count + kColumns - 1) / kColumns);
+}
+
+void VirtualKeyboard::ScrollEmoji(int row) {
+  const int clamped = std::clamp(row, 0, std::max(0, emoji_rows() - (kRows - 1)));
+  if (clamped == emoji_scroll_) return;
+  emoji_scroll_ = clamped;
+  RebuildLayout();
+}
+
+void VirtualKeyboard::SetPlacement(const Pose& relative) {
+  placement_ = relative;
+  placement_valid_ = true;
+}
+
+bool VirtualKeyboard::TakePlacementChanged(Pose* relative) {
+  if (!placement_changed_) return false;
+  placement_changed_ = false;
+  *relative = placement_;
+  return true;
+}
+
+void VirtualKeyboard::RememberPlacement() {
+  if (!head_valid_) return;
+  const Quat facing = YawOf(head_);
+  const Quat inverse = QuatConjugate(facing);
+  placement_.position =
+      QuatRotate(inverse, Sub(panel_.position, head_.position));
+  placement_.orientation = QuatMultiply(inverse, panel_.orientation);
+  placement_valid_ = true;
+  placement_changed_ = true;
 }
 
 void VirtualKeyboard::SetText(const VirtualKeyboardText& text) {
@@ -419,6 +640,20 @@ void VirtualKeyboard::Activate(const VirtualKey& key,
       caps_lock_ = !caps_lock_;
       RebuildLayout();
       return;
+    case A::kEmoji:
+      emoji_mode_ = !emoji_.empty();
+      shift_ = false;
+      RebuildLayout();
+      return;
+    case A::kLetters:
+      emoji_mode_ = false;
+      RebuildLayout();
+      return;
+    case A::kEmojiGroup:
+      emoji_group_ = key.group;
+      emoji_scroll_ = 0;
+      RebuildLayout();
+      return;
     case A::kClose:
       output->keys.push_back({kScancodeEscape, false});
       Hide();
@@ -428,27 +663,32 @@ void VirtualKeyboard::Activate(const VirtualKey& key,
 
 void VirtualKeyboard::OpenAccents(int hand, int key) {
   const VirtualKey& held = keys_[key];
-  const AccentSpec* spec = AccentsFor(held, Output(held));
-  if (spec == nullptr) return;
   const bool upper = IsLetter(held.text) ? shift_ != caps_lock_ : shift_;
-  const std::vector<const char*>& texts = upper ? spec->upper : spec->lower;
+  const std::vector<std::string> texts = AccentsFor(held, Output(held), upper);
+  if (texts.empty()) return;
+  // Up to a full row wide; more choices (two-person skin tones) wrap onto
+  // further rows. Above the key when they fit, else below it.
+  const int count = static_cast<int>(texts.size());
+  const int columns = std::min(count, kColumns);
+  const int rows = (count + columns - 1) / columns;
   const float width = 1.f / kColumns;
   const float height = (kBodyFraction - kFieldFraction) / kRows;
-  const float count = static_cast<float>(texts.size());
-  const float left = std::max(0.f, std::min(held.u0, 1.f - count * width));
-  const float bottom = held.v0;
-  const float top = std::max(0.f, bottom - height);
+  const float left = std::clamp(held.u0, 0.f, 1.f - columns * width);
+  float top = held.v0 - rows * height;
+  if (top < 0.f) top = held.v1;
+  if (top + rows * height > 1.f) top = std::max(0.f, 1.f - rows * height);
   accents_ = VirtualKeyboardAccents{};
   accents_.hand = hand;
   accents_.key = key;
   accents_.selected = 0;
-  for (std::size_t i = 0; i < texts.size(); ++i) {
+  for (int i = 0; i < count; ++i) {
     VirtualKey cell;
     cell.label = cell.text = cell.shift_text = texts[i];
-    cell.u0 = left + width * static_cast<float>(i);
+    cell.emoji = held.emoji;
+    cell.u0 = left + width * static_cast<float>(i % columns);
     cell.u1 = cell.u0 + width;
-    cell.v0 = top;
-    cell.v1 = bottom;
+    cell.v0 = top + height * static_cast<float>(i / columns);
+    cell.v1 = cell.v0 + height;
     accents_.cells.push_back(std::move(cell));
   }
   Touch();
@@ -520,6 +760,7 @@ VirtualKeyboardOutput VirtualKeyboard::Update(
       }
       hand.dragging = false;
       hand.captured = false;
+      RememberPlacement();
       Touch();
     }
 
@@ -584,11 +825,30 @@ VirtualKeyboardOutput VirtualKeyboard::Update(
         // sliding off cancels. Activate may rebuild the layout and clear
         // pressed/hovered.
         const VirtualKey key = keys_[hovered];
+        // A press on the emoji grid may turn into dragging it.
+        hand.scroll_anchor_v = v;
+        hand.scroll_anchor = emoji_scroll_;
         if (key.action != A::kText) Activate(key, &output);
       }
     } else if (hand.trigger_down) {
+      const float row_height = (kBodyFraction - kFieldFraction) / kRows;
+      const bool grid_press = emoji_mode_ && hand.pressed >= 0 &&
+                              keys_[hand.pressed].emoji &&
+                              keys_[hand.pressed].action == A::kText;
       if (accents_.hand == index) {
         // The accent row owns this press until it is released.
+      } else if (hit && (hand.scrolling ||
+                         (grid_press && std::abs(v - hand.scroll_anchor_v) >
+                                            kScrollStartRows * row_height))) {
+        // Dragging the grid scrolls it, like a phone; nothing is typed.
+        if (!hand.scrolling) {
+          hand.scrolling = true;
+          hand.pressed = -1;
+          Touch();
+        }
+        ScrollEmoji(hand.scroll_anchor + static_cast<int>(std::lround(
+                                             (hand.scroll_anchor_v - v) /
+                                             row_height)));
       } else if (hand.pressed >= 0 && hand.pressed != hovered) {
         hand.pressed = -1;
         Touch();
@@ -601,13 +861,14 @@ VirtualKeyboardOutput VirtualKeyboard::Update(
         } else if (key.action == A::kText &&
                    now_ns - hand.pressed_at_ns >= kLongPressNs &&
                    accents_.hand < 0 &&
-                   AccentsFor(key, Output(key)) != nullptr) {
+                   !AccentsFor(key, Output(key), false).empty()) {
           OpenAccents(index, hand.pressed);
           output.haptic[index] = true;
         }
       }
     } else if (was_down) {
       hand.captured = false;
+      hand.scrolling = false;
       if (accents_.hand == index) {
         const int selected = accents_.selected;
         const std::string text =
@@ -643,6 +904,24 @@ VirtualKeyboardOutput VirtualKeyboard::Update(
                                                       : kStickRepeatIntervalNs);
     }
     hand.stick_direction = direction;
+
+    // Up and down on the stick scroll the emoji grid a row at a time.
+    int scroll = 0;
+    if (emoji_mode_ && hand.over_panel && !hand.dragging) {
+      const float y = pointer.thumbstick_y;
+      scroll = y >= kStickPress    ? -1
+               : y <= -kStickPress ? 1
+               : std::abs(y) < kStickRelease ? 0
+                                             : hand.scroll_direction;
+    }
+    if (scroll != 0 && (scroll != hand.scroll_direction ||
+                        now_ns >= hand.scroll_repeat_at_ns)) {
+      hand.scroll_repeat_at_ns =
+          now_ns + (scroll != hand.scroll_direction ? kStickRepeatDelayNs
+                                                    : kScrollRepeatIntervalNs);
+      ScrollEmoji(emoji_scroll_ + scroll);
+    }
+    hand.scroll_direction = scroll;
   }
   return output;
 }

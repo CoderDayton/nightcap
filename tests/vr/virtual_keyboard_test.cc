@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cctype>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -655,6 +658,214 @@ TEST(VirtualKeyboardTest, TextFieldSitsAboveTheKeysAndTypesNothing) {
   const auto out = d.Frame(field, 1.f);
   EXPECT_TRUE(out.text.empty());
   EXPECT_TRUE(out.keys.empty());
+}
+
+// A catalog with 80 faces (six grid rows, four fit) and two flags.
+EmojiCatalog TestCatalog() {
+  std::vector<std::u32string> sequences;
+  for (char32_t c = 0x1F600; c < 0x1F600 + 80; ++c)
+    sequences.push_back(std::u32string(1, c));
+  sequences.push_back(U"\U0001F600\U0001F3FB");  // not real; a toned face
+  sequences.push_back(U"\U0001F1FA\U0001F1F8");
+  sequences.push_back(U"\U0001F1EC\U0001F1E7");
+  return BuildEmojiCatalog(std::move(sequences));
+}
+
+TEST(VirtualKeyboardTest, EmojiKeyOnlyWithACatalog) {
+  VirtualKeyboard keyboard;
+  EXPECT_EQ(FindKey(keyboard, "Emoji"), -1);
+  keyboard.SetEmojiCatalog(TestCatalog());
+  EXPECT_GE(FindKey(keyboard, "Emoji"), 0);
+  // The bottom row still spans the panel.
+  float right = 0.f;
+  for (const VirtualKey& key : keyboard.keys()) right = std::max(right, key.u1);
+  EXPECT_NEAR(right, 1.f, 1e-5f);
+}
+
+TEST(VirtualKeyboardTest, EmojiPickerTypesTabsAndGoesBack) {
+  Driver d;
+  d.keyboard.SetEmojiCatalog(TestCatalog());
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Tap("Emoji");
+  ASSERT_TRUE(d.keyboard.emoji_mode());
+  EXPECT_EQ(d.keyboard.emoji_group(), 0);
+  EXPECT_EQ(d.keyboard.emoji_rows(), 6);  // 80 faces, 15 per row
+  EXPECT_EQ(FindKey(d.keyboard, "q"), -1);
+  const int face = FindKey(d.keyboard, "\U0001F601");
+  ASSERT_GE(face, 0);
+  EXPECT_TRUE(d.keyboard.keys()[face].emoji);
+  EXPECT_EQ(d.Type("\U0001F601"), std::vector<std::string>{"\U0001F601"});
+  EXPECT_EQ(Scancodes(d.Tap("Backspace")),
+            std::vector<std::uint32_t>{kBackspace});
+  EXPECT_EQ(d.Type("Space"), std::vector<std::string>{" "});
+  // The flag tab is labelled with its first emoji.
+  d.Tap("\U0001F1EC\U0001F1E7");
+  EXPECT_EQ(d.keyboard.emoji_group(), 1);
+  EXPECT_GE(FindKey(d.keyboard, "\U0001F1FA\U0001F1F8"), 0);
+  d.Tap("ABC");
+  EXPECT_FALSE(d.keyboard.emoji_mode());
+  EXPECT_GE(FindKey(d.keyboard, "q"), 0);
+  // Reopening starts on the letters.
+  d.Tap("Emoji");
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  EXPECT_FALSE(d.keyboard.emoji_mode());
+}
+
+TEST(VirtualKeyboardTest, EmojiGridScrollsByStickAndByDragging) {
+  Driver d;
+  d.keyboard.SetEmojiCatalog(TestCatalog());
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Tap("Emoji");
+  ASSERT_EQ(d.keyboard.emoji_scroll(), 0);
+  auto stick = [&](const Pose& aim, float y, std::uint64_t step = 11 * kMs) {
+    d.now += step;
+    VirtualKeyboardPointer pointers[2];
+    pointers[1].valid = true;
+    pointers[1].aim = aim;
+    pointers[1].thumbstick_y = y;
+    return d.keyboard.Update(d.now, pointers);
+  };
+  const Pose grid = AimAt(d.keyboard, 0.5f, VirtualKeyboard::kFieldFraction + 0.1f);
+  stick(grid, -0.9f);  // down
+  EXPECT_EQ(d.keyboard.emoji_scroll(), 1);
+  stick(grid, -0.9f, 500 * kMs);  // held: repeats
+  EXPECT_EQ(d.keyboard.emoji_scroll(), 2);
+  stick(grid, -0.9f, 500 * kMs);  // six rows, four shown: stops at 2
+  EXPECT_EQ(d.keyboard.emoji_scroll(), 2);
+  stick(grid, 0.f);
+  stick(grid, 0.9f);  // up
+  EXPECT_EQ(d.keyboard.emoji_scroll(), 1);
+  stick(grid, 0.f);
+  stick(grid, 0.9f);
+  EXPECT_EQ(d.keyboard.emoji_scroll(), 0);
+  EXPECT_TRUE(d.keyboard.CapturesThumbstick(1));
+
+  // Pressing an emoji and dragging up a row scrolls instead of typing.
+  const float row = (VirtualKeyboard::kBodyFraction -
+                     VirtualKeyboard::kFieldFraction) / VirtualKeyboard::kRows;
+  const float v = VirtualKeyboard::kFieldFraction + row * 1.5f;
+  d.Frame(AimAt(d.keyboard, 0.3f, v), 1.f);
+  d.Frame(AimAt(d.keyboard, 0.3f, v - row), 1.f);
+  EXPECT_EQ(d.keyboard.emoji_scroll(), 1);
+  EXPECT_EQ(d.keyboard.pressed_key(1), -1);
+  EXPECT_TRUE(d.Frame(AimAt(d.keyboard, 0.3f, v - row), 0.f).text.empty());
+}
+
+TEST(VirtualKeyboardTest, LongPressOnAnEmojiOffersItsSkinTones) {
+  Driver d;
+  d.keyboard.SetEmojiCatalog(TestCatalog());
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Tap("Emoji");
+  const Pose face = AimAtKey(d.keyboard, "\U0001F600");
+  d.Frame(face, 1.f);
+  d.Frame(face, 1.f, 1, 500 * kMs);
+  ASSERT_EQ(d.keyboard.accents().hand, 1);
+  ASSERT_EQ(d.keyboard.accents().cells.size(), 2u);
+  EXPECT_TRUE(d.keyboard.accents().cells[1].emoji);
+  // Above the held emoji, over the text field.
+  const VirtualKey& key = d.keyboard.keys()[FindKey(d.keyboard, "\U0001F600")];
+  EXPECT_LE(d.keyboard.accents().cells[0].v1, key.v0 + 1e-6f);
+  const VirtualKey cell = d.keyboard.accents().cells[1];
+  const Pose on = AimAt(d.keyboard, (cell.u0 + cell.u1) / 2,
+                        (cell.v0 + cell.v1) / 2);
+  d.Frame(on, 1.f);
+  EXPECT_EQ(d.Frame(on, 0.f).text,
+            std::vector<std::string>{"\U0001F600\U0001F3FB"});
+}
+
+TEST(VirtualKeyboardTest, ManyChoicesWrapOntoMoreRows) {
+  std::vector<std::u32string> sequences = {U"\U0001F9D1"};
+  for (char32_t a = 0x1F3FB; a <= 0x1F3FF; ++a)
+    for (char32_t b = 0x1F3FB; b <= 0x1F3FF; ++b)
+      sequences.push_back(std::u32string{0x1F9D1, a, 0x200D, 0x1F91D, 0x200D,
+                                         0x1F9D1, b});
+  sequences.push_back(U"\U0001F9D1‍\U0001F91D‍\U0001F9D1");
+  Driver d;
+  d.keyboard.SetEmojiCatalog(BuildEmojiCatalog(sequences));
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.Tap("Emoji");
+  const std::string pair = "\U0001F9D1‍\U0001F91D‍\U0001F9D1";
+  const Pose held = AimAtKey(d.keyboard, pair);
+  d.Frame(held, 1.f);
+  d.Frame(held, 1.f, 1, 500 * kMs);
+  const auto& cells = d.keyboard.accents().cells;
+  ASSERT_EQ(cells.size(), 26u);
+  int rows = 0;
+  for (const VirtualKey& cell : cells) {
+    EXPECT_GE(cell.u0, -1e-6f);
+    EXPECT_LE(cell.u1, 1.f + 1e-6f);
+    if (cell.u0 == cells.front().u0) ++rows;
+  }
+  EXPECT_EQ(rows, 2);
+}
+
+TEST(VirtualKeyboardTest, DraggedSpotIsRememberedRelativeToTheHead) {
+  Driver d;
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  d.keyboard.SetHead(HeadAt(0.f, 1.6f, 0.f));
+  pose::Pose spot;
+  EXPECT_FALSE(d.keyboard.TakePlacementChanged(&spot));
+  const Pose handle = AimAt(d.keyboard, 0.5f, 0.95f);
+  d.Frame(handle, 1.f);
+  Pose moved = handle;
+  moved.position.x += 0.2f;
+  d.Frame(moved, 1.f);
+  d.Frame(moved, 0.f);
+  ASSERT_TRUE(d.keyboard.TakePlacementChanged(&spot));
+  EXPECT_FALSE(d.keyboard.TakePlacementChanged(&spot));  // once
+  const Pose dragged = d.keyboard.panel_pose();
+
+  // Reopened from the same head: the same spot.
+  d.keyboard.Hide();
+  d.keyboard.Show(HeadAt(0.f, 1.6f, 0.f));
+  EXPECT_NEAR(d.keyboard.panel_pose().position.x, dragged.position.x, 1e-4f);
+  EXPECT_NEAR(d.keyboard.panel_pose().position.y, dragged.position.y, 1e-4f);
+  EXPECT_NEAR(d.keyboard.panel_pose().position.z, dragged.position.z, 1e-4f);
+
+  // Turned 90 degrees and moved: the spot turns and moves with the head.
+  d.keyboard.Hide();
+  d.keyboard.Show(HeadAt(1.f, 1.6f, 2.f, -pose::kPi / 2));
+  const Pose& turned = d.keyboard.panel_pose();
+  // Facing +X now: what was ahead (-Z) is +X, what was right (+X) is +Z.
+  EXPECT_NEAR(turned.position.x, 1.f - dragged.position.z, 1e-4f);
+  EXPECT_NEAR(turned.position.z, 2.f + dragged.position.x, 1e-4f);
+  EXPECT_NEAR(turned.position.y, dragged.position.y, 1e-4f);
+
+  // A fresh keyboard given the spot opens there too.
+  VirtualKeyboard other;
+  other.SetPlacement(spot);
+  other.Show(HeadAt(0.f, 1.6f, 0.f));
+  EXPECT_NEAR(other.panel_pose().position.x, dragged.position.x, 1e-4f);
+}
+
+TEST(VirtualKeyboardTest, PlacementFileRoundTripsAndRejectsJunk) {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() /
+      ("vr_keyboard_test_" + std::to_string(::getpid()));
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path file = dir / "nested" / "vr_keyboard.json";
+  pose::Pose spot;
+  spot.position = Vec3{0.1f, -0.3f, -0.5f};
+  spot.orientation = QuatFromAxisAngle(Vec3{1.f, 0.f, 0.f}, -0.5f);
+  ASSERT_TRUE(SaveVirtualKeyboardPlacement(file, spot));
+  pose::Pose loaded;
+  ASSERT_TRUE(LoadVirtualKeyboardPlacement(file, &loaded));
+  EXPECT_NEAR(loaded.position.y, -0.3f, 1e-5f);
+  EXPECT_NEAR(loaded.orientation.x, spot.orientation.x, 1e-5f);
+  EXPECT_FALSE(std::filesystem::exists(file.string() + ".tmp"));
+
+  for (const char* junk :
+       {"", "not json", "{\"version\":2,\"position\":[0,0,0],"
+                        "\"orientation\":[0,0,0,1]}",
+        "{\"version\":1,\"position\":[0,0],\"orientation\":[0,0,0,1]}",
+        "{\"version\":1,\"position\":[0,0,9],\"orientation\":[0,0,0,1]}",
+        "{\"version\":1,\"position\":[0,0,0],\"orientation\":[0,0,0,0]}"}) {
+    SCOPED_TRACE(junk);
+    std::ofstream(file, std::ios::trunc) << junk;
+    EXPECT_FALSE(LoadVirtualKeyboardPlacement(file, &loaded));
+  }
+  EXPECT_FALSE(LoadVirtualKeyboardPlacement(dir / "missing.json", &loaded));
+  std::filesystem::remove_all(dir);
 }
 
 TEST(VirtualKeyboardTest, TextMirrorFollowsTheFocusedTextBox) {

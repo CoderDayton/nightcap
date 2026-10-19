@@ -33,6 +33,7 @@ add_library(mocktail_vr STATIC
   src/vr/vr_mirror.cc
   src/vr/xr_controller.cc
   src/vr/roblox_vr_device_bridge.cc
+  src/vr/emoji_catalog.cc
   src/vr/virtual_keyboard.cc)
 add_library(Mocktail::VR ALIAS mocktail_vr)
 target_include_directories(mocktail_vr PUBLIC "${CMAKE_SOURCE_DIR}/include")

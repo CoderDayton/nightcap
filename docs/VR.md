@@ -41,8 +41,16 @@ trigger types and does not click the game behind it.
 - **Editing.** `Left` and `Right` move the cursor, and so does the thumbstick
   while you point at the keyboard. **Select all** and **Paste** work like
   Ctrl+A and Ctrl+V. Hold Backspace or an arrow to repeat it.
+- **Emoji.** The smiley key opens every emoji Roblox can show, read from the
+  emoji font in the installed Roblox build. Tabs along the bottom jump
+  between faces, people, nature, travel, symbols and flags; scroll with the
+  thumbstick or by dragging the grid. Hold an emoji to pick a skin tone.
+  `ABC` goes back to the letters.
 - **Moving it.** Grab the bar under the keyboard with the trigger and move
-  it; it turns to face you. It opens in its usual spot the next time.
+  it; it turns to face you. It opens in that spot, relative to where you
+  are facing, from then on, also after a restart. The spot is kept in
+  `vr_keyboard.json` in Nightcap's state folder; delete it to go back to the
+  default spot.
 
 The keyboard icon closes the keyboard and leaves the text box. Set
 `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.

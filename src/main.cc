@@ -1173,6 +1173,9 @@ int main(int argc, char* argv[]) {
           mocktail::window::QueueVirtualKeyPress(scancode, ctrl);
         };
         mocktail::vr::SetVirtualKeyboardHost(&keyboard_host);
+        // The keyboard comes back where the player last dragged it.
+        mocktail::vr::SetVirtualKeyboardStateFile(paths.state_root() /
+                                                  "vr_keyboard.json");
         // TextBox text is drawn as a desktop window overlay that never reaches
         // the eye images; mirror it into the keyboard's text field.
         mocktail::runtime::SetRobloxTextDisplayMirror(

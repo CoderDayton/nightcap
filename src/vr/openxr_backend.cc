@@ -2962,6 +2962,27 @@ void OpenXrBackend::UpdateVirtualKeyboardLocked() {
   if (!enabled) {
     return;
   }
+  if (!keyboard_setup_done_) {
+    keyboard_setup_done_ = true;
+    // The spot the player last dragged the keyboard to, from earlier runs.
+    pose::Pose placement;
+    const std::filesystem::path state = VirtualKeyboardStateFile();
+    if (!state.empty() && LoadVirtualKeyboardPlacement(state, &placement)) {
+      keyboard_.SetPlacement(placement);
+    }
+    // Reading every payload font takes a moment; do it off this thread.
+    keyboard_emoji_ = std::async(std::launch::async, [] {
+      return LoadEmojiCatalog(PayloadEmojiFonts());
+    });
+  }
+  if (keyboard_emoji_.valid() &&
+      keyboard_emoji_.wait_for(std::chrono::seconds(0)) ==
+          std::future_status::ready) {
+    EmojiCatalog catalog = keyboard_emoji_.get();
+    Log("  [vr-keyboard] %zu emoji in %zu groups from the payload\n",
+        catalog.size(), catalog.groups.size());
+    keyboard_.SetEmojiCatalog(std::move(catalog));
+  }
   const VirtualKeyboardHost host = CurrentVirtualKeyboardHost();
   // A panel that cannot be drawn must not take triggers either.
   const bool requested =
@@ -2998,6 +3019,8 @@ void OpenXrBackend::UpdateVirtualKeyboardLocked() {
         state.axes[static_cast<std::size_t>(ControllerAxis::kTrigger)];
     pointers[hand].thumbstick_x =
         state.axes[static_cast<std::size_t>(ControllerAxis::kThumbstickX)];
+    pointers[hand].thumbstick_y =
+        state.axes[static_cast<std::size_t>(ControllerAxis::kThumbstickY)];
   }
   // A dragged panel turns to face the head.
   if (keyboard_head_valid_) keyboard_.SetHead(keyboard_head_);
@@ -3009,6 +3032,12 @@ void OpenXrBackend::UpdateVirtualKeyboardLocked() {
   for (const VirtualKeyPress& key : output.keys) {
     if (host.press_key != nullptr)
       host.press_key(host.context, key.scancode, key.ctrl);
+  }
+  pose::Pose placement;
+  if (keyboard_.TakePlacementChanged(&placement)) {
+    const std::filesystem::path state = VirtualKeyboardStateFile();
+    if (!state.empty() && !SaveVirtualKeyboardPlacement(state, placement))
+      Log("  [vr-keyboard] could not remember the keyboard's spot\n");
   }
   for (int hand = 0; hand < 2; ++hand) {
     // A short, light tick for each key, like a phone's key feedback.
