@@ -25,6 +25,11 @@ constexpr std::uintmax_t kMaximumJsonBytes = 16U * 1024U * 1024U;
 constexpr std::string_view kAppPolicySuffix = ":app-policy";
 constexpr const char* kFlyoutVariantFlag = "FIntFlyoutTestVariantRollout12";
 constexpr const char* kDesktopFlyoutVariant = "2";
+constexpr const char* kVrSpatialUiFlags[] = {
+    "FFlagLuaAppIECVREnabled8",
+    "FFlagEnableUIManagerPackgify8",
+    "FFlagSpatialUIEnableDrag",
+};
 constexpr std::string_view kDesktopAppPolicyOverride =
     "FStringAppConfigurationOverrideAppPolicy";
 std::atomic<std::uint64_t> g_temporary_sequence{0};
@@ -428,6 +433,12 @@ bool MergeVrAppPolicyClientSettingsOverrides(
   const auto flyout = client_settings.find(kFlyoutVariantFlag);
   if (flyout != client_settings.end() && *flyout == kDesktopFlyoutVariant) {
     *flyout = "0";
+  }
+  // Roblox turns on the spatial VR toolbar (VrSpatialUi) through the
+  // Experience.Menu.VR IXP layer, which enrolls Quest but not this client.
+  // The CoreScripts are the same; emplace keeps a value from fflags.json.
+  for (const char* flag : kVrSpatialUiFlags) {
+    client_settings.emplace(flag, "True");
   }
   const std::string encoded_policy = policy.dump();
   client_settings[std::string(kDesktopAppPolicyOverride)] = encoded_policy;

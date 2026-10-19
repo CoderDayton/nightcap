@@ -334,8 +334,24 @@ TEST(RobloxDesktopAppPolicyTest, VrPolicyWorksWithoutDesktopProfile) {
   const nlohmann::json expected = {
       {"FStringAppConfigurationOverrideAppPolicy", policy.dump()},
   };
-  EXPECT_EQ(nlohmann::json::parse(client), expected);
+  nlohmann::json expected_client = expected;
+  expected_client["FFlagLuaAppIECVREnabled8"] = "True";
+  expected_client["FFlagEnableUIManagerPackgify8"] = "True";
+  expected_client["FFlagSpatialUIEnableDrag"] = "True";
+  EXPECT_EQ(nlohmann::json::parse(client), expected_client);
   EXPECT_EQ(nlohmann::json::parse(fast), expected);
+}
+
+TEST(RobloxDesktopAppPolicyTest, VrSpatialUiFlagsKeepUserValues) {
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, R"({"FFlagSpatialUIEnableDrag":"False"})", "{}", &client, &fast,
+      &error)) << error;
+  const auto client_json = nlohmann::json::parse(client);
+  EXPECT_EQ(client_json.at("FFlagSpatialUIEnableDrag"), "False");
+  EXPECT_EQ(client_json.at("FFlagLuaAppIECVREnabled8"), "True");
+  EXPECT_EQ(client_json.at("FFlagEnableUIManagerPackgify8"), "True");
+  EXPECT_FALSE(nlohmann::json::parse(fast).contains("FFlagLuaAppIECVREnabled8"));
 }
 
 TEST(RobloxDesktopAppPolicyTest, VrKeepsLateFastFlagsPolicyPrecedence) {
@@ -371,6 +387,7 @@ TEST(RobloxDesktopAppPolicyTest, NonVrPreservesBothPolicyChannels) {
   std::string client, fast, error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
       false, client_input, fast_input, &client, &fast, &error)) << error;
+  EXPECT_EQ(client.find("FFlagLuaAppIECVREnabled8"), std::string::npos);
   EXPECT_EQ(client, client_input);
   EXPECT_EQ(fast, fast_input);
 }
@@ -383,7 +400,10 @@ TEST(RobloxDesktopAppPolicyTest, VrAcceptsEmptyAppPolicyString) {
   EXPECT_EQ(nlohmann::json::parse(client)
                 .at("FStringAppConfigurationOverrideAppPolicy"),
             R"({"ThrottleFramerate":false})");
-  EXPECT_EQ(client, fast);
+  EXPECT_EQ(nlohmann::json::parse(client)
+                .at("FStringAppConfigurationOverrideAppPolicy"),
+            nlohmann::json::parse(fast)
+                .at("FStringAppConfigurationOverrideAppPolicy"));
 }
 
 TEST(RobloxDesktopAppPolicyTest, VrRejectsMalformedOverridesWithoutErasingThem) {

@@ -19,6 +19,13 @@ building and running.
 The home menu uses Roblox's `More` button. The desktop side panel is turned
 off in VR, because the VR pointer cannot click it.
 
+In games, VR uses the same floating toolbar as the Quest app, and you can
+drag it. Roblox only turns that toolbar on for Quest, so Nightcap sets
+`FFlagLuaAppIECVREnabled8`, `FFlagEnableUIManagerPackgify8` and
+`FFlagSpatialUIEnableDrag` to `True` in VR. A value you set for one of them in
+`fflags.json` is used instead. To get the older bottom bar back, set
+`FFlagLuaAppIECVREnabled8` to `False`.
+
 When a text box takes focus (chat, search), a keyboard opens in front of you,
 below eye level. It is a full US layout without the function row or
 Ctrl/Alt. Point at a key and pull the trigger. While you point at the keyboard,
