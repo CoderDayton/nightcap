@@ -12,6 +12,12 @@ Release notes on GitHub are taken from the matching section here.
   `overlay.position` moves it from the top center to another corner or edge. Both are in the settings
   window under Graphics.
 
+### Fixed
+
+- The Flatpak no longer fails to install Roblox on NVIDIA under Wayland with "graphics canary exited with
+  status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version
+  failed its startup test.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added
