@@ -22,6 +22,7 @@ add_library(mocktail_input_runtime STATIC
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_font_resolver.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_surface_overlay.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_window_input_runtime.cc
+  ${MOCKTAIL_INPUT_ROOT}/src/runtime/server_info_overlay.cc
 )
 add_library(Mocktail::InputRuntime ALIAS mocktail_input_runtime)
 target_include_directories(mocktail_input_runtime PUBLIC
@@ -39,6 +40,8 @@ target_link_libraries(mocktail_input_runtime PUBLIC
     PkgConfig::FONTCONFIG
     SDL3_ttf::SDL3_ttf
     nlohmann_json::nlohmann_json
+    mocktail_compat
+    stub_log
 )
 target_compile_features(mocktail_input_runtime PUBLIC cxx_std_17)
 mocktail_apply_compile_options(mocktail_input_runtime)

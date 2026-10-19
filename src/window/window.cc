@@ -1492,6 +1492,11 @@ bool ReleaseCurrentOnThread() {
 bool IsInitialised() { return g_state.initialised; }
 bool HasPresentedFrame() { return g_real_swap_count.load() > 0; }
 
+std::uint64_t PresentedFrameCount() {
+  return static_cast<std::uint64_t>(
+      g_real_swap_count.load(std::memory_order_relaxed));
+}
+
 void RecordFirstPresentTime(int present_count) {
   if (present_count != 1) {
     return;

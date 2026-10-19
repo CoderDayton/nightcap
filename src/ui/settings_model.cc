@@ -526,6 +526,33 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "roblox",
                  {}},
             }},
+           {"Server info",
+            {
+                {"overlay.server_info",
+                 "Show server info",
+                 "Location, ping and frame rate.",
+                 SettingKind::kChoice,
+                 {
+                     {"off", "Off"},
+                     {"notice", "After joining"},
+                     {"always", "Always"},
+                 },
+                 "off",
+                 {}},
+                {"overlay.position",
+                 "Position",
+                 "",
+                 SettingKind::kChoice,
+                 {
+                     {"top_center", "Top center"},
+                     {"top_right", "Top right"},
+                     {"bottom_left", "Bottom left"},
+                     {"bottom_center", "Bottom center"},
+                     {"bottom_right", "Bottom right"},
+                 },
+                 "top_center",
+                 {}},
+            }},
            {"Window",
             {
                 {"window.width", "Width",
@@ -1142,6 +1169,9 @@ bool SettingsDocument::IsActive(std::string_view key) const {
     return false;
   }
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
+    return false;
+  }
+  if (key == "overlay.position" && Value("overlay.server_info") == "off") {
     return false;
   }
   if (key == "integrations.fleasion.proxy_port" &&

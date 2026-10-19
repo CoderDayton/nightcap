@@ -186,6 +186,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.raw_mouse",
        "input.system_cursor",
        "input.hardware_cursor",
+      "overlay.server_info",
+      "overlay.position",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
       "network.proxy_host",
@@ -322,6 +324,22 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_THEME"] = *theme;
+  }
+  if (const auto mode = value("overlay.server_info"); mode.has_value()) {
+    if (!ParseServerInfoMode(*mode).has_value()) {
+      *error = "overlay.server_info must be off, notice, or always";
+      return false;
+    }
+    (*environment)["MOCKTAIL_SERVER_INFO"] = *mode;
+  }
+  if (const auto position = value("overlay.position"); position.has_value()) {
+    if (!ParseOverlayPosition(*position).has_value()) {
+      *error =
+          "overlay.position must be top_center, top_right, bottom_left, "
+          "bottom_center, or bottom_right";
+      return false;
+    }
+    (*environment)["MOCKTAIL_OVERLAY_POSITION"] = *position;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -755,7 +773,8 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
       } else if (key == "runtime" || key == "appearance" ||
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
-                 key == "compatibility" || key == "network") {
+                 key == "compatibility" || key == "network" ||
+                 key == "overlay") {
         valid = ReadMapping(&document, value_node, key, values, error);
       } else if (key == "integrations") {
         valid = ReadNestedMapping(&document, value_node, key, 2, values, error);
@@ -831,6 +850,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "graphics backend is invalid";
   } else if (!result.config.theme_mode_valid()) {
     result.error = "theme mode is invalid";
+  } else if (!result.config.overlay().valid) {
+    result.error = "server info overlay policy is invalid";
   } else if (!result.config.window().high_dpi_valid) {
     result.error = "window high-DPI policy is invalid";
   } else if (result.config.vsync_mode() != "auto" &&
@@ -943,6 +964,14 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_GRAPHICS_BACKEND",
                           config.graphics_backend_name(), error) &&
       SetEnvironmentValue("MOCKTAIL_THEME", config.theme_mode(), error) &&
+      SetEnvironmentValue("MOCKTAIL_SERVER_INFO",
+                          std::string(ServerInfoModeName(
+                              config.overlay().server_info)),
+                          error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_POSITION",
+                          std::string(OverlayPositionName(
+                              config.overlay().position)),
+                          error) &&
       SetEnvironmentValue("MOCKTAIL_WIN_WIDTH",
                           std::to_string(config.window().width), error) &&
       SetEnvironmentValue("MOCKTAIL_WIN_HEIGHT",

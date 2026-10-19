@@ -93,6 +93,10 @@ input:
   # cursor is still drawn by Roblox.
   hardware_cursor: false
 
+overlay:
+  server_info: off
+  position: top_center
+
 integrations:
   fleasion:
     # Boolean (default: false): trust Fleasion's CA without editing Roblox files.

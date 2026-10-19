@@ -270,6 +270,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/command_line.cc
   src/runtime/crash_report_policy.cc
   src/runtime/discord_rpc.cc
+  src/runtime/https_json.cc
   src/runtime/device_profile.cc
   src/runtime/engine_pump_rest.cc
   src/runtime/environment.cc
@@ -310,6 +311,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/runtime_config_file.cc
   src/runtime/runtime_paths.cc
   src/runtime/running_instance.cc
+  src/runtime/server_info.cc
   src/runtime/session_log.cc
   src/runtime/single_instance_lock.cc
   src/runtime/startup_state_machine.cc
