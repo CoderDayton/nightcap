@@ -78,6 +78,7 @@
 #include "runtime/roblox_platform_web_symbols.h"
 #include "runtime/roblox_experience_composition.h"
 #include "runtime/roblox_game_session_native_adapter.h"
+#include "runtime/roblox_mouse_behavior_query.h"
 #include "runtime/roblox_window_input_runtime.h"
 #include "runtime/roblox_text_input_jni_bridge.h"
 #include "runtime/runtime_config.h"
@@ -7168,9 +7169,19 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (mocktail::window::IsInitialised()) {
       mocktail::runtime::JniEnvironmentProvider input_environment{
           raw_vm, jni_vm.get(), &RestoreGameSessionJniEnvironment};
+      mocktail::runtime::RobloxInputSymbols input_symbols =
+          roblox_capabilities.input;
+      input_symbols.mouse_lock_compare =
+          mocktail::runtime::PrepareLockCenterCompare(reinterpret_cast<void*>(
+              input_symbols.get_main_window_is_mouse_locked_center));
+      std::cerr << (input_symbols.mouse_lock_compare != nullptr
+                        ? "  [input] right drag follows Roblox's camera pan\n"
+                        : "  [input] right drag captures on every press: "
+                          "Roblox's pan state is unreadable\n")
+                << std::flush;
       window_input_runtime =
           std::make_shared<mocktail::runtime::RobloxWindowInputRuntime>(
-              input_environment, roblox_capabilities.input);
+              input_environment, input_symbols);
       window_input_runtime->SetRawMouseEnabled(input_capabilities.raw_mouse);
       const mocktail::Status input_status = window_input_runtime->Initialize();
       if (!input_status.ok()) {

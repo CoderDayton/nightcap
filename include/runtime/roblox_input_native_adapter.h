@@ -18,6 +18,12 @@
 namespace mocktail {
 namespace runtime {
 
+struct RobloxMouseLock {
+  bool center = false;
+  bool current_position = false;
+  bool reports_current_position = false;
+};
+
 // Owns the JNI class references used by the exported NativeInputInterface and
 // NativeGLInterface entrypoints. Every operation acquires a thread-local JNIEnv
 // synchronously and rejects calls after Release.
@@ -34,7 +40,7 @@ class RobloxInputNativeAdapter final {
   Status Release();
   bool initialized() const;
   bool SupportsGamepads() const;
-  Status GetMainWindowIsMouseLockedCenter(bool* locked_center);
+  Status GetMainWindowMouseLock(RobloxMouseLock* lock);
   Status QueryCurrentTextBoxInfo(RobloxNativeTextBoxInfoQueryResult* result);
   RobloxInputSink Sink();
 
@@ -121,7 +127,7 @@ class RobloxInputRuntime final {
                                    const RobloxTextFocusProperties& properties);
   RobloxInputDispatchResult HandleEvent(const platform::PlatformEvent& event);
   RobloxInputSnapshot Snapshot() const;
-  Status GetMainWindowIsMouseLockedCenter(bool* locked_center);
+  Status GetMainWindowMouseLock(RobloxMouseLock* lock);
   bool SupportsGamepads() const;
   void SetRawMouseEnabled(bool enabled);
 

@@ -70,14 +70,18 @@ class FakeBackend final : public PointerCaptureBackend {
 struct QueryState {
   bool succeeds = true;
   bool locked_center = false;
+  bool locked_current_position = false;
+  bool reports_current_position = false;
 };
 
-bool Query(void* context, bool* locked_center) {
+bool Query(void* context, MouseLock* lock) {
   auto* state = static_cast<QueryState*>(context);
-  if (state == nullptr || locked_center == nullptr || !state->succeeds) {
+  if (state == nullptr || lock == nullptr || !state->succeeds) {
     return false;
   }
-  *locked_center = state->locked_center;
+  lock->center = state->locked_center;
+  lock->current_position = state->locked_current_position;
+  lock->reports_current_position = state->reports_current_position;
   return true;
 }
 
@@ -85,12 +89,12 @@ struct ReentrantQueryState {
   WindowPointerCaptureOwner* owner = nullptr;
 };
 
-bool ClearQueryReentrantly(void* context, bool* locked_center) {
+bool ClearQueryReentrantly(void* context, MouseLock* lock) {
   auto* state = static_cast<ReentrantQueryState*>(context);
-  if (state == nullptr || state->owner == nullptr || locked_center == nullptr) {
+  if (state == nullptr || state->owner == nullptr || lock == nullptr) {
     return false;
   }
-  *locked_center = false;
+  lock->center = false;
   state->owner->ClearQuery();
   return true;
 }
@@ -109,7 +113,7 @@ struct GatedQueryState {
   bool second_clear_returned = false;
 };
 
-bool GatedQuery(void* context, bool* locked_center) {
+bool GatedQuery(void* context, MouseLock* mouse_lock) {
   auto* state = static_cast<GatedQueryState*>(context);
   std::unique_lock<std::mutex> lock(state->mutex);
   state->entered = true;
@@ -123,7 +127,7 @@ bool GatedQuery(void* context, bool* locked_center) {
     state->condition.notify_all();
   }
   state->condition.wait(lock, [state] { return state->allow_return; });
-  *locked_center = false;
+  mouse_lock->center = false;
   return true;
 }
 
@@ -373,6 +377,55 @@ TEST(WindowPointerCaptureOwnerTest, RightDragCapturesUntilButtonRelease) {
   EXPECT_TRUE(owner.OnRightButton(false, false));
   EXPECT_FALSE(owner.captured());
   EXPECT_FALSE(owner.cursor_visible());
+}
+
+TEST(WindowPointerCaptureOwnerTest, RightDragOnUiThatRobloxKeepsDoesNotCapture) {
+  FakeBackend backend;
+  QueryState query;
+  query.reports_current_position = true;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+}
+
+TEST(WindowPointerCaptureOwnerTest, RightDragCapturesOnceRobloxStartsPanning) {
+  FakeBackend backend;
+  QueryState query;
+  query.reports_current_position = true;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.captured());
+  query.locked_current_position = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+}
+
+TEST(WindowPointerCaptureOwnerTest, LockCurrentPositionAloneDoesNotCapture) {
+  FakeBackend backend;
+  QueryState query;
+  query.reports_current_position = true;
+  query.locked_current_position = true;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
 }
 
 TEST(WindowPointerCaptureOwnerTest,
