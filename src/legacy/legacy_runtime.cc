@@ -2853,7 +2853,10 @@ jobject BuildPlatformParams(JNIEnv* env, jobject surface, bool is_headless) {
       GetEnvString("MOCKTAIL_DEVICE_NAME", "Mocktail Headless");
   SetStringField(env, params, "deviceName", platform_device_name.c_str());
   SetStringField(env, params, "locale", "en_us");
-  SetStringField(env, params, "assetFolderPath", DefaultAssetPath().c_str());
+  SetStringField(env, params, "assetFolderPath",
+                 GetEnvStringDefaultPath("MOCKTAIL_ASSET_PATH",
+                                         DefaultAssetPath())
+                     .c_str());
   const mocktail::runtime::DisplaySize platform_window = HostWindowPixelSize();
   const mocktail::runtime::DisplaySize platform_display = HostDisplaySize();
   SetIntField(env, params, "width", platform_window.width);
