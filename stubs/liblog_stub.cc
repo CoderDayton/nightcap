@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 
 #include "mocktail/platform/android_log_observer.h"
 
@@ -34,13 +35,15 @@ static const char* PriorityChar(int prio) {
 
 namespace {
 
-std::atomic<MocktailAndroidLogObserver> g_log_observer{nullptr};
+std::atomic<MocktailAndroidLogObserver> g_log_observers[4] = {};
+std::mutex g_log_observers_mutex;
 
 void NotifyObserver(int priority, const char* tag, const char* message) {
-  MocktailAndroidLogObserver observer =
-      g_log_observer.load(std::memory_order_acquire);
-  if (observer != nullptr) {
-    observer(priority, tag, message);
+  for (auto& slot : g_log_observers) {
+    MocktailAndroidLogObserver observer = slot.load(std::memory_order_acquire);
+    if (observer != nullptr) {
+      observer(priority, tag, message);
+    }
   }
 }
 
@@ -48,8 +51,32 @@ void NotifyObserver(int priority, const char* tag, const char* message) {
 
 extern "C" {
 
-void mocktail_android_log_set_observer(MocktailAndroidLogObserver observer) {
-  g_log_observer.store(observer, std::memory_order_release);
+bool mocktail_android_log_add_observer(MocktailAndroidLogObserver observer) {
+  if (observer == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_log_observers_mutex);
+  for (auto& slot : g_log_observers) {
+    if (slot.load(std::memory_order_acquire) == observer) {
+      return true;
+    }
+  }
+  for (auto& slot : g_log_observers) {
+    MocktailAndroidLogObserver empty = nullptr;
+    if (slot.compare_exchange_strong(empty, observer,
+                                     std::memory_order_acq_rel)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void mocktail_android_log_remove_observer(MocktailAndroidLogObserver observer) {
+  std::lock_guard<std::mutex> lock(g_log_observers_mutex);
+  for (auto& slot : g_log_observers) {
+    MocktailAndroidLogObserver expected = observer;
+    slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+  }
 }
 
 int __android_log_print(int prio, const char* tag, const char* fmt, ...) {

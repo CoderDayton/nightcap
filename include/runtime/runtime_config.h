@@ -51,6 +51,27 @@ struct InputCapabilityConfig {
   bool hardware_cursor = false;
 };
 
+enum class ServerInfoMode { kOff, kNotice, kAlways };
+
+enum class OverlayPosition {
+  kTopCenter,
+  kTopRight,
+  kBottomLeft,
+  kBottomCenter,
+  kBottomRight,
+};
+
+struct OverlayConfig {
+  ServerInfoMode server_info = ServerInfoMode::kOff;
+  OverlayPosition position = OverlayPosition::kTopCenter;
+  bool valid = true;
+};
+
+std::optional<ServerInfoMode> ParseServerInfoMode(std::string_view name);
+std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name);
+std::string_view ServerInfoModeName(ServerInfoMode mode);
+std::string_view OverlayPositionName(OverlayPosition position);
+
 struct NetworkProxyConfig {
   std::string scheme = "http";
   std::string host;
@@ -158,6 +179,7 @@ class RuntimeConfig {
   }
   const DiscordRpcConfig& discord_rpc() const { return discord_rpc_; }
   bool discord_rpc_valid() const { return discord_rpc_valid_; }
+  const OverlayConfig& overlay() const { return overlay_; }
 
   // These legacy opt-ins create workers that do not own their VM/JNI state.
   // Empty and "0" values are disabled; every other non-empty value is unsafe.
@@ -197,6 +219,7 @@ class RuntimeConfig {
   std::optional<NetworkProxyConfig> network_proxy_;
   std::optional<std::filesystem::path> ca_bundle_;
   bool ca_bundle_valid_ = true;
+  OverlayConfig overlay_;
   DiscordRpcConfig discord_rpc_;
   bool discord_rpc_valid_ = true;
   std::vector<std::string> unsafe_detached_thread_overrides_;

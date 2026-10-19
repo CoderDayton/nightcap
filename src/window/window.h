@@ -127,6 +127,7 @@ void* GetGLProcAddress(const char* name);
 bool SwapBuffers();
 
 bool HasPresentedFrame();
+std::uint64_t PresentedFrameCount();
 
 // Records a real vkQueuePresentKHR; tests must not fabricate readiness.
 void NoteVulkanPresent();

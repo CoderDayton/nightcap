@@ -66,6 +66,7 @@
 #include "runtime/display_size.h"
 #include "runtime/environment.h"
 #include "runtime/discord_rpc.h"
+#include "runtime/server_info_overlay.h"
 #include "runtime/luau_codegen_switch.h"
 #include "runtime/jnivm_platform_web_callbacks.h"
 #include "runtime/owned_pthread.h"
@@ -4726,6 +4727,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                 << "; continuing without Rich Presence\n";
     }
   }
+  mocktail::runtime::ServerInfoOverlay server_info(runtime_config.overlay());
+  if (!runtime_config.headless()) {
+    server_info.Start();
+  }
   mocktail::runtime::LuauCodegenMenuSwitch luau_codegen_switch(
       [&process_environment]() -> std::uint8_t* {
         if (process_environment.GetOr("MOCKTAIL_LUAU_CODEGEN_MENU_SWITCH",
@@ -5767,6 +5772,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       "setsockopt", reinterpret_cast<void*>(mocktail_bionic_setsockopt));
   linker::RegisterSymbol("sendmsg",
                          reinterpret_cast<void*>(mocktail_bionic_sendmsg));
+  linker::RegisterSymbol("sendto",
+                         reinterpret_cast<void*>(mocktail_bionic_sendto));
+  linker::RegisterSymbol("__sendto_chk",
+                         reinterpret_cast<void*>(mocktail_bionic_sendto_chk));
+  linker::RegisterSymbol("recvfrom",
+                         reinterpret_cast<void*>(mocktail_bionic_recvfrom));
   linker::RegisterSymbol("mprotect", reinterpret_cast<void*>(mocktail_mprotect));
   linker::RegisterSymbol("pthread_condattr_init",
                          reinterpret_cast<void*>(mocktail_pthread_condattr_init));

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <climits>
@@ -378,4 +379,61 @@ extern "C" ssize_t mocktail_bionic_sendmsg(int socket,
                                             const struct msghdr *message,
                                             int flags) {
   return mocktail::compat::BionicSendmsg(socket, message, flags);
+}
+
+namespace {
+
+std::atomic<MocktailDatagramObserver> g_datagram_observer{nullptr};
+
+void NotifyDatagram(bool outgoing, const struct sockaddr *peer,
+                    socklen_t peer_length, ssize_t bytes) {
+  const MocktailDatagramObserver observer =
+      g_datagram_observer.load(std::memory_order_acquire);
+  if (observer == nullptr || bytes < 0 || peer == nullptr) {
+    return;
+  }
+  const int saved_errno = errno;
+  observer(outgoing, peer, peer_length, bytes);
+  errno = saved_errno;
+}
+
+}
+
+extern "C" void mocktail_bionic_set_datagram_observer(
+    MocktailDatagramObserver observer) {
+  g_datagram_observer.store(observer, std::memory_order_release);
+}
+
+extern "C" ssize_t mocktail_bionic_sendto(int socket, const void *buffer,
+                                           size_t length, int flags,
+                                           const struct sockaddr *destination,
+                                           socklen_t destination_length) {
+  const ssize_t sent = ::sendto(socket, buffer, length, flags, destination,
+                                destination_length);
+  NotifyDatagram(true, destination, destination_length, sent);
+  return sent;
+}
+
+extern "C" ssize_t mocktail_bionic_sendto_chk(
+    int socket, const void *buffer, size_t length, size_t buffer_length,
+    int flags, const struct sockaddr *destination,
+    socklen_t destination_length) {
+  if (length > buffer_length) {
+    errno = ERANGE;
+    length = buffer_length;
+  }
+  return mocktail_bionic_sendto(socket, buffer, length, flags, destination,
+                                destination_length);
+}
+
+extern "C" ssize_t mocktail_bionic_recvfrom(int socket, void *buffer,
+                                             size_t length, int flags,
+                                             struct sockaddr *source,
+                                             socklen_t *source_length) {
+  const ssize_t received =
+      ::recvfrom(socket, buffer, length, flags, source, source_length);
+  if (received >= 0 && source_length != nullptr) {
+    NotifyDatagram(false, source, *source_length, received);
+  }
+  return received;
 }

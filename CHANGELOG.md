@@ -5,6 +5,13 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- An optional server info badge shows the game server's location, your ping, and frame rate. Set
+  `overlay.server_info` to `notice` to show it after each join, or `always` to keep it on screen.
+  `overlay.position` moves it from the top center to another corner or edge. Both are in the settings
+  window under Graphics.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added
