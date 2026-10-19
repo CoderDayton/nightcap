@@ -20,6 +20,8 @@ Release notes on GitHub are taken from the matching section here.
   failed its startup test.
 - Holding right click over a button, the leaderboard, or the Roblox menu no longer freezes the cursor.
   The cursor now only holds still while the camera turns, as on Windows.
+- The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
+  the `.desktop` file, so the menu entry pointed at a file that does not exist.
 
 ## [0.4.0] - 2026-10-18
 

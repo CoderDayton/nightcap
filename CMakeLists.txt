@@ -741,13 +741,17 @@ install(FILES
 # launches from sessions whose PATH lacks the install prefix. Uses the prefix
 # given at install time, not the configure-time one.
 install(CODE "
+  set(MOCKTAIL_DESKTOP_BINDIR \"${CMAKE_INSTALL_BINDIR}\")
+  if(NOT IS_ABSOLUTE \"\${MOCKTAIL_DESKTOP_BINDIR}\")
+    set(MOCKTAIL_DESKTOP_BINDIR \"\${CMAKE_INSTALL_PREFIX}/\${MOCKTAIL_DESKTOP_BINDIR}\")
+  endif()
   file(READ \"${CMAKE_SOURCE_DIR}/packaging/io.github.CoderDayton.nightcap.desktop\"
        MOCKTAIL_DESKTOP_ENTRY)
   string(REPLACE \"Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u\"
-         \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail %u\"
+         \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${MOCKTAIL_DESKTOP_BINDIR}/mocktail %u\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
   string(REPLACE \"Exec=mocktail --settings\"
-         \"Exec=\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail --settings\"
+         \"Exec=\${MOCKTAIL_DESKTOP_BINDIR}/mocktail --settings\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
   file(WRITE \"${CMAKE_BINARY_DIR}/io.github.CoderDayton.nightcap.desktop\"
        \"\${MOCKTAIL_DESKTOP_ENTRY}\")
