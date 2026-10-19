@@ -3,6 +3,7 @@
 
 #include <jni.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -134,6 +135,7 @@ struct RobloxInputSymbols {
   NativeGamepadDisconnectEventFn gamepad_disconnect_event = nullptr;
   NativeGetMainWindowIsMouseLockedCenterFn
       get_main_window_is_mouse_locked_center = nullptr;
+  std::uint8_t* mouse_lock_compare = nullptr;
   NativePassVector3Fn pass_accelerometer_change = nullptr;
   NativePassVector3Fn pass_gravity_change = nullptr;
   NativePassGyroscopeChangeFn pass_gyroscope_change = nullptr;

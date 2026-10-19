@@ -2,6 +2,7 @@
 
 #include <utf8proc.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -10,6 +11,9 @@
 namespace mocktail {
 namespace runtime {
 namespace {
+
+constexpr std::uint8_t kMouseBehaviorLockCenter = 1;
+constexpr std::uint8_t kMouseBehaviorLockCurrentPosition = 2;
 
 constexpr char kNativeInputClassName[] =
     "com/roblox/engine/jni/NativeInputInterface";
@@ -161,21 +165,32 @@ bool RobloxInputNativeAdapter::SupportsGamepads() const {
          symbols_.gamepad_axis_event != nullptr;
 }
 
-Status RobloxInputNativeAdapter::GetMainWindowIsMouseLockedCenter(
-    bool* locked_center) {
-  if (locked_center == nullptr) {
+Status RobloxInputNativeAdapter::GetMainWindowMouseLock(
+    RobloxMouseLock* mouse_lock) {
+  if (mouse_lock == nullptr) {
     return Status::Error(StatusCode::kInvalidArgument,
                          "mouse lock output is required");
   }
-  *locked_center = false;
+  *mouse_lock = {};
   std::lock_guard<std::mutex> lock(mutex_);
   JNIEnv* env = nullptr;
   Status status = RequireReadyLocked(&env);
   if (!status.ok()) {
     return status;
   }
-  *locked_center = symbols_.get_main_window_is_mouse_locked_center(
-                       env, native_input_class_) == JNI_TRUE;
+  mouse_lock->center = symbols_.get_main_window_is_mouse_locked_center(
+                           env, native_input_class_) == JNI_TRUE;
+  status = CheckJniException(env, "nativeGetMainWindowIsMouseLockedCenter");
+  if (!status.ok() || symbols_.mouse_lock_compare == nullptr) {
+    return status;
+  }
+  volatile std::uint8_t* compare = symbols_.mouse_lock_compare;
+  *compare = kMouseBehaviorLockCurrentPosition;
+  mouse_lock->current_position =
+      symbols_.get_main_window_is_mouse_locked_center(
+          env, native_input_class_) == JNI_TRUE;
+  *compare = kMouseBehaviorLockCenter;
+  mouse_lock->reports_current_position = true;
   return CheckJniException(env, "nativeGetMainWindowIsMouseLockedCenter");
 }
 
@@ -639,9 +654,8 @@ bool RobloxInputRuntime::SupportsGamepads() const {
   return adapter_.SupportsGamepads();
 }
 
-Status RobloxInputRuntime::GetMainWindowIsMouseLockedCenter(
-    bool* locked_center) {
-  return adapter_.GetMainWindowIsMouseLockedCenter(locked_center);
+Status RobloxInputRuntime::GetMainWindowMouseLock(RobloxMouseLock* lock) {
+  return adapter_.GetMainWindowMouseLock(lock);
 }
 
 void RobloxInputRuntime::PlatformEventCallback(

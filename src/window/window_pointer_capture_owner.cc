@@ -98,7 +98,7 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     }
   }
 
-  bool locked_center = false;
+  MouseLock mouse_lock;
   const bool query_ok =
       callback != nullptr &&
       [&] {
@@ -111,7 +111,7 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
             t_pointer_query_owner = previous_query_owner;
           }
         } reset_callback_marker{previous_query_owner};
-        return callback(context, &locked_center);
+        return callback(context, &mouse_lock);
       }();
   if (callback != nullptr) {
     {
@@ -120,14 +120,17 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     }
     condition_.notify_all();
   }
-  const bool native_lock_active = query_ok && locked_center;
+  const bool native_lock_active = query_ok && mouse_lock.center;
   native_lock_observed_ = native_lock_active;
   if (wait_for_native_unlock_after_right_drag_ && !native_lock_active) {
     wait_for_native_unlock_after_right_drag_ = false;
   }
   const bool client_active = query_ok;
   const bool native_capture_active = client_active && native_lock_active;
-  const bool right_drag_active = right_button_held_ && game_session_active_;
+  const bool roblox_pans = !query_ok || !mouse_lock.reports_current_position ||
+                           mouse_lock.current_position;
+  const bool right_drag_active =
+      right_button_held_ && game_session_active_ && roblox_pans;
   // Roblox can keep Shift Lock active while chat has text focus. Honor that
   // native lock so camera motion stays relative and cannot leave the window.
   // Text editing only suppresses the host's fallback RMB camera capture.
