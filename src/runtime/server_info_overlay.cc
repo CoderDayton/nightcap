@@ -534,7 +534,9 @@ bool ServerInfoOverlay::Content::operator==(const Content& other) const {
          hud_alpha == other.hud_alpha && place == other.place &&
          ping_ms == other.ping_ms && fps == other.fps &&
          show_fps == other.show_fps && show_ping == other.show_ping &&
-         position == other.position && pixel_width == other.pixel_width &&
+         position == other.position &&
+         location_offset == other.location_offset &&
+         pixel_width == other.pixel_width &&
          pixel_height == other.pixel_height && scale == other.scale;
 }
 
@@ -744,6 +746,7 @@ void ServerInfoOverlay::Run() {
         content.ping_ms = hud_ping ? ping.value_or(-1) : -1;
         content.position = config.position;
       }
+      content.location_offset = config.location_offset;
       content.pixel_width = viewport.pixel_width;
       content.pixel_height = viewport.pixel_height;
       content.scale = static_cast<float>(viewport.pixel_width) /
@@ -791,7 +794,7 @@ void ServerInfoOverlay::Run() {
         content.show_hud ? OverlaySize{hud_card->width, hud_card->height}
                          : OverlaySize{},
         content.scale,
-        Eased(popup_opacity));
+        Eased(popup_opacity), content.location_offset);
     std::vector<std::uint8_t> rgba(
         static_cast<std::size_t>(layout.bounds.width) * layout.bounds.height *
             4,

@@ -10,6 +10,7 @@
 
 #include "runtime/device_profile.h"
 #include "runtime/frame_rate_policy.h"
+#include "runtime/runtime_config.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_editor.h"
 #include "runtime/runtime_config_store.h"
@@ -540,6 +541,16 @@ const std::vector<SettingsPage>& SettingsPages() {
                       {},
                       "false",
                       {}}),
+                Live({"overlay.location_offset",
+                      "Distance from top",
+                      "In pixels. 12 lines it up with the top bar.",
+                      SettingKind::kNumber,
+                      {},
+                      "12",
+                      {},
+                      0,
+                      runtime::kMaximumOverlayLocationOffset,
+                      1}),
             }},
            {"Performance overlay",
             {
@@ -1194,6 +1205,9 @@ bool SettingsDocument::IsActive(std::string_view key) const {
     return false;
   }
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
+    return false;
+  }
+  if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
     return false;
   }
   if (key == "overlay.position" && !IsSwitchedOn("overlay.fps") &&

@@ -188,6 +188,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.hardware_cursor",
       "overlay.server_info",
       "overlay.location",
+      "overlay.location_offset",
       "overlay.fps",
       "overlay.ping",
       "overlay.position",
@@ -358,6 +359,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_OVERLAY_POSITION"] = *position;
+  }
+  if (const auto offset = value("overlay.location_offset"); offset.has_value()) {
+    if (!ParseOverlayLocationOffset(*offset).has_value()) {
+      *error = "overlay.location_offset must be a whole number from 0 to " +
+               std::to_string(kMaximumOverlayLocationOffset);
+      return false;
+    }
+    (*environment)["MOCKTAIL_OVERLAY_LOCATION_OFFSET"] = *offset;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -869,7 +878,7 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
   } else if (!result.config.theme_mode_valid()) {
     result.error = "theme mode is invalid";
   } else if (!result.config.overlay().valid) {
-    result.error = "overlay position is invalid";
+    result.error = "overlay settings are invalid";
   } else if (!result.config.window().high_dpi_valid) {
     result.error = "window high-DPI policy is invalid";
   } else if (result.config.vsync_mode() != "auto" &&
@@ -984,6 +993,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_THEME", config.theme_mode(), error) &&
       SetEnvironmentValue("MOCKTAIL_OVERLAY_LOCATION",
                           config.overlay().location ? "on" : "off", error) &&
+      SetEnvironmentValue(
+          "MOCKTAIL_OVERLAY_LOCATION_OFFSET",
+          std::to_string(config.overlay().location_offset), error) &&
       SetEnvironmentValue("MOCKTAIL_OVERLAY_FPS",
                           config.overlay().fps ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_OVERLAY_PING",

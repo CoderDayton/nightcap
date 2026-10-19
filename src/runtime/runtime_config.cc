@@ -176,6 +176,17 @@ std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name) {
   return std::nullopt;
 }
 
+std::optional<int> ParseOverlayLocationOffset(std::string_view value) {
+  int parsed = 0;
+  const char* end = value.data() + value.size();
+  const auto result = std::from_chars(value.data(), end, parsed);
+  if (result.ec != std::errc() || result.ptr != end || parsed < 0 ||
+      parsed > kMaximumOverlayLocationOffset) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
 std::string_view OverlayPositionName(OverlayPosition position) {
   for (const auto& [candidate, name] : kOverlayPositions) {
     if (candidate == position) {
@@ -272,6 +283,13 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
     const auto parsed = ParseOverlayPosition(*position);
     config.overlay_.valid = config.overlay_.valid && parsed.has_value();
     config.overlay_.position = parsed.value_or(OverlayPosition::kBottomLeft);
+  }
+  if (const auto offset = environment.Get("MOCKTAIL_OVERLAY_LOCATION_OFFSET");
+      offset.has_value()) {
+    const std::optional<int> parsed = ParseOverlayLocationOffset(*offset);
+    config.overlay_.valid = config.overlay_.valid && parsed.has_value();
+    config.overlay_.location_offset =
+        parsed.value_or(config.overlay_.location_offset);
   }
   const std::optional<std::string> configured_device =
       environment.Get("MOCKTAIL_DEVICE_PROFILE");

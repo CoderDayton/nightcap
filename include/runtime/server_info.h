@@ -93,7 +93,7 @@ struct OverlayLayout {
 OverlayLayout LayOutOverlay(OverlayPosition hud_position, int view_width,
                             int view_height, OverlaySize popup,
                             OverlaySize hud, float scale,
-                            float popup_presence = 1.0F);
+                            float popup_presence = 1.0F, int popup_top = 12);
 
 // Moves a bubble's opacity toward 1 when it should show and toward 0 when it
 // should not, covering the full range in fade_us.

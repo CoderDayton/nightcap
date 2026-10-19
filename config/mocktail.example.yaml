@@ -98,6 +98,9 @@ overlay:
   # seconds after each join, at the top center. Looks the server up at
   # ipinfo.io only while this is on.
   location: false
+  # Integer (default: 12, 0-200): the location popup's distance from the top,
+  # in pixels. 12 lines it up with Roblox's top bar.
+  location_offset: 12
   # Booleans (default: false): keep the frame rate and ping on screen in game.
   fps: false
   ping: false
