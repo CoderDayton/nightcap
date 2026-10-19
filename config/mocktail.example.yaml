@@ -73,6 +73,10 @@ graphics:
   # default, unlimited, lets the OpenXR runtime pace frames at the headset's
   # refresh rate.
   # frame_rate_limit: unlimited
+  # Boolean (default: true): use the Quest app's floating in-game toolbar,
+  # which you can drag, instead of the older bottom bar. A value for its
+  # FFlags in fflags.json still wins.
+  # spatial_toolbar: true
 
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every

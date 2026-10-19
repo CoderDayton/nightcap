@@ -23,8 +23,9 @@ In games, VR uses the same floating toolbar as the Quest app, and you can
 drag it. Roblox only turns that toolbar on for Quest, so Nightcap sets
 `FFlagLuaAppIECVREnabled8`, `FFlagEnableUIManagerPackgify8` and
 `FFlagSpatialUIEnableDrag` to `True` in VR. A value you set for one of them in
-`fflags.json` is used instead. To get the older bottom bar back, set
-`FFlagLuaAppIECVREnabled8` to `False`.
+`fflags.json` is used instead. To get the older bottom bar back, turn off
+**Floating toolbar** on the VR tab of the settings window, or set
+`vr.spatial_toolbar: false` in `config.yaml`.
 
 When a text box takes focus (chat, search), a keyboard opens in front of you,
 below eye level. It is a full US layout without the function row or
@@ -50,6 +51,7 @@ leaves the text box. Set `MOCKTAIL_VR_KEYBOARD=0` to turn the keyboard off.
 | `MOCKTAIL_VR_DESKTOP_MIRROR` | `1` | `0` stops copying the left eye to the desktop window. |
 | `MOCKTAIL_VR_MIRROR_SHM` | unset | A shared-memory name such as `/nightcap-mirror` publishes both eyes for an external viewer. The segment is private to your user. |
 | `MOCKTAIL_VR_KEYBOARD` | `1` | `0` turns off the in-headset keyboard. |
+| `MOCKTAIL_VR_SPATIAL_TOOLBAR` | `on` | Same as `vr.spatial_toolbar`. `off` keeps the older bottom bar in games. |
 
 ## Hands and scale
 

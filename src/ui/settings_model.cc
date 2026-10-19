@@ -698,6 +698,17 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "unlimited",
                  {}},
             }},
+           {"In game",
+            {
+                {"vr.spatial_toolbar",
+                 "Floating toolbar",
+                 "Use the Quest app's toolbar, which you can drag. Off keeps "
+                 "the older bottom bar.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
+            }},
        }},
       {"performance",
        "Performance",

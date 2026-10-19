@@ -171,6 +171,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "vr.enabled",
       "vr.mode",
       "vr.anti_aliasing",
+      "vr.spatial_toolbar",
       "vr.frame_rate_limit",
       "appearance.theme",
       "graphics.backend",
@@ -360,6 +361,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_VR_ANTI_ALIASING"] = *anti_aliasing;
+  }
+  if (const auto spatial_toolbar = value("vr.spatial_toolbar");
+      spatial_toolbar.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*spatial_toolbar, &parsed)) {
+      *error = "vr.spatial_toolbar must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_SPATIAL_TOOLBAR"] = parsed ? "on" : "off";
   }
   if (const auto frame_rate = value("vr.frame_rate_limit");
       frame_rate.has_value()) {
@@ -1062,6 +1072,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                           FrameRateValue(config.vr_frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VR_ANTI_ALIASING",
                           config.vr_anti_aliasing(), error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_SPATIAL_TOOLBAR",
+                          config.vr_spatial_toolbar() ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

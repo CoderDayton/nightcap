@@ -172,6 +172,8 @@ class RuntimeConfig {
   // vr.anti_aliasing: fxaa, smaa or off. The VR backend reads it from the
   // exported MOCKTAIL_VR_ANTI_ALIASING.
   const std::string& vr_anti_aliasing() const { return vr_anti_aliasing_; }
+  // vr.spatial_toolbar: use Quest's floating in-game toolbar in VR.
+  bool vr_spatial_toolbar() const { return vr_spatial_toolbar_; }
   const FrameRatePolicy& active_frame_rate() const {
     return vr_enabled_ ? vr_frame_rate_ : frame_rate_;
   }
@@ -231,6 +233,7 @@ class RuntimeConfig {
   FrameRatePolicy frame_rate_;
   FrameRatePolicy vr_frame_rate_{FrameRateLimitMode::kUnlimited, 0};
   std::string vr_anti_aliasing_ = "fxaa";
+  bool vr_spatial_toolbar_ = true;
   std::string vsync_mode_ = "auto";
   PerformancePolicy performance_;
   std::string audio_output_device_ = "default";

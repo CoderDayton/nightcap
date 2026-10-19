@@ -297,7 +297,7 @@ TEST(RobloxDesktopAppPolicyTest,
       desktop.policy_json, R"({"DFIntTaskSchedulerTargetFps":"90"})", &client,
       &error)) << error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, client, R"({"FFlagUnrelated":"True"})", &client, &fast, &error))
+      true, true, client, R"({"FFlagUnrelated":"True"})", &client, &fast, &error))
       << error;
   const auto client_json = nlohmann::json::parse(client);
   const auto fast_json = nlohmann::json::parse(fast);
@@ -321,7 +321,7 @@ TEST(RobloxDesktopAppPolicyTest,
   const std::string first_client = client;
   const std::string first_fast = fast;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, client, fast, &client, &fast, &error)) << error;
+      true, true, client, fast, &client, &fast, &error)) << error;
   EXPECT_EQ(client, first_client);
   EXPECT_EQ(fast, first_fast);
 }
@@ -329,7 +329,7 @@ TEST(RobloxDesktopAppPolicyTest,
 TEST(RobloxDesktopAppPolicyTest, VrPolicyWorksWithoutDesktopProfile) {
   std::string client, fast, error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, "{}", "{}", &client, &fast, &error)) << error;
+      true, true, "{}", "{}", &client, &fast, &error)) << error;
   const nlohmann::json policy = {{"ThrottleFramerate", false}};
   const nlohmann::json expected = {
       {"FStringAppConfigurationOverrideAppPolicy", policy.dump()},
@@ -345,13 +345,23 @@ TEST(RobloxDesktopAppPolicyTest, VrPolicyWorksWithoutDesktopProfile) {
 TEST(RobloxDesktopAppPolicyTest, VrSpatialUiFlagsKeepUserValues) {
   std::string client, fast, error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, R"({"FFlagSpatialUIEnableDrag":"False"})", "{}", &client, &fast,
+      true, true, R"({"FFlagSpatialUIEnableDrag":"False"})", "{}", &client, &fast,
       &error)) << error;
   const auto client_json = nlohmann::json::parse(client);
   EXPECT_EQ(client_json.at("FFlagSpatialUIEnableDrag"), "False");
   EXPECT_EQ(client_json.at("FFlagLuaAppIECVREnabled8"), "True");
   EXPECT_EQ(client_json.at("FFlagEnableUIManagerPackgify8"), "True");
   EXPECT_FALSE(nlohmann::json::parse(fast).contains("FFlagLuaAppIECVREnabled8"));
+}
+
+TEST(RobloxDesktopAppPolicyTest, VrSpatialUiFlagsOffWithSetting) {
+  std::string client, fast, error;
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
+      true, false, "{}", "{}", &client, &fast, &error)) << error;
+  const auto client_json = nlohmann::json::parse(client);
+  EXPECT_FALSE(client_json.contains("FFlagLuaAppIECVREnabled8"));
+  EXPECT_FALSE(client_json.contains("FFlagEnableUIManagerPackgify8"));
+  EXPECT_FALSE(client_json.contains("FFlagSpatialUIEnableDrag"));
 }
 
 TEST(RobloxDesktopAppPolicyTest, VrKeepsLateFastFlagsPolicyPrecedence) {
@@ -369,7 +379,7 @@ TEST(RobloxDesktopAppPolicyTest, VrKeepsLateFastFlagsPolicyPrecedence) {
   };
   std::string client, fast, error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, client_input.dump(), fast_input.dump(), &client, &fast, &error))
+      true, true, client_input.dump(), fast_input.dump(), &client, &fast, &error))
       << error;
   later["ThrottleFramerate"] = false;
   EXPECT_EQ(nlohmann::json::parse(client)
@@ -386,7 +396,7 @@ TEST(RobloxDesktopAppPolicyTest, NonVrPreservesBothPolicyChannels) {
   const std::string fast_input = R"({ "FIntUnrelated": "42" })";
   std::string client, fast, error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      false, client_input, fast_input, &client, &fast, &error)) << error;
+      false, true, client_input, fast_input, &client, &fast, &error)) << error;
   EXPECT_EQ(client.find("FFlagLuaAppIECVREnabled8"), std::string::npos);
   EXPECT_EQ(client, client_input);
   EXPECT_EQ(fast, fast_input);
@@ -395,7 +405,7 @@ TEST(RobloxDesktopAppPolicyTest, NonVrPreservesBothPolicyChannels) {
 TEST(RobloxDesktopAppPolicyTest, VrAcceptsEmptyAppPolicyString) {
   std::string client, fast, error;
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, "{}", R"({"FStringAppConfigurationOverrideAppPolicy":""})",
+      true, true, "{}", R"({"FStringAppConfigurationOverrideAppPolicy":""})",
       &client, &fast, &error)) << error;
   EXPECT_EQ(nlohmann::json::parse(client)
                 .at("FStringAppConfigurationOverrideAppPolicy"),
@@ -418,10 +428,10 @@ TEST(RobloxDesktopAppPolicyTest, VrRejectsMalformedOverridesWithoutErasingThem) 
     SCOPED_TRACE(input);
     std::string client = "unchanged", fast = "unchanged", error;
     EXPECT_FALSE(MergeVrAppPolicyClientSettingsOverrides(
-        true, input, "{}", &client, &fast, &error));
+        true, true, input, "{}", &client, &fast, &error));
     EXPECT_FALSE(error.empty());
     EXPECT_FALSE(MergeVrAppPolicyClientSettingsOverrides(
-        true, "{}", input, &client, &fast, &error));
+        true, true, "{}", input, &client, &fast, &error));
     EXPECT_EQ(client, "unchanged");
     EXPECT_EQ(fast, "unchanged");
   }
@@ -435,12 +445,12 @@ TEST(RobloxDesktopAppPolicyTest, VrTurnsOffTheDesktopFlyoutSidePanel) {
   ASSERT_EQ(nlohmann::json::parse(desktop)["FIntFlyoutTestVariantRollout12"],
             "2");
 
-  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(false, desktop, "{}",
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(false, true, desktop, "{}",
                                                       &client, &fast, &error));
   EXPECT_EQ(nlohmann::json::parse(client)["FIntFlyoutTestVariantRollout12"],
             "2");
 
-  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(true, desktop, "{}",
+  ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(true, true, desktop, "{}",
                                                       &client, &fast, &error));
   EXPECT_EQ(nlohmann::json::parse(client)["FIntFlyoutTestVariantRollout12"],
             "0");
@@ -449,7 +459,7 @@ TEST(RobloxDesktopAppPolicyTest, VrTurnsOffTheDesktopFlyoutSidePanel) {
 
   // fflags.json is the later channel, so a user's own value still decides.
   ASSERT_TRUE(MergeVrAppPolicyClientSettingsOverrides(
-      true, desktop, R"({"FIntFlyoutTestVariantRollout12":"2"})", &client,
+      true, true, desktop, R"({"FIntFlyoutTestVariantRollout12":"2"})", &client,
       &fast, &error));
   EXPECT_EQ(nlohmann::json::parse(fast)["FIntFlyoutTestVariantRollout12"],
             "2");

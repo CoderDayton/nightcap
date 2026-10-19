@@ -209,6 +209,26 @@ TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaSmaaOrOff) {
   EXPECT_NE(invalid.error.find("vr.anti_aliasing"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, VrSpatialToolbarDefaultsOnAndParsesBoolean) {
+  TemporaryDirectory temporary;
+  const auto defaults =
+      LoadRuntimeConfig(MapEnvironment(), temporary.Write("version: 1\n"));
+  ASSERT_TRUE(defaults) << defaults.error;
+  EXPECT_TRUE(defaults.config.vr_spatial_toolbar());
+
+  const auto off = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  spatial_toolbar: false\n"));
+  ASSERT_TRUE(off) << off.error;
+  EXPECT_FALSE(off.config.vr_spatial_toolbar());
+
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  spatial_toolbar: sometimes\n"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.spatial_toolbar"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
   TemporaryDirectory temporary;
   const auto defaults = LoadRuntimeConfig(

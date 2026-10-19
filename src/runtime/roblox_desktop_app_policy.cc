@@ -381,7 +381,7 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
 }
 
 bool MergeVrAppPolicyClientSettingsOverrides(
-    bool enabled, std::string_view client_settings_json,
+    bool enabled, bool spatial_toolbar, std::string_view client_settings_json,
     std::string_view fast_flags_json, std::string* merged_client_settings,
     std::string* merged_fast_flags, std::string* error) {
   if (merged_client_settings == nullptr || merged_fast_flags == nullptr) {
@@ -437,8 +437,10 @@ bool MergeVrAppPolicyClientSettingsOverrides(
   // Roblox turns on the spatial VR toolbar (VrSpatialUi) through the
   // Experience.Menu.VR IXP layer, which enrolls Quest but not this client.
   // The CoreScripts are the same; emplace keeps a value from fflags.json.
-  for (const char* flag : kVrSpatialUiFlags) {
-    client_settings.emplace(flag, "True");
+  if (spatial_toolbar) {
+    for (const char* flag : kVrSpatialUiFlags) {
+      client_settings.emplace(flag, "True");
+    }
   }
   const std::string encoded_policy = policy.dump();
   client_settings[std::string(kDesktopAppPolicyOverride)] = encoded_policy;

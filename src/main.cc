@@ -1327,7 +1327,7 @@ int main(int argc, char* argv[]) {
       std::string vr_client_settings;
       std::string vr_fast_flags;
       if (!mocktail::runtime::MergeVrAppPolicyClientSettingsOverrides(
-              vr_active,
+              vr_active, runtime_config.config.vr_spatial_toolbar(),
               environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"),
               environment.GetOr("MOCKTAIL_FAST_FLAGS_JSON", "{}"),
               &vr_client_settings, &vr_fast_flags, &command_line_error)) {

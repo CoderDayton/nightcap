@@ -423,6 +423,11 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       environment.GetOr("MOCKTAIL_VR_FRAME_RATE_LIMIT", "unlimited"));
   config.vr_anti_aliasing_ =
       environment.GetOr("MOCKTAIL_VR_ANTI_ALIASING", config.vr_anti_aliasing_);
+  if (const std::optional<bool> spatial_toolbar =
+          InputEnabled(environment, "MOCKTAIL_VR_SPATIAL_TOOLBAR");
+      spatial_toolbar.has_value()) {
+    config.vr_spatial_toolbar_ = *spatial_toolbar;
+  }
   config.vsync_mode_ = environment.GetOr("MOCKTAIL_VSYNC", "auto");
   config.performance_ = ParsePerformancePolicy(
       environment.GetOr("MOCKTAIL_MULTITHREADED_RENDERING", "0"),

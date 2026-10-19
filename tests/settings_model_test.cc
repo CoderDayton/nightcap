@@ -166,7 +166,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "integrations.discord_rpc.images.small",
            "integrations.discord_rpc.images.small_text", "updates.automatic",
            "updates.source", "updates.launch_after_update", "vr.mode",
-           "vr.anti_aliasing", "vr.frame_rate_limit"}) {
+           "vr.anti_aliasing", "vr.frame_rate_limit", "vr.spatial_toolbar"}) {
     keys.emplace_back(key, key);
   }
   for (const auto& [key, row] : keys) {
@@ -318,6 +318,7 @@ TEST_F(SettingsModelTest, VrValuesReachTheLoadedConfig) {
   ASSERT_TRUE(document.Load(&error)) << error;
   ASSERT_TRUE(document.Set("vr.mode", "auto", &error)) << error;
   ASSERT_TRUE(document.Set("vr.anti_aliasing", "smaa", &error)) << error;
+  ASSERT_TRUE(document.Set("vr.spatial_toolbar", "false", &error)) << error;
   ASSERT_TRUE(document.Set(
       "vr.frame_rate_limit",
       FrameRateSettingValue(Find("vr.frame_rate_limit"),
@@ -329,6 +330,7 @@ TEST_F(SettingsModelTest, VrValuesReachTheLoadedConfig) {
   ASSERT_TRUE(loaded) << loaded.error;
   EXPECT_EQ(loaded.config.vr_mode(), runtime::VrMode::kAuto);
   EXPECT_EQ(loaded.config.vr_anti_aliasing(), "smaa");
+  EXPECT_FALSE(loaded.config.vr_spatial_toolbar());
   EXPECT_EQ(loaded.config.vr_frame_rate().mode,
             runtime::FrameRateLimitMode::kUnmanaged);
 }
