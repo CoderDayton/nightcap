@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "runtime/https_json.h"
 #include "runtime/owned_pthread.h"
 
 namespace mocktail {
@@ -33,7 +34,6 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr std::size_t kMaximumDiscordFrameBytes = 1024U * 1024U;
-constexpr std::size_t kMaximumRobloxApiBytes = 512U * 1024U;
 constexpr std::size_t kDiscordWorkerStackBytes = 16U * 1024U * 1024U;
 constexpr std::chrono::milliseconds kReconnectDelay{5000};
 constexpr std::chrono::seconds kDiscordActivityRateWindow{20};
@@ -408,90 +408,6 @@ bool SetDiscordActivity(int descriptor, const DiscordRpcActivity* activity,
   return WriteFrame(descriptor, DiscordOpcode::kFrame, DumpJson(request));
 }
 
-struct BoundedResponse {
-  std::string body;
-  bool exceeded = false;
-};
-
-std::once_flag g_curl_init_once;
-CURLcode g_curl_init_status = CURLE_FAILED_INIT;
-
-void InitializeCurl() {
-  g_curl_init_status = curl_global_init(CURL_GLOBAL_DEFAULT);
-}
-
-size_t WriteHttpResponse(char* data, size_t size, size_t count,
-                         void* user_data) {
-  auto* response = static_cast<BoundedResponse*>(user_data);
-  if (response == nullptr || data == nullptr ||
-      (count != 0 && size > std::numeric_limits<size_t>::max() / count)) {
-    return 0;
-  }
-  const std::size_t bytes = size * count;
-  if (bytes > kMaximumRobloxApiBytes ||
-      response->body.size() > kMaximumRobloxApiBytes - bytes) {
-    response->exceeded = true;
-    return 0;
-  }
-  response->body.append(data, bytes);
-  return bytes;
-}
-
-std::optional<Json> GetRobloxJson(std::string url) {
-  std::call_once(g_curl_init_once, InitializeCurl);
-  if (g_curl_init_status != CURLE_OK) {
-    return std::nullopt;
-  }
-  CURL* curl = curl_easy_init();
-  if (curl == nullptr) {
-    return std::nullopt;
-  }
-  BoundedResponse response;
-  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
-  curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
-  curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 2000L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 3500L);
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mocktail/0.1");
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteHttpResponse);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-  std::string proxy_url;
-  const char* proxy_host = std::getenv("MOCKTAIL_HTTP_PROXY_HOST");
-  const char* proxy_port = std::getenv("MOCKTAIL_HTTP_PROXY_PORT");
-  const char* proxy_scheme = std::getenv("MOCKTAIL_HTTP_PROXY_SCHEME");
-  if (proxy_host != nullptr && proxy_port != nullptr) {
-    const std::optional<NetworkProxyConfig> proxy =
-        ParseNetworkProxyConfig(proxy_host, proxy_port,
-                                proxy_scheme != nullptr ? proxy_scheme
-                                                        : "http");
-    if (proxy.has_value()) {
-      proxy_url = BuildNetworkProxyUrl(*proxy);
-      curl_easy_setopt(curl, CURLOPT_PROXY, proxy_url.c_str());
-      curl_easy_setopt(curl, CURLOPT_NOPROXY, "");
-    }
-  }
-  if (const char* ca_bundle = std::getenv("MOCKTAIL_CA_BUNDLE")) {
-    curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-  }
-  const CURLcode status = curl_easy_perform(curl);
-  long http_status = 0;
-  if (status == CURLE_OK) {
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
-  }
-  curl_easy_cleanup(curl);
-  if (status != CURLE_OK || http_status != 200 || response.exceeded) {
-    return std::nullopt;
-  }
-  Json parsed = Json::parse(response.body, nullptr, false);
-  if (parsed.is_discarded()) {
-    return std::nullopt;
-  }
-  return parsed;
-}
-
 struct ResolvedPlaceMetadata {
   std::string name;
   std::string creator_name;
@@ -511,7 +427,7 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
     return metadata;
   }
   const std::optional<Json> universe =
-      GetRobloxJson("https://apis.roblox.com/universes/v1/places/" +
+      GetHttpsJson("https://apis.roblox.com/universes/v1/places/" +
                     std::to_string(place_id) + "/universe");
   if (!universe.has_value() || !universe->contains("universeId")) {
     return metadata;
@@ -534,7 +450,7 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
     return metadata;
   }
   const std::optional<Json> game =
-      GetRobloxJson("https://games.roblox.com/v1/games?universeIds=" +
+      GetHttpsJson("https://games.roblox.com/v1/games?universeIds=" +
                     std::to_string(universe_id));
   if (game.has_value() && game->contains("data") &&
       (*game)["data"].is_array() && !(*game)["data"].empty()) {
@@ -552,7 +468,7 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
     }
   }
 
-  const std::optional<Json> thumbnail = GetRobloxJson(
+  const std::optional<Json> thumbnail = GetHttpsJson(
       "https://thumbnails.roblox.com/v1/games/icons?universeIds=" +
       std::to_string(universe_id) +
       "&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false");
@@ -689,7 +605,7 @@ class DiscordRpcSession::Impl final {
       }
       return false;
     }
-    std::call_once(g_curl_init_once, InitializeCurl);
+    EnsureCurlInitialized();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (started_) {

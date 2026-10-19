@@ -141,7 +141,9 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "performance.gamemode", "audio.output_device", "audio.input_device",
            "window.width", "window.height", "window.title", "window.high_dpi",
            "input.raw_mouse", "input.system_cursor", "input.hardware_cursor",
-           "network.use_system_proxy",
+           "overlay.server_info", "overlay.position",
+           "network.use_system_proxy", "network.proxy_scheme",
+           "network.proxy_username", "network.proxy_password",
            "network.ca_bundle",
            "integrations.fleasion.enabled", "integrations.fleasion.proxy_mode",
            "integrations.fleasion.proxy_port",
@@ -217,6 +219,11 @@ TEST_F(SettingsModelTest, AutomaticUpdatesIsASwitchThatIsOnUntilTurnedOff) {
   }
 }
 
+bool NeedsFixedProxy(std::string_view key) {
+  return key == "network.proxy_scheme" || key == "network.proxy_username" ||
+         key == "network.proxy_password";
+}
+
 TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
   SettingsDocument document(file_);
   std::string error;
@@ -225,7 +232,8 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
   for (const SettingsPage& page : SettingsPages()) {
     for (const SettingsGroup& group : page.groups) {
       for (const Setting& setting : group.settings) {
-        if (setting.kind == SettingKind::kEditor) {
+        if (setting.kind == SettingKind::kEditor ||
+            NeedsFixedProxy(setting.key)) {
           continue;
         }
         if (setting.kind == SettingKind::kText ||
@@ -1008,6 +1016,84 @@ TEST_F(SettingsModelTest, TheFixedProxyIsOneHostAndPortRow) {
   EXPECT_FALSE(loaded.config.network_proxy().has_value());
 }
 
+TEST_F(SettingsModelTest, ServerInfoPositionNeedsTheServerInfoShown) {
+  EXPECT_EQ(Find("overlay.server_info").kind, SettingKind::kChoice);
+  EXPECT_EQ(Find("overlay.position").kind, SettingKind::kChoice);
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Value("overlay.server_info"), "off");
+  EXPECT_EQ(document.Value("overlay.position"), "top_center");
+  EXPECT_FALSE(document.Set("overlay.position", "top_left", &error));
+  EXPECT_FALSE(document.IsActive("overlay.position"));
+
+  ASSERT_TRUE(document.Set("overlay.server_info", "notice", &error)) << error;
+  EXPECT_TRUE(document.IsActive("overlay.position"));
+
+  ASSERT_TRUE(document.Set("overlay.server_info", "always", &error)) << error;
+  ASSERT_TRUE(document.Set("overlay.position", "bottom_right", &error))
+      << error;
+  runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.overlay().server_info,
+            runtime::ServerInfoMode::kAlways);
+  EXPECT_EQ(loaded.config.overlay().position,
+            runtime::OverlayPosition::kBottomRight);
+}
+
+TEST_F(SettingsModelTest, ProxyTypeAndLoginNeedAFixedProxy) {
+  EXPECT_EQ(Find("network.proxy_scheme").kind, SettingKind::kChoice);
+  EXPECT_EQ(Find("network.proxy_username").kind, SettingKind::kText);
+  EXPECT_EQ(Find("network.proxy_password").kind, SettingKind::kPassword);
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  for (const std::string_view key :
+       {"network.proxy_scheme", "network.proxy_username",
+        "network.proxy_password"}) {
+    EXPECT_FALSE(document.IsActive(key)) << key;
+  }
+
+  ASSERT_TRUE(document.SetText("network.proxy", "proxy.lan:1080", &error))
+      << error;
+  EXPECT_TRUE(document.IsActive("network.proxy_scheme"));
+  EXPECT_TRUE(document.IsActive("network.proxy_username"));
+  EXPECT_FALSE(document.IsActive("network.proxy_password"));
+
+  ASSERT_TRUE(document.Set("network.proxy_scheme", "socks5", &error)) << error;
+  ASSERT_TRUE(document.SetText("network.proxy_username", "me", &error))
+      << error;
+  EXPECT_TRUE(document.IsActive("network.proxy_password"));
+  runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  ASSERT_TRUE(loaded.config.network_proxy().has_value());
+  EXPECT_EQ(loaded.config.network_proxy()->scheme, "socks5h");
+  EXPECT_EQ(loaded.config.network_proxy()->username, "me");
+  EXPECT_EQ(loaded.config.network_proxy()->password, "");
+
+  ASSERT_TRUE(document.SetText("network.proxy_password", "p@ss word", &error))
+      << error;
+  ASSERT_TRUE(document.SetText("network.proxy_password", "", &error)) << error;
+  ASSERT_TRUE(document.SetText("network.proxy_password", "p@ss word", &error))
+      << error;
+  loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.network_proxy()->password, "p@ss word");
+
+  ASSERT_TRUE(document.Set("network.proxy_username", "", &error)) << error;
+  EXPECT_FALSE(document.IsSet("network.proxy_password"));
+  ASSERT_TRUE(document.Set("network.proxy_username", "me", &error)) << error;
+  ASSERT_TRUE(document.Set("network.proxy", "", &error)) << error;
+  for (const std::string_view key :
+       {"network.proxy_scheme", "network.proxy_username",
+        "network.proxy_password"}) {
+    EXPECT_FALSE(document.IsSet(key)) << key;
+  }
+  loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.network_proxy().has_value());
+}
+
 TEST_F(SettingsModelTest, NumberRowsKeepToTheRangeTheLoaderAccepts) {
   EXPECT_EQ(Find("window.width").minimum, 1);
   EXPECT_EQ(Find("window.height").minimum, 1);
@@ -1116,7 +1202,7 @@ TEST_F(SettingsModelTest, AChangedRowIsTheOnlyOneAndResetPutsItBack) {
     for (const SettingsGroup& group : page.groups) {
       for (const Setting& setting : group.settings) {
         const std::optional<std::string> value = ChangedSample(setting);
-        if (!value.has_value()) {
+        if (!value.has_value() || NeedsFixedProxy(setting.key)) {
           continue;
         }
         SCOPED_TRACE(std::string(setting.key) + " = " + *value);

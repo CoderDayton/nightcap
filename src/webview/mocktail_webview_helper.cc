@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -59,6 +60,7 @@ enum class PendingRobloxCookieOperation {
 struct AppState {
   GtkApplication* application = nullptr;
   WebKitNetworkSession* network_session = nullptr;
+  std::optional<mocktail::runtime::NetworkProxyConfig> proxy;
   std::string initial_url;
   std::string pending_navigation_url;
   std::string pending_roblox_cookie;
@@ -285,32 +287,28 @@ bool InitializeNetworkSession(AppState* state) {
   const bool use_system_proxy =
       system_proxy != nullptr && system_proxy[0] != '\0' &&
       std::string_view(system_proxy) != "0";
-  const char* proxy_host = std::getenv("MOCKTAIL_HTTP_PROXY_HOST");
-  const char* proxy_port = std::getenv("MOCKTAIL_HTTP_PROXY_PORT");
-  const char* proxy_scheme = std::getenv("MOCKTAIL_HTTP_PROXY_SCHEME");
-  if (proxy_host != nullptr && proxy_port != nullptr) {
-    const std::optional<mocktail::runtime::NetworkProxyConfig> proxy =
-        mocktail::runtime::ParseNetworkProxyConfig(
-            proxy_host, proxy_port,
-            proxy_scheme != nullptr ? proxy_scheme : "http");
-    if (proxy.has_value()) {
-      const std::string proxy_url =
-          mocktail::runtime::BuildNetworkProxyUrl(*proxy);
-      WebKitNetworkProxySettings* settings =
-          webkit_network_proxy_settings_new(proxy_url.c_str(), nullptr);
-      if (settings == nullptr) {
-        g_object_unref(state->network_session);
-        state->network_session = nullptr;
-        g_free(cookie_database);
-        return false;
-      }
-      webkit_network_session_set_proxy_settings(
-          state->network_session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, settings);
-      webkit_network_proxy_settings_free(settings);
-      std::cerr << "[webview] "
-                << (use_system_proxy ? "normalized system" : "configured")
-                << " proxy applied: " << proxy_url << '\n';
+  state->proxy = mocktail::runtime::ReadNetworkProxy(
+      mocktail::runtime::ProcessEnvironment());
+  if (state->proxy.has_value()) {
+    auto proxy = *state->proxy;
+    if (proxy.scheme == "socks5h") proxy.scheme = "socks5";
+    const std::string proxy_url =
+        mocktail::runtime::BuildNetworkProxyUrl(proxy, true);
+    WebKitNetworkProxySettings* settings =
+        webkit_network_proxy_settings_new(proxy_url.c_str(), nullptr);
+    if (settings == nullptr) {
+      g_object_unref(state->network_session);
+      state->network_session = nullptr;
+      g_free(cookie_database);
+      return false;
     }
+    webkit_network_session_set_proxy_settings(
+        state->network_session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, settings);
+    webkit_network_proxy_settings_free(settings);
+    std::cerr << "[webview] "
+              << (use_system_proxy ? "normalized system" : "configured")
+              << " proxy applied: "
+              << mocktail::runtime::BuildNetworkProxyUrl(proxy) << '\n';
   }
 
   WebKitCookieManager* cookies =
@@ -1274,6 +1272,25 @@ gboolean OnReloadKeyPressed(GtkEventControllerKey*, guint keyval, guint,
   return FALSE;
 }
 
+gboolean OnProxyAuthenticate(WebKitWebView*, WebKitAuthenticationRequest* request,
+                             gpointer user_data) {
+  auto* app = static_cast<AppState*>(user_data);
+  if (!webkit_authentication_request_is_for_proxy(request) ||
+      !app->proxy.has_value() || app->proxy->username.empty()) {
+    return FALSE;
+  }
+  if (webkit_authentication_request_is_retry(request)) {
+    webkit_authentication_request_cancel(request);
+    return TRUE;
+  }
+  WebKitCredential* credential = webkit_credential_new(
+      app->proxy->username.c_str(), app->proxy->password.c_str(),
+      WEBKIT_CREDENTIAL_PERSISTENCE_NONE);
+  webkit_authentication_request_authenticate(request, credential);
+  webkit_credential_free(credential);
+  return TRUE;
+}
+
 WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   WebKitUserContentManager* content_manager = webkit_user_content_manager_new();
   WebKitWebView* web_view = nullptr;
@@ -1296,6 +1313,7 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
     return nullptr;
   }
 
+  g_signal_connect(web_view, "authenticate", G_CALLBACK(OnProxyAuthenticate), app);
   GtkWidget* window = gtk_application_window_new(app->application);
   gtk_window_set_title(GTK_WINDOW(window), "Roblox");
   GtkWidget* header = gtk_header_bar_new();
@@ -1499,8 +1517,10 @@ int main(int argc, char *argv[]) {
   g_weak_ref_init(&state.primary_web_view, nullptr);
   g_weak_ref_init(&state.primary_window, nullptr);
 
+  const char* flatpak_id = std::getenv("FLATPAK_ID");
   GtkApplication *application = gtk_application_new(
-      "org.mocktail.WebViewHelper", G_APPLICATION_NON_UNIQUE);
+      flatpak_id != nullptr ? flatpak_id : "org.mocktail.WebViewHelper",
+      G_APPLICATION_NON_UNIQUE);
   state.application = application;
   g_signal_connect(application, "activate", G_CALLBACK(Activate), &state);
   state.termination_source =

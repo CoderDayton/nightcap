@@ -60,10 +60,33 @@ struct InputCapabilityConfig {
   bool hardware_cursor = false;
 };
 
+enum class ServerInfoMode { kOff, kNotice, kAlways };
+
+enum class OverlayPosition {
+  kTopCenter,
+  kTopRight,
+  kBottomLeft,
+  kBottomCenter,
+  kBottomRight,
+};
+
+struct OverlayConfig {
+  ServerInfoMode server_info = ServerInfoMode::kOff;
+  OverlayPosition position = OverlayPosition::kTopCenter;
+  bool valid = true;
+};
+
+std::optional<ServerInfoMode> ParseServerInfoMode(std::string_view name);
+std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name);
+std::string_view ServerInfoModeName(ServerInfoMode mode);
+std::string_view OverlayPositionName(OverlayPosition position);
+
 struct NetworkProxyConfig {
   std::string scheme = "http";
   std::string host;
   int port = 0;
+  std::string username;
+  std::string password;
 };
 
 // Text and image fields expand {place_name}, {place_icon}, and
@@ -101,8 +124,11 @@ struct DiscordRpcConfig {
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
     std::string_view host, std::string_view port,
-    std::string_view scheme = "http");
-std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy);
+    std::string_view scheme = "http", std::string_view username = {},
+    std::string_view password = {});
+std::optional<NetworkProxyConfig> ReadNetworkProxy(const Environment& environment);
+std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy,
+                                 bool include_credentials = false);
 
 // Immutable, supported runtime options. Advanced MOCKTAIL_PATCH_* controls
 // intentionally do not belong here; they remain isolated in the legacy path.
@@ -175,6 +201,7 @@ class RuntimeConfig {
   }
   const DiscordRpcConfig& discord_rpc() const { return discord_rpc_; }
   bool discord_rpc_valid() const { return discord_rpc_valid_; }
+  const OverlayConfig& overlay() const { return overlay_; }
 
   // These legacy opt-ins create workers that do not own their VM/JNI state.
   // Empty and "0" values are disabled; every other non-empty value is unsafe.
@@ -219,6 +246,7 @@ class RuntimeConfig {
   std::optional<NetworkProxyConfig> network_proxy_;
   std::optional<std::filesystem::path> ca_bundle_;
   bool ca_bundle_valid_ = true;
+  OverlayConfig overlay_;
   DiscordRpcConfig discord_rpc_;
   bool discord_rpc_valid_ = true;
   std::vector<std::string> unsafe_detached_thread_overrides_;

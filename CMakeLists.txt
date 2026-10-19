@@ -9,7 +9,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
-  VERSION 0.3.4
+  VERSION 0.4.0
   DESCRIPTION "Android Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
@@ -272,6 +272,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/command_line.cc
   src/runtime/crash_report_policy.cc
   src/runtime/discord_rpc.cc
+  src/runtime/https_json.cc
   src/runtime/device_profile.cc
   src/runtime/engine_pump_rest.cc
   src/runtime/environment.cc
@@ -313,6 +314,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/runtime_config_file.cc
   src/runtime/runtime_paths.cc
   src/runtime/running_instance.cc
+  src/runtime/server_info.cc
   src/runtime/session_log.cc
   src/runtime/single_instance_lock.cc
   src/runtime/startup_state_machine.cc
@@ -329,6 +331,7 @@ target_include_directories(mocktail_runtime PUBLIC
 )
 target_compile_definitions(mocktail_runtime PRIVATE
   "MOCKTAIL_DISCORD_APPLICATION_ID=\"${MOCKTAIL_DISCORD_APPLICATION_ID}\""
+  "MOCKTAIL_INSTALL_LIBDIR=\"${CMAKE_INSTALL_LIBDIR}\""
 )
 set_property(SOURCE src/runtime/session_log.cc APPEND PROPERTY
   COMPILE_DEFINITIONS

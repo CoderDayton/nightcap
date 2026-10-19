@@ -7,6 +7,15 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- An optional server info badge shows the game server's location, your ping, and frame rate. Set
+  `overlay.server_info` to `notice` to show it after each join, or `always` to keep it on screen.
+  `overlay.position` moves it from the top center to another corner or edge. Both are in the settings
+  window under Graphics.
+
+## [0.4.0] - 2026-10-18
+
+### Added
+
 - Added a settings window. Open it from the app menu (right-click Nightcap, then Settings) or with
   `mocktail --settings`. It changes `config.yaml` and `fflags.json` for you, keeps your comments, and does
   not save a value Nightcap could not start with. Changes apply the next time Nightcap starts. If Nightcap
@@ -40,10 +49,16 @@ Release notes on GitHub are taken from the matching section here.
 - Anti-aliasing in VR. Roblox draws the VR eyes without it, so edges were jagged in the headset. Each eye is
   now filtered on its way to the headset. `vr.anti_aliasing` picks `fxaa` (the default), `smaa`, which finds
   edges more precisely and keeps text sharper for a little more GPU time, or `off`.
+- The nightly `continuous` prerelease now has a `.deb`, `.rpm` and pacman package next to the AppImage,
+  each with a `.sha256`. They are versioned after the last release, such as `0.3.4+r29.g112f5ab`, so they
+  upgrade over it and over each other. The notes list the commits since the last nightly.
 - The log now names each Roblox Java call that Nightcap has no handler for, once per call, as
   `[JNI] no handler for <class>.<method><signature>`. This shows what a new Roblox version needs.
 - `--profile` traces now show how much GPU memory decoded ETC2 textures take, as the `emulated texture (MB)`
   and `compressed texture (MB)` counters. `scripts/summarize_profile_trace.py` prints the peak of each.
+- A fixed proxy can be SOCKS5 and can have a login: `network.proxy_scheme`, `network.proxy_username` and
+  `network.proxy_password` in `config.yaml`, or the Proxy rows in the settings window, where the password
+  is hidden as you type. It is saved as plain text in `config.yaml`. From upstream mocktail.
 
 ### Fixed
 
@@ -54,6 +69,13 @@ Release notes on GitHub are taken from the matching section here.
 - The loading window no longer gets a dock icon of its own. It now shows under Nightcap's icon.
 - The browser tracker ID no longer fails with HTTP 500 on almost every launch. Nightcap reuses the ID
   Roblox already saved, asks for one only when there is none, and keeps its cookie out of your sign-in file.
+- After you alt-tab away, moving the mouse over the game no longer turns the camera. Click in the game or
+  press a key to take control again.
+- The `.deb` package now finds its sign-in, update and error helpers, which Debian installs under
+  `/usr/lib/x86_64-linux-gnu`. From upstream mocktail.
+- Nightcap no longer crashes at first launch when it cannot read the sign-in helper's path. Thanks to
+  @justacalico.
+- In the Flatpak, the sign-in window now registers on the desktop's accessibility bus. Thanks to @reqhald.
 
 ### Changed
 
@@ -338,7 +360,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.4.0
 [0.3.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.4
 [0.3.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.3
 [0.3.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.2

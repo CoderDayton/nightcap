@@ -18,6 +18,10 @@
 
 extern char** environ;
 
+#ifndef MOCKTAIL_INSTALL_LIBDIR
+#define MOCKTAIL_INSTALL_LIBDIR "lib"
+#endif
+
 namespace mocktail {
 namespace runtime {
 namespace {
@@ -79,7 +83,8 @@ std::filesystem::path UpdateHelper(const Environment& environment) {
       executable_dir / "mocktail_updater",
       executable_dir.parent_path() / "libexec" / "mocktail" /
           "mocktail_updater",
-      executable_dir.parent_path() / "lib" / "mocktail" / "mocktail_updater",
+      executable_dir.parent_path() / MOCKTAIL_INSTALL_LIBDIR / "mocktail" /
+          "mocktail_updater",
   };
   for (const std::filesystem::path& candidate : candidates) {
     if (IsExecutableRegularFile(candidate)) {
@@ -377,7 +382,8 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
 
   const std::filesystem::path helper = UpdateHelper(environment);
   if (helper.empty()) {
-    if (force_run_latest) {
+    if (force_run_latest ||
+        environment.HasNonEmpty("MOCKTAIL_RUNTIME_LIBRARY_DIR")) {
       result.error = "cannot locate the Mocktail update helper";
     }
     return result;

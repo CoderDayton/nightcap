@@ -511,6 +511,69 @@ input:
   EXPECT_NE(invalid.error.find("input.system_cursor"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, ServerInfoIsOffByDefaultAtTheTopCenter) {
+  TemporaryDirectory defaulted_directory;
+  const RuntimeConfigLoadResult defaulted = LoadRuntimeConfig(
+      MapEnvironment(), defaulted_directory.Write(R"yaml(
+version: 1
+)yaml"));
+  ASSERT_TRUE(defaulted) << defaulted.error;
+  EXPECT_EQ(defaulted.config.overlay().server_info, ServerInfoMode::kOff);
+  EXPECT_EQ(defaulted.config.overlay().position, OverlayPosition::kTopCenter);
+
+  TemporaryDirectory configured_directory;
+  const RuntimeConfigLoadResult configured = LoadRuntimeConfig(
+      MapEnvironment(), configured_directory.Write(R"yaml(
+version: 1
+overlay:
+  server_info: always
+  position: top_right
+)yaml"));
+  ASSERT_TRUE(configured) << configured.error;
+  EXPECT_EQ(configured.config.overlay().server_info, ServerInfoMode::kAlways);
+  EXPECT_EQ(configured.config.overlay().position, OverlayPosition::kTopRight);
+
+  TemporaryDirectory off_directory;
+  const RuntimeConfigLoadResult off = LoadRuntimeConfig(
+      MapEnvironment(), off_directory.Write(R"yaml(
+version: 1
+overlay:
+  server_info: off
+)yaml"));
+  ASSERT_TRUE(off) << off.error;
+  EXPECT_EQ(off.config.overlay().server_info, ServerInfoMode::kOff);
+
+  TemporaryDirectory bad_mode_directory;
+  const RuntimeConfigLoadResult bad_mode = LoadRuntimeConfig(
+      MapEnvironment(), bad_mode_directory.Write(R"yaml(
+version: 1
+overlay:
+  server_info: sometimes
+)yaml"));
+  EXPECT_FALSE(bad_mode);
+  EXPECT_NE(bad_mode.error.find("overlay.server_info"), std::string::npos);
+
+  TemporaryDirectory bad_position_directory;
+  const RuntimeConfigLoadResult bad_position = LoadRuntimeConfig(
+      MapEnvironment(), bad_position_directory.Write(R"yaml(
+version: 1
+overlay:
+  position: middle
+)yaml"));
+  EXPECT_FALSE(bad_position);
+  EXPECT_NE(bad_position.error.find("overlay.position"), std::string::npos);
+
+  TemporaryDirectory top_left_directory;
+  const RuntimeConfigLoadResult top_left = LoadRuntimeConfig(
+      MapEnvironment(), top_left_directory.Write(R"yaml(
+version: 1
+overlay:
+  position: top_left
+)yaml"));
+  EXPECT_FALSE(top_left);
+  EXPECT_NE(top_left.error.find("overlay.position"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, HardwareCursorIsSeparateFromTheSystemTheme) {
   TemporaryDirectory directory;
   const RuntimeConfigLoadResult loaded = LoadRuntimeConfig(

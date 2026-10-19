@@ -38,6 +38,12 @@ games with a Linux entry in Discord's list. Roblox has none, so no process
 name Nightcap could use would be detected. Only Roblox or Discord can change
 that.
 
+## Where does the server location come from?
+
+When the server info badge is on, Nightcap looks up the game server's
+address at ipinfo.io once per new server. Only the server's address is sent.
+With the badge off, nothing is looked up.
+
 ## Where can I find logs for a bug report?
 
 Nightcap saves logs automatically. Reproduce the issue, close Nightcap, and

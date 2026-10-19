@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 #ifndef MOCKTAIL_DISCORD_APPLICATION_ID
 #define MOCKTAIL_DISCORD_APPLICATION_ID ""
@@ -17,6 +18,23 @@
 namespace mocktail {
 namespace runtime {
 namespace {
+
+std::string EncodeProxyCredential(std::string_view value) {
+  constexpr char hex[] = "0123456789ABCDEF";
+  std::string encoded;
+  for (unsigned char byte : value) {
+    if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+        (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' ||
+        byte == '_' || byte == '~') {
+      encoded += static_cast<char>(byte);
+    } else {
+      encoded += '%';
+      encoded += hex[byte >> 4];
+      encoded += hex[byte & 15];
+    }
+  }
+  return encoded;
+}
 
 constexpr std::array<std::string_view, 7> kUnsafeDetachedThreadOverrides = {
     "MOCKTAIL_APP_BRIDGE_APP_START_THREAD",
@@ -118,6 +136,8 @@ int ReadPositiveInt(const Environment& environment, std::string_view name,
   return static_cast<int>(parsed);
 }
 
+}  // namespace
+
 std::optional<NetworkProxyConfig> ReadNetworkProxy(
     const Environment& environment) {
   const std::optional<std::string> host =
@@ -129,13 +149,69 @@ std::optional<NetworkProxyConfig> ReadNetworkProxy(
   if (!host.has_value() || host->empty() || !port.has_value()) {
     return std::nullopt;
   }
-  return ParseNetworkProxyConfig(*host, *port, scheme);
+  return ParseNetworkProxyConfig(
+      *host, *port, scheme,
+      environment.GetOr("MOCKTAIL_HTTP_PROXY_USERNAME", ""),
+      environment.GetOr("MOCKTAIL_HTTP_PROXY_PASSWORD", ""));
 }
 
-}  // namespace
+namespace {
+
+constexpr std::pair<ServerInfoMode, std::string_view> kServerInfoModes[] = {
+    {ServerInfoMode::kOff, "off"},
+    {ServerInfoMode::kNotice, "notice"},
+    {ServerInfoMode::kAlways, "always"},
+};
+
+constexpr std::pair<OverlayPosition, std::string_view> kOverlayPositions[] = {
+    {OverlayPosition::kTopCenter, "top_center"},
+    {OverlayPosition::kTopRight, "top_right"},
+    {OverlayPosition::kBottomLeft, "bottom_left"},
+    {OverlayPosition::kBottomCenter, "bottom_center"},
+    {OverlayPosition::kBottomRight, "bottom_right"},
+};
+
+}
+
+std::optional<ServerInfoMode> ParseServerInfoMode(std::string_view name) {
+  for (const auto& [mode, mode_name] : kServerInfoModes) {
+    if (mode_name == name) {
+      return mode;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name) {
+  for (const auto& [position, position_name] : kOverlayPositions) {
+    if (position_name == name) {
+      return position;
+    }
+  }
+  return std::nullopt;
+}
+
+std::string_view ServerInfoModeName(ServerInfoMode mode) {
+  for (const auto& [candidate, name] : kServerInfoModes) {
+    if (candidate == mode) {
+      return name;
+    }
+  }
+  return "off";
+}
+
+std::string_view OverlayPositionName(OverlayPosition position) {
+  for (const auto& [candidate, name] : kOverlayPositions) {
+    if (candidate == position) {
+      return name;
+    }
+  }
+  return "top_center";
+}
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
-    std::string_view host, std::string_view port, std::string_view scheme) {
+    std::string_view host, std::string_view port, std::string_view scheme,
+    std::string_view username, std::string_view password) {
   std::string normalized_scheme;
   if (scheme == "http" || scheme == "https") {
     // Desktop resolvers commonly label the proxy selected for an HTTPS URL as
@@ -145,6 +221,13 @@ std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
              scheme == "socks5h") {
     normalized_scheme = "socks5h";
   } else {
+    return std::nullopt;
+  }
+  if ((username.empty() && !password.empty()) ||
+      username.find('\0') != std::string_view::npos ||
+      password.find('\0') != std::string_view::npos ||
+      (normalized_scheme == "socks5h" &&
+       (username.size() > 255 || password.size() > 255))) {
     return std::nullopt;
   }
   if (host.empty() || port.empty() || host.find("://") != std::string::npos ||
@@ -164,13 +247,20 @@ std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
     return std::nullopt;
   }
   return NetworkProxyConfig{std::move(normalized_scheme), std::string(host),
-                            parsed_port};
+                            parsed_port, std::string(username),
+                            std::string(password)};
 }
 
-std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy) {
+std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy,
+                                 bool include_credentials) {
   const bool ipv6 = proxy.host.find(':') != std::string::npos;
-  return proxy.scheme + "://" + std::string(ipv6 ? "[" : "") + proxy.host +
-         (ipv6 ? "]" : "") + ":" + std::to_string(proxy.port);
+  const std::string credentials =
+      include_credentials && !proxy.username.empty()
+          ? EncodeProxyCredential(proxy.username) + ":" +
+                EncodeProxyCredential(proxy.password) + "@"
+          : std::string();
+  return proxy.scheme + "://" + credentials + (ipv6 ? "[" : "") +
+         proxy.host + (ipv6 ? "]" : "") + ":" + std::to_string(proxy.port);
 }
 
 const char* VrModeName(VrMode mode) {
@@ -219,6 +309,18 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
                                         &config.window_.high_dpi_valid);
   config.theme_mode_ =
       environment.GetOr("MOCKTAIL_THEME", config.theme_mode_);
+  if (const auto mode = environment.Get("MOCKTAIL_SERVER_INFO");
+      mode.has_value()) {
+    const auto parsed = ParseServerInfoMode(*mode);
+    config.overlay_.valid = parsed.has_value();
+    config.overlay_.server_info = parsed.value_or(ServerInfoMode::kOff);
+  }
+  if (const auto position = environment.Get("MOCKTAIL_OVERLAY_POSITION");
+      position.has_value()) {
+    const auto parsed = ParseOverlayPosition(*position);
+    config.overlay_.valid = config.overlay_.valid && parsed.has_value();
+    config.overlay_.position = parsed.value_or(OverlayPosition::kTopCenter);
+  }
   const std::optional<std::string> configured_device =
       environment.Get("MOCKTAIL_DEVICE_PROFILE");
   const bool has_explicit_device =
@@ -360,7 +462,8 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       if (config.network_proxy_ &&
           (config.network_proxy_->host != fleasion_proxy->host ||
            config.network_proxy_->port != fleasion_proxy->port ||
-           config.network_proxy_->scheme != "http"))
+           config.network_proxy_->scheme != "http" ||
+           !config.network_proxy_->username.empty()))
         config.fleasion_valid_ = false;
       config.network_proxy_ = fleasion_proxy;
     } else if (config.network_proxy_) {

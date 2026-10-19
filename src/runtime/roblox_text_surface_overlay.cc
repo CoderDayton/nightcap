@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "runtime/roblox_text_font_resolver.h"
+#include "runtime/server_info_overlay.h"
 
 namespace mocktail {
 namespace runtime {
@@ -752,18 +753,35 @@ void RobloxTextSurfaceOverlay::RecordFailureLocked(Status status) {
 
 extern "C" bool mocktail_text_overlay_may_present() {
   return mocktail::runtime::g_overlay_may_present.load(
-      std::memory_order_acquire);
+             std::memory_order_acquire) ||
+         mocktail::runtime::ServerInfoOverlay::MayPresent();
 }
 
 extern "C" bool mocktail_text_overlay_query(
     MocktailTextOverlayFrameInfo* frame) {
-  std::lock_guard<std::mutex> lock(mocktail::runtime::g_active_overlay_mutex);
-  return mocktail::runtime::g_active_overlay != nullptr &&
-         mocktail::runtime::g_active_overlay->QueryFrame(frame);
+  {
+    std::lock_guard<std::mutex> lock(
+        mocktail::runtime::g_active_overlay_mutex);
+    if (mocktail::runtime::g_active_overlay != nullptr &&
+        mocktail::runtime::g_active_overlay->QueryFrame(frame) &&
+        frame->visible != 0) {
+      return true;
+    }
+  }
+  MocktailTextOverlayFrameInfo server_info{};
+  if (mocktail::runtime::ServerInfoOverlay::QueryFrame(&server_info)) {
+    *frame = server_info;
+    return true;
+  }
+  return false;
 }
 
 extern "C" bool mocktail_text_overlay_copy(std::uint64_t revision, void* rgba,
                                            std::size_t rgba_capacity) {
+  if ((revision & mocktail::runtime::ServerInfoOverlay::kRevisionBit) != 0) {
+    return mocktail::runtime::ServerInfoOverlay::CopyFrame(revision, rgba,
+                                                          rgba_capacity);
+  }
   std::lock_guard<std::mutex> lock(mocktail::runtime::g_active_overlay_mutex);
   return mocktail::runtime::g_active_overlay != nullptr &&
          mocktail::runtime::g_active_overlay->CopyFrame(revision, rgba,

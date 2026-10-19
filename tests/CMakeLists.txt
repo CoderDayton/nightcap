@@ -208,6 +208,37 @@ target_link_libraries(discord_rpc_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(server_info_test server_info_test.cc)
+target_link_libraries(server_info_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(server_info_test)
+
+add_executable(https_json_test https_json_test.cc)
+target_link_libraries(https_json_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(https_json_test)
+
+add_executable(bionic_datagram_observer_test bionic_datagram_observer_test.cc)
+target_link_libraries(bionic_datagram_observer_test PRIVATE
+  Mocktail::Compat
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(bionic_datagram_observer_test)
+
+add_executable(android_log_observer_test android_log_observer_test.cc)
+target_link_libraries(android_log_observer_test PRIVATE
+  stub_log
+  GTest::gtest_main
+)
+target_include_directories(android_log_observer_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+mocktail_apply_compile_options(android_log_observer_test)
+
 add_executable(native_update_helper_fixture native_update_helper_fixture.cc)
 add_executable(native_progress_helper_fixture native_progress_helper_fixture.cc)
 mocktail_apply_compile_options(native_update_helper_fixture)
@@ -1327,6 +1358,10 @@ gtest_discover_tests(window_fullscreen_request_gate_test)
 gtest_discover_tests(window_state_store_test)
 gtest_discover_tests(roblox_fullscreen_menu_request_gate_test)
 gtest_discover_tests(roblox_fullscreen_runtime_bridge_test)
+gtest_discover_tests(server_info_test)
+gtest_discover_tests(https_json_test)
+gtest_discover_tests(bionic_datagram_observer_test)
+gtest_discover_tests(android_log_observer_test)
 gtest_discover_tests(roblox_output_device_bridge_test)
 gtest_discover_tests(window_text_input_owner_test)
 gtest_discover_tests(window_pointer_capture_owner_test)

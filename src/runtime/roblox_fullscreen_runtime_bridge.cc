@@ -121,7 +121,7 @@ Status RobloxFullscreenRuntimeBridge::Install(
         StatusCode::kFailedPrecondition,
         "fullscreen state synchronizer already has an owner");
   }
-  mocktail_android_log_set_observer(&ObserveAndroidLog);
+  (void)mocktail_android_log_add_observer(&ObserveAndroidLog);
   installed_ = true;
   std::fprintf(stderr,
                "  [fullscreen] Roblox menu bridge armed for Build ID %s\n",
@@ -133,7 +133,7 @@ void RobloxFullscreenRuntimeBridge::Shutdown() {
   if (!installed_) {
     return;
   }
-  mocktail_android_log_set_observer(nullptr);
+  mocktail_android_log_remove_observer(&ObserveAndroidLog);
   window::ClearFullscreenStateSyncCallback();
   installed_ = false;
   setter_validated_ = false;

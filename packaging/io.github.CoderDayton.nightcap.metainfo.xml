@@ -53,6 +53,19 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.4.0" date="2026-10-18">
+      <description>
+        <ul>
+          <li>A settings window, opened from the app menu or with mocktail --settings.</li>
+          <li>Options to use the desktop's cursor theme and to have the desktop draw the cursor.</li>
+          <li>An asset overlay folder that replaces Roblox's own files.</li>
+          <li>A fixed proxy can be SOCKS5 and can have a login.</li>
+          <li>Joining a game from a website link while in a game no longer freezes Nightcap.</li>
+          <li>Moving the mouse over the game after alt-tab no longer turns the camera.</li>
+          <li>Fewer long frames in menus, less texture hitching and a faster start.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-10-11">
       <description>
         <ul>
