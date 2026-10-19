@@ -36,7 +36,9 @@ constexpr std::int64_t kStatsLogUs = 30 * kSecondUs;
 constexpr auto kTick = std::chrono::milliseconds(250);
 constexpr auto kFadeTick = std::chrono::milliseconds(16);
 constexpr std::int64_t kFadeUs = 200000;
-constexpr float kTopMargin = 40.0F;
+// Lines the top positions up with Roblox's top bar buttons, which sit 12 pt
+// below the top of the window.
+constexpr float kTopMargin = 12.0F;
 constexpr float kEdgeMargin = 24.0F;
 
 struct Color {
