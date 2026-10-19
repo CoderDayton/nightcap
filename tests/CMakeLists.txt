@@ -688,6 +688,23 @@ target_link_libraries(chrome_trace_writer_test PRIVATE GTest::gtest_main
   Threads::Threads nlohmann_json::nlohmann_json)
 mocktail_apply_compile_options(chrome_trace_writer_test)
 
+add_library(vulkan_driver_pin_fixture SHARED vulkan_driver_pin_fixture.cc)
+
+add_executable(vulkan_driver_pin_test
+  vulkan_driver_pin_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_driver_pin.cc
+)
+target_include_directories(vulkan_driver_pin_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(vulkan_driver_pin_test PRIVATE GTest::gtest_main
+  ${CMAKE_DL_LIBS})
+target_compile_definitions(vulkan_driver_pin_test PRIVATE
+  "MOCKTAIL_TEST_PIN_FIXTURE=\"$<TARGET_FILE:vulkan_driver_pin_fixture>\""
+)
+add_dependencies(vulkan_driver_pin_test vulkan_driver_pin_fixture)
+mocktail_apply_compile_options(vulkan_driver_pin_test)
+
 add_executable(vulkan_etc2_emulation_test
   vulkan_etc2_emulation_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
@@ -1202,6 +1219,7 @@ gtest_discover_tests(texture_override_test)
 gtest_discover_tests(texture_resample_test)
 gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)
+gtest_discover_tests(vulkan_driver_pin_test)
 gtest_discover_tests(video_driver_policy_test)
 gtest_discover_tests(window_surface_lifecycle_test)
 gtest_discover_tests(window_creation_policy_test)
