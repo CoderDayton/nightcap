@@ -47,6 +47,7 @@ class ServerInfoOverlay final {
     bool show_fps = false;
     bool show_ping = false;
     OverlayPosition position = OverlayPosition::kBottomLeft;
+    int location_offset = 12;
     int pixel_width = 0;
     int pixel_height = 0;
     float scale = 1.0F;

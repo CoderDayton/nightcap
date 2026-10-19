@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <stdlib.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -140,8 +141,8 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "performance.gamemode", "audio.output_device", "audio.input_device",
            "window.width", "window.height", "window.title", "window.high_dpi",
            "input.raw_mouse", "input.system_cursor", "input.hardware_cursor",
-           "overlay.location", "overlay.fps", "overlay.ping",
-           "overlay.position",
+           "overlay.location", "overlay.location_offset", "overlay.fps",
+           "overlay.ping", "overlay.position",
            "network.use_system_proxy", "network.proxy_scheme",
            "network.proxy_username", "network.proxy_password",
            "network.ca_bundle",
@@ -258,7 +259,8 @@ TEST_F(SettingsModelTest, EveryValueTheWindowOffersSavesAndLoads) {
         // Nightcap loads.
         std::vector<std::string> values;
         if (setting.kind == SettingKind::kNumber) {
-          values = {NumberValue(4096), std::string(setting.default_value)};
+          values = {NumberValue(std::min(4096.0, setting.maximum)),
+                    std::string(setting.default_value)};
         } else if (setting.kind == SettingKind::kToggle) {
           const bool on = setting.default_value == "true";
           values = {on ? "false" : "true", on ? "true" : "false"};
@@ -979,7 +981,9 @@ TEST_F(SettingsModelTest, LocationAndPerformanceOverlayAreSeparateGroups) {
   ASSERT_NE(location, nullptr);
   ASSERT_NE(performance, nullptr);
   EXPECT_EQ(location->title, "Server location");
-  EXPECT_EQ(location->settings.size(), 1U);
+  ASSERT_EQ(location->settings.size(), 2U);
+  EXPECT_EQ(location->settings[0].key, "overlay.location");
+  EXPECT_EQ(location->settings[1].key, "overlay.location_offset");
   EXPECT_EQ(performance->title, "Performance overlay");
   ASSERT_EQ(performance->settings.size(), 3U);
   EXPECT_EQ(performance->settings[0].key, "overlay.fps");
@@ -998,9 +1002,9 @@ TEST_F(SettingsModelTest, OnlyOverlaySettingsApplyWithoutARestart) {
       }
     }
   }
-  EXPECT_EQ(live, (std::set<std::string_view>{"overlay.location", "overlay.fps",
-                                              "overlay.ping",
-                                              "overlay.position"}));
+  EXPECT_EQ(live, (std::set<std::string_view>{
+                      "overlay.location", "overlay.location_offset",
+                      "overlay.fps", "overlay.ping", "overlay.position"}));
 }
 
 TEST_F(SettingsModelTest, LocationSwitchReadsTheOldServerInfoKey) {
@@ -1036,8 +1040,12 @@ TEST_F(SettingsModelTest, OverlayPositionNeedsAStatShown) {
   EXPECT_EQ(document.Value("overlay.position"), "bottom_left");
   EXPECT_FALSE(document.Set("overlay.position", "top_left", &error));
   EXPECT_FALSE(document.IsActive("overlay.position"));
+  EXPECT_EQ(Find("overlay.location_offset").kind, SettingKind::kNumber);
+  EXPECT_EQ(document.Value("overlay.location_offset"), "12");
+  EXPECT_FALSE(document.IsActive("overlay.location_offset"));
 
   ASSERT_TRUE(document.Set("overlay.location", "true", &error)) << error;
+  EXPECT_TRUE(document.IsActive("overlay.location_offset"));
   EXPECT_FALSE(document.IsActive("overlay.position"));
   ASSERT_TRUE(document.Set("overlay.ping", "true", &error)) << error;
   EXPECT_TRUE(document.IsActive("overlay.position"));

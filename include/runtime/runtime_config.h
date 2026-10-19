@@ -59,13 +59,18 @@ enum class OverlayPosition {
   kBottomRight,
 };
 
+inline constexpr int kMaximumOverlayLocationOffset = 200;
+
 struct OverlayConfig {
   bool location = false;
+  int location_offset = 12;
   bool fps = false;
   bool ping = false;
   OverlayPosition position = OverlayPosition::kBottomLeft;
   bool valid = true;
 };
+
+std::optional<int> ParseOverlayLocationOffset(std::string_view value);
 
 std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name);
 std::string_view OverlayPositionName(OverlayPosition position);

@@ -184,8 +184,8 @@ OverlayPoint PlaceOverlay(OverlayPosition position, int view_width,
 OverlayLayout LayOutOverlay(OverlayPosition hud_position, int view_width,
                             int view_height, OverlaySize popup,
                             OverlaySize hud, float scale,
-                            float popup_presence) {
-  constexpr float kTopBarMargin = 12.0F;
+                            float popup_presence, int popup_top) {
+  const auto popup_margin = static_cast<float>(popup_top);
   constexpr float kBelowTopBarMargin = 64.0F;
   constexpr float kEdgeMargin = 24.0F;
   const auto scaled = [scale](float value) {
@@ -204,9 +204,9 @@ OverlayLayout LayOutOverlay(OverlayPosition hud_position, int view_width,
   constexpr float kBesideGap = 8.0F;
   const bool shares_row = hud_position == OverlayPosition::kTopCenter;
   OverlayLayout layout;
-  layout.popup = place(OverlayPosition::kTopCenter, popup, kTopBarMargin);
+  layout.popup = place(OverlayPosition::kTopCenter, popup, popup_margin);
   layout.hud = place(hud_position, hud,
-                     shares_row ? kTopBarMargin : kBelowTopBarMargin);
+                     shares_row ? popup_margin : kBelowTopBarMargin);
   const OverlayRect empty{};
   if (shares_row && !(layout.popup == empty) && !(layout.hud == empty)) {
     const int gap = scaled(kBesideGap);
@@ -268,8 +268,9 @@ OverlayConfigReloader::Stamp StampOf(const std::filesystem::path& file) {
 }
 
 bool SameOverlay(const OverlayConfig& a, const OverlayConfig& b) {
-  return a.location == b.location && a.fps == b.fps && a.ping == b.ping &&
-         a.position == b.position;
+  return a.location == b.location &&
+         a.location_offset == b.location_offset && a.fps == b.fps &&
+         a.ping == b.ping && a.position == b.position;
 }
 
 }
@@ -310,6 +311,7 @@ std::optional<OverlayConfig> OverlayConfigReloader::Reload(
     }
   };
   take_changed(&OverlayConfig::location);
+  take_changed(&OverlayConfig::location_offset);
   take_changed(&OverlayConfig::fps);
   take_changed(&OverlayConfig::ping);
   take_changed(&OverlayConfig::position);

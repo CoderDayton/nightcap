@@ -220,6 +220,12 @@ TEST(ServerInfoTest, ReloadAppliesOnlyTheOverlaySettingsTheFileChanged) {
       reloader.Reload(*shown, &error);
   ASSERT_TRUE(same_second.has_value());
   EXPECT_EQ(same_second->position, OverlayPosition::kTopCenter);
+
+  file.Write("  fps: true\n  position: top_center\n  location_offset: 30\n");
+  const std::optional<OverlayConfig> lowered =
+      reloader.Reload(*same_second, &error);
+  ASSERT_TRUE(lowered.has_value());
+  EXPECT_EQ(lowered->location_offset, 30);
 }
 
 TEST(ServerInfoTest, DropsThePopupWhenTheCombinedImageIsTooLarge) {
@@ -234,6 +240,20 @@ TEST(ServerInfoTest, DropsThePopupWhenTheCombinedImageIsTooLarge) {
       OverlayPosition::kBottomRight, 3840, 2160, OverlaySize{400, 88},
       OverlaySize{240, 88}, 2.0F);
   EXPECT_FALSE(uhd.popup == OverlayRect{});
+}
+
+TEST(ServerInfoTest, LowersThePopupRowByTheLocationOffset) {
+  const OverlayLayout layout = LayOutOverlay(
+      OverlayPosition::kTopCenter, 2000, 1200, OverlaySize{400, 88},
+      OverlaySize{240, 88}, 2.0F, 1.0F, 40);
+  EXPECT_EQ(layout.popup.y, 80);
+  EXPECT_EQ(layout.hud.y, 80);
+
+  const OverlayLayout corner = LayOutOverlay(
+      OverlayPosition::kTopRight, 2000, 1200, OverlaySize{400, 88},
+      OverlaySize{240, 88}, 2.0F, 1.0F, 40);
+  EXPECT_EQ(corner.popup.y, 80);
+  EXPECT_EQ(corner.hud.y, 128);
 }
 
 TEST(ServerInfoTest, PutsATopRightHudBelowTheTopBarButtons) {

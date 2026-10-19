@@ -357,6 +357,7 @@ version: 1
   EXPECT_FALSE(defaulted.config.overlay().fps);
   EXPECT_FALSE(defaulted.config.overlay().ping);
   EXPECT_EQ(defaulted.config.overlay().position, OverlayPosition::kBottomLeft);
+  EXPECT_EQ(defaulted.config.overlay().location_offset, 12);
 
   TemporaryDirectory configured_directory;
   const RuntimeConfigLoadResult configured = LoadRuntimeConfig(
@@ -367,8 +368,10 @@ overlay:
   fps: true
   ping: false
   position: top_right
+  location_offset: 40
 )yaml"));
   ASSERT_TRUE(configured) << configured.error;
+  EXPECT_EQ(configured.config.overlay().location_offset, 40);
   EXPECT_TRUE(configured.config.overlay().location);
   EXPECT_TRUE(configured.config.overlay().fps);
   EXPECT_FALSE(configured.config.overlay().ping);
@@ -384,6 +387,19 @@ overlay:
   ASSERT_TRUE(ping) << ping.error;
   EXPECT_TRUE(ping.config.overlay().ping);
   EXPECT_FALSE(ping.config.overlay().fps);
+
+  for (const char* offset : {"201", "-1", "ten"}) {
+    TemporaryDirectory bad_offset_directory;
+    const RuntimeConfigLoadResult bad_offset = LoadRuntimeConfig(
+        MapEnvironment(),
+        bad_offset_directory.Write(
+            std::string("version: 1\noverlay:\n  location_offset: ") +
+            offset + "\n"));
+    EXPECT_FALSE(bad_offset) << offset;
+    EXPECT_NE(bad_offset.error.find("overlay.location_offset"),
+              std::string::npos)
+        << bad_offset.error;
+  }
 
   TemporaryDirectory bad_location_directory;
   const RuntimeConfigLoadResult bad_location = LoadRuntimeConfig(

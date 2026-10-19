@@ -8,9 +8,10 @@ Release notes on GitHub are taken from the matching section here.
 ### Added
 
 - An optional popup shows the game server's location for a few seconds after each join
-  (`overlay.location`). A separate performance overlay keeps your frame rate (`overlay.fps`) and ping
-  (`overlay.ping`) on screen, and `overlay.position` moves it to a corner or edge. All are in the
-  settings window under Graphics, and changes apply while you play, without a restart.
+  (`overlay.location`), and `overlay.location_offset` moves it down. A separate performance
+  overlay keeps your frame rate (`overlay.fps`) and ping (`overlay.ping`) on screen, and
+  `overlay.position` moves it to a corner or edge. All are in the settings window under Graphics,
+  and changes apply while you play, without a restart.
 
 ## [0.4.0] - 2026-10-18
 
