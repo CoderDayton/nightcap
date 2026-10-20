@@ -144,8 +144,7 @@ bool CopyImmutable(const std::filesystem::path& source,
   return error->empty() && WriteExclusive(destination, contents, 0444, error);
 }
 
-std::string UtcTimestamp() {
-  const std::time_t now = std::time(nullptr);
+std::string UtcTimestamp(std::time_t now) {
   std::tm utc{};
   if (gmtime_r(&now, &utc) == nullptr) return "1970-01-01T00:00:00Z";
   std::array<char, 32> value{};
@@ -403,7 +402,7 @@ CandidateApprovalResult CreateCandidateApproval(
       {"successful_runs", 2},
       {"canary_attestation_sha256",
        Json::array({attestation_hashes[0], attestation_hashes[1]})},
-      {"approved_at", UtcTimestamp()},
+      {"approved_at", UtcTimestamp(static_cast<std::time_t>(epoch))},
   };
   if (!WriteExclusive(result.receipt, receipt.dump(2) + "\n", 0444,
                       &result.error)) {
