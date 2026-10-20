@@ -311,6 +311,12 @@ target_link_libraries(running_instance_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(roblox_cache_test roblox_cache_test.cc)
+target_link_libraries(roblox_cache_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(single_instance_lock_test single_instance_lock_test.cc)
 target_link_libraries(single_instance_lock_test PRIVATE
   Mocktail::Runtime
@@ -1185,6 +1191,7 @@ gtest_discover_tests(roblox_cursor_hook_test)
 gtest_discover_tests(roblox_mouse_behavior_query_test)
 gtest_discover_tests(cursor_picture_source_test)
 gtest_discover_tests(running_instance_test)
+gtest_discover_tests(roblox_cache_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
 gtest_discover_tests(process_launch_policy_test)

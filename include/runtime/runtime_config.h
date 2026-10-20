@@ -177,6 +177,9 @@ class RuntimeConfig {
   bool fleasion_valid() const { return fleasion_valid_; }
   const std::string& fleasion_proxy_mode() const { return fleasion_proxy_mode_; }
   int fleasion_proxy_port() const { return fleasion_proxy_port_; }
+  bool fleasion_clear_cache_on_launch() const {
+    return fleasion_clear_cache_on_launch_;
+  }
   const std::optional<std::filesystem::path>& fleasion_ca_certificate() const {
     return fleasion_ca_certificate_;
   }
@@ -218,6 +221,7 @@ class RuntimeConfig {
   bool fleasion_valid_ = true;
   std::string fleasion_proxy_mode_ = "env";
   int fleasion_proxy_port_ = 58443;
+  bool fleasion_clear_cache_on_launch_ = false;
   std::optional<std::filesystem::path> fleasion_ca_certificate_;
   std::optional<NetworkProxyConfig> network_proxy_;
   std::optional<std::filesystem::path> ca_bundle_;

@@ -149,6 +149,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "integrations.fleasion.enabled", "integrations.fleasion.proxy_mode",
            "integrations.fleasion.proxy_port",
            "integrations.fleasion.ca_certificate",
+           "integrations.fleasion.clear_cache_on_launch",
            "integrations.discord_rpc.enabled",
            "integrations.discord_rpc.show_place_name",
            "integrations.discord_rpc.show_elapsed_time",
@@ -191,6 +192,19 @@ TEST_F(SettingsModelTest, TheAdvancedPageOpensTheConfigFolder) {
   const Setting& folder = Find("config_folder");
   EXPECT_EQ(folder.kind, SettingKind::kFolder);
   EXPECT_EQ(&advanced.groups.back().settings.back(), &folder);
+}
+
+TEST_F(SettingsModelTest, TheAdvancedPageClearsTheRobloxCache) {
+  const SettingsPage& advanced = SettingsPages().back();
+  const Setting& cache = Find("roblox_cache");
+  EXPECT_EQ(cache.kind, SettingKind::kCache);
+  bool on_advanced = false;
+  for (const SettingsGroup& group : advanced.groups) {
+    for (const Setting& setting : group.settings) {
+      on_advanced = on_advanced || &setting == &cache;
+    }
+  }
+  EXPECT_TRUE(on_advanced);
 }
 
 TEST_F(SettingsModelTest, AutomaticUpdatesIsASwitchThatIsOnUntilTurnedOff) {
@@ -1186,6 +1200,7 @@ std::optional<std::string> ChangedSample(const Setting& setting) {
       return TextSample(setting.key);
     case SettingKind::kEditor:
     case SettingKind::kFolder:
+    case SettingKind::kCache:
       return std::nullopt;
   }
   return std::nullopt;
@@ -1364,6 +1379,19 @@ TEST_F(SettingsModelTest, HostsRoutingLeavesTheFleasionPortInactive) {
       << error;
   EXPECT_FALSE(document.IsActive("integrations.fleasion.proxy_port"));
   EXPECT_TRUE(document.IsActive("integrations.fleasion.ca_certificate"));
+}
+
+TEST_F(SettingsModelTest, ClearingOnLaunchNeedsFleasion) {
+  Write("integrations:\n  fleasion:\n    enabled: false\n");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_FALSE(
+      document.IsActive("integrations.fleasion.clear_cache_on_launch"));
+  ASSERT_TRUE(document.Set("integrations.fleasion.enabled", "true", &error))
+      << error;
+  EXPECT_TRUE(
+      document.IsActive("integrations.fleasion.clear_cache_on_launch"));
 }
 
 TEST(SettingsPagesTest, TextGroupsExplainTheirPlaceholders) {

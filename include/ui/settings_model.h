@@ -35,6 +35,7 @@ enum class SettingKind {
   kEditor,
   // A row that opens the folder config.yaml is in.
   kFolder,
+  kCache,
 };
 
 struct SettingChoice {

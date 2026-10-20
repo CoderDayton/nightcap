@@ -408,6 +408,9 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   config.network_proxy_ = ReadNetworkProxy(environment);
   config.fleasion_enabled_ = ReadBoolean(
       environment, "MOCKTAIL_FLEASION_ENABLED", false, &config.fleasion_valid_);
+  config.fleasion_clear_cache_on_launch_ =
+      ReadBoolean(environment, "MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH", false,
+                  &config.fleasion_valid_);
   config.fleasion_proxy_mode_ = environment.GetOr("MOCKTAIL_FLEASION_PROXY_MODE", "env");
   const auto fleasion_proxy = ParseNetworkProxyConfig(
       "127.0.0.1", environment.GetOr("MOCKTAIL_FLEASION_PROXY_PORT", "58443"));

@@ -1387,6 +1387,29 @@ TEST(RuntimeConfigFileTest, FleasionEnvironmentRoundTripsAndHostsModeDoesNotSetP
   ASSERT_TRUE(ExportRuntimeConfigEnvironment(RuntimeConfig::FromEnvironment(MapEnvironment()), &error));
 }
 
+TEST(RuntimeConfigFileTest, FleasionCanClearTheRobloxCacheOnLaunch) {
+  TemporaryDirectory temporary;
+  auto file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n");
+  auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.fleasion_clear_cache_on_launch());
+
+  file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n"
+                         "    clear_cache_on_launch: true\n");
+  loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.fleasion_clear_cache_on_launch());
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  EXPECT_TRUE(RuntimeConfig::FromEnvironment(ProcessEnvironment())
+                  .fleasion_clear_cache_on_launch());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(RuntimeConfig::FromEnvironment(MapEnvironment()), &error));
+
+  file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n"
+                         "    clear_cache_on_launch: sometimes\n");
+  EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment(), file));
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail
