@@ -29,27 +29,24 @@ with extra fixes for playing on a PC. The program and config paths keep the
 `io.github.CoderDayton.nightcap`, so Nightcap and upstream can be installed
 side by side.
 
-- **Keeps up with Roblox.** New Roblox versions work soon after they come out.
-- **Plays more games.** Nightcap answers a server check that some experiences
-  use, so you can join and stay in those too.
-- **Voice chat that keeps working.** Your microphone still works after a
-  Roblox update.
-- **Logging in works.** Verification checks and captchas finish instead of
-  hanging.
-- **The current Roblox look.** The new home screen and side menu, like on
-  Windows.
-- **Your own cursors, fonts and skies.** Drop files in
-  `~/.local/share/mocktail/asset_overlay` and Nightcap uses them. The layout
-  matches Sober's `asset_overlay` folder.
-- **Smoother mouse and a cooler PC.** Optional raw mouse input, and less CPU
-  use while idle.
+- **Roblox updates.** New versions work soon after release. The last working
+  one is kept if an update fails.
+- **More games.** Answers a server check some experiences use, so you can join
+  and stay.
+- **Login and voice chat.** Captchas finish, and your mic survives updates.
+- **Mouse and keyboard.** The PC home screen and side menu, raw mouse input,
+  and your own cursor theme.
+- **Performance.** Less idle CPU use and faster texture loading.
+- **Custom assets.** Cursors, fonts and skies go in
+  `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Fleasion
+  works too.
+- **Overlays.** FPS, ping, and the server's location when you join.
+- **Discord.** Shows the game you're playing.
+- **Settings window.** Every option in one place.
 
-Everything else works the same as upstream. See
-[`textures/`](textures/README.md) for custom textures, a ready-made crosshair
-and the asset overlay folder, the [roadmap](docs/ROADMAP.md) for what is
-coming next, the [changelog](CHANGELOG.md) for what each release changed,
-[performance](docs/PERFORMANCE.md) for CPU load, heat and the knobs that change
-them, and the [FAQ](FAQ.md) for Discord RPC, logs, and VR.
+More: [custom textures](textures/README.md) ·
+[performance](docs/PERFORMANCE.md) · [FAQ](FAQ.md) ·
+[changelog](CHANGELOG.md) · [roadmap](docs/ROADMAP.md)
 
 ## Install with Flatpak
 
