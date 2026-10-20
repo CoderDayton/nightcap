@@ -825,6 +825,23 @@ TEST_P(PayloadStorePromotionTest, CurrentWriteFailureRestoresPrevious) {
   }
 }
 
+TEST_P(PayloadStorePromotionTest, RepeatedApprovalsAcrossSecondsDoNotCollide) {
+  if (!GetParam()) GTEST_SKIP();
+  const auto started = std::chrono::system_clock::now();
+  const auto first_second =
+      std::chrono::duration_cast<std::chrono::seconds>(started.time_since_epoch());
+  int attempts = 0;
+  while (std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::system_clock::now().time_since_epoch()) <
+         first_second + std::chrono::seconds(3)) {
+    ResetManifests();
+    const auto result = Promote();
+    ++attempts;
+    ASSERT_EQ(result.error.find("collision"), std::string::npos)
+        << "attempt " << attempts << ": " << result.error;
+  }
+}
+
 TEST_P(PayloadStorePromotionTest, FirstWriteFailurePreservesBothManifests) {
   for (const auto phase : phases) {
     for (const bool present : {true, false}) {

@@ -70,9 +70,12 @@ void PassKey(JNIEnv* env, jclass clazz, jboolean pressed, jint scan_code,
           static_cast<double>(key_code), static_cast<double>(repeat)});
 }
 
+std::uint8_t g_mouse_behavior = 1;
+std::uint8_t g_mouse_lock_compare = 1;
+
 jboolean GetMouseLockedCenter(JNIEnv* env, jclass clazz) {
   Record("mouse-lock-query", env, clazz, {});
-  return JNI_TRUE;
+  return g_mouse_behavior == g_mouse_lock_compare ? JNI_TRUE : JNI_FALSE;
 }
 
 jobject GetTextBoxInfo(JNIEnv* env, jclass clazz) {
@@ -343,16 +346,37 @@ TEST_F(RobloxInputNativeAdapterTest, CallsExactExportedJniSignatures) {
 }
 
 TEST_F(RobloxInputNativeAdapterTest, QueriesExactNativeMouseLockState) {
+  g_mouse_behavior = 1;
   RobloxInputRuntime runtime(Environment(), Symbols());
   ASSERT_TRUE(runtime.Initialize({1280, 720, 1280, 720}, true).ok());
 
-  bool locked_center = false;
-  ASSERT_TRUE(runtime.GetMainWindowIsMouseLockedCenter(&locked_center).ok());
+  RobloxMouseLock lock;
+  ASSERT_TRUE(runtime.GetMainWindowMouseLock(&lock).ok());
 
-  EXPECT_TRUE(locked_center);
+  EXPECT_TRUE(lock.center);
+  EXPECT_FALSE(lock.reports_current_position);
   ASSERT_EQ(probe_.calls.size(), 1U);
   EXPECT_EQ(probe_.calls[0].name, "mouse-lock-query");
   EXPECT_EQ(probe_.calls[0].env, vm_->GetJNIEnv());
+}
+
+TEST_F(RobloxInputNativeAdapterTest, ReportsLockCurrentPositionThroughTheCompare) {
+  g_mouse_behavior = 2;
+  g_mouse_lock_compare = 1;
+  RobloxInputSymbols symbols = Symbols();
+  symbols.mouse_lock_compare = &g_mouse_lock_compare;
+  RobloxInputRuntime runtime(Environment(), symbols);
+  ASSERT_TRUE(runtime.Initialize({1280, 720, 1280, 720}, true).ok());
+
+  RobloxMouseLock lock;
+  ASSERT_TRUE(runtime.GetMainWindowMouseLock(&lock).ok());
+
+  EXPECT_FALSE(lock.center);
+  EXPECT_TRUE(lock.current_position);
+  EXPECT_TRUE(lock.reports_current_position);
+  EXPECT_EQ(g_mouse_lock_compare, 1);
+  EXPECT_EQ(probe_.calls.size(), 2U);
+  g_mouse_behavior = 1;
 }
 
 TEST_F(RobloxInputNativeAdapterTest,

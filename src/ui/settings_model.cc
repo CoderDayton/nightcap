@@ -10,6 +10,7 @@
 
 #include "runtime/device_profile.h"
 #include "runtime/frame_rate_policy.h"
+#include "runtime/runtime_config.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_editor.h"
 #include "runtime/runtime_config_store.h"
@@ -18,6 +19,11 @@
 namespace mocktail {
 namespace ui {
 namespace {
+
+Setting Live(Setting setting) {
+  setting.live = true;
+  return setting;
+}
 
 // The touch switch. The file holds it inside the device block, which the
 // loader does not let input.touch_enabled be combined with.
@@ -551,32 +557,55 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "roblox",
                  {}},
             }},
-           {"Server info",
+           {"Server location",
             {
-                {"overlay.server_info",
-                 "Show server info",
-                 "Location, ping and frame rate.",
-                 SettingKind::kChoice,
-                 {
-                     {"off", "Off"},
-                     {"notice", "After joining"},
-                     {"always", "Always"},
-                 },
-                 "off",
-                 {}},
-                {"overlay.position",
-                 "Position",
-                 "",
-                 SettingKind::kChoice,
-                 {
-                     {"top_center", "Top center"},
-                     {"top_right", "Top right"},
-                     {"bottom_left", "Bottom left"},
-                     {"bottom_center", "Bottom center"},
-                     {"bottom_right", "Bottom right"},
-                 },
-                 "top_center",
-                 {}},
+                Live({"overlay.location",
+                      "Show after joining",
+                      "A popup at the top center.",
+                      SettingKind::kToggle,
+                      {},
+                      "false",
+                      {}}),
+                Live({"overlay.location_offset",
+                      "Distance from top",
+                      "In pixels. 12 lines it up with the top bar.",
+                      SettingKind::kNumber,
+                      {},
+                      "12",
+                      {},
+                      0,
+                      runtime::kMaximumOverlayLocationOffset,
+                      1}),
+            }},
+           {"Performance overlay",
+            {
+                Live({"overlay.fps",
+                      "Frame rate",
+                      "",
+                      SettingKind::kToggle,
+                      {},
+                      "false",
+                      {}}),
+                Live({"overlay.ping",
+                      "Ping",
+                      "",
+                      SettingKind::kToggle,
+                      {},
+                      "false",
+                      {}}),
+                Live({"overlay.position",
+                      "Position",
+                      "",
+                      SettingKind::kChoice,
+                      {
+                          {"top_center", "Top center"},
+                          {"top_right", "Top right"},
+                          {"bottom_left", "Bottom left"},
+                          {"bottom_center", "Bottom center"},
+                          {"bottom_right", "Bottom right"},
+                      },
+                      "bottom_left",
+                      {}}),
             }},
            {"Window",
             {
@@ -941,6 +970,10 @@ const std::vector<SettingsPage>& SettingsPages() {
                  SettingKind::kNumber, {}, "58443", {}, 1, 65535, 1},
                 {"integrations.fleasion.ca_certificate", "CA certificate",
                  "", SettingKind::kFile, {}, "", {}},
+                {"integrations.fleasion.clear_cache_on_launch",
+                 "Clear Roblox cache on launch",
+                 "Loads new replacements. Roblox downloads assets again.",
+                 SettingKind::kToggle, {}, "false", {}},
             },
             "Use Fleasion",
             "Trust Fleasion's certificate without editing Roblox files.",
@@ -1033,6 +1066,13 @@ const std::vector<SettingsPage>& SettingsPages() {
             "Nightcap downloads."},
            {"Files",
             {
+                {"roblox_cache",
+                 "Clear Roblox cache",
+                 "Downloaded game assets. Settings and sign-in are kept.",
+                 SettingKind::kCache,
+                 {},
+                 "",
+                 {}},
                 {"config_folder",
                  "Open config folder",
                  "Where config.yaml and fflags.json are kept.",
@@ -1215,6 +1255,13 @@ std::string SettingsDocument::Value(std::string_view key) const {
   if (key == kProxyKey) {
     return ProxyValue(file);
   }
+  if (key == "overlay.location" && !file.Get(key).found) {
+    const auto legacy = file.Get("overlay.server_info");
+    if (legacy.found) {
+      return legacy.value == "notice" || legacy.value == "always" ? "true"
+                                                                  : "false";
+    }
+  }
   return file.Get(key).value;
 }
 
@@ -1269,7 +1316,11 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
-  if (key == "overlay.position" && Value("overlay.server_info") == "off") {
+  if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
+    return false;
+  }
+  if (key == "overlay.position" && !IsSwitchedOn("overlay.fps") &&
+      !IsSwitchedOn("overlay.ping")) {
     return false;
   }
   if (key == "integrations.fleasion.proxy_port" &&
@@ -1316,6 +1367,7 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
       return value != fallback;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
+    case SettingKind::kCache:
       return false;
   }
   return false;

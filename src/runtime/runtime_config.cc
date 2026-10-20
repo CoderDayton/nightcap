@@ -157,12 +157,6 @@ std::optional<NetworkProxyConfig> ReadNetworkProxy(
 
 namespace {
 
-constexpr std::pair<ServerInfoMode, std::string_view> kServerInfoModes[] = {
-    {ServerInfoMode::kOff, "off"},
-    {ServerInfoMode::kNotice, "notice"},
-    {ServerInfoMode::kAlways, "always"},
-};
-
 constexpr std::pair<OverlayPosition, std::string_view> kOverlayPositions[] = {
     {OverlayPosition::kTopCenter, "top_center"},
     {OverlayPosition::kTopRight, "top_right"},
@@ -171,15 +165,6 @@ constexpr std::pair<OverlayPosition, std::string_view> kOverlayPositions[] = {
     {OverlayPosition::kBottomRight, "bottom_right"},
 };
 
-}
-
-std::optional<ServerInfoMode> ParseServerInfoMode(std::string_view name) {
-  for (const auto& [mode, mode_name] : kServerInfoModes) {
-    if (mode_name == name) {
-      return mode;
-    }
-  }
-  return std::nullopt;
 }
 
 std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name) {
@@ -191,13 +176,15 @@ std::optional<OverlayPosition> ParseOverlayPosition(std::string_view name) {
   return std::nullopt;
 }
 
-std::string_view ServerInfoModeName(ServerInfoMode mode) {
-  for (const auto& [candidate, name] : kServerInfoModes) {
-    if (candidate == mode) {
-      return name;
-    }
+std::optional<int> ParseOverlayLocationOffset(std::string_view value) {
+  int parsed = 0;
+  const char* end = value.data() + value.size();
+  const auto result = std::from_chars(value.data(), end, parsed);
+  if (result.ec != std::errc() || result.ptr != end || parsed < 0 ||
+      parsed > kMaximumOverlayLocationOffset) {
+    return std::nullopt;
   }
-  return "off";
+  return parsed;
 }
 
 std::string_view OverlayPositionName(OverlayPosition position) {
@@ -206,7 +193,7 @@ std::string_view OverlayPositionName(OverlayPosition position) {
       return name;
     }
   }
-  return "top_center";
+  return "bottom_left";
 }
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
@@ -309,17 +296,26 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
                                         &config.window_.high_dpi_valid);
   config.theme_mode_ =
       environment.GetOr("MOCKTAIL_THEME", config.theme_mode_);
-  if (const auto mode = environment.Get("MOCKTAIL_SERVER_INFO");
-      mode.has_value()) {
-    const auto parsed = ParseServerInfoMode(*mode);
-    config.overlay_.valid = parsed.has_value();
-    config.overlay_.server_info = parsed.value_or(ServerInfoMode::kOff);
+  for (const auto& [name, field] :
+       {std::pair{"MOCKTAIL_OVERLAY_LOCATION", &config.overlay_.location},
+        std::pair{"MOCKTAIL_OVERLAY_FPS", &config.overlay_.fps},
+        std::pair{"MOCKTAIL_OVERLAY_PING", &config.overlay_.ping}}) {
+    if (const std::optional<bool> shown = InputEnabled(environment, name)) {
+      *field = *shown;
+    }
   }
   if (const auto position = environment.Get("MOCKTAIL_OVERLAY_POSITION");
       position.has_value()) {
     const auto parsed = ParseOverlayPosition(*position);
     config.overlay_.valid = config.overlay_.valid && parsed.has_value();
-    config.overlay_.position = parsed.value_or(OverlayPosition::kTopCenter);
+    config.overlay_.position = parsed.value_or(OverlayPosition::kBottomLeft);
+  }
+  if (const auto offset = environment.Get("MOCKTAIL_OVERLAY_LOCATION_OFFSET");
+      offset.has_value()) {
+    const std::optional<int> parsed = ParseOverlayLocationOffset(*offset);
+    config.overlay_.valid = config.overlay_.valid && parsed.has_value();
+    config.overlay_.location_offset =
+        parsed.value_or(config.overlay_.location_offset);
   }
   const std::optional<std::string> configured_device =
       environment.Get("MOCKTAIL_DEVICE_PROFILE");
@@ -447,6 +443,9 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   config.network_proxy_ = ReadNetworkProxy(environment);
   config.fleasion_enabled_ = ReadBoolean(
       environment, "MOCKTAIL_FLEASION_ENABLED", false, &config.fleasion_valid_);
+  config.fleasion_clear_cache_on_launch_ =
+      ReadBoolean(environment, "MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH", false,
+                  &config.fleasion_valid_);
   config.fleasion_proxy_mode_ = environment.GetOr("MOCKTAIL_FLEASION_PROXY_MODE", "env");
   const auto fleasion_proxy = ParseNetworkProxyConfig(
       "127.0.0.1", environment.GetOr("MOCKTAIL_FLEASION_PROXY_PORT", "58443"));

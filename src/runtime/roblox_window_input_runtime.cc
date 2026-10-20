@@ -248,13 +248,20 @@ void RobloxWindowInputRuntime::StopXrControllerHaptics(int hand) {
 }
 
 bool RobloxWindowInputRuntime::MouseLockQueryCallback(void* context,
-                                                      bool* locked_center) {
-  if (context == nullptr || locked_center == nullptr) {
+                                                      window::MouseLock* lock) {
+  if (context == nullptr || lock == nullptr) {
     return false;
   }
-  return static_cast<RobloxWindowInputRuntime*>(context)
-      ->runtime_.GetMainWindowIsMouseLockedCenter(locked_center)
-      .ok();
+  RobloxMouseLock roblox_lock;
+  if (!static_cast<RobloxWindowInputRuntime*>(context)
+           ->runtime_.GetMainWindowMouseLock(&roblox_lock)
+           .ok()) {
+    return false;
+  }
+  lock->center = roblox_lock.center;
+  lock->current_position = roblox_lock.current_position;
+  lock->reports_current_position = roblox_lock.reports_current_position;
+  return true;
 }
 
 }  // namespace runtime

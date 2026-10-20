@@ -7,10 +7,24 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
-- An optional server info badge shows the game server's location, your ping, and frame rate. Set
-  `overlay.server_info` to `notice` to show it after each join, or `always` to keep it on screen.
-  `overlay.position` moves it from the top center to another corner or edge. Both are in the settings
-  window under Graphics.
+- An optional popup shows the game server's location for a few seconds after each join
+  (`overlay.location`), and `overlay.location_offset` moves it down. A separate performance
+  overlay keeps your frame rate (`overlay.fps`) and ping (`overlay.ping`) on screen, and
+  `overlay.position` moves it to a corner or edge. All are in the settings window under Graphics,
+  and changes apply while you play, without a restart.
+- Advanced settings can clear Roblox's downloaded game assets, and show how much space they use.
+  Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
+  clears them at every launch so new replacements load.
+
+### Fixed
+
+- The Flatpak no longer fails to install Roblox on NVIDIA under Wayland with "graphics canary exited with
+  status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version
+  failed its startup test.
+- Holding right click over a button, the leaderboard, or the Roblox menu no longer freezes the cursor.
+  The cursor now only holds still while the camera turns, as on Windows.
+- The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
+  the `.desktop` file, so the menu entry pointed at a file that does not exist.
 
 ## [0.4.0] - 2026-10-18
 

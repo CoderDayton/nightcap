@@ -279,6 +279,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/external_launch_broker.cc
   src/runtime/frame_rate_policy.cc
   src/runtime/fleasion.cc
+  src/runtime/roblox_cache.cc
   src/runtime/game_mode.cc
   src/runtime/game_session_coordinator.cc
   src/runtime/graphics_launch_policy.cc
@@ -307,6 +308,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/process_diagnostics.cc
   src/runtime/asset_overlay_names.cc
   src/runtime/roblox_cursor_hook.cc
+  src/runtime/roblox_mouse_behavior_query.cc
   src/runtime/runtime_config.cc
   src/runtime/runtime_config_bootstrap.cc
   src/runtime/runtime_config_editor.cc
@@ -744,13 +746,17 @@ install(FILES
 # launches from sessions whose PATH lacks the install prefix. Uses the prefix
 # given at install time, not the configure-time one.
 install(CODE "
+  set(MOCKTAIL_DESKTOP_BINDIR \"${CMAKE_INSTALL_BINDIR}\")
+  if(NOT IS_ABSOLUTE \"\${MOCKTAIL_DESKTOP_BINDIR}\")
+    set(MOCKTAIL_DESKTOP_BINDIR \"\${CMAKE_INSTALL_PREFIX}/\${MOCKTAIL_DESKTOP_BINDIR}\")
+  endif()
   file(READ \"${CMAKE_SOURCE_DIR}/packaging/io.github.CoderDayton.nightcap.desktop\"
        MOCKTAIL_DESKTOP_ENTRY)
   string(REPLACE \"Exec=env SDL_VIDEODRIVER=wayland,x11 mocktail %u\"
-         \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail %u\"
+         \"Exec=env SDL_VIDEODRIVER=wayland,x11 \${MOCKTAIL_DESKTOP_BINDIR}/mocktail %u\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
   string(REPLACE \"Exec=mocktail --settings\"
-         \"Exec=\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mocktail --settings\"
+         \"Exec=\${MOCKTAIL_DESKTOP_BINDIR}/mocktail --settings\"
          MOCKTAIL_DESKTOP_ENTRY \"\${MOCKTAIL_DESKTOP_ENTRY}\")
   file(WRITE \"${CMAKE_BINARY_DIR}/io.github.CoderDayton.nightcap.desktop\"
        \"\${MOCKTAIL_DESKTOP_ENTRY}\")

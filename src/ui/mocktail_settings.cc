@@ -13,8 +13,10 @@
 #include "mocktail/platform/application_id.h"
 #include "mocktail/platform/sdl_window_icon_data.h"
 #include "runtime/environment.h"
+#include "runtime/roblox_cache.h"
 #include "runtime/running_instance.h"
 #include "runtime/runtime_paths.h"
+#include "runtime/single_instance_lock.h"
 #include "ui/settings_model.h"
 
 namespace {
@@ -95,6 +97,7 @@ struct SettingsWindow {
   bool restarting = false;
   // A change saved while the restart ran may not reach the new Nightcap.
   bool saved_while_restarting = false;
+  bool needs_restart = false;
   // Set once the window is destroyed, after which its widgets are gone.
   bool closed = false;
   // The button on that card that takes the last saved change back.
@@ -104,6 +107,10 @@ struct SettingsWindow {
   bool refreshing = false;
   Row* stepped = nullptr;
   guint stepped_timer = 0;
+  std::filesystem::path android_data_root;
+  std::filesystem::path roblox_data_lock;
+  Row* cache = nullptr;
+  GtkWidget* cache_button = nullptr;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -250,6 +257,7 @@ void RefreshRow(Row* row, bool keep_edit) {
       break;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
+    case SettingKind::kCache:
       break;
   }
 }
@@ -289,6 +297,7 @@ constexpr char kSavedText[] =
     "Saved. Changes apply the next time Nightcap starts.";
 constexpr char kRestartToApplyText[] =
     "Saved. Restart Nightcap to apply the changes.";
+constexpr char kAppliedText[] = "Saved and applied.";
 
 struct RestartJob {
   std::filesystem::path instance_lock;
@@ -319,6 +328,7 @@ void OnRestartDone(GObject*, GAsyncResult* result, gpointer user_data) {
     return;
   }
   if (restarted && !window->saved_while_restarting) {
+    window->needs_restart = false;
     gtk_label_set_text(window->notice_label, "Saved. Nightcap restarted.");
     gtk_widget_set_visible(window->restart, FALSE);
     return;
@@ -381,7 +391,7 @@ void AskRestart(SettingsWindow* window) {
 }
 
 // Shows the saved card, and while Nightcap runs, offers to restart it.
-void OnChangeSaved(SettingsWindow* window) {
+void OnChangeSaved(SettingsWindow* window, bool live) {
   gtk_revealer_set_reveal_child(window->notice, TRUE);
   if (window->restarting) {
     window->saved_while_restarting = true;
@@ -390,6 +400,12 @@ void OnChangeSaved(SettingsWindow* window) {
   // An empty lock path finds nothing running.
   const mocktail::runtime::RunningInstance instance =
       mocktail::runtime::FindRunningInstance(window->instance_lock);
+  if (live && instance.running && !window->needs_restart) {
+    gtk_label_set_text(window->notice_label, kAppliedText);
+    gtk_widget_set_visible(window->restart, FALSE);
+    return;
+  }
+  window->needs_restart = window->needs_restart || instance.running;
   const bool can_restart = instance.running && instance.pid > 0 &&
                            !window->restart_program.empty();
   gtk_label_set_text(window->notice_label,
@@ -410,7 +426,7 @@ void ShowSaved(Row* row, std::size_t before, bool saved,
   if (!saved) {
     ShowError(window, error);
   } else if (window->document.saved_changes() != before) {
-    OnChangeSaved(window);
+    OnChangeSaved(window, row->setting->live);
   }
   gtk_widget_set_visible(window->undo, window->document.CanUndo());
   // On failure the rows go back to what the file holds. A text that was
@@ -448,7 +464,7 @@ void SaveStepped(SettingsWindow* window) {
     return;
   }
   if (window->document.saved_changes() != before) {
-    OnChangeSaved(window);
+    OnChangeSaved(window, row->setting->live);
   }
   gtk_widget_set_visible(window->undo, window->document.CanUndo());
   ShowChanged(window);
@@ -663,7 +679,7 @@ void SaveFFlags(FFlagsEditor* editor) {
     SettingsWindow* window = editor->window;
     // The dialog owns `editor` and may free it on close.
     adw_dialog_force_close(editor->dialog);
-    OnChangeSaved(window);
+    OnChangeSaved(window, false);
     return;
   }
   // The dialog stays open with the text, so nothing typed is lost.
@@ -864,6 +880,117 @@ GtkWidget* NewResetButton(Row* row) {
   return button;
 }
 
+struct CacheJob {
+  std::filesystem::path android_data_root;
+  std::filesystem::path lock;
+  bool clear = false;
+  std::uintmax_t bytes = 0;
+  std::string error;
+};
+
+void RunCacheJob(GTask* task, gpointer, gpointer task_data, GCancellable*) {
+  auto* job = static_cast<CacheJob*>(task_data);
+  if (!job->clear) {
+    job->bytes = mocktail::runtime::RobloxCacheBytes(job->android_data_root);
+    g_task_return_boolean(task, TRUE);
+    return;
+  }
+  std::error_code error;
+  std::filesystem::create_directories(job->lock.parent_path(), error);
+  const mocktail::runtime::SingleInstanceLock lock =
+      mocktail::runtime::SingleInstanceLock::Acquire(job->lock);
+  if (lock.already_running()) {
+    job->error =
+        "Close Nightcap, or wait for the other clear to finish, then try "
+        "again.";
+  } else if (!lock.acquired()) {
+    job->error = "Cannot clear the Roblox cache: " + lock.error();
+  } else {
+    const mocktail::runtime::RobloxCacheClear cleared =
+        mocktail::runtime::ClearRobloxCache(job->android_data_root);
+    job->bytes = cleared.bytes;
+    if (!cleared) job->error = "Cannot clear the Roblox cache: " + cleared.error;
+  }
+  g_task_return_boolean(task, job->error.empty());
+}
+
+std::string SizeText(std::uintmax_t bytes) {
+  char* text = g_format_size(bytes);
+  std::string result(text);
+  g_free(text);
+  return result;
+}
+
+void ShowCacheSize(SettingsWindow* window, std::uintmax_t bytes) {
+  const std::string subtitle =
+      Text(window->cache->setting->subtitle) +
+      (bytes == 0 ? " Nothing to clear." : " Using " + SizeText(bytes) + ".");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(window->cache->widget),
+                              subtitle.c_str());
+}
+
+void StartCacheJob(SettingsWindow* window, bool clear);
+
+void OnCacheJobDone(GObject*, GAsyncResult* result, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  GTask* task = G_TASK(result);
+  const auto* job = static_cast<const CacheJob*>(g_task_get_task_data(task));
+  const bool done = g_task_propagate_boolean(task, nullptr);
+  if (job->clear) g_application_release(g_application_get_default());
+  if (window->closed) return;
+  gtk_widget_set_sensitive(window->cache_button, TRUE);
+  if (!done) {
+    ShowError(window, job->error);
+    StartCacheJob(window, false);
+    return;
+  }
+  if (job->clear) {
+    const std::string message =
+        "Cleared " + SizeText(job->bytes) + " of Roblox cache.";
+    AdwToast* toast = adw_toast_new(message.c_str());
+    adw_toast_set_use_markup(toast, FALSE);
+    adw_toast_overlay_add_toast(window->toasts, toast);
+  }
+  ShowCacheSize(window, job->clear ? 0 : job->bytes);
+}
+
+void StartCacheJob(SettingsWindow* window, bool clear) {
+  gtk_widget_set_sensitive(window->cache_button, FALSE);
+  if (clear) g_application_hold(g_application_get_default());
+  auto* job = new CacheJob{window->android_data_root, window->roblox_data_lock,
+                           clear, 0, std::string()};
+  GTask* task = g_task_new(nullptr, nullptr, OnCacheJobDone, window);
+  g_task_set_task_data(task, job, [](gpointer data) {
+    delete static_cast<CacheJob*>(data);
+  });
+  g_task_run_in_thread(task, RunCacheJob);
+  g_object_unref(task);
+}
+
+void OnClearCacheResponse(AdwAlertDialog*, const char* response,
+                          gpointer user_data) {
+  if (g_strcmp0(response, "clear") == 0) {
+    StartCacheJob(static_cast<SettingsWindow*>(user_data), true);
+  }
+}
+
+void OnClearCacheClicked(GtkButton*, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  AdwDialog* question = adw_alert_dialog_new(
+      "Clear Roblox cache?",
+      "Roblox downloads game assets again the next time you join a game. "
+      "Settings and sign-in are kept.");
+  adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(question), "cancel",
+                                 "Cancel", "clear", "Clear", nullptr);
+  adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(question), "clear",
+                                           ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(question), "cancel");
+  adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(question), "cancel");
+  g_signal_connect(question, "response", G_CALLBACK(OnClearCacheResponse),
+                   window);
+  adw_dialog_present(question, window->widget);
+}
+
 void AddRow(SettingsWindow* window, GtkWidget* container,
             const Setting& setting, bool expander_switch = false) {
   Row& row = window->rows.emplace_back();
@@ -957,9 +1084,20 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       g_signal_connect(row.widget, "activated",
                        G_CALLBACK(OnFolderActivated), window);
       break;
+    case SettingKind::kCache:
+      row.widget = adw_action_row_new();
+      window->cache = &row;
+      window->cache_button = gtk_button_new_with_label("Clear");
+      gtk_widget_set_valign(window->cache_button, GTK_ALIGN_CENTER);
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget),
+                                window->cache_button);
+      g_signal_connect(window->cache_button, "clicked",
+                       G_CALLBACK(OnClearCacheClicked), window);
+      break;
   }
   if (row.reset == nullptr && setting.kind != SettingKind::kEditor &&
-      setting.kind != SettingKind::kFolder) {
+      setting.kind != SettingKind::kFolder &&
+      setting.kind != SettingKind::kCache) {
     row.reset = NewResetButton(&row);
     adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.reset);
     // Before the row's own control, so the control stays at the edge.
@@ -969,6 +1107,7 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
     }
   }
   SetRowText(row.widget, setting.title, setting.subtitle);
+  if (setting.kind == SettingKind::kCache) StartCacheJob(window, false);
   AddToContainer(container, row.widget);
   if (row.custom != nullptr) {
     AddToContainer(container, row.custom);
@@ -1340,6 +1479,8 @@ int main(int argc, char* argv[]) {
   };
   window.instance_lock =
       absolute_path(mocktail::runtime::kInstanceLockVariable);
+  window.android_data_root = paths.android_data_root();
+  window.roblox_data_lock = mocktail::runtime::RobloxDataLockPath(paths);
   window.restart_program =
       absolute_path(mocktail::runtime::kRestartProgramVariable);
 

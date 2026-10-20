@@ -11,6 +11,9 @@
 #include "runtime/roblox_xr_controller_input.h"
 
 namespace mocktail {
+namespace window {
+struct MouseLock;
+}
 namespace runtime {
 
 // Composition owner for the single SDL event observer. It queries logical and
@@ -56,7 +59,7 @@ class RobloxWindowInputRuntime final {
  private:
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);
-  static bool MouseLockQueryCallback(void* context, bool* locked_center);
+  static bool MouseLockQueryCallback(void* context, window::MouseLock* lock);
   static void GamepadEventCallback(void* context,
                                    const platform::PlatformEvent& event);
   static void XrControllerEventCallback(void* context,

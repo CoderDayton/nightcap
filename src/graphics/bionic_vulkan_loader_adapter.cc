@@ -23,6 +23,7 @@
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
+#include "mocktail/graphics/vulkan_driver_pin.h"
 #include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
 #include "mocktail/graphics/vulkan_text_overlay_compositor.h"
@@ -1922,6 +1923,7 @@ vkCreateInstance(const VkInstanceCreateInfo* create_info,
             state.host_get_instance_proc_addr(*instance, "vkGetDeviceProcAddr")),
         std::memory_order_release);
     std::fprintf(stderr, "  [vulkan] host VkInstance created\n");
+    mocktail::graphics::PinLoadedVulkanDrivers();
     if (host_application_info.apiVersion != requested_api) {
       std::fprintf(stderr,
                    "  [vulkan] instance API raised to 1.2 for imported "

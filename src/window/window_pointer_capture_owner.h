@@ -15,7 +15,13 @@
 namespace mocktail {
 namespace window {
 
-using MouseLockQueryCallback = bool (*)(void* context, bool* locked_center);
+struct MouseLock {
+  bool center = false;
+  bool current_position = false;
+  bool reports_current_position = false;
+};
+
+using MouseLockQueryCallback = bool (*)(void* context, MouseLock* lock);
 
 // The desktop cursor shown over the window. kHidden leaves the pointer to
 // Roblox, which draws its own. kCustom shows a game's own cursor picture.

@@ -11,8 +11,8 @@ Nothing is queued right now.
 - Settings window, from the app menu or `mocktail --settings`: graphics,
 input, performance, audio, and Discord options, and a text editor for
 `fflags.json`. It edits the same `config.yaml`, keeps your comments, and
-does not save a value Nightcap could not start with. Changes apply on the
-next launch.
+does not save a value Nightcap could not start with. Overlay changes apply
+at once; the rest apply on the next launch.
 - Lower input latency: frames are presented as soon as they are ready.
 - Controllers hot-plug without a restart, and a pad that is unplugged mid-game
 releases its held buttons and sticks instead of leaving them stuck.

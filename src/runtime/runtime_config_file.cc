@@ -192,6 +192,10 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.system_cursor",
        "input.hardware_cursor",
       "overlay.server_info",
+      "overlay.location",
+      "overlay.location_offset",
+      "overlay.fps",
+      "overlay.ping",
       "overlay.position",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
@@ -205,6 +209,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "integrations.fleasion.proxy_mode",
       "integrations.fleasion.proxy_port",
       "integrations.fleasion.ca_certificate",
+      "integrations.fleasion.clear_cache_on_launch",
       "integrations.discord_rpc.enabled",
       "integrations.discord_rpc.show_place_name",
       "integrations.discord_rpc.show_elapsed_time",
@@ -379,13 +384,27 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_VR_FRAME_RATE_LIMIT"] = *frame_rate;
   }
-  if (const auto server_info = value("overlay.server_info");
-      server_info.has_value()) {
-    if (!ParseServerInfoMode(*server_info).has_value()) {
+  if (const auto legacy = value("overlay.server_info"); legacy.has_value()) {
+    if (*legacy != "off" && *legacy != "notice" && *legacy != "always") {
       *error = "overlay.server_info must be off, notice, or always";
       return false;
     }
-    (*environment)["MOCKTAIL_SERVER_INFO"] = *server_info;
+    if (*legacy != "off" && !value("overlay.location").has_value()) {
+      (*environment)["MOCKTAIL_OVERLAY_LOCATION"] = "on";
+    }
+  }
+  for (const auto& [key, variable] :
+       {std::pair{"overlay.location", "MOCKTAIL_OVERLAY_LOCATION"},
+        std::pair{"overlay.fps", "MOCKTAIL_OVERLAY_FPS"},
+        std::pair{"overlay.ping", "MOCKTAIL_OVERLAY_PING"}}) {
+    if (const auto shown = value(key); shown.has_value()) {
+      bool parsed = false;
+      if (!ParseBoolean(*shown, &parsed)) {
+        *error = std::string(key) + " must be true or false";
+        return false;
+      }
+      (*environment)[variable] = parsed ? "on" : "off";
+    }
   }
   if (const auto position = value("overlay.position"); position.has_value()) {
     if (!ParseOverlayPosition(*position).has_value()) {
@@ -395,6 +414,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_OVERLAY_POSITION"] = *position;
+  }
+  if (const auto offset = value("overlay.location_offset"); offset.has_value()) {
+    if (!ParseOverlayLocationOffset(*offset).has_value()) {
+      *error = "overlay.location_offset must be a whole number from 0 to " +
+               std::to_string(kMaximumOverlayLocationOffset);
+      return false;
+    }
+    (*environment)["MOCKTAIL_OVERLAY_LOCATION_OFFSET"] = *offset;
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -615,6 +642,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
                "integrations.discord_rpc.enabled",
                "MOCKTAIL_DISCORD_RPC_ENABLED"),
            {"integrations.fleasion.enabled", "MOCKTAIL_FLEASION_ENABLED"},
+           {"integrations.fleasion.clear_cache_on_launch",
+            "MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH"},
            {"integrations.discord_rpc.show_place_name",
             "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME"},
            {"integrations.discord_rpc.show_elapsed_time",
@@ -912,7 +941,7 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
   } else if (!result.config.theme_mode_valid()) {
     result.error = "theme mode is invalid";
   } else if (!result.config.overlay().valid) {
-    result.error = "server info overlay policy is invalid";
+    result.error = "overlay settings are invalid";
   } else if (!result.config.window().high_dpi_valid) {
     result.error = "window high-DPI policy is invalid";
   } else if (result.config.vsync_mode() != "auto" &&
@@ -1031,10 +1060,15 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_GRAPHICS_BACKEND",
                           config.graphics_backend_name(), error) &&
       SetEnvironmentValue("MOCKTAIL_THEME", config.theme_mode(), error) &&
-      SetEnvironmentValue("MOCKTAIL_SERVER_INFO",
-                          std::string(ServerInfoModeName(
-                              config.overlay().server_info)),
-                          error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_LOCATION",
+                          config.overlay().location ? "on" : "off", error) &&
+      SetEnvironmentValue(
+          "MOCKTAIL_OVERLAY_LOCATION_OFFSET",
+          std::to_string(config.overlay().location_offset), error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_FPS",
+                          config.overlay().fps ? "on" : "off", error) &&
+      SetEnvironmentValue("MOCKTAIL_OVERLAY_PING",
+                          config.overlay().ping ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_OVERLAY_POSITION",
                           std::string(OverlayPositionName(
                               config.overlay().position)),
@@ -1140,7 +1174,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_MODE",
                            config.fleasion_proxy_mode(), error) ||
       !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_PORT",
-                           std::to_string(config.fleasion_proxy_port()), error))
+                           std::to_string(config.fleasion_proxy_port()), error) ||
+      !SetEnvironmentValue("MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH",
+                           config.fleasion_clear_cache_on_launch() ? "1" : "0",
+                           error))
     return false;
   if (config.fleasion_ca_certificate()) {
     if (!SetEnvironmentValue("MOCKTAIL_FLEASION_CA_CERTIFICATE",
