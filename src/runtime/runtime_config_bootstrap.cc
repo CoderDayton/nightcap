@@ -135,6 +135,9 @@ integrations:
     proxy_mode: env
     # Integer: Fleasion's local HTTP proxy port in env mode.
     proxy_port: 58443
+    # Boolean (default: false): clear Roblox's downloaded game assets at each
+    # launch so Fleasion's replacements load. Settings and sign-in are kept.
+    clear_cache_on_launch: false
     # Optional absolute public CA path. Default: $XDG_CONFIG_HOME/Fleasion/proxy_ca/ca.crt
     # or ~/.config/Fleasion/proxy_ca/ca.crt. Never select ca.key.
     # ca_certificate: /home/user/.config/Fleasion/proxy_ca/ca.crt

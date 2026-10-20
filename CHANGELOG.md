@@ -12,6 +12,9 @@ Release notes on GitHub are taken from the matching section here.
   overlay keeps your frame rate (`overlay.fps`) and ping (`overlay.ping`) on screen, and
   `overlay.position` moves it to a corner or edge. All are in the settings window under Graphics,
   and changes apply while you play, without a restart.
+- Advanced settings can clear Roblox's downloaded game assets, and show how much space they use.
+  Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
+  clears them at every launch so new replacements load.
 
 ### Fixed
 

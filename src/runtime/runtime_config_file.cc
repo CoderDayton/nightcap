@@ -204,6 +204,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "integrations.fleasion.proxy_mode",
       "integrations.fleasion.proxy_port",
       "integrations.fleasion.ca_certificate",
+      "integrations.fleasion.clear_cache_on_launch",
       "integrations.discord_rpc.enabled",
       "integrations.discord_rpc.show_place_name",
       "integrations.discord_rpc.show_elapsed_time",
@@ -587,6 +588,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
                "integrations.discord_rpc.enabled",
                "MOCKTAIL_DISCORD_RPC_ENABLED"),
            {"integrations.fleasion.enabled", "MOCKTAIL_FLEASION_ENABLED"},
+           {"integrations.fleasion.clear_cache_on_launch",
+            "MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH"},
            {"integrations.discord_rpc.show_place_name",
             "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME"},
            {"integrations.discord_rpc.show_elapsed_time",
@@ -1099,7 +1102,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_MODE",
                            config.fleasion_proxy_mode(), error) ||
       !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_PORT",
-                           std::to_string(config.fleasion_proxy_port()), error))
+                           std::to_string(config.fleasion_proxy_port()), error) ||
+      !SetEnvironmentValue("MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH",
+                           config.fleasion_clear_cache_on_launch() ? "1" : "0",
+                           error))
     return false;
   if (config.fleasion_ca_certificate()) {
     if (!SetEnvironmentValue("MOCKTAIL_FLEASION_CA_CERTIFICATE",

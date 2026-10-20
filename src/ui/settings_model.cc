@@ -889,6 +889,10 @@ const std::vector<SettingsPage>& SettingsPages() {
                  SettingKind::kNumber, {}, "58443", {}, 1, 65535, 1},
                 {"integrations.fleasion.ca_certificate", "CA certificate",
                  "", SettingKind::kFile, {}, "", {}},
+                {"integrations.fleasion.clear_cache_on_launch",
+                 "Clear Roblox cache on launch",
+                 "Loads new replacements. Roblox downloads assets again.",
+                 SettingKind::kToggle, {}, "false", {}},
             },
             "Use Fleasion",
             "Trust Fleasion's certificate without editing Roblox files.",
@@ -981,6 +985,13 @@ const std::vector<SettingsPage>& SettingsPages() {
             "Nightcap downloads."},
            {"Files",
             {
+                {"roblox_cache",
+                 "Clear Roblox cache",
+                 "Downloaded game assets. Settings and sign-in are kept.",
+                 SettingKind::kCache,
+                 {},
+                 "",
+                 {}},
                 {"config_folder",
                  "Open config folder",
                  "Where config.yaml and fflags.json are kept.",
@@ -1258,6 +1269,7 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
       return value != fallback;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
+    case SettingKind::kCache:
       return false;
   }
   return false;
