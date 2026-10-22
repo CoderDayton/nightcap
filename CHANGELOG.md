@@ -33,6 +33,13 @@ Release notes on GitHub are taken from the matching section here.
 - The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
   the `.desktop` file, so the menu entry pointed at a file that does not exist.
 
+### Changed
+
+- ETC2 textures now decode on the graphics card instead of the CPU, so loading them no longer takes CPU
+  time from the game. Small upscaled textures and texture overrides still decode on the CPU. A self-test
+  at startup falls back to the CPU if the card's output differs, and `MOCKTAIL_ETC2_GPU_DECODE=0` turns
+  it off.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added

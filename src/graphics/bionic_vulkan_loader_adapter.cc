@@ -1723,6 +1723,8 @@ struct Etc2SubmitRewrite {
   std::deque<std::vector<std::uint64_t>> signal_values;
   std::deque<VkTimelineSemaphoreSubmitInfo> timelines;
   std::deque<std::vector<VkSemaphoreSubmitInfo>> wait_infos;
+  std::deque<std::vector<VkCommandBuffer>> command_buffers;
+  std::deque<std::vector<VkCommandBufferSubmitInfo>> command_infos;
   std::vector<VkSubmitInfo> rewritten;
   std::vector<VkSubmitInfo2> rewritten2;
 };
@@ -1732,7 +1734,7 @@ struct Etc2SubmitRewrite {
 // instead: a VkTimelineSemaphoreSubmitInfo would have to be rebuilt, and a
 // VkDeviceGroupSubmitInfo's pWaitSemaphoreDeviceIndices would be left one
 // entry short of the grown wait list.
-const VkSubmitInfo* PrepareEtc2Submit(std::uint32_t submit_count,
+const VkSubmitInfo* PrepareEtc2Submit(VkQueue queue, std::uint32_t submit_count,
                                       const VkSubmitInfo* submits,
                                       Etc2SubmitRewrite* rewrite) {
   if (submits == nullptr || submit_count == 0) {
@@ -1749,13 +1751,32 @@ const VkSubmitInfo* PrepareEtc2Submit(std::uint32_t submit_count,
                     VK_STRUCTURE_TYPE_DEVICE_GROUP_SUBMIT_INFO) != nullptr;
     const mocktail::graphics::Etc2SubmitWait wait = State().etc2.PrepareSubmit(
         original.pCommandBuffers, original.commandBufferCount,
-        !fixed_wait_list);
-    if (wait.semaphore == VK_NULL_HANDLE) {
+        !fixed_wait_list, queue);
+    if (wait.semaphore == VK_NULL_HANDLE && wait.decode_commands.empty()) {
       continue;
     }
     if (!rewritten_any) {
       rewrite->rewritten.assign(submits, submits + submit_count);
       rewritten_any = true;
+    }
+    if (!wait.decode_commands.empty()) {
+      if (FindFeature(original.pNext,
+                      VK_STRUCTURE_TYPE_DEVICE_GROUP_SUBMIT_INFO) != nullptr) {
+        std::fprintf(stderr,
+                     "  [vulkan] ETC2 GPU decode skipped for a device-group "
+                     "submit\n");
+      } else {
+        std::vector<VkCommandBuffer>& buffers =
+            rewrite->command_buffers.emplace_back(wait.decode_commands);
+        buffers.insert(buffers.end(), original.pCommandBuffers,
+                       original.pCommandBuffers + original.commandBufferCount);
+        rewrite->rewritten[index].commandBufferCount =
+            static_cast<std::uint32_t>(buffers.size());
+        rewrite->rewritten[index].pCommandBuffers = buffers.data();
+      }
+    }
+    if (wait.semaphore == VK_NULL_HANDLE) {
+      continue;
     }
     std::vector<VkSemaphore>& semaphores = rewrite->wait_semaphores.emplace_back(
         original.pWaitSemaphores,
@@ -1794,7 +1815,8 @@ const VkSubmitInfo* PrepareEtc2Submit(std::uint32_t submit_count,
   return rewritten_any ? rewrite->rewritten.data() : submits;
 }
 
-const VkSubmitInfo2* PrepareEtc2Submit2(std::uint32_t submit_count,
+const VkSubmitInfo2* PrepareEtc2Submit2(VkQueue queue,
+                                        std::uint32_t submit_count,
                                         const VkSubmitInfo2* submits,
                                         Etc2SubmitRewrite* rewrite) {
   if (submits == nullptr || submit_count == 0) {
@@ -1812,13 +1834,32 @@ const VkSubmitInfo2* PrepareEtc2Submit2(std::uint32_t submit_count,
     }
     const mocktail::graphics::Etc2SubmitWait wait = State().etc2.PrepareSubmit(
         command_buffers.data(),
-        static_cast<std::uint32_t>(command_buffers.size()), true);
-    if (wait.semaphore == VK_NULL_HANDLE) {
+        static_cast<std::uint32_t>(command_buffers.size()), true, queue);
+    if (wait.semaphore == VK_NULL_HANDLE && wait.decode_commands.empty()) {
       continue;
     }
     if (!rewritten_any) {
       rewrite->rewritten2.assign(submits, submits + submit_count);
       rewritten_any = true;
+    }
+    if (!wait.decode_commands.empty()) {
+      std::vector<VkCommandBufferSubmitInfo>& infos =
+          rewrite->command_infos.emplace_back();
+      for (VkCommandBuffer decode : wait.decode_commands) {
+        VkCommandBufferSubmitInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        info.commandBuffer = decode;
+        infos.push_back(info);
+      }
+      infos.insert(infos.end(), original.pCommandBufferInfos,
+                   original.pCommandBufferInfos +
+                       original.commandBufferInfoCount);
+      rewrite->rewritten2[index].commandBufferInfoCount =
+          static_cast<std::uint32_t>(infos.size());
+      rewrite->rewritten2[index].pCommandBufferInfos = infos.data();
+    }
+    if (wait.semaphore == VK_NULL_HANDLE) {
+      continue;
     }
     std::vector<VkSemaphoreSubmitInfo>& waits = rewrite->wait_infos.emplace_back(
         original.pWaitSemaphoreInfos,
@@ -2253,6 +2294,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   }
   std::uint32_t graphics_family = UINT32_MAX;
   std::uint32_t graphics_count = 0;
+  VkDeviceQueueCreateFlags graphics_queue_flags = 0;
   for (std::uint32_t index = 0; index < create_info->queueCreateInfoCount;
        ++index) {
     const VkDeviceQueueCreateInfo& queue_info =
@@ -2265,7 +2307,33 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
     }
     graphics_family = queue_info.queueFamilyIndex;
     graphics_count = 1;
+    graphics_queue_flags = queue_info.flags;
     break;
+  }
+  bool every_family_computes = true;
+  for (std::uint32_t index = 0; index < create_info->queueCreateInfoCount;
+       ++index) {
+    const std::uint32_t family =
+        create_info->pQueueCreateInfos[index].queueFamilyIndex;
+    if (family >= queue_families.size() ||
+        (queue_families[family].queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
+      every_family_computes = false;
+    }
+  }
+  if (etc2_emulated && graphics_family != UINT32_MAX && !every_family_computes) {
+    std::fprintf(stderr,
+                 "  [vulkan] ETC2 GPU decode off: a requested queue family has "
+                 "no compute\n");
+  }
+  if (etc2_emulated && graphics_family != UINT32_MAX && every_family_computes &&
+      graphics_queue_flags == 0) {
+    const auto host_get_queue = reinterpret_cast<PFN_vkGetDeviceQueue>(
+        HostDeviceProc(*device, "vkGetDeviceQueue"));
+    VkQueue decode_queue = VK_NULL_HANDLE;
+    if (host_get_queue != nullptr) {
+      host_get_queue(*device, graphics_family, 0, &decode_queue);
+    }
+    State().etc2.EnableGpuDecode(*device, decode_queue, graphics_family);
   }
 
   const bool registered =
@@ -2323,6 +2391,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetDeviceQueue(VkDevice device,
   host_get_queue(device, queue_family_index, queue_index, queue);
   if (*queue != VK_NULL_HANDLE) {
     RegisterHostQueueBinding(device, *queue);
+    State().etc2.RegisterQueue(device, *queue, queue_family_index);
     (void)State().text_overlay.RegisterQueue(device, *queue, queue_family_index,
                                              queue_index);
     const auto vr_note_queue =
@@ -2343,6 +2412,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetDeviceQueue2(
   host_get_queue(device, queue_info, queue);
   if (*queue != VK_NULL_HANDLE) {
     RegisterHostQueueBinding(device, *queue);
+    State().etc2.RegisterQueue(device, *queue, queue_info->queueFamilyIndex);
     (void)State().text_overlay.RegisterQueue(
         device, *queue, queue_info->queueFamilyIndex, queue_info->queueIndex);
     const auto vr_note_queue =
@@ -2802,7 +2872,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
   scope.Arg("submits", submit_count);
   Etc2SubmitRewrite rewrite;
   const VkSubmitInfo* prepared =
-      PrepareEtc2Submit(submit_count, submits, &rewrite);
+      PrepareEtc2Submit(queue, submit_count, submits, &rewrite);
   const VkResult result = State().text_overlay.QueueSubmit(
       queue, submit_count, prepared, fence, LockedHostSubmit);
   if (result == VK_SUCCESS)
@@ -2826,7 +2896,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
   scope.Arg("submits", submit_count);
   Etc2SubmitRewrite rewrite;
   const VkSubmitInfo2* prepared =
-      PrepareEtc2Submit2(submit_count, submits, &rewrite);
+      PrepareEtc2Submit2(queue, submit_count, submits, &rewrite);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, prepared, fence, LockedHostSubmit2);
   if (result == VK_SUCCESS)
@@ -2850,7 +2920,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
   scope.Arg("submits", submit_count);
   Etc2SubmitRewrite rewrite;
   const VkSubmitInfo2* prepared =
-      PrepareEtc2Submit2(submit_count, submits, &rewrite);
+      PrepareEtc2Submit2(queue, submit_count, submits, &rewrite);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, prepared, fence, LockedHostSubmit2KHR);
   if (result == VK_SUCCESS)
