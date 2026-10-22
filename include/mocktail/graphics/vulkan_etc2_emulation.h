@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "mocktail/graphics/etc2_decoder.h"
 
@@ -69,6 +70,7 @@ inline constexpr VkDeviceSize kEtc2StagingBlockBytes = 16 * 1024 * 1024;
 struct Etc2SubmitWait {
   VkSemaphore semaphore = VK_NULL_HANDLE;
   std::uint64_t value = 0;
+  std::vector<VkCommandBuffer> decode_commands;
 };
 
 // Reports ETC2/EAC support on hosts without native ETC2 (desktop GPUs) and
@@ -100,6 +102,11 @@ class VulkanEtc2Emulation final {
                       PFN_vkGetDeviceProcAddr get_device_proc_addr,
                       bool timeline_semaphore = false);
   void DestroyDevice(VkDevice device);
+
+  void RegisterQueue(VkDevice device, VkQueue queue,
+                     std::uint32_t queue_family);
+  bool EnableGpuDecode(VkDevice device, VkQueue queue,
+                       std::uint32_t queue_family);
 
   VkResult CreateImage(VkDevice device, const VkImageCreateInfo* create_info,
                        const VkAllocationCallbacks* allocator, VkImage* image);
@@ -159,7 +166,8 @@ class VulkanEtc2Emulation final {
   // `allow_async` is false, or when the device has no timeline semaphore. In
   // those cases every upload is already decoded when this returns.
   Etc2SubmitWait PrepareSubmit(const VkCommandBuffer* command_buffers,
-                               std::uint32_t count, bool allow_async = false);
+                               std::uint32_t count, bool allow_async = false,
+                               VkQueue queue = VK_NULL_HANDLE);
   // Destroys the staging buffers owned by a command buffer that is no longer
   // pending, after waiting for any decode still writing into them.
   void ReleaseCommandBuffer(VkCommandBuffer command_buffer);
