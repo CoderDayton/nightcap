@@ -386,6 +386,16 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
     int height = 0;
     if (SDL_GetWindowSize(window, &width, &height)) {
       SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
+      // Shift lock or first person can start during an RMB camera drag.
+      // SDL only records a warp made in relative mode, and moves the pointer
+      // to it as relative mode ends, so leave and re-enter to relock there.
+      if (relative_mode_ && SDL_SetWindowRelativeMouseMode(window, false) &&
+          !SDL_SetWindowRelativeMouseMode(window, true)) {
+        relative_mode_ = false;
+        capture_anchor_valid_ = false;
+        SDL_SetWindowMouseGrab(window, false);
+        return false;
+      }
     }
   }
   pointer_centered_ = relative_mode && center_pointer;

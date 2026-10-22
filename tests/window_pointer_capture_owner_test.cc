@@ -819,6 +819,33 @@ TEST(WindowPointerCaptureOwnerTest, CameraDragDoesNotCenterThePointer) {
   EXPECT_FALSE(backend.calls.back().center_pointer);
 }
 
+TEST(WindowPointerCaptureOwnerTest, LockDuringCameraDragCentersThePointer) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.PublishRobloxCursor(CursorShape::kArrow);
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_FALSE(backend.calls.back().center_pointer);
+
+  // Zooming into first person or enabling shift lock mid-drag moves the
+  // cursor from the press point to the center, where Roblox now draws it.
+  query.locked_center = true;
+  owner.PublishRobloxCursor(CursorShape::kPointer);
+  EXPECT_TRUE(owner.OnShiftKeyPressed(false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_TRUE(backend.calls.back().center_pointer);
+  EXPECT_EQ(owner.cursor(), CursorShape::kPointer);
+
+  // Releasing the button keeps the lock, and the cursor, at the center.
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_TRUE(backend.calls.back().center_pointer);
+}
+
 TEST(WindowPointerCaptureOwnerTest, CameraDragHidesTheCursorWhereItWouldJump) {
   FakeBackend backend;
   QueryState query;
