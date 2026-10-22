@@ -280,6 +280,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/frame_rate_policy.cc
   src/runtime/fleasion.cc
   src/runtime/roblox_cache.cc
+  src/runtime/android_device_id.cc
   src/runtime/game_mode.cc
   src/runtime/game_session_coordinator.cc
   src/runtime/graphics_launch_policy.cc

@@ -4,7 +4,10 @@
 #include <nlohmann/json.hpp>
 
 #include <charconv>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <system_error>
 
 namespace mocktail {
 namespace runtime {
@@ -72,19 +75,89 @@ bool MergeFrameRateClientSettingsOverrides(const FrameRatePolicy &policy,
     return false;
   }
   if (policy.mode == FrameRateLimitMode::kUnmanaged ||
-      policy.mode == FrameRateLimitMode::kDisplay) {
+      policy.mode == FrameRateLimitMode::kDisplay ||
+      RobloxSettingsFramerateCap(policy).has_value()) {
     *merged_json = overrides.dump();
     return true;
   }
-  const std::string target =
-      policy.mode == FrameRateLimitMode::kUnlimited
-          ? std::to_string(kMaximumSupportedRobloxSchedulerFps)
-          : std::to_string(policy.fixed_fps);
-  if (!SetCompatibleValue(&overrides, "DFIntTaskSchedulerTargetFps", target,
-                          error)) {
+  if (!SetCompatibleValue(&overrides, "DFIntTaskSchedulerTargetFps",
+                          std::to_string(policy.fixed_fps), error)) {
     return false;
   }
   *merged_json = overrides.dump();
+  return true;
+}
+
+std::optional<int> RobloxSettingsFramerateCap(const FrameRatePolicy &policy) {
+  if (policy.mode == FrameRateLimitMode::kUnlimited) {
+    return kUnlimitedRobloxFramerateCap;
+  }
+  if (policy.mode == FrameRateLimitMode::kFixed &&
+      policy.fixed_fps > kMaximumSupportedRobloxSchedulerFps) {
+    return policy.fixed_fps;
+  }
+  return std::nullopt;
+}
+
+bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
+                             int fps, std::string *error) {
+  namespace fs = std::filesystem;
+  const fs::path file =
+      android_data_root / "files/appData/GlobalBasicSettings_13.xml";
+  std::error_code exists_error;
+  if (!fs::exists(file, exists_error)) {
+    return true;
+  }
+  std::string text;
+  {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) {
+      *error = "cannot read " + file.string();
+      return false;
+    }
+    text.assign(std::istreambuf_iterator<char>(input), {});
+  }
+
+  const std::string open = "<int name=\"FramerateCap\">";
+  const std::string value = std::to_string(fps);
+  const std::size_t found = text.find(open);
+  if (found != std::string::npos) {
+    const std::size_t start = found + open.size();
+    const std::size_t end = text.find("</int>", start);
+    if (end == std::string::npos) {
+      *error = "FramerateCap in " + file.string() + " is not closed";
+      return false;
+    }
+    text.replace(start, end - start, value);
+  } else {
+    const std::string properties = "<Properties>\n";
+    const std::size_t at = text.find(properties);
+    if (at == std::string::npos) {
+      *error = file.string() + " has no Properties section";
+      return false;
+    }
+    text.insert(at + properties.size(), open + value + "</int>\n");
+  }
+
+  const fs::path temporary = file.string() + ".nightcap";
+  {
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    output << text;
+    if (!output.flush()) {
+      *error = "cannot write " + temporary.string();
+      return false;
+    }
+  }
+  std::error_code status_error;
+  fs::permissions(temporary, fs::status(file, status_error).permissions(),
+                  status_error);
+  std::error_code rename_error;
+  fs::rename(temporary, file, rename_error);
+  if (rename_error) {
+    fs::remove(temporary, rename_error);
+    *error = "cannot replace " + file.string();
+    return false;
+  }
   return true;
 }
 

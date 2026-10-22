@@ -444,6 +444,18 @@ target_link_libraries(roblox_cache_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(fleasion_test fleasion_test.cc)
+target_link_libraries(fleasion_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(android_device_id_test android_device_id_test.cc)
+target_link_libraries(android_device_id_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(single_instance_lock_test single_instance_lock_test.cc)
 target_link_libraries(single_instance_lock_test PRIVATE
   Mocktail::Runtime
@@ -1342,6 +1354,8 @@ gtest_discover_tests(roblox_mouse_behavior_query_test)
 gtest_discover_tests(cursor_picture_source_test)
 gtest_discover_tests(running_instance_test)
 gtest_discover_tests(roblox_cache_test)
+gtest_discover_tests(android_device_id_test)
+gtest_discover_tests(fleasion_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
 gtest_discover_tests(process_launch_policy_test)

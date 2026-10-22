@@ -58,6 +58,7 @@
 #include "runtime/running_instance.h"
 #include "runtime/settings_launcher.h"
 #include "runtime/roblox_cache.h"
+#include "runtime/android_device_id.h"
 #include "runtime/single_instance_lock.h"
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
@@ -389,6 +390,31 @@ int main(int argc, char* argv[]) {
     instance_lock.emplace(
         mocktail::runtime::SingleInstanceLock::AcquireForLaunch(environment,
                                                                 paths));
+    if (!isolated_canary && !instance_lock->acquired() &&
+        instance_lock->already_running() &&
+        external_launch_request.has_value()) {
+      const mocktail::runtime::RuntimeConfigLoadResult saved =
+          mocktail::runtime::LoadRuntimeConfig(environment,
+                                               paths.config_file());
+      if (saved && mocktail::runtime::WebsiteJoinNeedsFreshLaunch(saved.config)) {
+        std::cout << "  [launch] closing the running Nightcap so the Roblox "
+                     "cache clears before this join\n"
+                  << std::flush;
+        std::string stop_error;
+        if (mocktail::runtime::StopRunningInstance(
+                mocktail::runtime::CurrentUserInstanceLockPath(),
+                std::chrono::minutes(2), &stop_error)) {
+          instance_lock.reset();
+          instance_lock.emplace(
+              mocktail::runtime::SingleInstanceLock::AcquireForLaunch(
+                  environment, paths));
+        } else {
+          std::cerr << "  [launch] cannot close the running Nightcap, so the "
+                       "join goes to it: "
+                    << stop_error << '\n';
+        }
+      }
+    }
     if (!instance_lock->acquired()) {
       if (!isolated_canary && instance_lock->already_running() &&
           external_launch_request.has_value()) {
@@ -445,6 +471,19 @@ int main(int argc, char* argv[]) {
           "Nightcap could not start because another Nightcap is using its "
           "Roblox data, or its cache is being cleared.");
       return EXIT_FAILURE;
+    }
+    const char* android_id_override = std::getenv("MOCKTAIL_ANDROID_ID");
+    if (android_id_override == nullptr || android_id_override[0] == '\0') {
+      const mocktail::runtime::AndroidDeviceId android_id =
+          mocktail::runtime::LoadOrCreateAndroidDeviceId(
+              paths.android_runtime_root() / "android_id");
+      if (!android_id ||
+          setenv("MOCKTAIL_ANDROID_ID", android_id.value.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot prepare the Android device ID: "
+                  << (android_id ? "cannot export it" : android_id.error)
+                  << '\n';
+        return EXIT_FAILURE;
+      }
     }
   }
   const mocktail::runtime::RuntimeConfigBootstrapResult config_bootstrap =
@@ -631,6 +670,31 @@ int main(int argc, char* argv[]) {
       } else {
         std::cerr << "  [fleasion] cannot clear Roblox cache: " << cleared.error
                   << '\n';
+      }
+    }
+    std::string fleasion_overrides;
+    if (!mocktail::runtime::MergeFleasionClientSettingsOverrides(
+            environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"),
+            &fleasion_overrides, &command_line_error) ||
+        setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
+               fleasion_overrides.c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot apply Fleasion client settings: "
+                << command_line_error << '\n';
+      return EXIT_FAILURE;
+    }
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    if (const std::optional<int> framerate_cap =
+            mocktail::runtime::RobloxSettingsFramerateCap(
+                runtime_config.config.frame_rate())) {
+      std::string framerate_error;
+      if (mocktail::runtime::WriteRobloxFramerateCap(
+              paths.android_data_root(), *framerate_cap, &framerate_error)) {
+        std::cout << "  [runtime] Roblox frame-rate cap=" << *framerate_cap
+                  << '\n';
+      } else {
+        std::cerr << "  [runtime] cannot set Roblox frame-rate cap: "
+                  << framerate_error << '\n';
       }
     }
   }

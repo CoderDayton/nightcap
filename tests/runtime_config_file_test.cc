@@ -322,8 +322,8 @@ TEST(RuntimeConfigBootstrapTest,
            "desktop color scheme).\n  theme: roblox",
            "# Recommended values: direct-vulkan, opengl, system, "
            "angle-vulkan.\n  backend: direct-vulkan",
-           "# DFIntTaskSchedulerTargetFps without a whitelist.\n  "
-           "# frame_rate_limit: -1",
+           "# in Roblox's own settings, since Roblox stops the scheduler flag "
+           "at 240.\n  # frame_rate_limit: -1",
            "# Optional presentation synchronization override: auto, on, or "
            "off. auto\n  # presents through the lowest-latency synchronized "
            "mode the driver offers\n  # unless frame_rate_limit is unlimited.\n"

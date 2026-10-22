@@ -195,7 +195,10 @@ and your value applies everywhere. To keep the interpreter in the menus too:
 
 `graphics.frame_rate_limit` (default `-1`) leaves Roblox's own in-game
 framerate cap in charge; Nightcap sets no `DFIntTaskSchedulerTargetFps`
-override. A fixed value forwards that number to the scheduler.
+override. A fixed value up to 240 forwards that number to the scheduler.
+Roblox stops the scheduler flag at 240, so `unlimited` and higher values write
+`FramerateCap` into Roblox's `GlobalBasicSettings_13.xml` at launch instead
+(`unlimited` writes 9999).
 
 In VR, `vr.frame_rate_limit` (`MOCKTAIL_VR_FRAME_RATE_LIMIT`) replaces
 `graphics.frame_rate_limit` and takes the same values. Its default is
