@@ -26,19 +26,39 @@ std::uintmax_t RegularFileBytes(const fs::path& path) {
   return error ? 0 : size;
 }
 
+std::uintmax_t FolderBytes(const fs::path& folder) {
+  std::uintmax_t bytes = 0;
+  std::error_code error;
+  if (!fs::is_directory(fs::symlink_status(folder, error))) return 0;
+  for (fs::recursive_directory_iterator
+           it(folder, fs::directory_options::skip_permission_denied, error),
+       end;
+       !error && it != end; it.increment(error)) {
+    bytes += RegularFileBytes(it->path());
+  }
+  return bytes;
+}
+
+std::vector<fs::path> ContentProviderFolders(const fs::path& root) {
+  std::vector<fs::path> folders;
+  std::error_code error;
+  for (fs::directory_iterator it(root, error), end; !error && it != end;
+       it.increment(error)) {
+    std::error_code status_error;
+    if (it->path().filename().string().rfind("ContentProvider_", 0) == 0 &&
+        fs::is_directory(fs::symlink_status(it->path(), status_error))) {
+      folders.push_back(it->path());
+    }
+  }
+  return folders;
+}
+
 }
 
 std::uintmax_t RobloxCacheBytes(const fs::path& android_data_root) {
-  std::uintmax_t bytes = 0;
-  std::error_code error;
-  const fs::path storage = Storage(android_data_root);
-  if (fs::is_directory(fs::symlink_status(storage, error))) {
-    for (fs::recursive_directory_iterator
-             it(storage, fs::directory_options::skip_permission_denied, error),
-         end;
-         !error && it != end; it.increment(error)) {
-      bytes += RegularFileBytes(it->path());
-    }
+  std::uintmax_t bytes = FolderBytes(Storage(android_data_root));
+  for (const fs::path& folder : ContentProviderFolders(android_data_root)) {
+    bytes += FolderBytes(folder);
   }
   for (const char* name : kIndexFiles) {
     bytes += RegularFileBytes(Index(android_data_root, name));
@@ -72,6 +92,13 @@ RobloxCacheClear ClearRobloxCache(const fs::path& android_data_root) {
         result.error = "cannot remove " + entry.string() + ": " + error.message();
         return result;
       }
+    }
+  }
+  for (const fs::path& folder : ContentProviderFolders(android_data_root)) {
+    fs::remove_all(folder, error);
+    if (error) {
+      result.error = "cannot remove " + folder.string() + ": " + error.message();
+      return result;
     }
   }
   for (const char* name : kIndexFiles) {

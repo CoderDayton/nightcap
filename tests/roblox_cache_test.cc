@@ -67,6 +67,29 @@ TEST_F(RobloxCacheTest, ClearRemovesAssetsAndKeepsSettings) {
   EXPECT_EQ(RobloxCacheBytes(root_), 0u);
 }
 
+TEST_F(RobloxCacheTest, ClearRemovesContentProviderFolders) {
+  Write(root_ / "ContentProvider_2/a", 40);
+  Write(root_ / "ContentProvider_455744/b", 60);
+  Write(root_ / "sounds/keep", 9);
+  EXPECT_EQ(RobloxCacheBytes(root_), 100u);
+  const RobloxCacheClear cleared = ClearRobloxCache(root_);
+  ASSERT_TRUE(cleared) << cleared.error;
+  EXPECT_EQ(cleared.bytes, 100u);
+  EXPECT_FALSE(fs::exists(root_ / "ContentProvider_2"));
+  EXPECT_FALSE(fs::exists(root_ / "ContentProvider_455744"));
+  EXPECT_TRUE(fs::exists(root_ / "sounds/keep"));
+  EXPECT_EQ(RobloxCacheBytes(root_), 0u);
+}
+
+TEST_F(RobloxCacheTest, NeverFollowsALinkedContentProviderFolder) {
+  Write(base_ / "outside/keep", 40);
+  fs::create_directory_symlink(base_ / "outside", root_ / "ContentProvider_7");
+  EXPECT_EQ(RobloxCacheBytes(root_), 0u);
+  const RobloxCacheClear cleared = ClearRobloxCache(root_);
+  ASSERT_TRUE(cleared) << cleared.error;
+  EXPECT_TRUE(fs::exists(base_ / "outside/keep"));
+}
+
 TEST_F(RobloxCacheTest, AMissingCacheIsEmpty) {
   EXPECT_EQ(RobloxCacheBytes(root_ / "missing"), 0u);
   const RobloxCacheClear cleared = ClearRobloxCache(root_ / "missing");
