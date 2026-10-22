@@ -22,6 +22,8 @@ Release notes on GitHub are taken from the matching section here.
 - Fleasion replacements load again. With `integrations.fleasion.enabled`, Nightcap sets
   `FFlagAssetProviderUseAssetDeliveryV3` to `False`, so Roblox requests assets through the endpoint
   Fleasion rewrites. A value in `~/.config/mocktail/fflags.json` still wins.
+- A frame-rate limit of `unlimited` or above 240 now goes past 240 FPS. Nightcap writes it to
+  Roblox's own frame-rate cap, since Roblox stops `DFIntTaskSchedulerTargetFps` at 240.
 - Each install now sends Roblox its own random Android device ID instead of `0000000000000000`.
 - The Flatpak no longer fails to install Roblox on NVIDIA under Wayland with "graphics canary exited with
   status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version

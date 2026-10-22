@@ -195,7 +195,10 @@ and your value applies everywhere. To keep the interpreter in the menus too:
 
 `graphics.frame_rate_limit` (default `-1`) leaves Roblox's own in-game
 framerate cap in charge; Nightcap sets no `DFIntTaskSchedulerTargetFps`
-override. A fixed value forwards that number to the scheduler.
+override. A fixed value up to 240 forwards that number to the scheduler.
+Roblox stops the scheduler flag at 240, so `unlimited` and higher values write
+`FramerateCap` into Roblox's `GlobalBasicSettings_13.xml` at launch instead
+(`unlimited` writes 9999).
 
 `graphics.vsync` (default `auto`) selects the presentation mode. `auto` and
 `on` both pick the lowest-latency synchronized mode the driver offers, in

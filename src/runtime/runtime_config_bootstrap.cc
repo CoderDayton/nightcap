@@ -63,8 +63,9 @@ graphics:
   backend: direct-vulkan
   # Optional string or integer: Mocktail frame-rate override. Leave commented
   # (or use -1) to let Roblox Basic Settings own the cap. Supported overrides:
-  # display, unlimited, or any positive integer; fixed values are forwarded to
-  # DFIntTaskSchedulerTargetFps without a whitelist.
+  # display, unlimited, or any positive integer. Values up to 240 are forwarded
+  # to DFIntTaskSchedulerTargetFps; unlimited and higher values set FramerateCap
+  # in Roblox's own settings, since Roblox stops the scheduler flag at 240.
   # frame_rate_limit: -1
   # Optional presentation synchronization override: auto, on, or off. auto
   # presents through the lowest-latency synchronized mode the driver offers

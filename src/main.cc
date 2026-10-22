@@ -624,6 +624,21 @@ int main(int argc, char* argv[]) {
       return EXIT_FAILURE;
     }
   }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    if (const std::optional<int> framerate_cap =
+            mocktail::runtime::RobloxSettingsFramerateCap(
+                runtime_config.config.frame_rate())) {
+      std::string framerate_error;
+      if (mocktail::runtime::WriteRobloxFramerateCap(
+              paths.android_data_root(), *framerate_cap, &framerate_error)) {
+        std::cout << "  [runtime] Roblox frame-rate cap=" << *framerate_cap
+                  << '\n';
+      } else {
+        std::cerr << "  [runtime] cannot set Roblox frame-rate cap: "
+                  << framerate_error << '\n';
+      }
+    }
+  }
   if (!mocktail::runtime::ExportNetworkProxyEnvironment(
           runtime_config.config, &command_line_error)) {
     std::cerr << "[FATAL] " << command_line_error << '\n';
