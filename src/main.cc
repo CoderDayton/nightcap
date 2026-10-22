@@ -588,6 +588,16 @@ int main(int argc, char* argv[]) {
                   << '\n';
       }
     }
+    std::string fleasion_overrides;
+    if (!mocktail::runtime::MergeFleasionClientSettingsOverrides(
+            environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"),
+            &fleasion_overrides, &command_line_error) ||
+        setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
+               fleasion_overrides.c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot apply Fleasion client settings: "
+                << command_line_error << '\n';
+      return EXIT_FAILURE;
+    }
   }
   if (!mocktail::runtime::ExportNetworkProxyEnvironment(
           runtime_config.config, &command_line_error)) {

@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include "runtime/runtime_config.h"
 #include "runtime/runtime_paths.h"
@@ -22,6 +23,10 @@ struct FleasionPreparation {
 FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
                                    const Environment& environment,
                                    const RuntimePaths& paths);
+
+bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
+                                          std::string* merged_json,
+                                          std::string* error);
 
 }  // namespace mocktail::runtime
 

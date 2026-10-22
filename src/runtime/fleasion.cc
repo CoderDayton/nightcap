@@ -10,6 +10,8 @@
 #include <fstream>
 #include <memory>
 
+#include <nlohmann/json.hpp>
+
 namespace mocktail::runtime {
 namespace {
 
@@ -146,6 +148,21 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
   if (size <= 0 || !WriteBundle(result.bundle, bytes, static_cast<std::size_t>(size)))
     result.error = "cannot write generated Fleasion CA bundle: " + result.bundle.string();
   return result;
+}
+
+bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
+                                          std::string* merged_json,
+                                          std::string* error) {
+  nlohmann::json overrides = nlohmann::json::parse(
+      base_json.empty() ? std::string_view("{}") : base_json, nullptr, false,
+      true);
+  if (overrides.is_discarded() || !overrides.is_object()) {
+    *error = "client-settings overrides must be a JSON object";
+    return false;
+  }
+  overrides.emplace("FFlagAssetProviderUseAssetDeliveryV3", "False");
+  *merged_json = overrides.dump();
+  return true;
 }
 
 }  // namespace mocktail::runtime
