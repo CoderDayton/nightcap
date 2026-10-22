@@ -1,6 +1,7 @@
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
 
 #include "mocktail/graphics/chrome_trace_writer.h"
+#include "mocktail/graphics/etc2_gpu_decoder.h"
 #include "mocktail/graphics/texture_override.h"
 
 #include <algorithm>
@@ -11,7 +12,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <memory>
+#include <string>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -130,6 +133,11 @@ bool EmulationDisabledByEnvironment() {
   return disabled;
 }
 
+bool GpuDecodeDisabledByEnvironment() {
+  const char* value = std::getenv("MOCKTAIL_ETC2_GPU_DECODE");
+  return value != nullptr && std::strcmp(value, "0") == 0;
+}
+
 }  // namespace
 
 bool Etc2SupportAdvertised(const char* value) {
@@ -194,6 +202,15 @@ struct HostDevice {
   PFN_vkCmdPipelineBarrier pipeline_barrier = nullptr;
   PFN_vkSignalSemaphore signal_semaphore = nullptr;
   PFN_vkDestroySemaphore destroy_semaphore = nullptr;
+  PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
+  PFN_vkCmdCopyBuffer copy_buffer = nullptr;
+  PFN_vkCreateCommandPool create_command_pool = nullptr;
+  PFN_vkDestroyCommandPool destroy_command_pool = nullptr;
+  PFN_vkAllocateCommandBuffers allocate_command_buffers = nullptr;
+  PFN_vkFreeCommandBuffers free_command_buffers = nullptr;
+  PFN_vkBeginCommandBuffer begin_command_buffer = nullptr;
+  PFN_vkEndCommandBuffer end_command_buffer = nullptr;
+  std::unique_ptr<Etc2GpuDecoder> gpu;
   // Signalled by the decode dispatcher so a submit can wait for its uploads
   // on the GPU instead of on the submitting thread. Null when the device was
   // created without the timelineSemaphore feature.
@@ -269,6 +286,8 @@ struct StagingBlock {
   // First byte not yet handed out, and the ranges command buffers hold.
   VkDeviceSize head = 0;
   std::size_t live = 0;
+  bool device_local = false;
+  Etc2GpuBinding binding;
 };
 
 // One recorded copy's range of a staging block.
@@ -286,6 +305,7 @@ constexpr VkDeviceSize kStagingAlignment = 256;
 constexpr VkDeviceSize kIdleStagingBlocks = 4;
 // Decode batches kept for their buffers once they complete.
 constexpr std::size_t kMaxSpareBatches = 8;
+constexpr VkDeviceSize kMaxGpuStagingBytes = VkDeviceSize{1} << 27;
 
 // A growable byte buffer that leaves new bytes uninitialized. The gather
 // writes every byte it later reads, and zeroing a multi-megabyte buffer is
@@ -342,8 +362,26 @@ struct PendingUpload {
   std::uint8_t* target = nullptr;
 };
 
+struct GpuUpload {
+  VkDevice device = VK_NULL_HANDLE;
+  VkBuffer source = VK_NULL_HANDLE;
+  VkDeviceSize source_offset = 0;
+  VkDeviceSize source_span = 0;
+  VkBuffer staging = VK_NULL_HANDLE;
+  Etc2GpuBinding binding;
+  Etc2GpuJob job;
+};
+
+struct DecodeCommands {
+  VkDevice device = VK_NULL_HANDLE;
+  std::uint32_t family = 0;
+  VkCommandBuffer buffer = VK_NULL_HANDLE;
+};
+
 struct CommandRecord {
   std::vector<PendingUpload> uploads;
+  std::vector<GpuUpload> gpu_uploads;
+  std::vector<DecodeCommands> decode_commands;
   std::vector<Staging> staging;
   std::vector<VkCommandBuffer> secondaries;
   // Highest decode ticket dispatched for this command buffer. Its staging
@@ -385,18 +423,22 @@ void LogFailure(const char* message) {
 }
 
 bool CreateStagingBlock(const HostDevice& dev, VkDeviceSize size,
-                        StagingBlock* block) {
+                        StagingBlock* block, bool device_local = false) {
   if (dev.create_buffer == nullptr || dev.allocate_memory == nullptr ||
       dev.get_buffer_memory_requirements == nullptr ||
       dev.bind_buffer_memory == nullptr || dev.map_memory == nullptr ||
       dev.destroy_buffer == nullptr || dev.free_memory == nullptr ||
-      size == 0) {
+      size == 0 || (device_local && dev.gpu == nullptr)) {
     return false;
   }
   VkBufferCreateInfo buffer_info{};
   buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   buffer_info.size = size;
-  buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  buffer_info.usage =
+      device_local ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                   : VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   VkBuffer buffer = VK_NULL_HANDLE;
   if (dev.create_buffer(dev.device, &buffer_info, nullptr, &buffer) !=
@@ -405,15 +447,26 @@ bool CreateStagingBlock(const HostDevice& dev, VkDeviceSize size,
   }
   VkMemoryRequirements requirements{};
   dev.get_buffer_memory_requirements(dev.device, buffer, &requirements);
-  constexpr VkMemoryPropertyFlags kRequired =
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  const VkMemoryPropertyFlags required =
+      device_local ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                   : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
   std::uint32_t type = UINT32_MAX;
   for (std::uint32_t index = 0; index < dev.memory.memoryTypeCount; ++index) {
     if ((requirements.memoryTypeBits & (1U << index)) != 0 &&
-        (dev.memory.memoryTypes[index].propertyFlags & kRequired) ==
-            kRequired) {
+        (dev.memory.memoryTypes[index].propertyFlags & required) ==
+            required) {
       type = index;
       break;
+    }
+  }
+  if (type == UINT32_MAX && device_local) {
+    for (std::uint32_t index = 0; index < dev.memory.memoryTypeCount;
+         ++index) {
+      if ((requirements.memoryTypeBits & (1U << index)) != 0) {
+        type = index;
+        break;
+      }
     }
   }
   VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -429,12 +482,15 @@ bool CreateStagingBlock(const HostDevice& dev, VkDeviceSize size,
     return false;
   }
   if (dev.bind_buffer_memory(dev.device, buffer, memory, 0) != VK_SUCCESS ||
-      dev.map_memory(dev.device, memory, 0, VK_WHOLE_SIZE, 0, &data) !=
-          VK_SUCCESS) {
+      (device_local
+           ? !dev.gpu->CreateBinding(buffer, buffer, &block->binding)
+           : dev.map_memory(dev.device, memory, 0, VK_WHOLE_SIZE, 0, &data) !=
+                 VK_SUCCESS)) {
     dev.destroy_buffer(dev.device, buffer, nullptr);
     dev.free_memory(dev.device, memory, nullptr);
     return false;
   }
+  block->device_local = device_local;
   block->device = dev.device;
   block->buffer = buffer;
   block->memory = memory;
@@ -534,6 +590,9 @@ void RecordHostWriteBarrier(const HostDevice& dev,
 
 // Freeing mapped memory unmaps it implicitly.
 void DestroyStagingBlock(const HostDevice& dev, const StagingBlock& block) {
+  if (block.binding.pool != VK_NULL_HANDLE && dev.gpu != nullptr) {
+    dev.gpu->DestroyBinding(block.binding);
+  }
   if (dev.destroy_buffer != nullptr) {
     dev.destroy_buffer(dev.device, block.buffer, nullptr);
   }
@@ -716,7 +775,14 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
   std::unordered_map<VkDeviceMemory, std::uint64_t> deferred_reads;
   std::unordered_map<VkCommandBuffer, CommandRecord> commands;
+  struct QueueFamily {
+    VkDevice device = VK_NULL_HANDLE;
+    std::uint32_t family = 0;
+  };
+  std::unordered_map<VkQueue, QueueFamily> queue_families;
   std::atomic<bool> has_commands{false};
+  std::mutex pool_mutex;
+  std::map<std::pair<VkDevice, std::uint32_t>, VkCommandPool> pools;
   // Blocks of every device, in creation order. Guarded by `mutex`; a block's
   // address is stable until it is destroyed.
   const VkDeviceSize staging_block_bytes;
@@ -865,13 +931,17 @@ struct VulkanEtc2Emulation::State {
   // Takes `size` bytes from the first block of the device with room for
   // them, or from a new block of at least `staging_block_bytes`.
   bool AcquireStaging(const HostDevice& dev, VkDeviceSize size,
-                      Staging* staging) {
+                      Staging* staging, bool device_local = false) {
     const VkDeviceSize aligned =
         (size + kStagingAlignment - 1) / kStagingAlignment * kStagingAlignment;
+    if (device_local && aligned > kMaxGpuStagingBytes) {
+      return false;
+    }
     {
       std::lock_guard<std::mutex> lock(mutex);
       for (const auto& block : staging_blocks) {
         if (block->device == dev.device &&
+            block->device_local == device_local &&
             block->capacity - block->head >= aligned) {
           *staging = {block.get(), block->head};
           block->head += aligned;
@@ -887,7 +957,7 @@ struct VulkanEtc2Emulation::State {
       TraceScope trace_scope(ActiveProfileTrace(), "etc2 staging create",
                              "texture");
       trace_scope.Arg("bytes", static_cast<std::int64_t>(capacity));
-      if (!CreateStagingBlock(dev, capacity, block.get())) {
+      if (!CreateStagingBlock(dev, capacity, block.get(), device_local)) {
         return false;
       }
     }
@@ -938,7 +1008,9 @@ struct VulkanEtc2Emulation::State {
     }
   }
 
-  const HostDevice* Find(VkDevice device) {
+  const HostDevice* Find(VkDevice device) { return FindMutable(device); }
+
+  HostDevice* FindMutable(VkDevice device) {
     std::lock_guard<std::mutex> lock(devices_mutex);
     for (const auto& candidate : devices) {
       if (candidate->device == device) {
@@ -946,6 +1018,233 @@ struct VulkanEtc2Emulation::State {
       }
     }
     return nullptr;
+  }
+
+  template <typename Region>
+  bool PlanGpuUpload(const HostDevice& dev, VkCommandBuffer command_buffer,
+                     const ImageRecord& record, VkBuffer source,
+                     VkImage destination, std::uint32_t count,
+                     const Region* regions, std::vector<Region>* rewritten,
+                     VkBuffer* staging_buffer) {
+    if (dev.gpu == nullptr || dev.copy_buffer == nullptr ||
+        record.scale != 1 || overrides.enabled()) {
+      return false;
+    }
+    std::vector<PendingUpload> uploads;
+    VkDeviceSize ignored = 0;
+    if (!PlanRegions(record, dev.device, source, destination, count, regions,
+                     rewritten, &uploads, &ignored)) {
+      rewritten->clear();
+      return false;
+    }
+    const auto align = [](VkDeviceSize bytes) {
+      return (bytes + kStagingAlignment - 1) / kStagingAlignment *
+             kStagingAlignment;
+    };
+    std::vector<GpuUpload> gpu_uploads;
+    VkDeviceSize total = 0;
+    for (std::size_t index = 0; index < uploads.size(); ++index) {
+      const PendingUpload& upload = uploads[index];
+      const VkDeviceSize block_bytes = EtcBlockBytes(upload.format);
+      GpuUpload gpu;
+      gpu.device = dev.device;
+      gpu.source = source;
+      gpu.source_offset = upload.source_offset;
+      gpu.source_span = upload.source_span;
+      gpu.job.format = upload.format;
+      gpu.job.blocks_wide = (upload.width + 3) / 4;
+      gpu.job.blocks_high = (upload.height + 3) / 4;
+      gpu.job.layers = upload.layers;
+      gpu.job.source_row_blocks =
+          static_cast<std::uint32_t>(upload.source_row_stride / block_bytes);
+      gpu.job.source_layer_blocks =
+          static_cast<std::uint32_t>(upload.source_layer_stride / block_bytes);
+      gpu.job.source_offset = total;
+      total += align(upload.source_span);
+      gpu.job.destination_offset = total;
+      total += align(Etc2GpuDecodedBytes(gpu.job));
+      Region& region = (*rewritten)[index];
+      region.bufferOffset = gpu.job.destination_offset;
+      region.bufferRowLength = Etc2GpuRowTexels(gpu.job.blocks_wide);
+      region.bufferImageHeight = gpu.job.blocks_high * 4;
+      gpu_uploads.push_back(gpu);
+    }
+    Staging staging;
+    if (!AcquireStaging(dev, total, &staging, true)) {
+      rewritten->clear();
+      return false;
+    }
+    for (GpuUpload& gpu : gpu_uploads) {
+      gpu.staging = staging.block->buffer;
+      gpu.binding = staging.block->binding;
+      gpu.job.source_offset += staging.offset;
+      gpu.job.destination_offset += staging.offset;
+    }
+    for (Region& region : *rewritten) {
+      region.bufferOffset += staging.offset;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      CommandRecord& command = commands[command_buffer];
+      command.gpu_uploads.insert(command.gpu_uploads.end(),
+                                 gpu_uploads.begin(), gpu_uploads.end());
+      command.staging.push_back(staging);
+      has_commands.store(true, std::memory_order_release);
+    }
+    *staging_buffer = staging.block->buffer;
+    return true;
+  }
+
+  VkCommandBuffer RecordDecodeCommands(const HostDevice& dev,
+                                       std::uint32_t family,
+                                       const std::vector<GpuUpload>& uploads) {
+    std::lock_guard<std::mutex> lock(pool_mutex);
+    VkCommandPool& pool = pools[{dev.device, family}];
+    if (pool == VK_NULL_HANDLE) {
+      VkCommandPoolCreateInfo pool_info{};
+      pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+      pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+      pool_info.queueFamilyIndex = family;
+      if (dev.create_command_pool(dev.device, &pool_info, nullptr, &pool) !=
+          VK_SUCCESS) {
+        pool = VK_NULL_HANDLE;
+        return VK_NULL_HANDLE;
+      }
+    }
+    VkCommandBufferAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocate.commandPool = pool;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    if (dev.allocate_command_buffers(dev.device, &allocate, &command_buffer) !=
+        VK_SUCCESS) {
+      return VK_NULL_HANDLE;
+    }
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    bool ok = dev.begin_command_buffer(command_buffer, &begin) == VK_SUCCESS;
+    const auto barrier = [&](VkPipelineStageFlags source_stage,
+                             VkAccessFlags source_access,
+                             VkPipelineStageFlags destination_stage,
+                             VkAccessFlags destination_access) {
+      VkMemoryBarrier memory{};
+      memory.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+      memory.srcAccessMask = source_access;
+      memory.dstAccessMask = destination_access;
+      dev.pipeline_barrier(command_buffer, source_stage, destination_stage, 0, 1,
+                           &memory, 0, nullptr, 0, nullptr);
+    };
+    constexpr VkPipelineStageFlags kStages =
+        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (ok) {
+      barrier(kStages,
+              VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+              kStages,
+              VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
+                  VK_ACCESS_SHADER_WRITE_BIT);
+      for (const GpuUpload& upload : uploads) {
+        const VkBufferCopy copy{upload.source_offset, upload.job.source_offset,
+                                upload.source_span};
+        dev.copy_buffer(command_buffer, upload.source, upload.staging, 1, &copy);
+      }
+      barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+      for (const GpuUpload& upload : uploads) {
+        ok = ok && dev.gpu->Record(command_buffer, upload.binding, &upload.job, 1);
+      }
+      barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+      ok = dev.end_command_buffer(command_buffer) == VK_SUCCESS && ok;
+    }
+    if (!ok) {
+      dev.free_command_buffers(dev.device, pool, 1, &command_buffer);
+      return VK_NULL_HANDLE;
+    }
+    return command_buffer;
+  }
+
+  std::vector<VkCommandBuffer> GpuDecodeCommands(
+      const VkCommandBuffer* command_buffers, std::uint32_t count,
+      VkQueue queue) {
+    std::vector<VkCommandBuffer> out;
+    ChromeTraceWriter* const trace = ActiveProfileTrace();
+    const std::uint64_t start_ns = trace != nullptr ? TraceClockNanos() : 0;
+    std::int64_t uploads = 0;
+    std::int64_t compressed_bytes = 0;
+    std::int64_t decoded_bytes = 0;
+    std::int64_t recorded_buffers = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto queue_record = queue_families.find(queue);
+    const auto add = [&](VkCommandBuffer command_buffer) {
+      const auto record = commands.find(command_buffer);
+      if (record == commands.end() || record->second.gpu_uploads.empty()) {
+        return;
+      }
+      if (queue_record == queue_families.end()) {
+        LogFailure("GPU-decoded upload submitted to an unknown queue");
+        return;
+      }
+      for (const GpuUpload& upload : record->second.gpu_uploads) {
+        ++uploads;
+        compressed_bytes += static_cast<std::int64_t>(upload.source_span);
+        decoded_bytes += static_cast<std::int64_t>(Etc2GpuDecodedBytes(upload.job));
+      }
+      const std::uint32_t family = queue_record->second.family;
+      for (const DecodeCommands& recorded : record->second.decode_commands) {
+        if (recorded.family == family) {
+          out.push_back(recorded.buffer);
+          return;
+        }
+      }
+      ++recorded_buffers;
+      const VkDevice device = record->second.gpu_uploads.front().device;
+      const HostDevice* dev = Find(device);
+      const VkCommandBuffer recorded =
+          dev == nullptr ? VK_NULL_HANDLE
+                         : RecordDecodeCommands(*dev, family,
+                                                record->second.gpu_uploads);
+      if (recorded == VK_NULL_HANDLE) {
+        LogFailure("could not record the GPU decode commands");
+        return;
+      }
+      record->second.decode_commands.push_back({device, family, recorded});
+      out.push_back(recorded);
+    };
+    for (std::uint32_t index = 0; index < count; ++index) {
+      add(command_buffers[index]);
+      const auto record = commands.find(command_buffers[index]);
+      if (record != commands.end()) {
+        for (VkCommandBuffer secondary : record->second.secondaries) {
+          add(secondary);
+        }
+      }
+    }
+    if (trace != nullptr && uploads > 0) {
+      trace->Slice("etc2 gpu decode", "texture", start_ns, TraceClockNanos(),
+                   {{"uploads", uploads},
+                    {"compressed_bytes", compressed_bytes},
+                    {"decoded_bytes", decoded_bytes},
+                    {"recorded", recorded_buffers}});
+    }
+    return out;
+  }
+
+  void FreeDecodeCommands(const std::vector<DecodeCommands>& doomed) {
+    if (doomed.empty()) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(pool_mutex);
+    for (const DecodeCommands& decode : doomed) {
+      const HostDevice* dev = Find(decode.device);
+      const auto pool = pools.find({decode.device, decode.family});
+      if (dev != nullptr && pool != pools.end() &&
+          dev->free_command_buffers != nullptr) {
+        dev->free_command_buffers(dev->device, pool->second, 1,
+                                  &decode.buffer);
+      }
+    }
   }
 
   bool BlitScaledCopy(const HostDevice& dev, VkCommandBuffer command_buffer,
@@ -1269,6 +1568,20 @@ void VulkanEtc2Emulation::RegisterDevice(
       get, device, "vkSignalSemaphore", "vkSignalSemaphoreKHR");
   dev->destroy_semaphore =
       DeviceProc<PFN_vkDestroySemaphore>(get, device, "vkDestroySemaphore");
+  dev->get_device_proc_addr = get;
+  dev->copy_buffer = DeviceProc<PFN_vkCmdCopyBuffer>(get, device, "vkCmdCopyBuffer");
+  dev->create_command_pool =
+      DeviceProc<PFN_vkCreateCommandPool>(get, device, "vkCreateCommandPool");
+  dev->destroy_command_pool =
+      DeviceProc<PFN_vkDestroyCommandPool>(get, device, "vkDestroyCommandPool");
+  dev->allocate_command_buffers = DeviceProc<PFN_vkAllocateCommandBuffers>(
+      get, device, "vkAllocateCommandBuffers");
+  dev->free_command_buffers =
+      DeviceProc<PFN_vkFreeCommandBuffers>(get, device, "vkFreeCommandBuffers");
+  dev->begin_command_buffer =
+      DeviceProc<PFN_vkBeginCommandBuffer>(get, device, "vkBeginCommandBuffer");
+  dev->end_command_buffer =
+      DeviceProc<PFN_vkEndCommandBuffer>(get, device, "vkEndCommandBuffer");
   if (emulated && timeline_semaphore && dev->signal_semaphore != nullptr) {
     const auto create_semaphore =
         DeviceProc<PFN_vkCreateSemaphore>(get, device, "vkCreateSemaphore");
@@ -1337,6 +1650,11 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
         ++it;
       }
     }
+    for (auto it = state_->queue_families.begin();
+         it != state_->queue_families.end();) {
+      it = it->second.device == device ? state_->queue_families.erase(it)
+                                       : std::next(it);
+    }
     totals = state_->texture_bytes;
     now = TraceClockNanos();
     state_->has_commands.store(!state_->commands.empty(),
@@ -1344,6 +1662,20 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   }
   TraceTextureBytes(totals, now);
   if (const HostDevice* dev = state_->Find(device); dev != nullptr) {
+    {
+      std::lock_guard<std::mutex> lock(state_->pool_mutex);
+      for (auto it = state_->pools.begin(); it != state_->pools.end();) {
+        if (it->first.first == device) {
+          if (it->second != VK_NULL_HANDLE &&
+              dev->destroy_command_pool != nullptr) {
+            dev->destroy_command_pool(device, it->second, nullptr);
+          }
+          it = state_->pools.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
     for (const auto& block : doomed) {
       DestroyStagingBlock(*dev, *block);
     }
@@ -1613,6 +1945,14 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
     return;
   }
   std::vector<VkBufferImageCopy> rewritten;
+  VkBuffer gpu_staging = VK_NULL_HANDLE;
+  if (state_->PlanGpuUpload(*dev, command_buffer, record, source, destination,
+                            region_count, regions, &rewritten,
+                            &gpu_staging)) {
+    dev->copy_buffer_to_image(command_buffer, gpu_staging, destination, layout,
+                              region_count, rewritten.data());
+    return;
+  }
   std::vector<PendingUpload> uploads;
   VkDeviceSize total = 0;
   Staging staging;
@@ -1651,6 +1991,16 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
     return;
   }
   std::vector<VkBufferImageCopy2> rewritten;
+  VkBuffer gpu_staging = VK_NULL_HANDLE;
+  if (state_->PlanGpuUpload(*dev, command_buffer, record, info->srcBuffer,
+                            info->dstImage, info->regionCount, info->pRegions,
+                            &rewritten, &gpu_staging)) {
+    VkCopyBufferToImageInfo2 host_info = *info;
+    host_info.srcBuffer = gpu_staging;
+    host_info.pRegions = rewritten.data();
+    dev->copy_buffer_to_image2(command_buffer, &host_info);
+    return;
+  }
   std::vector<PendingUpload> uploads;
   VkDeviceSize total = 0;
   Staging staging;
@@ -1787,13 +2137,60 @@ void VulkanEtc2Emulation::CmdExecuteCommands(
   dev->execute_commands(command_buffer, count, secondaries);
 }
 
+void VulkanEtc2Emulation::RegisterQueue(VkDevice device, VkQueue queue,
+                                        std::uint32_t queue_family) {
+  if (device == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  state_->queue_families[queue] = {device, queue_family};
+}
+
+bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
+                                          std::uint32_t queue_family) {
+  HostDevice* dev = state_->FindMutable(device);
+  if (dev == nullptr || !dev->emulated || queue == VK_NULL_HANDLE) {
+    return false;
+  }
+  if (GpuDecodeDisabledByEnvironment()) {
+    std::fprintf(stderr,
+                 "  [vulkan] ETC2 GPU decode off (MOCKTAIL_ETC2_GPU_DECODE=0)\n");
+    return false;
+  }
+  if (dev->copy_buffer == nullptr || dev->create_command_pool == nullptr ||
+      dev->destroy_command_pool == nullptr ||
+      dev->allocate_command_buffers == nullptr ||
+      dev->free_command_buffers == nullptr ||
+      dev->begin_command_buffer == nullptr ||
+      dev->end_command_buffer == nullptr || dev->pipeline_barrier == nullptr) {
+    return false;
+  }
+  std::string error;
+  std::unique_ptr<Etc2GpuDecoder> decoder =
+      Etc2GpuDecoder::Create(device, dev->get_device_proc_addr, &error);
+  if (decoder == nullptr ||
+      !decoder->SelfTest(queue, queue_family, dev->memory, &error)) {
+    std::fprintf(stderr,
+                 "  [vulkan] ETC2 GPU decode unavailable (%s); decoding on "
+                 "the CPU\n",
+                 error.c_str());
+    return false;
+  }
+  dev->gpu = std::move(decoder);
+  std::fprintf(stderr, "  [vulkan] ETC2 GPU decode enabled\n");
+  return true;
+}
+
 Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     const VkCommandBuffer* command_buffers, std::uint32_t count,
-    bool allow_async) {
+    bool allow_async, VkQueue queue) {
+  Etc2SubmitWait result;
   if (command_buffers == nullptr || count == 0 ||
       !state_->has_commands.load(std::memory_order_acquire)) {
-    return {};
+    return result;
   }
+  result.decode_commands =
+      state_->GpuDecodeCommands(command_buffers, count, queue);
   struct Work {
     PendingUpload upload;
     std::uint8_t* source = nullptr;
@@ -1851,7 +2248,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     }
   }
   if (work.empty()) {
-    return {};
+    return result;
   }
   // A submit carries one device, but a batch that somehow spans two cannot be
   // signalled by a single timeline, so it decodes on this thread instead.
@@ -1960,7 +2357,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     }
     state_->DecodeAndEmit(uploads, state_->scratch_source.data(),
                           state_->scratch_decoded.data());
-    return {};
+    return result;
   }
 
   batch->source_bytes = compressed_total;
@@ -2012,7 +2409,9 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     }
   }
   trace_scope.Arg("ticket", static_cast<std::int64_t>(ticket));
-  return {batch_dev->timeline, ticket};
+  result.semaphore = batch_dev->timeline;
+  result.value = ticket;
+  return result;
 }
 
 void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
@@ -2043,6 +2442,7 @@ void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
   }
 
   std::vector<Staging> doomed;
+  std::vector<DecodeCommands> decode_commands;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     const auto record = state_->commands.find(command_buffer);
@@ -2050,10 +2450,12 @@ void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
       return;
     }
     doomed = std::move(record->second.staging);
+    decode_commands = std::move(record->second.decode_commands);
     state_->commands.erase(record);
     state_->has_commands.store(!state_->commands.empty(),
                                std::memory_order_release);
   }
+  state_->FreeDecodeCommands(decode_commands);
   state_->ReleaseStaging(std::move(doomed));
 }
 
