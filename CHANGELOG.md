@@ -18,6 +18,7 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Each install now sends Roblox its own random Android device ID instead of `0000000000000000`.
 - The Flatpak no longer fails to install Roblox on NVIDIA under Wayland with "graphics canary exited with
   status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version
   failed its startup test.

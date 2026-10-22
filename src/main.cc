@@ -51,6 +51,7 @@
 #include "runtime/running_instance.h"
 #include "runtime/settings_launcher.h"
 #include "runtime/roblox_cache.h"
+#include "runtime/android_device_id.h"
 #include "runtime/single_instance_lock.h"
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
@@ -421,6 +422,19 @@ int main(int argc, char* argv[]) {
           "Nightcap could not start because another Nightcap is using its "
           "Roblox data, or its cache is being cleared.");
       return EXIT_FAILURE;
+    }
+    const char* android_id_override = std::getenv("MOCKTAIL_ANDROID_ID");
+    if (android_id_override == nullptr || android_id_override[0] == '\0') {
+      const mocktail::runtime::AndroidDeviceId android_id =
+          mocktail::runtime::LoadOrCreateAndroidDeviceId(
+              paths.android_runtime_root() / "android_id");
+      if (!android_id ||
+          setenv("MOCKTAIL_ANDROID_ID", android_id.value.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot prepare the Android device ID: "
+                  << (android_id ? "cannot export it" : android_id.error)
+                  << '\n';
+        return EXIT_FAILURE;
+      }
     }
   }
   const mocktail::runtime::RuntimeConfigBootstrapResult config_bootstrap =
