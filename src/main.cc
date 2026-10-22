@@ -366,6 +366,31 @@ int main(int argc, char* argv[]) {
     instance_lock.emplace(
         mocktail::runtime::SingleInstanceLock::AcquireForLaunch(environment,
                                                                 paths));
+    if (!isolated_canary && !instance_lock->acquired() &&
+        instance_lock->already_running() &&
+        external_launch_request.has_value()) {
+      const mocktail::runtime::RuntimeConfigLoadResult saved =
+          mocktail::runtime::LoadRuntimeConfig(environment,
+                                               paths.config_file());
+      if (saved && mocktail::runtime::WebsiteJoinNeedsFreshLaunch(saved.config)) {
+        std::cout << "  [launch] closing the running Nightcap so the Roblox "
+                     "cache clears before this join\n"
+                  << std::flush;
+        std::string stop_error;
+        if (mocktail::runtime::StopRunningInstance(
+                mocktail::runtime::CurrentUserInstanceLockPath(),
+                std::chrono::minutes(2), &stop_error)) {
+          instance_lock.reset();
+          instance_lock.emplace(
+              mocktail::runtime::SingleInstanceLock::AcquireForLaunch(
+                  environment, paths));
+        } else {
+          std::cerr << "  [launch] cannot close the running Nightcap, so the "
+                       "join goes to it: "
+                    << stop_error << '\n';
+        }
+      }
+    }
     if (!instance_lock->acquired()) {
       if (!isolated_canary && instance_lock->already_running() &&
           external_launch_request.has_value()) {

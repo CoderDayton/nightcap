@@ -150,6 +150,10 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
   return result;
 }
 
+bool WebsiteJoinNeedsFreshLaunch(const RuntimeConfig& config) {
+  return config.fleasion_enabled() && config.fleasion_clear_cache_on_launch();
+}
+
 bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
                                           std::string* merged_json,
                                           std::string* error) {

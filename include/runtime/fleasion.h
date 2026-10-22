@@ -24,6 +24,8 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
                                    const Environment& environment,
                                    const RuntimePaths& paths);
 
+bool WebsiteJoinNeedsFreshLaunch(const RuntimeConfig& config);
+
 bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
                                           std::string* merged_json,
                                           std::string* error);
