@@ -957,6 +957,120 @@ TEST(WindowPointerCaptureOwnerTest, LockWhereTheCursorWouldJumpLeavesItToRoblox)
   EXPECT_EQ(owner.cursor(), CursorShape::kHidden);
 }
 
+std::uint64_t g_fake_now_ms = 0;
+
+std::uint64_t FakeNowMs() { return g_fake_now_ms; }
+
+TEST(WindowPointerCaptureOwnerTest, BriefLockDropKeepsTheCapture) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_frames = 10;
+  g_fake_now_ms = 1000;
+  query.locked_center = true;
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.captured());
+  const std::size_t calls_before = backend.calls.size();
+
+  for (int frame = 0; frame < 20; ++frame) {
+    query.locked_center = frame % 2 == 0;
+    g_fake_frames += 1;
+    g_fake_now_ms += 16;
+    EXPECT_TRUE(owner.Pump(false));
+    EXPECT_TRUE(owner.captured());
+  }
+  EXPECT_EQ(backend.calls.size(), calls_before);
+}
+
+TEST(WindowPointerCaptureOwnerTest, LockOffForSeveralFramesReleases) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_frames = 10;
+  g_fake_now_ms = 1000;
+  query.locked_center = true;
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.locked_center = false;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+  g_fake_frames += 2;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+  g_fake_frames += 1;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+}
+
+TEST(WindowPointerCaptureOwnerTest, LockDropReleasesWhenRobloxStopsPresenting) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_frames = 10;
+  g_fake_now_ms = 1000;
+  query.locked_center = true;
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.locked_center = false;
+  EXPECT_TRUE(owner.Pump(false));
+  g_fake_now_ms += 249;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+  g_fake_now_ms += 1;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+}
+
+TEST(WindowPointerCaptureOwnerTest, CameraDragReleasesAtOnce) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_frames = 10;
+  g_fake_now_ms = 1000;
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.captured());
+
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+}
+
+TEST(WindowPointerCaptureOwnerTest, LockCentersThePointerWhereTheCursorHides) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.locked_center = true;
+  EXPECT_TRUE(owner.Pump(false));
+  ASSERT_FALSE(backend.calls.empty());
+  EXPECT_TRUE(backend.calls.back().center_pointer);
+}
+
+TEST(WindowPointerCaptureOwnerTest, FailedLockCaptureGetsNoGrace) {
+  FakeBackend backend;
+  backend.succeeds = false;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_frames = 10;
+  g_fake_now_ms = 1000;
+  query.locked_center = true;
+  EXPECT_FALSE(owner.Pump(false));
+  backend.calls.clear();
+
+  query.locked_center = false;
+  owner.Pump(false);
+  for (const FakeBackend::Call& call : backend.calls) {
+    EXPECT_FALSE(call.relative_mode);
+  }
+}
+
 }  // namespace
 }  // namespace window
 }  // namespace mocktail
