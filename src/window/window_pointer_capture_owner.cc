@@ -1,10 +1,12 @@
 #include "window/window_pointer_capture_owner.h"
 
+#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <tuple>
@@ -41,11 +43,22 @@ const char* CursorShapeName(CursorShape shape) {
 }
 
 WindowPointerCaptureOwner::WindowPointerCaptureOwner(
-    PointerCaptureBackend* backend, FrameCounter presented_frames)
-    : backend_(backend), presented_frames_(presented_frames) {}
+    PointerCaptureBackend* backend, FrameCounter presented_frames,
+    Clock now_ms)
+    : backend_(backend), presented_frames_(presented_frames), now_ms_(now_ms) {}
 
 std::uint64_t WindowPointerCaptureOwner::PresentedFrames() const {
   return presented_frames_ != nullptr ? presented_frames_() : 0;
+}
+
+std::uint64_t WindowPointerCaptureOwner::NowMs() const {
+  if (now_ms_ != nullptr) {
+    return now_ms_();
+  }
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
 }
 
 WindowPointerCaptureOwner::~WindowPointerCaptureOwner() { Shutdown(); }
@@ -126,7 +139,23 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     wait_for_native_unlock_after_right_drag_ = false;
   }
   const bool client_active = query_ok;
-  const bool native_capture_active = client_active && native_lock_active;
+  bool native_capture_active = client_active && native_lock_active;
+  if (!native_capture_active && client_active && pointer_centered_ &&
+      presented_frames_ != nullptr) {
+    const std::uint64_t frames = PresentedFrames();
+    const std::uint64_t now = NowMs();
+    if (!native_unlock_pending_) {
+      native_unlock_pending_ = true;
+      native_unlock_frame_ = frames;
+      native_unlock_ms_ = now;
+    }
+    native_capture_active =
+        frames - native_unlock_frame_ < kNativeUnlockFrames &&
+        now - native_unlock_ms_ < kNativeUnlockMs;
+  }
+  if (native_lock_active || !native_capture_active) {
+    native_unlock_pending_ = false;
+  }
   const bool roblox_pans = !query_ok || !mouse_lock.reports_current_position ||
                            mouse_lock.current_position;
   const bool right_drag_active =
@@ -151,6 +180,7 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     std::tie(cursor, image) = uncaptured_cursor;
     shows_roblox_cursor = client_active;
   } else {
+    center_pointer = native_capture_active;
     // Not cursor_, which is the unfocused arrow on a refocusing click.
     if (!captured_) {
       std::tie(capture_cursor_, capture_cursor_image_) = uncaptured_cursor;
@@ -160,7 +190,6 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
         // First person and shift lock draw the cursor at the center, so the
         // desktop one goes there and follows what Roblox reports.
         std::tie(cursor, image) = uncaptured_cursor;
-        center_pointer = true;
       } else {
         // An RMB drag keeps a desktop cursor that was already showing.
         cursor = capture_cursor_;
@@ -374,6 +403,7 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
   if (relative_mode && !relative_mode_) {
     SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
     capture_anchor_valid_ = true;
+    anchor_centered_ = false;
     SDL_SetWindowMouseGrab(window, true);
   }
   // Before relative mode starts: Wayland then locks the pointer where it is.
@@ -394,6 +424,16 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
       }
     }
   }
+  if (pointer_centered_ && !(relative_mode && center_pointer)) {
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowSize(window, &width, &height)) {
+      capture_anchor_x_ = width / 2.0f;
+      capture_anchor_y_ = height / 2.0f;
+      capture_anchor_valid_ = true;
+      anchor_centered_ = true;
+    }
+  }
   pointer_centered_ = relative_mode && center_pointer;
   if (!relative_mode && relative_mode_ && capture_anchor_valid_) {
     // SDL requires the warp before relative mode is disabled. This preserves
@@ -408,6 +448,16 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
       SDL_SetWindowMouseGrab(window, false);
     }
     return false;
+  }
+  if (!relative_mode && relative_mode_ && anchor_centered_ &&
+      capture_anchor_valid_) {
+    SDL_Event motion{};
+    motion.type = SDL_EVENT_MOUSE_MOTION;
+    motion.motion.windowID = SDL_GetWindowID(window);
+    motion.motion.state = SDL_GetMouseState(nullptr, nullptr);
+    motion.motion.x = capture_anchor_x_;
+    motion.motion.y = capture_anchor_y_;
+    SDL_PushEvent(&motion);
   }
   relative_mode_ = relative_mode;
   if (!relative_mode_) {
