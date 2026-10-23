@@ -465,6 +465,165 @@ TEST(RobloxDesktopAppPolicyTest, VrTurnsOffTheDesktopFlyoutSidePanel) {
             "2");
 }
 
+struct OtaFixture {
+  std::filesystem::path storage;
+  std::filesystem::path backups;
+  std::vector<OtaPatchSeed> patches;
+};
+
+bool Touch(const std::filesystem::path& path) {
+  std::error_code error;
+  std::filesystem::create_directories(path.parent_path(), error);
+  std::ofstream output(path);
+  output << "blob";
+  return output.good();
+}
+
+OtaFixture MakeOtaFixture(const std::filesystem::path& root) {
+  OtaFixture fixture;
+  fixture.storage = root / "files/appData/LocalStorage/appStorage.json";
+  fixture.backups = root / "files/appData/OTAPatchBackups";
+  const std::filesystem::path universal =
+      root / "assets/UniversalAppPatchConfig.json";
+  const std::filesystem::path in_experience =
+      root / "assets/InExperiencePatchConfig.json";
+  WriteJson(universal,
+            {{"AppStorageResetId", "0"},
+             {"AssetId", "118593852151835"},
+             {"AssetVersion", "14827"},
+             {"IsForcedUpdate", false},
+             {"LocalAssetURI",
+              "rbxasset://models/UniversalApp/UniversalApp.rbxm"},
+             {"LocalAssetHash", "6d9cfee80b8ff14f68a9d1007c549be2"},
+             {"MaxAppVersion", "742"}});
+  WriteJson(in_experience,
+            {{"AppStorageResetId", "0"},
+             {"AssetId", "80471914653504"},
+             {"AssetVersion", "14738"},
+             {"IsForcedUpdate", false},
+             {"LocalAssetURI",
+              "rbxasset://models/InExperience/InExperience.rbxm"},
+             {"MaxAppVersion", "742"}});
+  fixture.patches = {{"UniversalAppPatch", universal},
+                     {"InExperiencePatch", in_experience}};
+  return fixture;
+}
+
+nlohmann::json DecodePatchEntries(const nlohmann::json& storage,
+                                  const std::string& key) {
+  return nlohmann::json::parse(storage[key].get_ref<const std::string&>(),
+                               nullptr, false, true);
+}
+
+TEST(RobloxOtaPatchSeedTest, RecordsNewestDownloadedPatchForInstallation) {
+  TemporaryDirectory temporary;
+  const OtaFixture fixture = MakeOtaFixture(temporary.path());
+  ASSERT_TRUE(WriteJson(fixture.storage, {{"AppInstallationId", "1583"},
+                                          {"RobloxLocaleId", "en_us"}}));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_118593852151835_15350"));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_118593852151835_15200"));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_80471914653504_15258"));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_999_20000"));
+
+  const OtaPatchSeedResult result = SeedDownloadedOtaPatchConfigs(
+      fixture.storage, fixture.backups, fixture.patches);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.seeded_count, 2U);
+
+  const nlohmann::json storage = ReadJson(fixture.storage);
+  EXPECT_EQ(storage["RobloxLocaleId"], "en_us");
+  EXPECT_EQ(FileMode(fixture.storage), 0600);
+  const nlohmann::json universal =
+      DecodePatchEntries(storage, "_Patch__UniversalAppPatch");
+  ASSERT_TRUE(universal.contains("app:1583"));
+  ASSERT_EQ(universal["app:1583"].size(), 1U);
+  const nlohmann::json entry = universal["app:1583"][0];
+  EXPECT_EQ(entry["AssetId"], "118593852151835");
+  EXPECT_EQ(entry["AssetVersion"], "15350");
+  EXPECT_EQ(entry["MaxAppVersion"], "742");
+  EXPECT_EQ(entry["LocalAssetURI"],
+            "rbxasset://models/UniversalApp/UniversalApp.rbxm");
+  EXPECT_EQ(entry["AppStorageResetId"], "0");
+  EXPECT_EQ(entry["IsForcedUpdate"], false);
+  EXPECT_EQ(entry["DownloadSource"], "in_process");
+  EXPECT_EQ(DecodePatchEntries(storage, "_Patch__InExperiencePatch")
+                ["app:1583"][0]["AssetVersion"],
+            "15258");
+}
+
+TEST(RobloxOtaPatchSeedTest, LeavesRobloxOwnedEntriesAlone) {
+  TemporaryDirectory temporary;
+  const OtaFixture fixture = MakeOtaFixture(temporary.path());
+  const std::string owned = R"({"app:1583":[{"AssetVersion":"15000"}]})";
+  ASSERT_TRUE(WriteJson(fixture.storage,
+                        {{"AppInstallationId", "1583"},
+                         {"_Patch__UniversalAppPatch", owned}}));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_118593852151835_15350"));
+
+  const OtaPatchSeedResult result = SeedDownloadedOtaPatchConfigs(
+      fixture.storage, fixture.backups, fixture.patches);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.seeded_count, 0U);
+  const nlohmann::json storage = ReadJson(fixture.storage);
+  EXPECT_EQ(storage["_Patch__UniversalAppPatch"], owned);
+  EXPECT_FALSE(storage.contains("_Patch__InExperiencePatch"));
+}
+
+TEST(RobloxOtaPatchSeedTest, IgnoresDownloadsNotNewerThanBuiltInPatch) {
+  TemporaryDirectory temporary;
+  const OtaFixture fixture = MakeOtaFixture(temporary.path());
+  ASSERT_TRUE(WriteJson(fixture.storage, {{"AppInstallationId", "1583"}}));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_118593852151835_14827"));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_80471914653504_100"));
+  ASSERT_TRUE(
+      Touch(fixture.backups / "DataModelPatch_80471914653504_15258.tmp.3"));
+
+  const OtaPatchSeedResult result = SeedDownloadedOtaPatchConfigs(
+      fixture.storage, fixture.backups, fixture.patches);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.seeded_count, 0U);
+  EXPECT_FALSE(ReadJson(fixture.storage).contains("_Patch__UniversalAppPatch"));
+}
+
+TEST(RobloxOtaPatchSeedTest, CountsUnrecordedPatchesWithoutWriting) {
+  TemporaryDirectory temporary;
+  const OtaFixture fixture = MakeOtaFixture(temporary.path());
+  ASSERT_TRUE(WriteJson(fixture.storage, {{"AppInstallationId", "1583"}}));
+  EXPECT_EQ(CountUnrecordedOtaPatches(fixture.storage, fixture.backups,
+                                      fixture.patches),
+            0U);
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_118593852151835_15350"));
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_80471914653504_15258"));
+
+  EXPECT_EQ(CountUnrecordedOtaPatches(fixture.storage, fixture.backups,
+                                      fixture.patches),
+            2U);
+  EXPECT_FALSE(ReadJson(fixture.storage).contains("_Patch__UniversalAppPatch"));
+  ASSERT_TRUE(SeedDownloadedOtaPatchConfigs(fixture.storage, fixture.backups,
+                                            fixture.patches));
+  EXPECT_EQ(CountUnrecordedOtaPatches(fixture.storage, fixture.backups,
+                                      fixture.patches),
+            0U);
+}
+
+TEST(RobloxOtaPatchSeedTest, SkipsProfilesRobloxHasNotStarted) {
+  TemporaryDirectory temporary;
+  const OtaFixture fixture = MakeOtaFixture(temporary.path());
+  ASSERT_TRUE(Touch(fixture.backups / "DataModelPatch_118593852151835_15350"));
+
+  OtaPatchSeedResult result = SeedDownloadedOtaPatchConfigs(
+      fixture.storage, fixture.backups, fixture.patches);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.seeded_count, 0U);
+  EXPECT_FALSE(std::filesystem::exists(fixture.storage));
+
+  ASSERT_TRUE(WriteJson(fixture.storage, {{"RobloxLocaleId", "en_us"}}));
+  result = SeedDownloadedOtaPatchConfigs(fixture.storage, fixture.backups,
+                                         fixture.patches);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.seeded_count, 0U);
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

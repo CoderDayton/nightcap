@@ -72,6 +72,9 @@ bool RestartRunningInstance(const std::filesystem::path& lock_file,
                             std::chrono::milliseconds timeout,
                             std::string* error);
 
+bool ReplaceProcess(const std::filesystem::path& program,
+                    const LaunchCommand& command, std::string* error);
+
 }  // namespace runtime
 }  // namespace mocktail
 
