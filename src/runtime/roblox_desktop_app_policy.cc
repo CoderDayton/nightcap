@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <nlohmann/json.hpp>
@@ -123,18 +124,18 @@ bool AtomicWriteJson(const std::filesystem::path& path,
                      const nlohmann::json& value, std::string* error) {
   std::error_code filesystem_error;
   if (!RuntimePaths::EnsureDirectory(path.parent_path(), &filesystem_error)) {
-    *error = "cannot create desktop app-policy directory";
+    *error = "cannot create Roblox appStorage directory";
     return false;
   }
   const std::filesystem::file_status target_status =
       std::filesystem::symlink_status(path, filesystem_error);
   if (!filesystem_error && std::filesystem::is_symlink(target_status)) {
-    *error = "desktop app-policy target is a symlink";
+    *error = "Roblox appStorage is a symlink";
     return false;
   }
   if (filesystem_error != std::errc::no_such_file_or_directory &&
       filesystem_error) {
-    *error = "cannot inspect desktop app-policy target";
+    *error = "cannot inspect Roblox appStorage";
     return false;
   }
 
@@ -146,7 +147,7 @@ bool AtomicWriteJson(const std::filesystem::path& path,
       open(temporary.c_str(),
            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
   if (descriptor < 0) {
-    *error = "cannot create temporary desktop app-policy";
+    *error = "cannot create temporary Roblox appStorage";
     return false;
   }
   bool stored = false;
@@ -160,18 +161,18 @@ bool AtomicWriteJson(const std::filesystem::path& path,
     const int saved_errno = errno;
     (void)unlink(temporary.c_str());
     errno = saved_errno;
-    *error = "cannot atomically store desktop app-policy";
+    *error = "cannot atomically store Roblox appStorage";
     return false;
   }
   const int directory_descriptor =
       open(path.parent_path().c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
   if (directory_descriptor < 0) {
-    *error = "cannot open desktop app-policy directory for sync";
+    *error = "cannot open Roblox appStorage directory for sync";
     return false;
   }
   const ScopedFileDescriptor directory(directory_descriptor);
   if (fsync(directory.get()) != 0) {
-    *error = "cannot sync desktop app-policy directory";
+    *error = "cannot sync Roblox appStorage directory";
     return false;
   }
   return true;
@@ -200,6 +201,106 @@ bool DecodePolicy(const nlohmann::json& encoded, nlohmann::json* policy) {
   *policy = nlohmann::json::parse(encoded.get_ref<const std::string&>(),
                                   nullptr, false, true);
   return !policy->is_discarded() && policy->is_object();
+}
+
+bool ReadStringField(const nlohmann::json& object, const char* key,
+                     std::string* value) {
+  const auto field = object.find(key);
+  if (field == object.end() || !field->is_string() ||
+      field->get_ref<const std::string&>().empty()) {
+    return false;
+  }
+  *value = field->get<std::string>();
+  return true;
+}
+
+bool ParseVersion(std::string_view text, std::uint64_t* version) {
+  if (text.empty()) {
+    return false;
+  }
+  const auto parsed =
+      std::from_chars(text.data(), text.data() + text.size(), *version);
+  return parsed.ec == std::errc() && parsed.ptr == text.data() + text.size();
+}
+
+std::size_t AddUnrecordedOtaPatchEntries(
+    nlohmann::json* storage,
+    const std::filesystem::path& patch_backup_directory,
+    const std::vector<OtaPatchSeed>& patches) {
+  const auto installation = storage->find("AppInstallationId");
+  std::string installation_id;
+  if (installation != storage->end() && installation->is_string()) {
+    installation_id = installation->get<std::string>();
+  } else if (installation != storage->end() &&
+             installation->is_number_unsigned()) {
+    installation_id = std::to_string(installation->get<std::uint64_t>());
+  }
+  if (installation_id.empty()) {
+    return 0;
+  }
+
+  std::size_t added = 0;
+  for (const OtaPatchSeed& patch : patches) {
+    const std::string storage_key = "_Patch__" + patch.storage_name;
+    if (storage->contains(storage_key)) {
+      continue;
+    }
+    const JsonReadResult builtin =
+        ReadJsonObject(patch.builtin_config_file, "built-in OTA patch config");
+    if (builtin.status != ReadStatus::kReady) {
+      continue;
+    }
+    std::string asset_id;
+    std::string builtin_version;
+    std::string max_app_version;
+    std::string local_asset_uri;
+    std::string reset_id = "0";
+    if (!ReadStringField(builtin.value, "AssetId", &asset_id) ||
+        !ReadStringField(builtin.value, "AssetVersion", &builtin_version) ||
+        !ReadStringField(builtin.value, "MaxAppVersion", &max_app_version) ||
+        !ReadStringField(builtin.value, "LocalAssetURI", &local_asset_uri)) {
+      continue;
+    }
+    (void)ReadStringField(builtin.value, "AppStorageResetId", &reset_id);
+    std::uint64_t newest = 0;
+    if (!ParseVersion(builtin_version, &newest)) {
+      continue;
+    }
+    const std::uint64_t builtin_number = newest;
+    const std::string prefix = "DataModelPatch_" + asset_id + "_";
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(patch_backup_directory, error),
+         end;
+         !error && it != end; it.increment(error)) {
+      const std::string name = it->path().filename().string();
+      std::uint64_t version = 0;
+      if (name.rfind(prefix, 0) != 0 ||
+          !ParseVersion(std::string_view(name).substr(prefix.size()),
+                        &version) ||
+          !std::filesystem::is_regular_file(it->symlink_status())) {
+        continue;
+      }
+      if (version > newest) {
+        newest = version;
+      }
+    }
+    if (newest == builtin_number) {
+      continue;
+    }
+    const nlohmann::json entry = {
+        {"AssetId", asset_id},
+        {"AssetVersion", std::to_string(newest)},
+        {"MaxAppVersion", max_app_version},
+        {"LocalAssetURI", local_asset_uri},
+        {"IsForcedUpdate", false},
+        {"AppStorageResetId", reset_id},
+        {"DownloadSource", "in_process"}};
+    nlohmann::json entries = nlohmann::json::object();
+    entries["app:" + installation_id] = nlohmann::json::array({entry});
+    (*storage)[storage_key] = entries.dump();
+    ++added;
+  }
+  return added;
 }
 
 }  // namespace
@@ -371,6 +472,42 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
   overrides.emplace("FIntFlyoutTestVariantRollout12", "2");
   *merged_json = overrides.dump();
   return true;
+}
+
+OtaPatchSeedResult SeedDownloadedOtaPatchConfigs(
+    const std::filesystem::path& app_storage_file,
+    const std::filesystem::path& patch_backup_directory,
+    const std::vector<OtaPatchSeed>& patches) {
+  OtaPatchSeedResult result;
+  JsonReadResult storage =
+      ReadJsonObject(app_storage_file, "Roblox appStorage");
+  if (storage.status == ReadStatus::kInvalid) {
+    result.error = storage.error;
+    return result;
+  }
+  if (storage.status == ReadStatus::kMissing) {
+    return result;
+  }
+  result.seeded_count = AddUnrecordedOtaPatchEntries(
+      &storage.value, patch_backup_directory, patches);
+  if (result.seeded_count > 0 &&
+      !AtomicWriteJson(app_storage_file, storage.value, &result.error)) {
+    result.seeded_count = 0;
+  }
+  return result;
+}
+
+std::size_t CountUnrecordedOtaPatches(
+    const std::filesystem::path& app_storage_file,
+    const std::filesystem::path& patch_backup_directory,
+    const std::vector<OtaPatchSeed>& patches) {
+  JsonReadResult storage =
+      ReadJsonObject(app_storage_file, "Roblox appStorage");
+  if (storage.status != ReadStatus::kReady) {
+    return 0;
+  }
+  return AddUnrecordedOtaPatchEntries(&storage.value, patch_backup_directory,
+                                      patches);
 }
 
 }  // namespace runtime

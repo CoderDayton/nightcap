@@ -367,6 +367,90 @@ TEST_F(RunningInstanceTest, StartDetachedReportsAProgramThatCannotRun) {
   EXPECT_NE(error.find("missing"), std::string::npos) << error;
 }
 
+TEST_F(RunningInstanceTest, ReplaceProcessRunsTheProgramInThisProcess) {
+  const std::filesystem::path marker = directory_ / "marker";
+  const std::filesystem::path program = directory_ / "program.sh";
+  std::ofstream(program) << "#!/bin/sh\n{ echo \"$$ $1 $MARK\"; grep -E "
+                            "'^Sig(Ign|Blk)' /proc/$$/status; } > '"
+                         << marker.string() << "'\n";
+  std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    struct sigaction ignore {};
+    ignore.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &ignore, nullptr);
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &blocked, nullptr);
+    std::string error;
+    ReplaceProcess(program, {{program.string(), "again"}, {"MARK=yes"}, {}},
+                   &error);
+    _exit(99);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+  std::ifstream input(marker);
+  std::string first;
+  std::string ignored_line;
+  std::string blocked_line;
+  std::getline(input, first);
+  std::getline(input, blocked_line);
+  std::getline(input, ignored_line);
+  EXPECT_EQ(first, std::to_string(child) + " again yes");
+  const auto mask = [](const std::string& line) {
+    return std::stoull(line.substr(line.find_first_not_of("SigBlkIgn:\t ")),
+                       nullptr, 16);
+  };
+  EXPECT_EQ(mask(blocked_line) & (1ULL << (SIGUSR1 - 1)), 0u) << blocked_line;
+  EXPECT_EQ(mask(ignored_line) & (1ULL << (SIGINT - 1)), 0u) << ignored_line;
+}
+
+TEST_F(RunningInstanceTest, ReplaceProcessClosesInheritedDescriptors) {
+  const std::filesystem::path marker = directory_ / "marker";
+  const std::filesystem::path program = directory_ / "program.sh";
+  std::ofstream(program) << "#!/bin/sh\nif [ -e /proc/$$/fd/50 ]; then echo "
+                            "open; else echo closed; fi > '"
+                         << marker.string() << "'\n";
+  std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    const int leaked = open("/dev/null", O_RDONLY);
+    dup2(leaked, 50);
+    std::string error;
+    ReplaceProcess(program, {{program.string()}, {"MARK=yes"}, {}}, &error);
+    _exit(99);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+  std::ifstream input(marker);
+  std::string line;
+  std::getline(input, line);
+  EXPECT_EQ(line, "closed");
+}
+
+TEST_F(RunningInstanceTest, ReplaceProcessKeepsSignalsWhenItCannotRun) {
+  struct sigaction ignore {};
+  ignore.sa_handler = SIG_IGN;
+  struct sigaction old_int {};
+  sigaction(SIGINT, &ignore, &old_int);
+  std::string error;
+  EXPECT_FALSE(ReplaceProcess(directory_ / "missing", {}, &error));
+  struct sigaction now {};
+  sigaction(SIGINT, nullptr, &now);
+  sigaction(SIGINT, &old_int, nullptr);
+  EXPECT_EQ(now.sa_handler, SIG_IGN);
+  EXPECT_NE(error.find("missing"), std::string::npos) << error;
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

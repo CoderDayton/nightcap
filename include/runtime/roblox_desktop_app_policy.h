@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mocktail {
 namespace runtime {
@@ -37,6 +38,28 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
                                                  std::string_view base_json,
                                                  std::string* merged_json,
                                                  std::string* error);
+
+struct OtaPatchSeed {
+  std::string storage_name;
+  std::filesystem::path builtin_config_file;
+};
+
+struct OtaPatchSeedResult {
+  std::size_t seeded_count = 0;
+  std::string error;
+
+  explicit operator bool() const { return error.empty(); }
+};
+
+OtaPatchSeedResult SeedDownloadedOtaPatchConfigs(
+    const std::filesystem::path& app_storage_file,
+    const std::filesystem::path& patch_backup_directory,
+    const std::vector<OtaPatchSeed>& patches);
+
+std::size_t CountUnrecordedOtaPatches(
+    const std::filesystem::path& app_storage_file,
+    const std::filesystem::path& patch_backup_directory,
+    const std::vector<OtaPatchSeed>& patches);
 
 }  // namespace runtime
 }  // namespace mocktail
