@@ -189,6 +189,35 @@ void EnterFolderIfItExists(const std::string& folder) {
   }
 }
 
+struct ExecArguments {
+  ExecArguments(const std::filesystem::path& program,
+                const LaunchCommand& command)
+      : path(program.string()),
+        argument_text(command.arguments),
+        environment_text(command.environment) {
+    if (argument_text.empty()) {
+      argument_text.push_back(path);
+    }
+    for (std::string& argument : argument_text) {
+      arguments.push_back(argument.data());
+    }
+    arguments.push_back(nullptr);
+    for (std::string& variable : environment_text) {
+      environment.push_back(variable.data());
+    }
+    environment.push_back(nullptr);
+    envp = environment_text.empty() ? environ : environment.data();
+  }
+  ExecArguments(const ExecArguments&) = delete;
+  ExecArguments& operator=(const ExecArguments&) = delete;
+  std::string path;
+  std::vector<std::string> argument_text;
+  std::vector<std::string> environment_text;
+  std::vector<char*> arguments;
+  std::vector<char*> environment;
+  char* const* envp = nullptr;
+};
+
 }
 
 bool StopRunningInstance(const std::filesystem::path& lock_file,
@@ -207,23 +236,7 @@ bool StartDetached(const std::filesystem::path& program, std::string* error,
   };
   // Built before fork: the caller may have other threads, so the child must
   // not allocate.
-  std::string path = program.string();
-  std::vector<std::string> argument_text = command.arguments;
-  if (argument_text.empty()) {
-    argument_text.push_back(path);
-  }
-  std::vector<char*> arguments;
-  for (std::string& argument : argument_text) {
-    arguments.push_back(argument.data());
-  }
-  arguments.push_back(nullptr);
-  std::vector<std::string> environment_text = command.environment;
-  std::vector<char*> environment;
-  for (std::string& variable : environment_text) {
-    environment.push_back(variable.data());
-  }
-  environment.push_back(nullptr);
-  char* const* envp = command.environment.empty() ? environ : environment.data();
+  ExecArguments exec(program, command);
   const std::string working_directory = command.working_directory.string();
   // The grandchild reports a failed exec through this pipe. A successful exec
   // closes it, so the parent reads nothing.
@@ -254,7 +267,7 @@ bool StartDetached(const std::filesystem::path& program, std::string* error,
       sigemptyset(&none);
       sigprocmask(SIG_SETMASK, &none, nullptr);
       EnterFolderIfItExists(working_directory);
-      execve(path.c_str(), arguments.data(), envp);
+      execve(exec.path.c_str(), exec.arguments.data(), exec.envp);
       ReportStartError(report[1], errno);
       _exit(127);
     }
@@ -294,6 +307,38 @@ bool RestartRunningInstance(const std::filesystem::path& lock_file,
   }
   return StopInstance(lock_file, instance, timeout, error) &&
          StartDetached(program, error, command.value_or(LaunchCommand{}));
+}
+
+bool ReplaceProcess(const std::filesystem::path& program,
+                    const LaunchCommand& command, std::string* error) {
+  ExecArguments exec(program, command);
+  std::vector<int> unignored;
+  struct sigaction default_action {};
+  default_action.sa_handler = SIG_DFL;
+  for (int signal_number = 1; signal_number < NSIG; ++signal_number) {
+    struct sigaction current {};
+    if (sigaction(signal_number, nullptr, &current) == 0 &&
+        current.sa_handler == SIG_IGN &&
+        sigaction(signal_number, &default_action, nullptr) == 0) {
+      unignored.push_back(signal_number);
+    }
+  }
+  sigset_t none;
+  sigset_t saved_mask;
+  sigemptyset(&none);
+  pthread_sigmask(SIG_SETMASK, &none, &saved_mask);
+  (void)close_range(3, ~0U, CLOSE_RANGE_CLOEXEC);
+  EnterFolderIfItExists(command.working_directory.string());
+  execve(exec.path.c_str(), exec.arguments.data(), exec.envp);
+  const int exec_error = errno;
+  pthread_sigmask(SIG_SETMASK, &saved_mask, nullptr);
+  struct sigaction ignore_action {};
+  ignore_action.sa_handler = SIG_IGN;
+  for (const int signal_number : unignored) {
+    sigaction(signal_number, &ignore_action, nullptr);
+  }
+  *error = "cannot start " + exec.path + ": " + std::strerror(exec_error);
+  return false;
 }
 
 }  // namespace runtime

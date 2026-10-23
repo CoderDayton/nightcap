@@ -1,5 +1,9 @@
 // Modified by vii from komaruworld/mocktail. See README "About this fork".
+#include <signal.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -65,6 +69,8 @@
 
 namespace {
 
+constexpr char kOtaRestartedVariable[] = "MOCKTAIL_OTA_RESTARTED";
+
 struct AndroidWindowBridgeContext {};
 
 class ExternalLaunchBrokerScope final {
@@ -119,6 +125,78 @@ mocktail::Status ShutdownPlatformBridges(jnivm::VM* vm) {
   const mocktail::Status playback_status =
       mocktail::audio::ShutdownFmodJniAudioBridge(vm);
   return !voice_status.ok() ? voice_status : playback_status;
+}
+
+std::filesystem::path OtaPatchBackupDirectory(
+    const std::filesystem::path& app_storage_file) {
+  return app_storage_file.parent_path().parent_path() / "OTAPatchBackups";
+}
+
+class OtaPatchRestartWatch final {
+ public:
+  ~OtaPatchRestartWatch() { Stop(); }
+
+  void Start(std::filesystem::path app_storage_file,
+             std::vector<mocktail::runtime::OtaPatchSeed> patches) {
+    thread_ = std::thread([this, app_storage_file = std::move(app_storage_file),
+                           patches = std::move(patches)] {
+      const std::filesystem::path backups =
+          OtaPatchBackupDirectory(app_storage_file);
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      while (!stop_ && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        if (mocktail::runtime::CountUnrecordedOtaPatches(
+                app_storage_file, backups, patches) == 0) {
+          continue;
+        }
+        const auto settle =
+            std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (!stop_ && std::chrono::steady_clock::now() < settle) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (stop_) {
+          return;
+        }
+        restart_requested_ = true;
+        std::cout << "  [runtime] restarting once to load the Roblox UI "
+                     "downloaded on first launch\n"
+                  << std::flush;
+        kill(getpid(), SIGTERM);
+        return;
+      }
+    });
+  }
+
+  void Stop() {
+    stop_ = true;
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+  bool restart_requested() const { return restart_requested_; }
+
+ private:
+  std::atomic<bool> stop_{false};
+  std::atomic<bool> restart_requested_{false};
+  std::thread thread_;
+};
+
+void RestartForOtaPatches() {
+  std::optional<mocktail::runtime::LaunchCommand> command =
+      mocktail::runtime::ReadLaunchCommand(getpid());
+  if (!command.has_value() || command->environment.empty()) {
+    std::cerr << "  [runtime] cannot read this launch, so no restart\n";
+    return;
+  }
+  command->environment.push_back(std::string(kOtaRestartedVariable) + "=1");
+  std::cout.flush();
+  std::cerr.flush();
+  std::string error;
+  if (!mocktail::runtime::ReplaceProcess("/proc/self/exe", *command, &error)) {
+    std::cerr << "  [runtime] restart failed: " << error << '\n';
+  }
 }
 
 void PromptFirstLaunchSignIn(
@@ -793,6 +871,7 @@ int main(int argc, char* argv[]) {
     }
   }
   std::filesystem::path app_storage_file;
+  std::vector<mocktail::runtime::OtaPatchSeed> ota_patches;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     const mocktail::runtime::InputCapabilityConfig& input =
         runtime_config.config.input_capabilities();
@@ -1150,11 +1229,31 @@ int main(int argc, char* argv[]) {
           << "  [auth] explicit guest identity selected for production VM\n";
     }
     unsetenv("MOCKTAIL_LUAU_CODEGEN_MENU_SWITCH");
-    if (runtime_config.config.desktop_playability()) {
-      std::filesystem::path assets = paths.DefaultAssetPath();
-      if (environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
-        assets = environment.GetOr("MOCKTAIL_ASSET_PATH", "");
+    std::filesystem::path assets = paths.DefaultAssetPath();
+    if (environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
+      assets = environment.GetOr("MOCKTAIL_ASSET_PATH", "");
+    }
+    {
+      const std::filesystem::path patch_configs = assets / "configs";
+      ota_patches = {{"UniversalAppPatch", patch_configs /
+                                               "UniversalAppPatchConfig/"
+                                               "UniversalAppPatchConfig.json"},
+                     {"InExperiencePatch", patch_configs /
+                                               "InExperiencePatchConfig/"
+                                               "InExperiencePatchConfig.json"}};
+      const mocktail::runtime::OtaPatchSeedResult ota_seed =
+          mocktail::runtime::SeedDownloadedOtaPatchConfigs(
+              app_storage_file, OtaPatchBackupDirectory(app_storage_file),
+              ota_patches);
+      if (!ota_seed) {
+        std::cerr << "  [runtime] OTA patch configs not seeded: "
+                  << ota_seed.error << '\n';
+      } else if (ota_seed.seeded_count > 0) {
+        std::cout << "  [runtime] OTA patch configs seeded="
+                  << ota_seed.seeded_count << '\n';
       }
+    }
+    if (runtime_config.config.desktop_playability()) {
       const std::filesystem::path default_app_policy =
           assets / "guac/defaultConfigs/GuacDefaultPolicy-GlobalDist.json";
       const std::int64_t app_policy_user_id =
@@ -1222,6 +1321,7 @@ int main(int argc, char* argv[]) {
     dependencies = mocktail::legacy::RuntimeDependencies(
         std::move(composition), &ShutdownPlatformBridges);
   }
+  const bool launched_for_join = external_launch_request.has_value();
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       !isolated_canary) {
     // Listen only after re-exec, preflight, and bridge setup, so an ACK cannot
@@ -1248,8 +1348,19 @@ int main(int argc, char* argv[]) {
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kNativeRuntime);
   }
+  OtaPatchRestartWatch ota_restart_watch;
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      !isolated_canary && !launched_for_join &&
+      !ota_patches.empty() &&
+      environment.Get(kOtaRestartedVariable) != "1" &&
+      mocktail::runtime::CountUnrecordedOtaPatches(
+          app_storage_file, OtaPatchBackupDirectory(app_storage_file),
+          ota_patches) == 0) {
+    ota_restart_watch.Start(app_storage_file, ota_patches);
+  }
   int runtime_status =
       mocktail::legacy::Run(command_line.options, std::move(dependencies));
+  ota_restart_watch.Stop();
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kShutdown);
@@ -1280,6 +1391,10 @@ int main(int argc, char* argv[]) {
       command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog.MarkSuccessful();
     support_bundle_guard.Disarm();
+    if (ota_restart_watch.restart_requested()) {
+      session_log = mocktail::runtime::SessionLog();
+      RestartForOtaPatches();
+    }
     // Guest atexit handlers target workers that cannot be joined. Host
     // shutdown is already complete here, so do not re-enter guest teardown.
     std::cout.flush();
