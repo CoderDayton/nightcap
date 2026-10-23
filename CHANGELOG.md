@@ -16,6 +16,9 @@ Release notes on GitHub are taken from the matching section here.
   Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
   clears them at every launch so new replacements load. A join from the website closes an open
   Nightcap first, so the clear still runs.
+- Roblox's own account switcher is on for every account 13 or older. Roblox's servers turn it on
+  for some accounts only, and Nightcap's app policy had it off for all. After a switch, Nightcap
+  saves the new sign-in and restarts as that account, as the Android app does.
 
 ### Fixed
 

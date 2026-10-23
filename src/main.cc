@@ -183,14 +183,40 @@ class OtaPatchRestartWatch final {
   std::thread thread_;
 };
 
-void RestartForOtaPatches() {
+std::atomic<bool> g_account_switch_restart{false};
+
+void RequestAccountSwitchRestart(void*) {
+  if (g_account_switch_restart.exchange(true)) {
+    return;
+  }
+  std::cout << "  [auth] account switched; restarting signed in as the new "
+               "account\n"
+            << std::flush;
+  kill(getpid(), SIGTERM);
+}
+
+void RestartNightcap(bool after_ota_patches) {
   std::optional<mocktail::runtime::LaunchCommand> command =
       mocktail::runtime::ReadLaunchCommand(getpid());
   if (!command.has_value() || command->environment.empty()) {
     std::cerr << "  [runtime] cannot read this launch, so no restart\n";
     return;
   }
-  command->environment.push_back(std::string(kOtaRestartedVariable) + "=1");
+  if (after_ota_patches) {
+    command->environment.push_back(std::string(kOtaRestartedVariable) +
+                                   "=1");
+  }
+  if (g_account_switch_restart) {
+    std::vector<std::string>& environment = command->environment;
+    environment.erase(
+        std::remove_if(environment.begin(), environment.end(),
+                       [](const std::string& variable) {
+                         return variable.rfind("MOCKTAIL_ROBLOX_COOKIES=", 0) ==
+                                    0 ||
+                                variable.rfind("MOCKTAIL_COOKIE_FILE=", 0) == 0;
+                       }),
+        environment.end());
+  }
   std::cout.flush();
   std::cerr.flush();
   std::string error;
@@ -1301,6 +1327,8 @@ int main(int argc, char* argv[]) {
     android_window_callbacks.set_flags = &QueueAndroidWindowFlags;
     composition.jni_vm->SetAndroidWindowCallbacks(
         std::move(android_window_context), android_window_callbacks);
+    composition.jni_vm->SetRobloxAccountSwitchHandler(
+        nullptr, &RequestAccountSwitchRestart);
     const mocktail::Status audio_status =
         mocktail::audio::InstallFmodJniAudioBridge(composition.jni_vm.get());
     if (!audio_status.ok()) {
@@ -1391,9 +1419,9 @@ int main(int argc, char* argv[]) {
       command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog.MarkSuccessful();
     support_bundle_guard.Disarm();
-    if (ota_restart_watch.restart_requested()) {
+    if (ota_restart_watch.restart_requested() || g_account_switch_restart) {
       session_log = mocktail::runtime::SessionLog();
-      RestartForOtaPatches();
+      RestartNightcap(ota_restart_watch.restart_requested());
     }
     // Guest atexit handlers target workers that cannot be joined. Host
     // shutdown is already complete here, so do not re-enter guest teardown.

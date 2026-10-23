@@ -166,6 +166,38 @@ TEST(RobloxDesktopAppPolicyTest, RobloxThemeDoesNotForceCachedPolicy) {
   EXPECT_EQ(nlohmann::json::parse(result.policy_json)["ForceTheme"], "");
 }
 
+TEST(RobloxDesktopAppPolicyTest, EnablesTheAccountSwitcher) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path storage_path = temporary.path() / "storage.json";
+  const std::filesystem::path default_path = temporary.path() / "default.json";
+  ASSERT_TRUE(WriteJson(default_path, {{"PlatformGroup", "Unknown"},
+                                       {"AccountSwitcherEnabled", false},
+                                       {"ExcludeAccountSwitcher", true}}));
+  ASSERT_TRUE(WriteJson(
+      storage_path,
+      {{"AppConfiguration",
+        nlohmann::json{{"GUAC:42:app-policy",
+                        nlohmann::json{{"AccountSwitcherEnabled", false}}
+                            .dump()}}
+            .dump()}}));
+
+  const DesktopAppPolicyResult cached =
+      ApplyDesktopAppPolicy(storage_path, default_path, 42, "dark");
+  ASSERT_TRUE(cached) << cached.error;
+  const nlohmann::json cached_policy = nlohmann::json::parse(cached.policy_json);
+  EXPECT_EQ(cached_policy["AccountSwitcherEnabled"], true);
+  EXPECT_EQ(cached_policy["ExcludeAccountSwitcher"], false);
+
+  const std::filesystem::path fresh_storage =
+      temporary.path() / "fresh/storage.json";
+  const DesktopAppPolicyResult fresh =
+      ApplyDesktopAppPolicy(fresh_storage, default_path, -1, "dark");
+  ASSERT_TRUE(fresh) << fresh.error;
+  const nlohmann::json fresh_policy = nlohmann::json::parse(fresh.policy_json);
+  EXPECT_EQ(fresh_policy["AccountSwitcherEnabled"], true);
+  EXPECT_EQ(fresh_policy["ExcludeAccountSwitcher"], false);
+}
+
 TEST(RobloxDesktopAppPolicyTest,
      SelectsAuthenticatedEntitlementsAndSynchronizesCacheKeys) {
   TemporaryDirectory temporary;

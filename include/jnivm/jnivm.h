@@ -67,6 +67,7 @@ struct RobloxCredentialView {
 using RobloxCredentialProvider = RobloxCredentialView (*)(const void *context);
 using RobloxCookieGetter = jstring (*)(JNIEnv* env, jclass clazz,
                                        jstring domain);
+using RobloxAccountSwitchHandler = void (*)(void* context);
 
 jobject CreateAndroidConfiguration(JNIEnv *env);
 
@@ -306,6 +307,9 @@ public:
 
   void SetRobloxCookieGetter(RobloxCookieGetter getter);
   bool RefreshRobloxCredentialFromEngine(JNIEnv* env);
+  void SetRobloxAccountSwitchHandler(void* context,
+                                     RobloxAccountSwitchHandler handler);
+  void DispatchRobloxAccountSwitch();
 
   void SetRobloxCredentialSink(std::shared_ptr<void> context,
                                const RobloxCredentialSinkCallbacks &callbacks);
@@ -478,6 +482,8 @@ private:
 
   mutable std::mutex roblox_cookie_getter_mutex_;
   RobloxCookieGetter roblox_cookie_getter_ = nullptr;
+  void* roblox_account_switch_context_ = nullptr;
+  RobloxAccountSwitchHandler roblox_account_switch_handler_ = nullptr;
 
   struct RobloxCredentialSinkBinding {
     std::shared_ptr<void> context;
