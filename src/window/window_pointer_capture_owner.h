@@ -104,6 +104,12 @@ class WindowPointerCaptureOwner final {
     return desktop_shows_roblox_cursor_.load(std::memory_order_relaxed);
   }
 
+  bool TakePointerRecenter() {
+    const bool pending = pointer_recenter_pending_;
+    pointer_recenter_pending_ = false;
+    return pending;
+  }
+
   bool captured() const { return captured_; }
   bool cursor_visible() const { return cursor_ != CursorShape::kHidden; }
   CursorShape cursor() const { return cursor_; }
@@ -136,6 +142,7 @@ class WindowPointerCaptureOwner final {
   bool clearing_ = false;
   bool focused_ = true;
   bool right_button_held_ = false;
+  bool right_drag_panning_ = false;
   // Written by the experience composition, read on the SDL thread.
   std::atomic<bool> game_session_active_{false};
   bool native_lock_observed_ = false;
@@ -150,6 +157,7 @@ class WindowPointerCaptureOwner final {
   CursorShape cursor_ = CursorShape::kArrow;
   CursorImagePtr cursor_image_;
   bool pointer_centered_ = false;
+  bool pointer_recenter_pending_ = false;
   // What showed when the current capture began. An RMB camera drag keeps it
   // on screen at the press point; kHidden leaves the drag to Roblox.
   CursorShape capture_cursor_ = CursorShape::kHidden;

@@ -695,6 +695,14 @@ const std::vector<SettingsPage>& SettingsPages() {
                  },
                  "auto",
                  {}},
+                {"performance.mangohud",
+                 "MangoHud",
+                 "Show the MangoHud overlay on Vulkan backends. MangoHud "
+                 "must be installed.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
             }},
            {"Memory",
             {
