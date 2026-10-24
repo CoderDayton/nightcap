@@ -1,3 +1,4 @@
+#include <curl/curl.h>
 #include <gtest/gtest.h>
 #include <minizip/zip.h>
 #include <sys/stat.h>
@@ -260,6 +261,20 @@ TEST(HttpDownloadPolicyTest, PointsAtTheDnsFaqWhenAHostDoesNotResolve) {
             std::string::npos)
       << result.error;
   EXPECT_NE(result.error.find("FAQ"), std::string::npos) << result.error;
+}
+
+TEST(HttpDownloadPolicyTest, PointsAtTheDnsFaqWhenAServerAnswersWithoutTls) {
+  const std::string described = DescribeCurlFailure(
+      CURLE_SSL_CONNECT_ERROR,
+      "TLS connect error: error:0A00010B:SSL routines::wrong version number");
+  EXPECT_NE(described.find("wrong version number"), std::string::npos)
+      << described;
+  EXPECT_NE(described.find("not HTTPS"), std::string::npos) << described;
+  EXPECT_NE(described.find("FAQ"), std::string::npos) << described;
+
+  const std::string other = DescribeCurlFailure(
+      CURLE_SSL_CONNECT_ERROR, "TLS connect error: certificate expired");
+  EXPECT_EQ(other, "TLS connect error: certificate expired");
 }
 
 TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {

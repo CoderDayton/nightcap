@@ -277,15 +277,9 @@ std::string RedirectUrl(CURL* handle) {
 
 std::string CurlFailure(CURLcode status,
                         const std::array<char, CURL_ERROR_SIZE>& buffer) {
-  std::string failure = buffer[0] != '\0'
-                            ? std::string(buffer.data())
-                            : std::string(curl_easy_strerror(status));
-  if (status == CURLE_COULDNT_RESOLVE_HOST) {
-    failure +=
-        "; your DNS could not find this server, see \"The update says it "
-        "could not resolve a host\" in the FAQ";
-  }
-  return failure;
+  return DescribeCurlFailure(status, buffer[0] != '\0'
+                                         ? std::string_view(buffer.data())
+                                         : curl_easy_strerror(status));
 }
 
 std::string UrlHost(std::string_view url) {
@@ -511,6 +505,22 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
 }
 
 }  // namespace
+
+std::string DescribeCurlFailure(int curl_code, std::string_view message) {
+  std::string failure(message);
+  if (curl_code == CURLE_COULDNT_RESOLVE_HOST) {
+    failure +=
+        "; your DNS could not find this server, see \"The update says it "
+        "could not resolve a host\" in the FAQ";
+  } else if (curl_code == CURLE_SSL_CONNECT_ERROR &&
+             message.find("wrong version number") != std::string_view::npos) {
+    failure +=
+        "; the server that answered is not HTTPS, which usually means your "
+        "DNS sent this host to the wrong server, see \"The update says it "
+        "could not resolve a host\" in the FAQ";
+  }
+  return failure;
+}
 
 bool IsTrustedHttpsUrl(std::string_view url,
                        const std::vector<std::string>& allowed_hosts,
