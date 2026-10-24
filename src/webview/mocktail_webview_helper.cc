@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 
+#include "runtime/roblox_store_purchase.h"
 #include "runtime/runtime_config.h"
 #include "runtime/webview_helper_launcher.h"
 #include "webview/webview_helper_policy.h"
@@ -45,6 +46,8 @@ using mocktail::webview::CaptchaEventType;
 using mocktail::webview::EvaluateNavigationUri;
 using mocktail::webview::ExtractExecuteRobloxCommand;
 using mocktail::webview::ExtractRobloxWkHybridCommand;
+using mocktail::webview::ClassifyStorePurchaseNavigation;
+using mocktail::webview::StorePurchaseNavigation;
 using mocktail::webview::IsBrowserLoginUrl;
 using mocktail::webview::IsEssentialWebResource;
 using mocktail::webview::ParseCaptchaEvent;
@@ -977,6 +980,19 @@ gboolean OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecision* decision,
               << " host=" << policy.host << '\n';
     webkit_policy_decision_ignore(decision);
     return TRUE;
+  }
+  switch (ClassifyStorePurchaseNavigation(webkit_web_view_get_uri(web_view),
+                                          uri)) {
+    case StorePurchaseNavigation::kHandOff:
+      webkit_policy_decision_ignore(decision);
+      mocktail::runtime::HandOffRobuxPurchaseToBrowser();
+      return TRUE;
+    case StorePurchaseNavigation::kIgnore:
+      std::cerr << "[webview] store purchase from a non-Roblox page ignored\n";
+      webkit_policy_decision_ignore(decision);
+      return TRUE;
+    case StorePurchaseNavigation::kNone:
+      break;
   }
   webkit_policy_decision_use(decision);
   return TRUE;

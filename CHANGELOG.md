@@ -16,6 +16,11 @@ Release notes on GitHub are taken from the matching section here.
   Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
   clears them at every launch so new replacements load. A join from the website closes an open
   Nightcap first, so the clear still runs.
+- Buying Robux opens roblox.com/upgrades/robux in your browser, since Nightcap has no Google
+  Play. This works from a package on the Robux page and from a game's purchase prompt. The game is
+  told nothing was bought, so its prompt closes instead of waiting. A desktop notification says
+  where the purchase went. Sign in to the same account in the browser, buy there, then try the
+  purchase in the game again.
 
 ### Fixed
 

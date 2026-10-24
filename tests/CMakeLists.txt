@@ -503,6 +503,22 @@ target_link_libraries(roblox_web_view_bridge_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_web_view_bridge_test)
 
+add_executable(desktop_notification_test desktop_notification_test.cc)
+target_link_libraries(desktop_notification_test PRIVATE
+  Mocktail::Runtime
+  PkgConfig::GIO
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(desktop_notification_test)
+
+add_executable(roblox_store_purchase_test roblox_store_purchase_test.cc)
+target_link_libraries(roblox_store_purchase_test PRIVATE
+  Mocktail::LegacyJni
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(roblox_store_purchase_test)
+
 add_executable(roblox_permissions_bridge_test roblox_permissions_bridge_test.cc)
 target_link_libraries(roblox_permissions_bridge_test PRIVATE
   Mocktail::LegacyJni
@@ -1255,6 +1271,8 @@ gtest_discover_tests(roblox_app_lifecycle_test)
 gtest_discover_tests(roblox_game_session_native_adapter_test)
 gtest_discover_tests(roblox_experience_launch_bridge_test)
 gtest_discover_tests(roblox_web_view_bridge_test)
+gtest_discover_tests(roblox_store_purchase_test)
+gtest_discover_tests(desktop_notification_test)
 gtest_discover_tests(roblox_permissions_bridge_test)
 gtest_discover_tests(roblox_account_bridge_test)
 gtest_discover_tests(roblox_browser_service_bridge_test)

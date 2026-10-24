@@ -167,6 +167,35 @@ bool IsBrowserLoginUrl(std::string_view url) {
   return browser_login;
 }
 
+bool IsAndroidStorePurchaseNavigation(const char* uri) {
+  if (uri == nullptr || !EvaluateNavigationUri(uri).allowed) return false;
+  GUri* parsed = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+  if (parsed == nullptr) return false;
+  const char* host = g_uri_get_host(parsed);
+  const char* path = g_uri_get_path(parsed);
+  const bool purchase =
+      host != nullptr &&
+      (g_ascii_strcasecmp(host, "www.roblox.com") == 0 ||
+       g_ascii_strcasecmp(host, "roblox.com") == 0) &&
+      path != nullptr &&
+      g_ascii_strcasecmp(path, "/mobile-app-upgrades/buy") == 0;
+  g_uri_unref(parsed);
+  return purchase;
+}
+
+StorePurchaseNavigation ClassifyStorePurchaseNavigation(const char* current_uri,
+                                                        const char* target_uri) {
+  if (!IsAndroidStorePurchaseNavigation(target_uri)) {
+    return StorePurchaseNavigation::kNone;
+  }
+  const UriPolicyResult current = EvaluateNavigationUri(current_uri);
+  const bool roblox_page =
+      current.allowed && current.scheme == "https" &&
+      (current.host == "www.roblox.com" || current.host == "roblox.com");
+  return roblox_page ? StorePurchaseNavigation::kHandOff
+                     : StorePurchaseNavigation::kIgnore;
+}
+
 bool IsEssentialWebResource(const char* uri) {
   if (uri == nullptr) return false;
   const UriPolicyResult policy = EvaluateNavigationUri(uri);
