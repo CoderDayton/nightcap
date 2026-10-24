@@ -501,6 +501,9 @@ void ForwardDataModelNotificationToAppBridgeListener(jstring type,
   DeleteLocalJniReference(listener);
 }
 
+void HandleRobloxDidSwitchAccount(jobject obj, const char* name);
+void HandleRobloxDidLogOut(jobject obj, const char* name);
+
 void RecordDataModelNotification(jobject obj, jstring type, jstring data) {
   const std::string type_value = StringFromJString(type);
   const std::string data_value = StringFromJString(data);
@@ -518,6 +521,15 @@ void RecordDataModelNotification(jobject obj, jstring type, jstring data) {
     (void)vm->DispatchRobloxDataModelNotification(vm->GetJNIEnv(), type, data);
   }
   ForwardDataModelNotificationToAppBridgeListener(type, data);
+  if (type_value == "DID_SWITCH_ACCOUNT" || type_value == "DID_LOG_OUT") {
+    jobject helper = SingletonObject("com/roblox/client/startup/NativeHelper");
+    if (type_value == "DID_SWITCH_ACCOUNT") {
+      HandleRobloxDidSwitchAccount(helper,
+                                   "gameActivity_onDidSwitchAccountReceived");
+    } else {
+      HandleRobloxDidLogOut(helper, "gameActivity_onDidLogOutReceived");
+    }
+  }
 }
 
 jobject MakeNativeHelperObject(jobject activity) {
