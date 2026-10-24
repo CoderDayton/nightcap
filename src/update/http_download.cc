@@ -277,8 +277,15 @@ std::string RedirectUrl(CURL* handle) {
 
 std::string CurlFailure(CURLcode status,
                         const std::array<char, CURL_ERROR_SIZE>& buffer) {
-  return buffer[0] != '\0' ? std::string(buffer.data())
-                           : std::string(curl_easy_strerror(status));
+  std::string failure = buffer[0] != '\0'
+                            ? std::string(buffer.data())
+                            : std::string(curl_easy_strerror(status));
+  if (status == CURLE_COULDNT_RESOLVE_HOST) {
+    failure +=
+        "; your DNS could not find this server, see \"The update says it "
+        "could not resolve a host\" in the FAQ";
+  }
+  return failure;
 }
 
 std::string UrlHost(std::string_view url) {

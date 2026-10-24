@@ -244,6 +244,24 @@ TEST(HttpDownloadPolicyTest, RejectsCredentialsAndHostSuffixTricks) {
   EXPECT_FALSE(IsTrustedHttpsUrl("https://user@pureapk.com/a", hosts));
 }
 
+TEST(HttpDownloadPolicyTest, PointsAtTheDnsFaqWhenAHostDoesNotResolve) {
+  // .invalid never resolves (RFC 6761), so this needs no network.
+  HttpTransferRequest request;
+  request.url = "https://nightcap-dns-test.invalid/a";
+  request.allowed_hosts = {"nightcap-dns-test.invalid"};
+  request.maximum_bytes = 1024;
+  request.maximum_attempts = 1;
+  request.retry_delay_ms = 0;
+  const HttpBytesResult result = DownloadBytes(request);
+  ASSERT_FALSE(result);
+  EXPECT_NE(result.error.find("nightcap-dns-test.invalid"), std::string::npos)
+      << result.error;
+  EXPECT_NE(result.error.find("your DNS could not find this server"),
+            std::string::npos)
+      << result.error;
+  EXPECT_NE(result.error.find("FAQ"), std::string::npos) << result.error;
+}
+
 TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {
   TemporaryDirectory temporary;
   CanaryOptions options;
