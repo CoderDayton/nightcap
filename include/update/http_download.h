@@ -58,6 +58,8 @@ bool IsTrustedHttpsUrl(std::string_view url,
                        const std::vector<std::string>& allowed_hosts,
                        std::string* error = nullptr);
 
+std::string DescribeCurlFailure(int curl_code, std::string_view message);
+
 }  // namespace mocktail::update
 
 #endif  // MOCKTAIL_UPDATE_HTTP_DOWNLOAD_H_
