@@ -16,6 +16,7 @@ Release notes on GitHub are taken from the matching section here.
   Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
   clears them at every launch so new replacements load. A join from the website closes an open
   Nightcap first, so the clear still runs.
+- A MangoHud setting under Performance (`performance.mangohud`) launches Nightcap with `MANGOHUD=1`.
 
 ### Fixed
 
