@@ -884,6 +884,26 @@ TEST(WindowPointerCaptureOwnerTest, LockDuringCameraDragCentersThePointer) {
   EXPECT_TRUE(backend.calls.back().center_pointer);
 }
 
+TEST(WindowPointerCaptureOwnerTest, LockDuringCameraDragRecentersRoblox) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.TakePointerRecenter());
+
+  query.locked_center = true;
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.TakePointerRecenter());
+  EXPECT_FALSE(owner.TakePointerRecenter());
+
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.TakePointerRecenter());
+}
+
 TEST(WindowPointerCaptureOwnerTest, CameraDragHidesTheCursorWhereItWouldJump) {
   FakeBackend backend;
   QueryState query;

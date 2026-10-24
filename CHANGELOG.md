@@ -38,6 +38,8 @@ Release notes on GitHub are taken from the matching section here.
 - Shift lock no longer lets the cursor wander onto buttons when a game turns its lock off and on quickly.
   Nightcap keeps the pointer captured until the lock has stayed off for a few frames. Leaving shift lock
   or first person leaves the cursor at the center of the window, as on Windows.
+- Going into first person while holding right click now centers the crosshair in games that draw their own,
+  such as BedWars. Roblox kept the spot where right click was pressed as the mouse position.
 - The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
   the `.desktop` file, so the menu entry pointed at a file that does not exist.
 - When the Roblox updater crashes or quits without saying why, the session log and error dialog now

@@ -312,6 +312,9 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
     captured_ = capture;
     cursor_ = cursor;
     cursor_image_ = std::move(image);
+    if (center_pointer && !pointer_centered_) {
+      pointer_recenter_pending_ = true;
+    }
     pointer_centered_ = center_pointer;
     if (capture_changed && capture) {
       std::fprintf(stderr, "  [input] SDL relative pointer capture enabled\n");
