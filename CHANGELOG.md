@@ -32,7 +32,8 @@ Release notes on GitHub are taken from the matching section here.
   status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version
   failed its startup test.
 - Holding right click over a button, the leaderboard, or the Roblox menu no longer freezes the cursor.
-  The cursor now only holds still while the camera turns, as on Windows.
+  The cursor now only holds still while the camera turns, as on Windows. Once the camera starts turning,
+  it keeps turning until you let go, even when a button in the game world passes under the cursor.
 - Shift lock no longer lets the cursor wander onto buttons when a game turns its lock off and on quickly.
   Nightcap keeps the pointer captured until the lock has stayed off for a few frames. Leaving shift lock
   or first person leaves the cursor at the center of the window, as on Windows.

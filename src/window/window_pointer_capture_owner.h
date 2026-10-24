@@ -136,6 +136,7 @@ class WindowPointerCaptureOwner final {
   bool clearing_ = false;
   bool focused_ = true;
   bool right_button_held_ = false;
+  bool right_drag_panning_ = false;
   // Written by the experience composition, read on the SDL thread.
   std::atomic<bool> game_session_active_{false};
   bool native_lock_observed_ = false;
