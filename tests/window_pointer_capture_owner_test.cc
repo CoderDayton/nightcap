@@ -415,6 +415,70 @@ TEST(WindowPointerCaptureOwnerTest, RightDragCapturesOnceRobloxStartsPanning) {
   EXPECT_FALSE(owner.captured());
 }
 
+TEST(WindowPointerCaptureOwnerTest, CameraPanKeepsCaptureWhenRobloxDropsItsLock) {
+  FakeBackend backend;
+  QueryState query;
+  query.reports_current_position = true;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.locked_current_position = true;
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.captured());
+  query.locked_current_position = false;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+  query.locked_current_position = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.captured());
+
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+
+  query.locked_current_position = false;
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+}
+
+TEST(WindowPointerCaptureOwnerTest, FailedQueryDoesNotHoldRightDragCapture) {
+  FakeBackend backend;
+  QueryState query;
+  query.reports_current_position = true;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.succeeds = false;
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_TRUE(owner.captured());
+  query.succeeds = true;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+}
+
+TEST(WindowPointerCaptureOwnerTest, PanDuringTextInputDoesNotHoldCaptureAfter) {
+  FakeBackend backend;
+  QueryState query;
+  query.reports_current_position = true;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  query.locked_current_position = true;
+  EXPECT_TRUE(owner.OnRightButton(true, true));
+  EXPECT_FALSE(owner.captured());
+  query.locked_current_position = false;
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+}
+
 TEST(WindowPointerCaptureOwnerTest, LockCurrentPositionAloneDoesNotCapture) {
   FakeBackend backend;
   QueryState query;
@@ -818,6 +882,26 @@ TEST(WindowPointerCaptureOwnerTest, LockDuringCameraDragCentersThePointer) {
   EXPECT_TRUE(owner.OnRightButton(false, false));
   EXPECT_TRUE(owner.captured());
   EXPECT_TRUE(backend.calls.back().center_pointer);
+}
+
+TEST(WindowPointerCaptureOwnerTest, LockDuringCameraDragRecentersRoblox) {
+  FakeBackend backend;
+  backend.shows_captured_cursor = true;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.TakePointerRecenter());
+
+  query.locked_center = true;
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_TRUE(owner.TakePointerRecenter());
+  EXPECT_FALSE(owner.TakePointerRecenter());
+
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.TakePointerRecenter());
 }
 
 TEST(WindowPointerCaptureOwnerTest, CameraDragHidesTheCursorWhereItWouldJump) {

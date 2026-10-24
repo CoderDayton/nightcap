@@ -2236,6 +2236,28 @@ void MaybeReportVulkanPresentStall() {
                                       1000000ULL));
 }
 
+void NotifyPointerRecenter() {
+  if (g_pointer_capture_owner == nullptr ||
+      !g_pointer_capture_owner->TakePointerRecenter()) {
+    return;
+  }
+  int width = 0;
+  int height = 0;
+  if (!SDL_GetWindowSize(g_state.sdl_window, &width, &height) || width <= 0 ||
+      height <= 0) {
+    return;
+  }
+  platform::MouseMotionEvent motion;
+  motion.x = static_cast<float>(width) * 0.5f;
+  motion.y = static_cast<float>(height) * 0.5f;
+  motion.buttons =
+      static_cast<std::uint32_t>(SDL_GetMouseState(nullptr, nullptr));
+  platform::PlatformEvent event;
+  event.timestamp_ns = SDL_GetTicksNS();
+  event.payload = motion;
+  g_platform_event_observer.Notify(event);
+}
+
 bool PumpEvents() {
   ApplyShowWindowRequest();
   MaybeSynchronizeRestoredFullscreenState();
@@ -2255,6 +2277,7 @@ bool PumpEvents() {
                                      g_text_input_owner->active())) {
     fprintf(stderr, "  [input] SDL pointer capture state update failed\n");
   }
+  NotifyPointerRecenter();
   platform::PlatformEvent pending_motion{};
   bool has_pending_motion = false;
 
@@ -2443,6 +2466,7 @@ bool PumpEvents() {
     }
   }
   flush_motion();
+  NotifyPointerRecenter();
   MaybePersistWindowState();
   MaybeRecoverVulkanSurface();
   MaybeReportVulkanPresentStall();

@@ -16,6 +16,7 @@ Release notes on GitHub are taken from the matching section here.
   Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
   clears them at every launch so new replacements load. A join from the website closes an open
   Nightcap first, so the clear still runs.
+- A MangoHud setting under Performance (`performance.mangohud`) launches Nightcap with `MANGOHUD=1`.
 - Buying Robux opens roblox.com/upgrades/robux in your browser, since Nightcap has no Google
   Play. This works from a package on the Robux page and from a game's purchase prompt. The game is
   told nothing was bought, so its prompt closes instead of waiting. A desktop notification says
@@ -37,12 +38,20 @@ Release notes on GitHub are taken from the matching section here.
   status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version
   failed its startup test.
 - Holding right click over a button, the leaderboard, or the Roblox menu no longer freezes the cursor.
-  The cursor now only holds still while the camera turns, as on Windows.
+  The cursor now only holds still while the camera turns, as on Windows. Once the camera starts turning,
+  it keeps turning until you let go, even when a button in the game world passes under the cursor.
 - Shift lock no longer lets the cursor wander onto buttons when a game turns its lock off and on quickly.
   Nightcap keeps the pointer captured until the lock has stayed off for a few frames. Leaving shift lock
   or first person leaves the cursor at the center of the window, as on Windows.
+- Going into first person while holding right click now centers the crosshair in games that draw their own,
+  such as BedWars. Roblox kept the spot where right click was pressed as the mouse position.
 - The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
   the `.desktop` file, so the menu entry pointed at a file that does not exist.
+- When the Roblox updater crashes or quits without saying why, the session log and error dialog now
+  give its exit status or signal instead of only "Roblox update preflight failed". When DNS cannot find
+  a download server, the error points to a new FAQ entry with the commands to switch DNS servers.
+- PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.
+  The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
 
 ### Changed
 

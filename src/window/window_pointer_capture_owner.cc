@@ -158,8 +158,11 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   }
   const bool roblox_pans = !query_ok || !mouse_lock.reports_current_position ||
                            mouse_lock.current_position;
-  const bool right_drag_active =
-      right_button_held_ && game_session_active_ && roblox_pans;
+  const bool right_drag_active = right_button_held_ && game_session_active_ &&
+                                 (roblox_pans || right_drag_panning_);
+  right_drag_panning_ =
+      right_drag_active && !text_input_active &&
+      (right_drag_panning_ || (query_ok && mouse_lock.current_position));
   // Roblox can keep Shift Lock active while chat has text focus. Honor that
   // native lock so camera motion stays relative and cannot leave the window.
   // Text editing only suppresses the host's fallback RMB camera capture.
@@ -309,6 +312,9 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
     captured_ = capture;
     cursor_ = cursor;
     cursor_image_ = std::move(image);
+    if (center_pointer && !pointer_centered_) {
+      pointer_recenter_pending_ = true;
+    }
     pointer_centered_ = center_pointer;
     if (capture_changed && capture) {
       std::fprintf(stderr, "  [input] SDL relative pointer capture enabled\n");

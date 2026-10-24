@@ -176,6 +176,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "performance.physics_worker_mode",
       "performance.memory_limit_mb",
       "performance.gamemode",
+      "performance.mangohud",
       "audio.output_device",
       "audio.input_device",
        "window.width",
@@ -432,6 +433,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_GAMEMODE"] = GameModePolicyName(parsed);
+  }
+  if (const auto mangohud = value("performance.mangohud");
+      mangohud.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*mangohud, &parsed)) {
+      *error = "performance.mangohud must be true or false";
+      return false;
+    }
+    (*environment)["MANGOHUD"] = parsed ? "1" : "0";
   }
   if (const auto output_device = value("audio.output_device");
       output_device.has_value()) {
@@ -1095,6 +1105,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT",
                           config.discord_rpc().images.small_text, error);
   if (!base_exported) {
+    return false;
+  }
+  if (config.mangohud() && !SetEnvironmentValue("MANGOHUD", "1", error)) {
     return false;
   }
   if (!SetEnvironmentValue("MOCKTAIL_FLEASION_ENABLED",

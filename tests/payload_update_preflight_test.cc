@@ -281,6 +281,28 @@ TEST(PayloadUpdatePreflightTest, ReportsUpdaterFailureDetails) {
             "status 503)");
 }
 
+TEST(PayloadUpdatePreflightTest, ReportsSignalWhenUpdaterIsKilled) {
+  ScopedVariable signal_variable("MOCKTAIL_TEST_UPDATE_SIGNAL", "9");
+  const MapEnvironment environment = NativeEnvironment();
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  const auto result = RunPayloadUpdatePreflight(environment, paths);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.error, "Roblox update preflight failed");
+  EXPECT_EQ(result.details,
+            "the updater was killed by signal 9 (Killed) before it reported "
+            "a reason");
+}
+
+TEST(PayloadUpdatePreflightTest, ReportsExitStatusWhenUpdaterGivesNoReason) {
+  ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "7");
+  const MapEnvironment environment = NativeEnvironment();
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  const auto result = RunPayloadUpdatePreflight(environment, paths);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.details,
+            "the updater exited with status 7 without reporting a reason");
+}
+
 TEST(PayloadUpdatePreflightTest, KeepsLastUpdaterFailureOverWarnings) {
   ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "1");
   ScopedVariable stderr_variable(
