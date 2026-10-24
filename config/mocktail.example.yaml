@@ -68,6 +68,7 @@ performance:
   # String (default: auto): request Feral GameMode when its host daemon and
   # client library are available. Supported values: auto, on, off.
   gamemode: auto
+  mangohud: false
 
 audio:
   # String (default: default): `default` follows the host system output.

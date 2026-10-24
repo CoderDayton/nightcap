@@ -990,6 +990,25 @@ performance:
   unsetenv("MOCKTAIL_GAMEMODE");
 }
 
+TEST(RuntimeConfigFileTest, ExportsMangoHudWhenEnabled) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path enabled = temporary.Write(R"yaml(
+version: 1
+performance:
+  mangohud: true
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), enabled);
+  ASSERT_TRUE(loaded) << loaded.error;
+
+  unsetenv("MANGOHUD");
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  ASSERT_NE(getenv("MANGOHUD"), nullptr);
+  EXPECT_STREQ(getenv("MANGOHUD"), "1");
+  unsetenv("MANGOHUD");
+}
+
 TEST(RuntimeConfigFileTest, ExportsAudioOutputDevice) {
   unsetenv("MOCKTAIL_AUDIO_OUTPUT_DEVICE");
   std::string error;

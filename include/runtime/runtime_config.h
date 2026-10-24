@@ -158,6 +158,7 @@ class RuntimeConfig {
   const FrameRatePolicy& frame_rate() const { return frame_rate_; }
   const std::string& vsync_mode() const { return vsync_mode_; }
   const PerformancePolicy& performance() const { return performance_; }
+  bool mangohud() const { return mangohud_; }
   const std::string& audio_output_device() const {
     return audio_output_device_;
   }
@@ -212,6 +213,7 @@ class RuntimeConfig {
   FrameRatePolicy frame_rate_;
   std::string vsync_mode_ = "auto";
   PerformancePolicy performance_;
+  bool mangohud_ = false;
   std::string audio_output_device_ = "default";
   bool audio_output_device_valid_ = true;
   std::string audio_input_device_ = "default";
