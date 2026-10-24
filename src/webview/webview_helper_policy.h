@@ -48,6 +48,14 @@ bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
 const char* AndroidBridgeSource();
 std::string BuildRobloxAndroidUserAgent();
 bool IsBrowserLoginUrl(std::string_view url);
+bool IsAndroidStorePurchaseNavigation(const char* uri);
+enum class StorePurchaseNavigation {
+  kNone,
+  kHandOff,
+  kIgnore,
+};
+StorePurchaseNavigation ClassifyStorePurchaseNavigation(const char* current_uri,
+                                                        const char* target_uri);
 bool IsEssentialWebResource(const char* uri);
 std::string BoundedLogToken(const char* value, std::string_view fallback);
 UriPolicyResult EvaluateNavigationUri(const char* uri);
