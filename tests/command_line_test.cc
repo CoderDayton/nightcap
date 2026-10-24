@@ -15,6 +15,66 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
+TEST(CommandLineTest, ShortVrAliasSurvivesReexecAndLastOverrideWins) {
+  const char* arguments[] = {"mocktail", "-vr"};
+  const auto parsed = ParseCommandLine(2, arguments);
+  ASSERT_TRUE(parsed);
+  ASSERT_TRUE(parsed.options.vr_enabled.has_value());
+  EXPECT_TRUE(*parsed.options.vr_enabled);
+  std::vector<std::string> reexec;
+  std::string error;
+  ASSERT_TRUE(BuildCommandLineReexecArguments(parsed.options, 2, arguments, &reexec, &error));
+  EXPECT_EQ(reexec, (std::vector<std::string>{"-vr"}));
+  const char* disabled[] = {"mocktail", "-vr", "--no-vr"};
+  EXPECT_FALSE(*ParseCommandLine(3, disabled).options.vr_enabled);
+}
+
+TEST(CommandLineTest, VrOverrideSurvivesReexecAndCanDisableEnvironmentDefault) {
+  const std::array<const char*, 4> arguments = {"mocktail", "--vr",
+                                                "--headless", "--no-vr"};
+  const auto parsed = ParseCommandLine(arguments.size(), arguments.data());
+  ASSERT_TRUE(parsed) << parsed.error;
+  ASSERT_TRUE(parsed.options.vr_enabled.has_value());
+  EXPECT_FALSE(*parsed.options.vr_enabled);
+  std::vector<std::string> reexec;
+  std::string error;
+  ASSERT_TRUE(BuildCommandLineReexecArguments(
+      parsed.options, arguments.size(), arguments.data(), &reexec, &error))
+      << error;
+  EXPECT_EQ(reexec,
+            (std::vector<std::string>{"--vr", "--headless", "--no-vr"}));
+
+  const char* previous = std::getenv("MOCKTAIL_VR_ENABLED");
+  const std::optional<std::string> saved =
+      previous ? std::optional<std::string>(previous) : std::nullopt;
+  const char* previous_headless = std::getenv("MOCKTAIL_HEADLESS");
+  const std::optional<std::string> saved_headless =
+      previous_headless ? std::optional<std::string>(previous_headless)
+                        : std::nullopt;
+  setenv("MOCKTAIL_VR_ENABLED", "true", 1);
+  EXPECT_TRUE(ApplyCommandLineEnvironment(parsed.options, &error)) << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), "0");
+  if (saved)
+    setenv("MOCKTAIL_VR_ENABLED", saved->c_str(), 1);
+  else
+    unsetenv("MOCKTAIL_VR_ENABLED");
+  if (saved_headless)
+    setenv("MOCKTAIL_HEADLESS", saved_headless->c_str(), 1);
+  else
+    unsetenv("MOCKTAIL_HEADLESS");
+}
+
+TEST(CommandLineTest, ParsesExplicitVrAndKeepsUnspecifiedDistinctFromFalse) {
+  const char* enabled[] = {"mocktail", "--vr"};
+  const auto parsed = ParseCommandLine(2, enabled);
+  ASSERT_TRUE(parsed) << parsed.error;
+  EXPECT_EQ(parsed.options.vr_enabled, std::optional<bool>(true));
+  const char* normal[] = {"mocktail"};
+  EXPECT_FALSE(ParseCommandLine(1, normal).options.vr_enabled.has_value());
+  const char* incompatible[] = {"mocktail", "--force-run-latest", "--vr"};
+  EXPECT_FALSE(ParseCommandLine(3, incompatible));
+}
+
 TEST(CommandLineTest, ParsesCompleteRunContractOnce) {
   const std::array<const char*, 11> arguments = {
       "mocktail",

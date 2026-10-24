@@ -24,6 +24,13 @@ namespace {
 
 constexpr std::uintmax_t kMaximumJsonBytes = 16U * 1024U * 1024U;
 constexpr std::string_view kAppPolicySuffix = ":app-policy";
+constexpr const char* kFlyoutVariantFlag = "FIntFlyoutTestVariantRollout12";
+constexpr const char* kDesktopFlyoutVariant = "2";
+constexpr const char* kVrSpatialUiFlags[] = {
+    "FFlagLuaAppIECVREnabled8",
+    "FFlagEnableUIManagerPackgify8",
+    "FFlagSpatialUIEnableDrag",
+};
 constexpr std::string_view kDesktopAppPolicyOverride =
     "FStringAppConfigurationOverrideAppPolicy";
 std::atomic<std::uint64_t> g_temporary_sequence{0};
@@ -469,8 +476,78 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
   // Roblox enrolls desktop clients in the flyout side panel through a
   // server-side experiment that does not reach this client. Variant 2 is the
   // desktop side panel; an explicit user override is preserved.
-  overrides.emplace("FIntFlyoutTestVariantRollout12", "2");
+  overrides.emplace(kFlyoutVariantFlag, kDesktopFlyoutVariant);
   *merged_json = overrides.dump();
+  return true;
+}
+
+bool MergeVrAppPolicyClientSettingsOverrides(
+    bool enabled, bool spatial_toolbar, std::string_view client_settings_json,
+    std::string_view fast_flags_json, std::string* merged_client_settings,
+    std::string* merged_fast_flags, std::string* error) {
+  if (merged_client_settings == nullptr || merged_fast_flags == nullptr) {
+    if (error != nullptr) {
+      *error = "VR app-policy outputs are required";
+    }
+    return false;
+  }
+  if (!enabled) {
+    *merged_client_settings = client_settings_json;
+    *merged_fast_flags = fast_flags_json;
+    return true;
+  }
+
+  auto client_settings = nlohmann::json::parse(
+      client_settings_json.empty() ? "{}" : client_settings_json, nullptr,
+      false, true);
+  auto fast_flags = nlohmann::json::parse(
+      fast_flags_json.empty() ? "{}" : fast_flags_json, nullptr, false, true);
+  if (!client_settings.is_object() || !fast_flags.is_object()) {
+    if (error != nullptr) {
+      *error = "VR client-settings and fast-flags overrides must be JSON objects";
+    }
+    return false;
+  }
+
+  nlohmann::json policy = nlohmann::json::object();
+  const nlohmann::json* channels[] = {&client_settings, &fast_flags};
+  for (const auto* channel : channels) {
+    const auto existing = channel->find(kDesktopAppPolicyOverride);
+    if (existing == channel->end()) {
+      continue;
+    }
+    // An empty FString means no app-policy override. The later fast-flags
+    // channel can clear/replace an earlier client-settings override.
+    if (existing->is_string() &&
+        existing->get_ref<const std::string&>().empty()) {
+      policy = nlohmann::json::object();
+    } else if (!DecodePolicy(*existing, &policy)) {
+      if (error != nullptr) {
+        *error = "VR app-policy override must be an encoded JSON object";
+      }
+      return false;
+    }
+  }
+  policy["ThrottleFramerate"] = false;
+  // The desktop side panel cannot be reached with the VR pointer. fflags.json
+  // is the later channel, so a user's own value there still decides.
+  const auto flyout = client_settings.find(kFlyoutVariantFlag);
+  if (flyout != client_settings.end() && *flyout == kDesktopFlyoutVariant) {
+    *flyout = "0";
+  }
+  // Roblox turns on the spatial VR toolbar (VrSpatialUi) through the
+  // Experience.Menu.VR IXP layer, which enrolls Quest but not this client.
+  // The CoreScripts are the same; emplace keeps a value from fflags.json.
+  if (spatial_toolbar) {
+    for (const char* flag : kVrSpatialUiFlags) {
+      client_settings.emplace(flag, "True");
+    }
+  }
+  const std::string encoded_policy = policy.dump();
+  client_settings[std::string(kDesktopAppPolicyOverride)] = encoded_policy;
+  fast_flags[std::string(kDesktopAppPolicyOverride)] = encoded_policy;
+  *merged_client_settings = client_settings.dump();
+  *merged_fast_flags = fast_flags.dump();
   return true;
 }
 

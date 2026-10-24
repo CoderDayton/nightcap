@@ -29,6 +29,11 @@
 #include "mocktail/audio/fmod_jni_audio_bridge.h"
 #include "mocktail/audio/webrtc_jni_audio_bridge.h"
 #include "mocktail/audio/roblox_output_device_bridge.h"
+#include "mocktail/vr/headset_detection.h"
+#include "mocktail/vr/openxr_backend.h"
+#include "mocktail/vr/openxr_probe.h"
+#include "mocktail/vr/roblox_vr_device_bridge.h"
+#include "mocktail/vr/virtual_keyboard.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
 #include "runtime/crash_report_policy.h"
@@ -48,6 +53,8 @@
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
+#include "runtime/roblox_text_display_state.h"
+#include "runtime/roblox_text_editor.h"
 #include "runtime/runtime_config_bootstrap.h"
 #include "runtime/runtime_config_file.h"
 #include "runtime/runtime_paths.h"
@@ -330,6 +337,11 @@ void ConfigureHostDriverEnvironment() {
 
 int main(int argc, char* argv[]) {
   ConfigureHostDriverEnvironment();
+  // vr.mode: auto asks SteamVR for a headset from a copy of this process.
+  if (const char* probe = std::getenv(mocktail::vr::kHeadsetProbeEnvironment);
+      probe != nullptr && std::string_view(probe) == "1") {
+    return mocktail::vr::RunHeadsetProbeChild();
+  }
   const auto process_started_at = std::chrono::system_clock::now();
   mocktail::runtime::CommandLineParseResult command_line =
       mocktail::runtime::ParseCommandLine(argc, argv);
@@ -383,6 +395,7 @@ int main(int argc, char* argv[]) {
   }
 
   const mocktail::runtime::ProcessEnvironment environment;
+  const bool vr_requested = environment.HasNonEmpty("MOCKTAIL_VR_ENABLED");
   const std::string built_in_compatibility_manifest = environment.GetOr(
       "MOCKTAIL_UPDATE_COMPATIBILITY_PATH",
       environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
@@ -426,6 +439,17 @@ int main(int argc, char* argv[]) {
   }
   mocktail::runtime::ScrubCommandLineLaunchArguments(&command_line.options,
                                                      argc, argv);
+
+  // Reject --vr in a build without OpenXR before touching any data or state
+  // directories. A vr.enabled config is checked once the config is loaded.
+  const std::string vr_request = environment.GetOr("MOCKTAIL_VR_ENABLED", "");
+  if ((vr_request == "1" || vr_request == "true" || vr_request == "on") &&
+      !mocktail::vr::IsOpenXrSupportCompiled()) {
+    std::cerr << "  [vr] This build does not include OpenXR support. "
+                 "Use a VR-enabled build of Mocktail; refusing to start "
+                 "Roblox with --vr in a non-VR build.\n";
+    return EXIT_FAILURE;
+  }
   mocktail::runtime::SessionLog session_log;
   mocktail::runtime::FailureSupportBundleGuard support_bundle_guard(
       environment, paths,
@@ -560,6 +584,41 @@ int main(int argc, char* argv[]) {
       (void)mocktail::runtime::ShowFailureDialog(
           environment, "Mocktail could not load its configuration.");
     }
+    return EXIT_FAILURE;
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      runtime_config.config.vr_mode() == mocktail::runtime::VrMode::kAuto) {
+    std::error_code self_error;
+    const std::filesystem::path self =
+        std::filesystem::read_symlink("/proc/self/exe", self_error);
+    const mocktail::vr::HeadsetDetection detection =
+        mocktail::vr::DetectSteamVrHeadset(self_error ? std::string()
+                                                      : self.string());
+    std::cerr << "  [vr] vr.mode is auto: " << detection.reason
+              << (detection.headset ? "; starting in VR\n"
+                                    : "; starting on the desktop\n");
+    if (detection.headset) {
+      // A detected headset is not an explicit --vr: a Roblox build without
+      // VR support still starts on the desktop.
+      if (setenv("MOCKTAIL_VR_ENABLED", "1", 1) != 0) {
+        std::cerr << "[FATAL] Cannot enable VR for the detected headset\n";
+        return EXIT_FAILURE;
+      }
+      runtime_config = mocktail::runtime::LoadRuntimeConfig(
+          environment, paths.config_file());
+      if (!runtime_config) {
+        std::cerr << "[FATAL] Cannot load " << paths.config_file() << ": "
+                  << runtime_config.error << '\n';
+        return EXIT_FAILURE;
+      }
+    }
+  }
+  if (runtime_config.config.vr_enabled() &&
+      !mocktail::vr::IsOpenXrSupportCompiled()) {
+    std::cerr << "  [vr] This build does not include OpenXR support, but "
+                 "VR is on; set vr.mode to off or auto in "
+              << paths.config_file()
+              << ".\n";
     return EXIT_FAILURE;
   }
   if (runtime_config.config.use_system_proxy()) {
@@ -816,19 +875,50 @@ int main(int argc, char* argv[]) {
       !environment.HasNonEmpty("ROBLOX_LIB_PATH") &&
       runtime_config.config.roblox_library_path() ==
           std::filesystem::path("rbx_bin/libroblox.so");
-  if (!uses_managed_payload &&
-      !environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
-    const std::filesystem::path adjacent_assets =
-        mocktail::runtime::ResolveAdjacentRobloxAssetPath(
+  if (!uses_managed_payload) {
+    const mocktail::runtime::ExplicitRobloxLibrary explicit_library =
+        mocktail::runtime::ResolveExplicitRobloxLibrary(
             runtime_config.config.roblox_library_path(),
             paths.working_directory());
-    if (adjacent_assets.empty() ||
-        setenv("MOCKTAIL_ASSET_PATH", adjacent_assets.c_str(), 1) != 0) {
-      std::cerr << "[FATAL] Cannot bind assets to explicit Roblox library\n";
-      return EXIT_FAILURE;
+    if (explicit_library.payload_layout) {
+      if (!mocktail::runtime::PrepareExplicitPayloadWorkingDirectory(
+              paths, explicit_library, &command_line_error)) {
+        std::cerr << "[FATAL] " << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+      if (setenv("ROBLOX_LIB_PATH", explicit_library.library.c_str(), 1) !=
+          0) {
+        std::cerr << "[FATAL] Cannot activate explicit Roblox library\n";
+        return EXIT_FAILURE;
+      }
+      runtime_config = mocktail::runtime::LoadRuntimeConfig(
+          environment, paths.config_file());
+      if (!runtime_config) {
+        std::cerr << "[FATAL] Cannot resolve runtime configuration: "
+                  << runtime_config.error << '\n';
+        return EXIT_FAILURE;
+      }
     }
-    std::cout << "  [runtime] explicit Roblox library uses adjacent assets: "
-              << adjacent_assets << '\n';
+    if (!environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
+      const std::filesystem::path adjacent_assets =
+          explicit_library.payload_layout
+              ? explicit_library.assets_content
+              : mocktail::runtime::ResolveAdjacentRobloxAssetPath(
+                    runtime_config.config.roblox_library_path(),
+                    paths.working_directory());
+      if (adjacent_assets.empty() ||
+          setenv("MOCKTAIL_ASSET_PATH", adjacent_assets.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot bind assets to explicit Roblox library\n";
+        return EXIT_FAILURE;
+      }
+      const std::filesystem::path adjacent_root =
+          adjacent_assets.filename() == "content"
+              ? adjacent_assets.parent_path()
+              : adjacent_assets;
+      setenv("MOCKTAIL_ASSET_ROOT", adjacent_root.c_str(), 1);
+      std::cout << "  [runtime] explicit Roblox library uses adjacent assets: "
+                << adjacent_assets << '\n';
+    }
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
@@ -919,8 +1009,13 @@ int main(int argc, char* argv[]) {
       if ((needs_active_library &&
            setenv("ROBLOX_LIB_PATH", active.roblox_library.c_str(), 1) != 0) ||
           (needs_active_assets &&
-           setenv("MOCKTAIL_ASSET_PATH", active.assets_content.c_str(), 1) !=
-               0)) {
+           (setenv("MOCKTAIL_ASSET_PATH", active.assets_content.c_str(), 1) != 0 ||
+            setenv("MOCKTAIL_ASSET_ROOT",
+                   (active.assets_content.filename() == "content"
+                        ? active.assets_content.parent_path()
+                        : active.assets_content)
+                       .c_str(),
+                   1) != 0))) {
         std::cerr << "[FATAL] Cannot activate resolved Roblox payload\n";
         return EXIT_FAILURE;
       }
@@ -986,7 +1081,74 @@ int main(int argc, char* argv[]) {
               << " model=\""
               << runtime_config.config.device_profile().display_name << "\"\n";
   }
+  mocktail::compat::PayloadCompatibilityResult compatibility;
+  bool vr_active = false;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    const std::string compatibility_manifest =
+        environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
+                          MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST);
+    compatibility = mocktail::compat::CheckPayloadCompatibility(
+        runtime_config.config.roblox_library_path().string(),
+        compatibility_manifest,
+        command_line.options.allow_unverified_build,
+        (paths.cache_root() / mocktail::compat::kFileDigestRecordDirectory)
+            .string());
+    if (!compatibility) {
+      std::cerr << "[FATAL] " << compatibility.error << '\n';
+      return EXIT_FAILURE;
+    }
+    if (!compatibility.profile.vr_debug_device_bridge.has_value()) {
+      if (const auto* vr_profile =
+              mocktail::vr::FindRobloxVrDeviceProfile(compatibility.build_id)) {
+        compatibility.profile.vr_debug_device_bridge = *vr_profile;
+      }
+    }
+    const bool vr_build_supported =
+        compatibility.profile.vr_debug_device_bridge.has_value();
+    if (runtime_config.config.vr_enabled() && vr_requested &&
+        !vr_build_supported) {
+      // An explicit --vr on a build without VR support is a user error, not
+      // something to silently ignore; say which builds work and how to pick.
+      std::cerr << "[FATAL] VR is not available for Roblox "
+                << compatibility.profile.version_name << " (version "
+                << compatibility.profile.version_code << ", Build ID "
+                << compatibility.build_id << ").\n"
+                << "  VR supports builds "
+                << mocktail::vr::DescribeSupportedVrBuilds()
+                << ". Point --roblox-lib at one of those payloads'\n"
+                << "  libroblox.so, or launch without --vr.\n";
+      return EXIT_FAILURE;
+    }
+    vr_active = runtime_config.config.vr_enabled() && vr_build_supported;
+    if (runtime_config.config.vr_enabled() && !vr_active) {
+      std::cerr << "  [vr] Roblox " << compatibility.profile.version_name
+                << " (Build ID " << compatibility.build_id
+                << ") has no VR support (supported: "
+                << mocktail::vr::DescribeSupportedVrBuilds()
+                << "); continuing without VR\n";
+      if (setenv("MOCKTAIL_VR_ENABLED", "0", 1) != 0) {
+        std::cerr << "[FATAL] Cannot disable VR for this Roblox build\n";
+        return EXIT_FAILURE;
+      }
+    }
+    if (vr_active) {
+      const mocktail::vr::VrBackendMode vr_backend_mode =
+          mocktail::vr::ResolveVrBackendMode(true);
+      std::cerr << "  [vr] experimental backend="
+                << mocktail::vr::VrBackendModeName(vr_backend_mode)
+                << ": Roblox renders both eyes through its DebugDeviceVR "
+                   "debug device (Build ID "
+                << compatibility.build_id << ")";
+      if (vr_backend_mode == mocktail::vr::VrBackendMode::kXrOutput) {
+        std::cerr << "; eye images are submitted to the active OpenXR runtime "
+                     "as a projection layer. Start WiVRn or SteamVR/ALVR and "
+                     "connect the headset "
+                     "before launching.\n";
+      } else {
+        std::cerr << "; OpenXR output is disabled in this diagnostic mode "
+                     "(MOCKTAIL_VR_BACKEND=native).\n";
+      }
+    }
     const std::filesystem::path fflags_path =
         paths.config_root() / "fflags.json";
     const auto fflags = mocktail::services::LoadAndMergeFflagsFile(
@@ -1004,7 +1166,8 @@ int main(int argc, char* argv[]) {
     std::string client_settings_overrides;
     std::vector<std::string> kept_fflag_overrides;
     if (!mocktail::runtime::MergeRuntimeClientSettingsOverrides(
-            runtime_config.config.frame_rate(),
+            vr_active ? runtime_config.config.vr_frame_rate()
+                      : runtime_config.config.frame_rate(),
             runtime_config.config.performance(), fflags.json,
             &client_settings_overrides, &command_line_error,
             &kept_fflag_overrides)) {
@@ -1025,6 +1188,12 @@ int main(int argc, char* argv[]) {
                 << command_line_error << '\n';
       return EXIT_FAILURE;
     }
+    if (!mocktail::runtime::MergeVrClientSettingsOverrides(
+            vr_active, audio_capture_overrides,
+            &audio_capture_overrides, &command_line_error)) {
+      std::cerr << "[FATAL] Cannot apply VR policy: " << command_line_error << '\n';
+      return EXIT_FAILURE;
+    }
     if (setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
                audio_capture_overrides.c_str(), 1) != 0) {
       std::cerr << "[FATAL] Cannot export runtime client-settings policy\n";
@@ -1038,6 +1207,12 @@ int main(int argc, char* argv[]) {
             &fast_flags_overrides, &command_line_error)) {
       std::cerr << "[FATAL] Cannot apply crash-report fast-flags policy: "
                 << command_line_error << '\n';
+      return EXIT_FAILURE;
+    }
+    if (!mocktail::runtime::MergeVrClientSettingsOverrides(
+            vr_active, fast_flags_overrides,
+            &fast_flags_overrides, &command_line_error)) {
+      std::cerr << "[FATAL] Cannot apply VR policy: " << command_line_error << '\n';
       return EXIT_FAILURE;
     }
     if (setenv("MOCKTAIL_FAST_FLAGS_JSON", fast_flags_overrides.c_str(), 1) !=
@@ -1080,10 +1255,14 @@ int main(int argc, char* argv[]) {
                    "counts under Roblox client-settings control\n";
     }
   }
+  const mocktail::runtime::FrameRatePolicy& active_frame_rate =
+      vr_active ? runtime_config.config.vr_frame_rate()
+                : runtime_config.config.frame_rate();
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
-      runtime_config.config.frame_rate().mode ==
+      active_frame_rate.mode ==
           mocktail::runtime::FrameRateLimitMode::kUnlimited) {
-    std::cout << "  [runtime] frame-rate mode=unlimited scheduler_target="
+    std::cout << "  [runtime] " << (vr_active ? "vr " : "")
+              << "frame-rate mode=unlimited scheduler_target="
               << mocktail::runtime::kMaximumSupportedRobloxSchedulerFps
               << " vsync=" << runtime_config.config.vsync_mode() << '\n';
   }
@@ -1098,21 +1277,15 @@ int main(int argc, char* argv[]) {
 
   mocktail::runtime::RobloxFullscreenRuntimeBridge fullscreen_bridge;
   mocktail::audio::RobloxOutputDeviceBridge output_device_bridge;
+  // Never destroyed: Shutdown() stops waiting after 2 s, and a guest thread
+  // still inside a hook then keeps using this object until the process ends.
+  static auto& vr_device_bridge = *new mocktail::vr::RobloxVrDeviceBridge;
+  // Never destroyed, for the same reason: the hooks call into the backend.
+  static auto& xr_backend = *new mocktail::vr::OpenXrBackend;
+  struct DisarmOnExit {
+    ~DisarmOnExit() { xr_backend.Disarm(); }
+  } disarm_xr_backend_on_exit;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
-    const std::string compatibility_manifest =
-        environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
-                          MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST);
-    const mocktail::compat::PayloadCompatibilityResult compatibility =
-        mocktail::compat::CheckPayloadCompatibility(
-            runtime_config.config.roblox_library_path().string(),
-            compatibility_manifest,
-            command_line.options.allow_unverified_build,
-            (paths.cache_root() / mocktail::compat::kFileDigestRecordDirectory)
-                .string());
-    if (!compatibility) {
-      std::cerr << "[FATAL] " << compatibility.error << '\n';
-      return EXIT_FAILURE;
-    }
     const mocktail::Status fullscreen_status =
         fullscreen_bridge.Install(compatibility.profile);
     if (!fullscreen_status.ok()) {
@@ -1141,6 +1314,70 @@ int main(int argc, char* argv[]) {
       std::cerr << "[FATAL] Cannot install Roblox output-device bridge: "
                 << output_device_status.message() << '\n';
       return EXIT_FAILURE;
+    }
+    if (vr_active) {
+      const mocktail::Status vr_device_status =
+          vr_device_bridge.Install(compatibility.profile);
+      if (!vr_device_status.ok()) {
+        std::cerr << "[FATAL] Cannot install experimental Roblox VR device "
+                     "bridge: "
+                  << vr_device_status.message() << '\n';
+        return EXIT_FAILURE;
+      }
+      if (mocktail::vr::ResolveVrBackendMode(true) ==
+          mocktail::vr::VrBackendMode::kXrOutput) {
+        // Fail closed and loudly when no OpenXR runtime is reachable; the
+        // native-stereo diagnostic mode must be requested explicitly.
+        const mocktail::Status xr_status =
+            xr_backend.Arm(runtime_config.config.graphics_backend() ==
+                                   mocktail::runtime::GraphicsBackend::kVulkan
+                               ? mocktail::vr::VrGraphicsApi::kVulkan
+                               : mocktail::vr::VrGraphicsApi::kOpenGles);
+        if (!xr_status.ok()) {
+          std::cerr
+              << "[FATAL] Cannot arm the OpenXR backend for --vr: "
+              << xr_status.message() << '\n'
+              << "  Start WiVRn or SteamVR/ALVR, connect your headset, then "
+                 "run mocktail -vr again.\n"
+              << "  For a custom runtime set XR_RUNTIME_JSON to its manifest.\n"
+              << "  Set MOCKTAIL_VR_BACKEND=native for the "
+                 "native-stereo diagnostic mode without a runtime.\n";
+          return EXIT_FAILURE;
+        }
+        // The in-headset keyboard follows Roblox's TextBox keyboard requests
+        // and types through the same events as the desktop keyboard.
+        mocktail::vr::VirtualKeyboardHost keyboard_host;
+        keyboard_host.input_requested = [](void*) {
+          return mocktail::window::TextInputRequested();
+        };
+        keyboard_host.commit_text = [](void*, const char* utf8) {
+          mocktail::window::QueueVirtualTextInput(utf8);
+        };
+        keyboard_host.press_key = [](void*, std::uint32_t scancode,
+                                     bool ctrl) {
+          mocktail::window::QueueVirtualKeyPress(scancode, ctrl);
+        };
+        mocktail::vr::SetVirtualKeyboardHost(&keyboard_host);
+        // The keyboard comes back where the player last dragged it.
+        mocktail::vr::SetVirtualKeyboardStateFile(paths.state_root() /
+                                                  "vr_keyboard.json");
+        // TextBox text is drawn as a desktop window overlay that never reaches
+        // the eye images; mirror it into the keyboard's text field.
+        mocktail::runtime::SetRobloxTextDisplayMirror(
+            {nullptr, [](void*,
+                         const mocktail::runtime::RobloxTextDisplayUpdate&
+                             update) {
+               if (update.event ==
+                   mocktail::runtime::RobloxTextDisplayEvent::kHide) {
+                 mocktail::vr::ClearVirtualKeyboardText();
+                 return;
+               }
+               mocktail::vr::SetVirtualKeyboardText(
+                   update.utf8, update.utf8_size, update.cursor_utf16,
+                   mocktail::runtime::IsRobloxPasswordTextInputType(
+                       update.text_input_type));
+             }});
+      }
     }
   }
 
@@ -1295,6 +1532,26 @@ int main(int argc, char* argv[]) {
                 << " updated=" << (desktop_policy.updated ? 1 : 0)
                 << " runtime_override=1\n";
     }
+    if (vr_active) {
+      std::string vr_client_settings;
+      std::string vr_fast_flags;
+      if (!mocktail::runtime::MergeVrAppPolicyClientSettingsOverrides(
+              vr_active, runtime_config.config.vr_spatial_toolbar(),
+              environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"),
+              environment.GetOr("MOCKTAIL_FAST_FLAGS_JSON", "{}"),
+              &vr_client_settings, &vr_fast_flags, &command_line_error)) {
+        std::cerr << "[FATAL] Cannot apply VR app-policy: "
+                  << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+      if (setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
+                 vr_client_settings.c_str(), 1) != 0 ||
+          setenv("MOCKTAIL_FAST_FLAGS_JSON", vr_fast_flags.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot export VR app-policy\n";
+        return EXIT_FAILURE;
+      }
+      std::cout << "  [vr] app-policy idle render throttling disabled\n";
+    }
     auto android_window_context =
         std::make_shared<AndroidWindowBridgeContext>();
     jnivm::AndroidWindowCallbacks android_window_callbacks;
@@ -1379,6 +1636,8 @@ int main(int argc, char* argv[]) {
                               std::to_string(runtime_status) + ".");
   }
   support_bundle_guard.SetExitCode(runtime_status);
+  xr_backend.Disarm();
+  vr_device_bridge.Shutdown();
   output_device_bridge.Shutdown();
   fullscreen_bridge.Shutdown();
   memory_limit_watchdog.Stop();

@@ -96,7 +96,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 }
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
-  if (!focused_) {
+  if (!focused_ || vr_active_) {
     desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
     return Apply(false, CursorShape::kArrow);
   }
@@ -244,6 +244,10 @@ bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
 
 void WindowPointerCaptureOwner::SetGameSessionActive(bool active) {
   game_session_active_ = active;
+}
+
+void WindowPointerCaptureOwner::SetVrActive(bool active) {
+  vr_active_ = active;
 }
 
 bool WindowPointerCaptureOwner::OnShiftKeyPressed(bool text_input_active) {

@@ -922,8 +922,14 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_FALSE(composition.subscribed());
 }
 
-TEST(RobloxExperienceCompositionTest,
-     InitializesDurablePlatformProtocolsBeforeNativeBootstrap) {
+// HapticProtocol adds four handlers, only during a VR session.
+void ExpectDurablePlatformProtocols(bool vr_session) {
+  if (vr_session)
+    ASSERT_EQ(setenv("MOCKTAIL_VR_ENABLED", "1", 1), 0);
+  else
+    unsetenv("MOCKTAIL_VR_ENABLED");
+  const int handlers = vr_session ? 10 : 6;
+  const std::size_t haptic = vr_session ? 1u : 0u;
   jnivm::VM vm;
   Probe probe{&vm};
   g_probe = &probe;
@@ -950,9 +956,15 @@ TEST(RobloxExperienceCompositionTest,
 
   ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
   EXPECT_FALSE(composition.subscribed());
-  EXPECT_EQ(probe.permission_subscriptions, 6);
-  EXPECT_EQ(probe.permission_handlers.size(), 6u);
+  EXPECT_EQ(probe.permission_subscriptions, handlers);
+  EXPECT_EQ(probe.permission_handlers.size(),
+            static_cast<std::size_t>(handlers));
   EXPECT_EQ(probe.permission_handlers.count("getCallState"), 1u);
+  EXPECT_EQ(probe.permission_handlers.count("SupportsHaptics"), haptic);
+  EXPECT_EQ(probe.permission_handlers.count("GetMotors"), haptic);
+  EXPECT_EQ(probe.permission_handlers.count("SetMotorState"), haptic);
+  EXPECT_EQ(probe.permission_handlers.count("UpdateSingletonVibration"),
+            haptic);
   EXPECT_EQ(QueryMicrophone(&probe).at("status"), "DENIED");
   EXPECT_EQ(probe.web_view_initializations, 1);
   EXPECT_EQ(probe.browser_bindings, 4);
@@ -961,14 +973,25 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_EQ(probe.browser_releases, 0);
   EXPECT_EQ(probe.browser_callbacks_cleared, 0);
   EXPECT_TRUE(composition.Shutdown().ok());
-  EXPECT_EQ(probe.permission_disconnects, 6);
-  EXPECT_EQ(probe.permission_handlers_cleared, 6);
+  EXPECT_EQ(probe.permission_disconnects, handlers);
+  EXPECT_EQ(probe.permission_handlers_cleared, handlers);
   EXPECT_EQ(probe.disconnects, 3);
   EXPECT_EQ(probe.browser_disconnects, 4);
   EXPECT_EQ(probe.browser_releases, 4);
   EXPECT_EQ(probe.browser_callbacks_cleared, 4);
   EXPECT_TRUE(probe.account_handlers.empty());
   g_probe = nullptr;
+  unsetenv("MOCKTAIL_VR_ENABLED");
+}
+
+TEST(RobloxExperienceCompositionTest,
+     InitializesDurablePlatformProtocolsBeforeNativeBootstrap) {
+  ExpectDurablePlatformProtocols(false);
+}
+
+TEST(RobloxExperienceCompositionTest,
+     InitializesHapticProtocolDuringAVrSession) {
+  ExpectDurablePlatformProtocols(true);
 }
 
 TEST(RobloxExperienceCompositionTest,

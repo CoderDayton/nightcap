@@ -38,6 +38,8 @@ constexpr std::string_view kDeviceTypeKey = "device.type";
 // device.
 constexpr std::string_view kPlayabilityKey =
     "compatibility.desktop_playability";
+constexpr std::string_view kVrModeKey = "vr.mode";
+constexpr std::string_view kVrEnabledKey = "vr.enabled";
 constexpr std::string_view kProxyKey = "network.proxy";
 constexpr std::string_view kProxyHostKey = "network.proxy_host";
 constexpr std::string_view kProxyPortKey = "network.proxy_port";
@@ -217,6 +219,29 @@ runtime::RuntimeConfigEdit SetDevicePreset(std::string_view text,
   return Then(std::move(edit), [key, value](std::string_view current) {
     return runtime::SetRuntimeConfigString(current, key, value);
   });
+}
+
+std::string VrMode(const Reader& file) {
+  if (const runtime::RuntimeConfigValue& mode = file.Get(kVrModeKey);
+      mode.found) {
+    return mode.value;
+  }
+  if (const runtime::RuntimeConfigValue& enabled = file.Get(kVrEnabledKey);
+      enabled.found) {
+    return enabled.value == "true" ? "on" : "off";
+  }
+  return {};
+}
+
+runtime::RuntimeConfigEdit SetVrMode(std::string_view text,
+                                     std::string_view value) {
+  return Then(UnsetIfSet(text, kVrEnabledKey),
+              [value](std::string_view current) {
+                return value.empty()
+                           ? UnsetIfSet(current, kVrModeKey)
+                           : runtime::SetRuntimeConfigString(
+                                 current, kVrModeKey, value);
+              });
 }
 
 std::string ProxyValue(const Reader& file) {
@@ -656,6 +681,62 @@ const std::vector<SettingsPage>& SettingsPages() {
                 {kKeyboardKey, "Keyboard",
                  "Off hides the keyboard from Roblox.", SettingKind::kToggle,
                  {}, "true", {}},
+            }},
+       }},
+      {"vr",
+       "VR",
+       "view-dual-symbolic",
+       "Display & input",
+       {
+           {"Headset",
+            {
+                {kVrModeKey,
+                 "Start in VR",
+                 "Automatic starts in VR when SteamVR is running with a "
+                 "headset. --vr and --no-vr override this.",
+                 SettingKind::kChoice,
+                 {
+                     {"off", "Off"},
+                     {"auto", "Automatic"},
+                     {"on", "Always"},
+                 },
+                 "off",
+                 {}},
+                {"vr.anti_aliasing",
+                 "Anti-aliasing",
+                 "SMAA keeps text sharper than FXAA, for a little more GPU "
+                 "time.",
+                 SettingKind::kChoice,
+                 {
+                     {"fxaa", "FXAA"},
+                     {"smaa", "SMAA"},
+                     {"off", "Off"},
+                 },
+                 "fxaa",
+                 {}},
+                {"vr.frame_rate_limit",
+                 "Frame rate limit",
+                 "Unlimited lets the headset set the pace.",
+                 SettingKind::kFrameRate,
+                 {
+                     {"-1", "Roblox setting"},
+                     {"display", "Match display"},
+                     {"unlimited", "Unlimited"},
+                     {"custom", "Custom"},
+                 },
+                 "unlimited",
+                 {}},
+            }},
+           {"In game",
+            {
+                {"vr.spatial_toolbar",
+                 "Floating toolbar",
+                 "Use the Quest app's toolbar, which you can drag. Off keeps "
+                 "the older bottom bar.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
             }},
        }},
       {"performance",
@@ -1122,6 +1203,20 @@ std::string FrameRateValue(const FrameRate& rate) {
   return {};
 }
 
+FrameRate FrameRateSettingState(const Setting& setting,
+                                std::string_view value) {
+  return ParseFrameRate(value.empty() ? setting.default_value : value);
+}
+
+std::string FrameRateSettingValue(const Setting& setting,
+                                  const FrameRate& rate) {
+  std::string value = FrameRateValue(rate);
+  if (value.empty() && !setting.default_value.empty()) {
+    return "-1";
+  }
+  return value;
+}
+
 SettingsDocument::SettingsDocument(std::filesystem::path config_file)
     : config_file_(std::move(config_file)) {}
 
@@ -1161,6 +1256,9 @@ std::string SettingsDocument::Value(std::string_view key) const {
   }
   if (key == kDeviceKey) {
     return DevicePreset(file);
+  }
+  if (key == kVrModeKey) {
+    return VrMode(file);
   }
   if (key == kProxyKey) {
     return ProxyValue(file);
@@ -1316,6 +1414,9 @@ runtime::RuntimeConfigEdit SettingsDocument::Edit(std::string_view key,
   }
   if (key == kProxyKey) {
     return SetProxy(text, value);
+  }
+  if (key == kVrModeKey) {
+    return SetVrMode(text, value);
   }
   if (key == kProxyUsernameKey) {
     return SetProxyLogin(text, value);

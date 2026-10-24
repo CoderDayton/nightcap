@@ -3,6 +3,133 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License")
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# Test-only implicit Vulkan layer that captures GPU-level native stereo
+# evidence (eye render-pass counts and per-eye pixel readback).
+# Never linked into production code.
+add_library(mocktail_vr_evidence_layer MODULE vr/vr_evidence_layer.cc)
+target_link_libraries(mocktail_vr_evidence_layer PRIVATE Vulkan::Headers
+  ${CMAKE_DL_LIBS})
+mocktail_apply_compile_options(mocktail_vr_evidence_layer)
+set_target_properties(mocktail_vr_evidence_layer PROPERTIES
+  PREFIX "lib" OUTPUT_NAME "mocktail_vr_evidence_layer")
+file(GENERATE
+  OUTPUT "${CMAKE_BINARY_DIR}/tests/vr/VkLayer_mocktail_vr_evidence.json"
+  CONTENT [=[{
+  "file_format_version": "1.2.0",
+  "layer": {
+    "name": "VK_LAYER_MOCKTAIL_vr_evidence",
+    "type": "GLOBAL",
+    "library_path": "$<TARGET_FILE:mocktail_vr_evidence_layer>",
+    "api_version": "1.3.280",
+    "implementation_version": "1",
+    "description": "Mocktail VR native stereo evidence capture (test-only)",
+    "disable_environment": {"MOCKTAIL_VR_EVIDENCE_LAYER_DISABLE": "1"}
+  }
+}
+]=])
+
+add_executable(vr_mirror_test vr/vr_mirror_test.cc vr/runtime_detection_test.cc)
+target_link_libraries(vr_mirror_test PRIVATE Mocktail::VR GTest::gtest_main)
+mocktail_apply_compile_options(vr_mirror_test)
+add_executable(vr_pose_math_test vr/vr_pose_math_test.cc)
+target_include_directories(vr_pose_math_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_link_libraries(vr_pose_math_test PRIVATE GTest::gtest_main)
+mocktail_apply_compile_options(vr_pose_math_test)
+add_executable(xr_controller_test vr/xr_controller_test.cc)
+target_link_libraries(xr_controller_test PRIVATE Mocktail::VR GTest::gtest_main)
+mocktail_apply_compile_options(xr_controller_test)
+add_executable(virtual_keyboard_test vr/virtual_keyboard_test.cc)
+target_link_libraries(virtual_keyboard_test PRIVATE Mocktail::VR GTest::gtest_main)
+mocktail_apply_compile_options(virtual_keyboard_test)
+add_executable(emoji_catalog_test vr/emoji_catalog_test.cc)
+target_link_libraries(emoji_catalog_test PRIVATE Mocktail::VR GTest::gtest_main)
+mocktail_apply_compile_options(emoji_catalog_test)
+gtest_discover_tests(emoji_catalog_test)
+add_executable(vr_evidence_layer_test vr/vr_evidence_layer_test.cc)
+target_link_libraries(vr_evidence_layer_test PRIVATE Vulkan::Headers
+  ${CMAKE_DL_LIBS} GTest::gtest_main)
+mocktail_apply_compile_options(vr_evidence_layer_test)
+
+add_executable(roblox_vr_device_bridge_test vr/roblox_vr_device_bridge_test.cc)
+target_include_directories(roblox_vr_device_bridge_test PRIVATE
+  "${PROJECT_SOURCE_DIR}/src")
+target_compile_definitions(roblox_vr_device_bridge_test PRIVATE
+  "MOCKTAIL_TEST_BINARY_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\"")
+target_link_libraries(roblox_vr_device_bridge_test PRIVATE
+  Mocktail::VR
+  Mocktail::Compat
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(roblox_vr_device_bridge_test)
+if(MOCKTAIL_ENABLE_VR)
+  add_executable(openxr_backend_test vr/openxr_backend_test.cc)
+  target_include_directories(openxr_backend_test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include")
+  target_link_libraries(openxr_backend_test PRIVATE Mocktail::VR GTest::gtest_main)
+  gtest_discover_tests(openxr_backend_test)
+  add_executable(virtual_keyboard_raster_test
+    vr/virtual_keyboard_raster_test.cc)
+  target_link_libraries(virtual_keyboard_raster_test PRIVATE
+    Mocktail::VR GTest::gtest_main)
+  mocktail_apply_compile_options(virtual_keyboard_raster_test)
+  gtest_discover_tests(virtual_keyboard_raster_test)
+  add_executable(vr_queue_submission_test vr/queue_submission_test.cc)
+  target_link_libraries(vr_queue_submission_test PRIVATE
+    Mocktail::VR stub_vulkan GTest::gtest_main)
+  # The adapter looks up the backend's exported symbols at run time.
+  set_target_properties(vr_queue_submission_test PROPERTIES ENABLE_EXPORTS ON)
+  gtest_discover_tests(vr_queue_submission_test)
+  # Loads the adapter with dlopen() like the runtime does, so it must not
+  # link it; the adapter finds the backend through the exported symbols.
+  add_executable(vr_queue_sharing_load_test vr/queue_sharing_load_test.cc)
+  target_link_libraries(vr_queue_sharing_load_test PRIVATE
+    Mocktail::VR ${CMAKE_DL_LIBS} GTest::gtest_main)
+  target_compile_definitions(vr_queue_sharing_load_test PRIVATE
+    "MOCKTAIL_TEST_VULKAN_ADAPTER=\"$<TARGET_FILE:stub_vulkan>\"")
+  set_target_properties(vr_queue_sharing_load_test PROPERTIES
+    ENABLE_EXPORTS ON)
+  add_dependencies(vr_queue_sharing_load_test stub_vulkan)
+  gtest_discover_tests(vr_queue_sharing_load_test)
+  add_executable(gles_vr_transport_test vr/gles_transport_test.cc)
+  target_include_directories(gles_vr_transport_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include" ${MOCKTAIL_GLES3_INCLUDE_DIR})
+  target_link_libraries(gles_vr_transport_test PRIVATE Mocktail::VR SDL3::SDL3 GTest::gtest_main)
+  gtest_discover_tests(gles_vr_transport_test PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=offscreen")
+
+  add_library(mocktail_test_openxr_runtime MODULE
+    vr/fake_openxr_runtime.cc vr/fake_openxr_preview.cc)
+  target_link_libraries(mocktail_test_openxr_runtime PRIVATE
+    OpenXR::headers Vulkan::Headers)
+  target_compile_definitions(mocktail_test_openxr_runtime PRIVATE
+    XR_USE_GRAPHICS_API_VULKAN)
+  set_target_properties(mocktail_test_openxr_runtime PROPERTIES
+    CXX_VISIBILITY_PRESET hidden)
+  mocktail_apply_compile_options(mocktail_test_openxr_runtime)
+  add_test(NAME OpenXrProbeContract
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/probe_contract_test.py"
+      "$<TARGET_FILE:mocktail_vr_probe>" "$<TARGET_FILE:mocktail_test_openxr_runtime>")
+  add_test(NAME OpenXrPreviewContract
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/preview_contract_test.py"
+      "$<TARGET_FILE:mocktail_vr_probe>" "$<TARGET_FILE:mocktail_test_openxr_runtime>"
+      "$<TARGET_FILE:mocktail>")
+  set_tests_properties(OpenXrPreviewContract PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+  # The checked-in SPIR-V must match shaders/vr. Needs glslc to check.
+  find_program(MOCKTAIL_GLSLC glslc)
+  if(MOCKTAIL_GLSLC)
+    add_test(NAME VrShaders.SpirvMatchesSources
+      COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/generate_vr_shaders.py" --check
+        --glslc "${MOCKTAIL_GLSLC}")
+  endif()
+  target_compile_definitions(openxr_backend_test PRIVATE
+    "MOCKTAIL_TEST_OPENXR_RUNTIME=\"$<TARGET_FILE:mocktail_test_openxr_runtime>\"")
+  add_dependencies(openxr_backend_test mocktail_test_openxr_runtime)
+else()
+  add_test(NAME OpenXrProbeDisabled
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/probe_contract_test.py"
+      --disabled "$<TARGET_FILE:mocktail>")
+endif()
+
 add_executable(jnivm_test
   jnivm_test.cc
 )
@@ -512,6 +639,15 @@ target_link_libraries(roblox_permissions_bridge_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_permissions_bridge_test)
 
+add_executable(roblox_haptic_protocol_bridge_test roblox_haptic_protocol_bridge_test.cc)
+target_link_libraries(roblox_haptic_protocol_bridge_test PRIVATE
+  Mocktail::LegacyJni
+  Mocktail::Runtime
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(roblox_haptic_protocol_bridge_test)
+
 add_executable(roblox_account_bridge_test roblox_account_bridge_test.cc)
 target_link_libraries(roblox_account_bridge_test PRIVATE
   Mocktail::LegacyJni
@@ -868,6 +1004,14 @@ target_include_directories(roblox_output_device_bridge_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_output_device_bridge_test)
 
+add_executable(native_input_capture_test native_input_capture_test.cc)
+target_include_directories(native_input_capture_test PRIVATE
+  "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(native_input_capture_test PRIVATE
+  mocktail_audio_sdl GTest::gtest_main)
+mocktail_apply_compile_options(native_input_capture_test)
+gtest_discover_tests(native_input_capture_test)
+
 add_executable(window_text_input_owner_test
   window_text_input_owner_test.cc
 )
@@ -1194,6 +1338,12 @@ target_link_libraries(headless_graphics_test PRIVATE
 )
 
 include(GoogleTest)
+gtest_discover_tests(roblox_vr_device_bridge_test)
+gtest_discover_tests(vr_evidence_layer_test)
+gtest_discover_tests(vr_mirror_test)
+gtest_discover_tests(vr_pose_math_test)
+gtest_discover_tests(xr_controller_test)
+gtest_discover_tests(virtual_keyboard_test)
 gtest_discover_tests(jnivm_test)
 gtest_discover_tests(jnivm_fields_test)
 gtest_discover_tests(jnivm_fmod_write_allocation_test)
@@ -1256,6 +1406,7 @@ gtest_discover_tests(roblox_game_session_native_adapter_test)
 gtest_discover_tests(roblox_experience_launch_bridge_test)
 gtest_discover_tests(roblox_web_view_bridge_test)
 gtest_discover_tests(roblox_permissions_bridge_test)
+gtest_discover_tests(roblox_haptic_protocol_bridge_test)
 gtest_discover_tests(roblox_account_bridge_test)
 gtest_discover_tests(roblox_browser_service_bridge_test)
 gtest_discover_tests(roblox_fresh_game_launch_controller_test)
@@ -1431,4 +1582,11 @@ add_test(
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/system_install_test.sh
           ${CMAKE_BINARY_DIR}
 )
+endif()
+
+if(MOCKTAIL_ENABLE_VR)
+  add_executable(xr_actions_test vr/xr_actions_test.cc)
+  target_link_libraries(xr_actions_test PRIVATE Mocktail::InputRuntime GTest::gtest_main)
+  target_include_directories(xr_actions_test PRIVATE "${CMAKE_SOURCE_DIR}/third_party/OpenXR-SDK/include")
+  gtest_discover_tests(xr_actions_test)
 endif()

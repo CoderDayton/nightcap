@@ -360,6 +360,32 @@ TEST(WindowPointerCaptureOwnerTest, RightDragCapturesOnceTheGameSurfaceIsLive) {
   EXPECT_FALSE(owner.captured());
 }
 
+TEST(WindowPointerCaptureOwnerTest, VrNeverTrapsThePointer) {
+  FakeBackend backend;
+  QueryState query{true, true};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.captured());
+
+  // Turning VR on releases a held lock and shows the desktop cursor.
+  owner.SetVrActive(true);
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.cursor_visible());
+  // Neither Roblox's mouse lock nor an RMB drag captures it again.
+  EXPECT_TRUE(owner.OnRightButton(true, false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnShiftKeyPressed(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.OnFocusGained(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.cursor_visible());
+  ASSERT_FALSE(backend.calls.empty());
+  EXPECT_FALSE(backend.calls.back().relative_mode);
+}
+
 TEST(WindowPointerCaptureOwnerTest, RightDragCapturesUntilButtonRelease) {
   FakeBackend backend;
   QueryState query{true, false};

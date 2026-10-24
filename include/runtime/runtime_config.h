@@ -16,6 +16,15 @@
 namespace mocktail {
 namespace runtime {
 
+// VR is opt-in in every build (--vr or vr.enabled: true). A VR-capable build
+// must not try to reach an OpenXR runtime on a normal desktop launch.
+inline constexpr bool kDefaultVrEnabled = false;
+
+// vr.mode: on and off force VR or the desktop. auto starts in VR only when
+// SteamVR is running with a headset, which main() checks before launch.
+enum class VrMode { kOff, kOn, kAuto };
+const char* VrModeName(VrMode mode);
+
 enum class GraphicsBackend {
   kAuto,
   kSystem,
@@ -131,6 +140,10 @@ class RuntimeConfig {
   static RuntimeConfig FromEnvironment(const Environment& environment);
 
   bool headless() const { return headless_; }
+  bool vr_enabled() const { return vr_enabled_; }
+  // MOCKTAIL_VR_ENABLED (--vr, --no-vr) wins over MOCKTAIL_VR_MODE.
+  VrMode vr_mode() const { return vr_mode_; }
+  bool vr_valid() const { return vr_valid_; }
   const std::filesystem::path& roblox_library_path() const {
     return roblox_library_path_;
   }
@@ -156,6 +169,17 @@ class RuntimeConfig {
     return roblox_http_user_agent_;
   }
   const FrameRatePolicy& frame_rate() const { return frame_rate_; }
+  // Replaces frame_rate() while VR is enabled. Defaults to unlimited so the
+  // OpenXR runtime's xrWaitFrame paces Roblox at the headset refresh rate.
+  const FrameRatePolicy& vr_frame_rate() const { return vr_frame_rate_; }
+  // vr.anti_aliasing: fxaa, smaa or off. The VR backend reads it from the
+  // exported MOCKTAIL_VR_ANTI_ALIASING.
+  const std::string& vr_anti_aliasing() const { return vr_anti_aliasing_; }
+  // vr.spatial_toolbar: use Quest's floating in-game toolbar in VR.
+  bool vr_spatial_toolbar() const { return vr_spatial_toolbar_; }
+  const FrameRatePolicy& active_frame_rate() const {
+    return vr_enabled_ ? vr_frame_rate_ : frame_rate_;
+  }
   const std::string& vsync_mode() const { return vsync_mode_; }
   const PerformancePolicy& performance() const { return performance_; }
   bool mangohud() const { return mangohud_; }
@@ -201,6 +225,9 @@ class RuntimeConfig {
 
  private:
   bool headless_ = false;
+  bool vr_enabled_ = kDefaultVrEnabled;
+  VrMode vr_mode_ = kDefaultVrEnabled ? VrMode::kOn : VrMode::kOff;
+  bool vr_valid_ = true;
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;
   std::string graphics_backend_name_ = "direct-vulkan";
@@ -211,6 +238,9 @@ class RuntimeConfig {
   bool device_profile_valid_ = true;
   std::optional<std::string> roblox_http_user_agent_;
   FrameRatePolicy frame_rate_;
+  FrameRatePolicy vr_frame_rate_{FrameRateLimitMode::kUnlimited, 0};
+  std::string vr_anti_aliasing_ = "fxaa";
+  bool vr_spatial_toolbar_ = true;
   std::string vsync_mode_ = "auto";
   PerformancePolicy performance_;
   bool mangohud_ = false;

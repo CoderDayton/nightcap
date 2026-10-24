@@ -148,6 +148,57 @@ bool ParseOptionalFmodOutputDeviceBridge(
   return input_fields_present == 0 || input_fields_present == 4;
 }
 
+bool ParseOptionalVrDebugDeviceBridge(
+    const Json& object,
+    std::optional<VrDebugDeviceBridgeProfile>* bridge_profile) {
+  if (bridge_profile == nullptr) {
+    return false;
+  }
+  bridge_profile->reset();
+  const auto field = object.find("vr_debug_device_bridge");
+  if (field == object.end() || field->is_null()) {
+    return true;
+  }
+  if (!field->is_object()) {
+    return false;
+  }
+
+  std::optional<std::uintptr_t> vtable_rva;
+  std::optional<std::uintptr_t> constructor_rva;
+  std::optional<std::uintptr_t> state_getter_rva;
+  std::optional<std::uintptr_t> eye_getter_rva;
+  std::optional<std::uintptr_t> eye_initializer_rva;
+  std::optional<std::uintptr_t> emulator_flag_storage_rva;
+  std::optional<std::uintptr_t> device_create_framebuffer_vtable_offset;
+  if (!ParseOptionalRva(*field, "vtable_rva", &vtable_rva) ||
+      !ParseOptionalRva(*field, "constructor_rva", &constructor_rva) ||
+      !ParseOptionalRva(*field, "state_getter_rva", &state_getter_rva) ||
+      !ParseOptionalRva(*field, "eye_getter_rva", &eye_getter_rva) ||
+      !ParseOptionalRva(*field, "eye_initializer_rva", &eye_initializer_rva) ||
+      !ParseOptionalRva(*field, "emulator_flag_storage_rva",
+                        &emulator_flag_storage_rva) ||
+      !ParseOptionalRva(*field, "device_create_framebuffer_vtable_offset",
+                        &device_create_framebuffer_vtable_offset) ||
+      !vtable_rva.has_value() || !constructor_rva.has_value() ||
+      !state_getter_rva.has_value() || !eye_getter_rva.has_value() ||
+      !eye_initializer_rva.has_value() ||
+      !emulator_flag_storage_rva.has_value() ||
+      !device_create_framebuffer_vtable_offset.has_value()) {
+    return false;
+  }
+
+  *bridge_profile = VrDebugDeviceBridgeProfile{
+      *vtable_rva,
+      *constructor_rva,
+      *state_getter_rva,
+      *eye_getter_rva,
+      *eye_initializer_rva,
+      *emulator_flag_storage_rva,
+      *device_create_framebuffer_vtable_offset,
+  };
+  return true;
+}
+
 }  // namespace
 
 std::string_view BuildStatusName(BuildStatus status) noexcept {
@@ -211,6 +262,7 @@ ProfileLookupResult FindBuildProfile(const std::string& manifest_path,
     const Json* reason = RequiredField(entry, "reason");
     std::optional<std::uintptr_t> fullscreen_setter_rva;
     std::optional<FmodOutputDeviceBridgeProfile> fmod_output_device_bridge;
+    std::optional<VrDebugDeviceBridgeProfile> vr_debug_device_bridge;
     if (version_name == nullptr || !version_name->is_string() ||
         version_code == nullptr || !version_code->is_number_integer() ||
         profile_build_id == nullptr || !profile_build_id->is_string() ||
@@ -227,7 +279,8 @@ ProfileLookupResult FindBuildProfile(const std::string& manifest_path,
                           "user_game_settings_fullscreen_setter_rva",
                           &fullscreen_setter_rva) ||
         !ParseOptionalFmodOutputDeviceBridge(
-            entry, &fmod_output_device_bridge)) {
+            entry, &fmod_output_device_bridge) ||
+        !ParseOptionalVrDebugDeviceBridge(entry, &vr_debug_device_bridge)) {
       return Failure("compatibility profile has missing or invalid fields");
     }
 
@@ -278,6 +331,7 @@ ProfileLookupResult FindBuildProfile(const std::string& manifest_path,
         allow_host_constructor_replay->get<bool>(),
         fullscreen_setter_rva,
         fmod_output_device_bridge,
+        vr_debug_device_bridge,
         reason->get_ref<const std::string&>(),
     };
   }

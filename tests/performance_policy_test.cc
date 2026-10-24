@@ -347,6 +347,41 @@ TEST(PerformancePolicyTest, PermissionProtocolDoesNotUseTheTestBypass) {
   EXPECT_EQ(parsed.at("DFFlagVoiceChatSkipPermissionCheckForTests"), "False");
 }
 
+TEST(PerformancePolicyTest,
+     VrModeOverridesConflictingFlagAndPreservesSettings) {
+  std::string merged, error;
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(
+      true, R"({"FFlagDebugEnableVREmulator":"False","FFlagSlowDownRendering":"True","FIntUnrelated":"42"})",
+      &merged, &error));
+  auto json = nlohmann::json::parse(merged);
+  EXPECT_EQ(json["FFlagDebugEnableVREmulator"], "True");
+  EXPECT_EQ(json["FFlagSlowDownRendering"], "False");
+  EXPECT_EQ(json["FFlagFixVRAvatarPlacement"], "True");
+  EXPECT_EQ(json["FFlagKeepHapticsOnMobileWhenGamepadConnected"], "True");
+  EXPECT_EQ(json["FFlagVRHaptics"], "True");
+  EXPECT_EQ(json["FIntUnrelated"], "42");
+  // Without VR the user's own value is kept, and nothing is added.
+  std::string kept;
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(
+      false, R"({"FFlagDebugEnableVREmulator":"True","FIntUnrelated":"42"})",
+      &kept, &error));
+  EXPECT_EQ(nlohmann::json::parse(kept)["FFlagDebugEnableVREmulator"], "True");
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(false, "{}", &kept, &error));
+  EXPECT_FALSE(nlohmann::json::parse(kept).contains(
+      "FFlagDebugEnableVREmulator"));
+  EXPECT_FALSE(MergeVrClientSettingsOverrides(true, "[]", &merged, &error));
+  EXPECT_FALSE(MergeVrClientSettingsOverrides(true, "bad", &merged, &error));
+}
+
+TEST(PerformancePolicyTest, NonVrPreservesStartupRenderingPolicy) {
+  std::string merged, error;
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(
+      false, R"({"FFlagSlowDownRendering":"True"})", &merged, &error));
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagSlowDownRendering"], "True");
+  ASSERT_TRUE(MergeVrClientSettingsOverrides(false, "{}", &merged, &error));
+  EXPECT_FALSE(nlohmann::json::parse(merged).contains("FFlagSlowDownRendering"));
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

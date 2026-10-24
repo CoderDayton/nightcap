@@ -100,6 +100,7 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
       LoadRuntimeConfig(MapEnvironment(), file);
   ASSERT_TRUE(loaded) << loaded.error;
   EXPECT_TRUE(loaded.file_loaded);
+  EXPECT_EQ(loaded.config.vr_enabled(), kDefaultVrEnabled);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
@@ -114,6 +115,190 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_FALSE(loaded.config.input_capabilities().touch_enabled);
   EXPECT_TRUE(loaded.config.desktop_playability());
   EXPECT_EQ(loaded.config.device_profile().name, "pc-windows-11");
+}
+
+TEST(RuntimeConfigFileTest,
+     VrEnvironmentOverridesYamlIncludingExplicitDisable) {
+  TemporaryDirectory temporary;
+  const auto file = temporary.Write("version: 1\nvr:\n  enabled: true\n");
+  const auto enabled = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(enabled) << enabled.error;
+  EXPECT_TRUE(enabled.config.vr_enabled());
+  const auto disabled =
+      LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_VR_ENABLED", "0"}}), file);
+  ASSERT_TRUE(disabled) << disabled.error;
+  EXPECT_FALSE(disabled.config.vr_enabled());
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "maybe"}}), file);
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("VR configuration"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, VrModeSelectsOnOffOrAuto) {
+  TemporaryDirectory temporary;
+  const auto load = [&](const std::string& vr, MapEnvironment environment =
+                                                   MapEnvironment()) {
+    return LoadRuntimeConfig(environment,
+                             temporary.Write("version: 1\nvr:\n" + vr));
+  };
+  const auto on = load("  mode: on\n");
+  ASSERT_TRUE(on) << on.error;
+  EXPECT_EQ(on.config.vr_mode(), VrMode::kOn);
+  EXPECT_TRUE(on.config.vr_enabled());
+  const auto off = load("  mode: off\n");
+  ASSERT_TRUE(off) << off.error;
+  EXPECT_EQ(off.config.vr_mode(), VrMode::kOff);
+  EXPECT_FALSE(off.config.vr_enabled());
+  // auto stays on the desktop until main() finds a headset.
+  const auto automatic = load("  mode: auto\n");
+  ASSERT_TRUE(automatic) << automatic.error;
+  EXPECT_EQ(automatic.config.vr_mode(), VrMode::kAuto);
+  EXPECT_FALSE(automatic.config.vr_enabled());
+  // The older key still means on/off.
+  EXPECT_EQ(load("  enabled: true\n").config.vr_mode(), VrMode::kOn);
+  EXPECT_EQ(load("  enabled: false\n").config.vr_mode(), VrMode::kOff);
+  // --vr / --no-vr (and a detected headset) win over the file.
+  const auto forced = load("  mode: auto\n",
+                           MapEnvironment({{"MOCKTAIL_VR_ENABLED", "1"}}));
+  ASSERT_TRUE(forced) << forced.error;
+  EXPECT_EQ(forced.config.vr_mode(), VrMode::kOn);
+  EXPECT_TRUE(forced.config.vr_enabled());
+  const auto desktop = load("  mode: on\n",
+                            MapEnvironment({{"MOCKTAIL_VR_ENABLED", "0"}}));
+  ASSERT_TRUE(desktop) << desktop.error;
+  EXPECT_FALSE(desktop.config.vr_enabled());
+
+  const auto both = load("  mode: auto\n  enabled: true\n");
+  EXPECT_FALSE(both);
+  EXPECT_NE(both.error.find("vr.mode"), std::string::npos);
+  const auto invalid = load("  mode: sometimes\n");
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.mode"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaSmaaOrOff) {
+  TemporaryDirectory temporary;
+  for (const char* value : {"fxaa", "smaa", "off"}) {
+    const auto loaded = LoadRuntimeConfig(
+        MapEnvironment(),
+        temporary.Write(std::string("version: 1\nvr:\n  anti_aliasing: ") +
+                        value + "\n"));
+    EXPECT_TRUE(loaded) << value << ": " << loaded.error;
+  }
+  // The VR backend reads the exported variable, not the file.
+  const char* previous = std::getenv("MOCKTAIL_VR_ANTI_ALIASING");
+  const std::optional<std::string> saved =
+      previous ? std::optional<std::string>(previous) : std::nullopt;
+  const auto smaa = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  anti_aliasing: smaa\n"));
+  ASSERT_TRUE(smaa) << smaa.error;
+  EXPECT_EQ(smaa.config.vr_anti_aliasing(), "smaa");
+  std::string error;
+  EXPECT_TRUE(ExportRuntimeConfigEnvironment(smaa.config, &error)) << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ANTI_ALIASING"), "smaa");
+  if (saved)
+    setenv("MOCKTAIL_VR_ANTI_ALIASING", saved->c_str(), 1);
+  else
+    unsetenv("MOCKTAIL_VR_ANTI_ALIASING");
+
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  anti_aliasing: msaa\n"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.anti_aliasing"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, VrSpatialToolbarDefaultsOnAndParsesBoolean) {
+  TemporaryDirectory temporary;
+  const auto defaults =
+      LoadRuntimeConfig(MapEnvironment(), temporary.Write("version: 1\n"));
+  ASSERT_TRUE(defaults) << defaults.error;
+  EXPECT_TRUE(defaults.config.vr_spatial_toolbar());
+
+  const auto off = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  spatial_toolbar: false\n"));
+  ASSERT_TRUE(off) << off.error;
+  EXPECT_FALSE(off.config.vr_spatial_toolbar());
+
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  spatial_toolbar: sometimes\n"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.spatial_toolbar"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
+  TemporaryDirectory temporary;
+  const auto defaults = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "1"}}),
+      temporary.Write("version: 1\n"));
+  ASSERT_TRUE(defaults) << defaults.error;
+  EXPECT_EQ(defaults.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
+  EXPECT_EQ(defaults.config.vr_frame_rate().mode,
+            FrameRateLimitMode::kUnlimited);
+  EXPECT_EQ(defaults.config.active_frame_rate().mode,
+            FrameRateLimitMode::kUnlimited);
+
+  const auto file = temporary.Write(
+      "version: 1\ngraphics:\n  frame_rate_limit: 60\n"
+      "vr:\n  enabled: true\n  frame_rate_limit: 90\n");
+  const auto configured = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(configured) << configured.error;
+  EXPECT_EQ(configured.config.frame_rate().fixed_fps, 60);
+  EXPECT_EQ(configured.config.vr_frame_rate().fixed_fps, 90);
+  EXPECT_EQ(configured.config.active_frame_rate().fixed_fps, 90);
+
+  const auto desktop =
+      LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_VR_ENABLED", "0"},
+                                        {"MOCKTAIL_VR_FRAME_RATE_LIMIT", "-1"}}),
+                        file);
+  ASSERT_TRUE(desktop) << desktop.error;
+  EXPECT_EQ(desktop.config.vr_frame_rate().mode,
+            FrameRateLimitMode::kUnmanaged);
+  EXPECT_EQ(desktop.config.active_frame_rate().fixed_fps, 60);
+
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment(),
+      temporary.Write("version: 1\nvr:\n  frame_rate_limit: fastest\n"));
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("vr.frame_rate_limit"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, RejectsMalformedVrSectionAndUnsupportedKeys) {
+  TemporaryDirectory temporary;
+  for (const auto* yaml :
+       {"vr: true\n", "vr:\n  enabled: perhaps\n", "vr:\n  enabled: [true]\n",
+        "vr:\n  enable: true\n", "vr:\n  enabled: true\n  enabled: false\n"}) {
+    const auto result =
+        LoadRuntimeConfig(MapEnvironment(), temporary.Write(yaml));
+    EXPECT_FALSE(result) << yaml;
+  }
+}
+
+TEST(RuntimeConfigFileTest, ExportsResolvedVrStateAndRejectsInvalidState) {
+  const char* previous = std::getenv("MOCKTAIL_VR_ENABLED");
+  const std::optional<std::string> saved =
+      previous ? std::optional<std::string>(previous) : std::nullopt;
+  std::string error;
+  const auto enabled = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "on"}}));
+  EXPECT_TRUE(ExportRuntimeConfigEnvironment(enabled, &error)) << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), "1");
+  EXPECT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
+      << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), kDefaultVrEnabled ? "1" : "0");
+  EXPECT_FALSE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(
+          MapEnvironment({{"MOCKTAIL_VR_ENABLED", "invalid"}})),
+      &error));
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), kDefaultVrEnabled ? "1" : "0");
+  if (saved)
+    setenv("MOCKTAIL_VR_ENABLED", saved->c_str(), 1);
+  else
+    unsetenv("MOCKTAIL_VR_ENABLED");
 }
 
 TEST(RuntimeConfigBootstrapTest,

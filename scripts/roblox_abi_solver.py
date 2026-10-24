@@ -27,8 +27,8 @@ reference function is matched through independent clues:
 A match is accepted only with a score of at least ACCEPT_SCORE and a lead of
 at least ACCEPT_LEAD over the runner-up. `roblox_abi_targets.py` turns the
 matches into a profile with the same shape as the one
-`derive_roblox_host_abi_profile.py` writes, and `roblox_abi_check.py`
-compares the two on one update.
+`derive_roblox_host_abi_profile.py` writes, `roblox_abi_vr.py` into the VR
+device bridge, and `roblox_abi_check.py` compares the two on one update.
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ def _load_sibling(name: str, file_name: str):
 
 INDEX = _load_sibling("mocktail_roblox_function_index", "roblox_function_index.py")
 TARGETS = _load_sibling("mocktail_roblox_abi_targets", "roblox_abi_targets.py")
+VR = _load_sibling("mocktail_roblox_abi_vr", "roblox_abi_vr.py")
 DERIVER = INDEX.DERIVER
 FunctionIndex = INDEX.FunctionIndex
 Instruction = INDEX.Instruction
@@ -136,7 +137,7 @@ def _weighted(parts: Sequence[tuple[float | None, float]]) -> float:
     )
 
 
-class Solver(TARGETS.TargetDerivation):
+class Solver(TARGETS.TargetDerivation, VR.VrTargets):
     def __init__(self, reference: Any, candidate: Any, cache_dir: Path | None = None):
         self._start(FunctionIndex(reference, cache_dir), FunctionIndex(candidate, cache_dir))
 

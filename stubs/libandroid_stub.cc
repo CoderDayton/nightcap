@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -159,7 +160,13 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
   }
-  const std::string_view requested_view = StripAssetUriPrefix(filename);
+  std::string_view requested_view = StripAssetUriPrefix(filename);
+  std::string normalized_storage;
+  if (requested_view.find("..") != std::string_view::npos) {
+    std::filesystem::path p(requested_view);
+    normalized_storage = p.lexically_normal().string();
+    requested_view = normalized_storage;
+  }
   if (HasUnsafePathSegment(requested_view)) {
     return {};
   }
@@ -167,6 +174,13 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   const std::string requested(requested_view);
   const char* root_env = GetEnvNonEmpty("MOCKTAIL_ASSET_ROOT");
   const std::string root = root_env != nullptr ? root_env : "rbx_bin/assets";
+  std::string root_parent;
+  {
+    std::filesystem::path rp(root);
+    if (rp.filename() == "content") {
+      root_parent = rp.parent_path().string();
+    }
+  }
   const char* overlay_env = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY_DIR");
   const std::string overlay =
       overlay_env != nullptr ? overlay_env : "rbx_bin/asset_overlay";
@@ -201,7 +215,7 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
     }
   }
 
-  const std::vector<std::string> root_candidates = {
+  std::vector<std::string> root_candidates = {
       root + "/" + requested,
       root + "/" + stripped,
       root + "/content/" + requested,
@@ -209,6 +223,14 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
       root + "/ExtraContent/" + requested,
       root + "/ExtraContent/" + stripped,
   };
+  if (!root_parent.empty()) {
+    root_candidates.push_back(root_parent + "/" + requested);
+    root_candidates.push_back(root_parent + "/" + stripped);
+    root_candidates.push_back(root_parent + "/content/" + requested);
+    root_candidates.push_back(root_parent + "/content/" + stripped);
+    root_candidates.push_back(root_parent + "/ExtraContent/" + requested);
+    root_candidates.push_back(root_parent + "/ExtraContent/" + stripped);
+  }
   for (const std::string& candidate : root_candidates) {
     if (FileExists(candidate)) {
       return CacheResolvedAsset(cache_key, {candidate, false});
@@ -532,6 +554,11 @@ int AAsset_openFileDescriptor(AAsset* asset, off_t* outStart,
     fd = ::open(asset->path.c_str(), O_RDONLY | O_CLOEXEC);
   }
   if (fd < 0) {
+    if (AssetTraceEnabled()) {
+      std::fprintf(stderr,
+                   "[asset] openFileDescriptor failed for %s (errno=%d)\n",
+                   asset->path.c_str(), errno);
+    }
     return -1;
   }
   if (outStart != nullptr) {

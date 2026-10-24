@@ -126,6 +126,8 @@ set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL
   "Install vendored Vulkan-Headers" FORCE)
 add_subdirectory(third_party/Vulkan-Headers EXCLUDE_FROM_ALL)
 
+include(${CMAKE_SOURCE_DIR}/cmake/MocktailVR.cmake)
+
 include(CTest)
 if(BUILD_TESTING)
   # Package builds disable tests and do not fetch Google Test.
@@ -301,6 +303,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_account_bridge.cc
   src/runtime/roblox_message_bus_request_bridge.cc
   src/runtime/roblox_call_protocol_bridge.cc
+  src/runtime/roblox_haptic_protocol_bridge.cc
   src/runtime/payload_update_preflight.cc
   src/runtime/process_launch_policy.cc
   src/runtime/process_diagnostics.cc
@@ -640,6 +643,7 @@ target_compile_definitions(mocktail PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
 )
 target_link_libraries(mocktail PRIVATE
+  Mocktail::VR
   mocktail_legacy_runtime
   mocktail_auth_runtime_composition
   mocktail_failure_dialog_runtime

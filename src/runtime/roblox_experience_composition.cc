@@ -466,6 +466,20 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     (void)ReleaseGlobalObjects();
     return status;
   }
+  std::unique_ptr<RobloxHapticProtocolBridge> haptic_protocol_bridge;
+  if (RobloxHapticProtocolBridge::EnabledForThisSession()) {
+    haptic_protocol_bridge = std::make_unique<RobloxHapticProtocolBridge>(
+        environment_, permissions_symbols_, permissions_objects);
+    status = haptic_protocol_bridge->Initialize();
+    if (!status.ok()) {
+      (void)call_protocol_bridge->Shutdown();
+      (void)permissions_bridge->Shutdown();
+      (void)browser_service_bridge->Shutdown();
+      (void)web_view_bridge->Shutdown();
+      (void)ReleaseGlobalObjects();
+      return status;
+    }
+  }
   // AccountProtocol only shortens a device-integrity login challenge that
   // cannot succeed here, so its absence or failure never blocks startup.
   std::unique_ptr<RobloxAccountBridge> account_bridge;
@@ -493,6 +507,7 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     browser_service_bridge_ = std::move(browser_service_bridge);
     permissions_bridge_ = std::move(permissions_bridge);
     call_protocol_bridge_ = std::move(call_protocol_bridge);
+    haptic_protocol_bridge_ = std::move(haptic_protocol_bridge);
     account_bridge_ = std::move(account_bridge);
     platform_protocols_initialized_ = true;
   }
@@ -1694,6 +1709,7 @@ Status RobloxExperienceComposition::Shutdown() {
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge;
   std::unique_ptr<RobloxCallProtocolBridge> call_protocol_bridge;
+  std::unique_ptr<RobloxHapticProtocolBridge> haptic_protocol_bridge;
   std::unique_ptr<RobloxAccountBridge> account_bridge;
   std::shared_ptr<WebViewHelperProcess> web_surface_process;
   jnivm::VM* late_lifecycle_vm = nullptr;
@@ -1720,6 +1736,7 @@ Status RobloxExperienceComposition::Shutdown() {
     browser_service_bridge = std::move(browser_service_bridge_);
     permissions_bridge = std::move(permissions_bridge_);
     call_protocol_bridge = std::move(call_protocol_bridge_);
+    haptic_protocol_bridge = std::move(haptic_protocol_bridge_);
     account_bridge = std::move(account_bridge_);
     web_surface_process = std::move(web_surface_process_);
     web_surface_logical_exit_observer_ = {};
@@ -1737,9 +1754,14 @@ Status RobloxExperienceComposition::Shutdown() {
   if (web_surface_process != nullptr) {
     (void)web_surface_process->RequestClose();
   }
-  Status status = call_protocol_bridge != nullptr
-                      ? call_protocol_bridge->Shutdown()
+  Status status = haptic_protocol_bridge != nullptr
+                      ? haptic_protocol_bridge->Shutdown()
                       : Status::Ok();
+  const Status call_status = call_protocol_bridge != nullptr
+                                 ? call_protocol_bridge->Shutdown()
+                                 : Status::Ok();
+  if (status.ok())
+    status = call_status;
   const Status account_status =
       account_bridge != nullptr ? account_bridge->Shutdown() : Status::Ok();
   if (status.ok())

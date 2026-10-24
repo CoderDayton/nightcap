@@ -171,6 +171,8 @@ You can also edit the file by hand. Useful options:
 
 - `graphics.frame_rate_limit: display` to unlock FPS to your monitor's rate.
 - `graphics.vsync: off` for the lowest lag, at the cost of tearing.
+- `vr.frame_rate_limit` sets the cap in VR. It defaults to `unlimited`, so the
+  headset's refresh rate paces frames; use `-1` for Roblox's 60 FPS cap.
 - `graphics.backend: opengl` if Vulkan does not work on your GPU.
 
 ## Building
@@ -253,6 +255,59 @@ To run the same checks as CI before each commit and push, install
 ```bash
 lefthook install
 ```
+
+## Experimental VR
+
+Experimental OpenXR VR support on Linux `x86_64` using WiVRn or SteamVR/ALVR.
+
+VR works on these Roblox builds. On any other build, `--vr` stops at start-up
+and names them:
+
+| Build | Roblox version |
+| --- | --- |
+| 2998 | 2.736.1408 |
+| 3092 | 2.738.1397 |
+| 3222 | 2.742.1059 |
+
+### Build with VR
+
+VR support is compiled in when the OpenXR SDK submodule is checked out
+(`MOCKTAIL_ENABLE_VR` defaults to `AUTO`). Without the submodule the build
+skips VR. Pass `-DMOCKTAIL_ENABLE_VR=ON` to make a missing submodule an error,
+or `OFF` to leave VR out:
+
+```bash
+git submodule update --init third_party/OpenXR-SDK
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4
+```
+
+VR stays off at runtime until you pass `--vr` or set `vr.mode: on` in
+`config.yaml`. `vr.mode: auto` starts in VR only when SteamVR is running with a
+headset connected.
+
+### Run
+
+Start WiVRn or SteamVR/ALVR and connect your headset first:
+
+```bash
+./build/mocktail --vr
+```
+
+The OpenXR runtime is detected automatically. To pick one manually:
+
+```bash
+MOCKTAIL_VR_RUNTIME=wivrn ./build/mocktail --vr
+# or
+MOCKTAIL_VR_RUNTIME=alvr MOCKTAIL_GRAPHICS_BACKEND=direct-vulkan ./build/mocktail --vr
+```
+
+If you previously set `XR_RUNTIME_JSON`, unset it before switching runtimes.
+Use `--no-vr` for desktop mode.
+
+A keyboard opens in the headset when a text box takes focus. The rest is in
+[docs/VR.md](docs/VR.md): menus and typing, every VR environment variable,
+adding a Roblox build, and testing without a headset.
 
 ## Known limitations
 

@@ -1,0 +1,305 @@
+#ifndef MOCKTAIL_VR_VIRTUAL_KEYBOARD_H_
+#define MOCKTAIL_VR_VIRTUAL_KEYBOARD_H_
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+#include "mocktail/vr/emoji_catalog.h"
+#include "mocktail/vr/vr_pose_math.h"
+
+namespace mocktail::vr {
+
+// Host side of the in-headset keyboard. The window module owns Roblox's
+// TextBox focus and the SDL event path; main wires these callbacks so the VR
+// library never links the window library. Every callback may be called from
+// the render thread and must be thread-safe.
+struct VirtualKeyboardHost {
+  void* context = nullptr;
+  // True while Roblox has asked for an on-screen keyboard (showKeyboard).
+  bool (*input_requested)(void* context) = nullptr;
+  // Commits UTF-8 text exactly like an SDL_EVENT_TEXT_INPUT.
+  void (*commit_text)(void* context, const char* utf8) = nullptr;
+  // Presses and releases one SDL scancode exactly like a physical key, with
+  // Ctrl held when `ctrl` is set (Ctrl+A, Ctrl+V).
+  void (*press_key)(void* context, std::uint32_t scancode, bool ctrl) = nullptr;
+};
+
+// Where the keyboard remembers the spot it was last dragged to, across
+// launches. Empty (the default) keeps it for this run only.
+void SetVirtualKeyboardStateFile(const std::filesystem::path& file);
+std::filesystem::path VirtualKeyboardStateFile();
+
+// The remembered spot is the panel pose relative to the head, turned to face
+// the way the head faces (yaw only), so it follows the player around.
+bool LoadVirtualKeyboardPlacement(const std::filesystem::path& file,
+                                  pose::Pose* relative);
+bool SaveVirtualKeyboardPlacement(const std::filesystem::path& file,
+                                  const pose::Pose& relative);
+
+// Installs the process-wide host. Passing nullptr clears it.
+void SetVirtualKeyboardHost(const VirtualKeyboardHost* host);
+VirtualKeyboardHost CurrentVirtualKeyboardHost();
+
+// The focused TextBox's current contents, shown in the panel's text field.
+// The desktop draws TextBox text as a window overlay that never reaches the
+// eye images, so the headset would otherwise show an empty box. Safe from any
+// thread; the text is sensitive and is never logged.
+struct VirtualKeyboardText {
+  std::string utf8;
+  int cursor_utf16 = 0;
+  bool password = false;
+  std::uint64_t revision = 0;
+};
+void SetVirtualKeyboardText(const char* utf8, std::size_t size,
+                            int cursor_utf16, bool password);
+void ClearVirtualKeyboardText();
+VirtualKeyboardText CurrentVirtualKeyboardText();
+
+enum class VirtualKeyAction {
+  kText,       // commits text, or shift_text under Shift/Caps Lock
+  kBackspace,
+  kEnter,
+  kTab,
+  kShift,      // one-shot
+  kCapsLock,
+  kSpace,
+  kClose,      // Escape: leaves the TextBox and hides the panel
+  kLeft,       // moves the TextBox caret
+  kRight,
+  kSelectAll,  // Ctrl+A
+  kPaste,      // Ctrl+V
+  kEmoji,      // shows the emoji picker
+  kLetters,    // goes back to the letters
+  kEmojiGroup, // shows emoji group VirtualKey::group
+};
+
+struct VirtualKey {
+  std::string label;
+  std::string text;        // committed text for kText
+  std::string shift_text;  // committed under Shift (Caps Lock for letters)
+  VirtualKeyAction action = VirtualKeyAction::kText;
+  // Long-press choices, the key's own text first (emoji skin tones).
+  std::vector<std::string> alternates;
+  int group = -1;      // for kEmojiGroup
+  bool emoji = false;  // label is an emoji, drawn in colour
+  // Panel UV rectangle, origin top-left, both axes 0..1.
+  float u0 = 0.f, v0 = 0.f, u1 = 0.f, v1 = 0.f;
+};
+
+// One controller's pointing state for a frame. Positions are metres in the
+// OpenXR LOCAL space; the ray points along the aim pose's -Z axis.
+struct VirtualKeyboardPointer {
+  bool valid = false;
+  pose::Pose aim{};
+  float trigger = 0.f;      // 0..1
+  float thumbstick_x = 0.f;  // -1..1; moves the caret while aimed at the panel
+  float thumbstick_y = 0.f;  // -1..1, up positive; scrolls the emoji grid
+};
+
+struct VirtualKeyPress {
+  std::uint32_t scancode = 0;
+  bool ctrl = false;
+  bool operator==(const VirtualKeyPress& other) const {
+    return scancode == other.scancode && ctrl == other.ctrl;
+  }
+};
+
+// What the keyboard asks the host to do after an Update.
+struct VirtualKeyboardOutput {
+  std::vector<std::string> text;       // committed in order
+  std::vector<VirtualKeyPress> keys;   // pressed in order, after text
+  bool haptic[2] = {false, false};     // a short tick on that hand
+};
+
+// Long-press alternates (accents) for one held key, drawn above it.
+struct VirtualKeyboardAccents {
+  int hand = -1;              // -1 when closed
+  int key = -1;               // the held key
+  std::vector<VirtualKey> cells;
+  int selected = -1;          // cell under the pointer, -1 for none
+};
+
+// Ray/quad intersection. The quad is centred on `quad` with its face along
+// +Z, `width` x `height` metres. Returns false when the ray misses or points
+// away. u/v are panel UVs (origin top-left).
+bool IntersectVirtualKeyboardPanel(const pose::Pose& quad, float width,
+                                   float height, const pose::Pose& aim,
+                                   float* u, float* v, float* distance);
+
+// Pure keyboard state machine: layout, paging, shift, hover, trigger edges and
+// backspace auto-repeat. No OpenXR, Vulkan or SDL types, so it is unit-tested
+// directly.
+class VirtualKeyboard {
+ public:
+  // A text field over 15 x 5 normal-key units, 4 cm per unit, and a drag
+  // bar strip below them.
+  static constexpr int kTextureWidth = 1500;
+  static constexpr int kTextureHeight = 684;
+  static constexpr float kPanelWidthMetres = 0.60f;
+  // Texture aspect matches the panel so keys are not stretched.
+  static constexpr float kPanelHeightMetres =
+      kPanelWidthMetres * kTextureHeight / kTextureWidth;
+  // Top share of the panel holding the text field; keys fill the rest of the
+  // body, which ends at kBodyFraction. Below it sits the drag bar.
+  static constexpr float kFieldFraction = 120.f / 684.f;
+  static constexpr float kBodyFraction = 620.f / 684.f;
+  // The drag bar's hit area, centred under the body.
+  static constexpr float kHandleU0 = 0.38f;
+  static constexpr float kHandleU1 = 0.62f;
+  static constexpr int kColumns = 15;
+  static constexpr int kRows = 5;
+
+  VirtualKeyboard();
+
+  // Opens the panel in front of `head` (LOCAL space), below eye level and
+  // tilted up toward the viewer. Resets Shift and hover; keeps Caps Lock.
+  void Show(const pose::Pose& head);
+  void Hide();
+  bool visible() const { return visible_; }
+  const pose::Pose& panel_pose() const { return panel_; }
+  // The emoji the picker offers; empty hides the emoji key.
+  void SetEmojiCatalog(EmojiCatalog catalog);
+  bool emoji_mode() const { return emoji_mode_; }
+  int emoji_group() const { return emoji_group_; }
+  // First grid row shown, and how many rows the current group has.
+  int emoji_scroll() const { return emoji_scroll_; }
+  int emoji_rows() const;
+
+  // Where Show puts the panel, relative to the head (see
+  // LoadVirtualKeyboardPlacement). Dragging the panel replaces it.
+  void SetPlacement(const pose::Pose& relative);
+  // True once after a drag moved the panel; `relative` is the new spot.
+  bool TakePlacementChanged(pose::Pose* relative);
+
+  // Latest head pose; a dragged panel turns to face it.
+  void SetHead(const pose::Pose& head) {
+    head_ = head;
+    head_valid_ = true;
+  }
+
+  // Text shown in the field. Bumps the revision only when it changed.
+  void SetText(const VirtualKeyboardText& text);
+  const std::string& text() const { return text_.utf8; }
+  int text_cursor_utf16() const { return text_.cursor_utf16; }
+  bool text_password() const { return text_.password; }
+
+  // Processes one frame of both pointers. now_ns is monotonic.
+  VirtualKeyboardOutput Update(std::uint64_t now_ns,
+                               const VirtualKeyboardPointer (&pointers)[2]);
+
+  // True when this hand's trigger belongs to the keyboard this frame (aimed
+  // at the panel, or a press that began on it is still held, including after
+  // the panel hid mid-press). The backend withholds that trigger from Roblox
+  // so a key press is not also a click.
+  bool CapturesTrigger(int hand) const;
+  // True while this hand's thumbstick moves the caret instead of the avatar.
+  bool CapturesThumbstick(int hand) const;
+
+  // Current layout, with Shift/Caps Lock applied to the labels.
+  const std::vector<VirtualKey>& keys() const;
+  // -1 when the hand is not over a key.
+  int hovered_key(int hand) const { return hands_[hand & 1].hovered; }
+  int pressed_key(int hand) const { return hands_[hand & 1].pressed; }
+  const VirtualKeyboardAccents& accents() const { return accents_; }
+  // Drag bar state, for drawing.
+  bool handle_hovered() const;
+  bool dragging() const { return hands_[0].dragging || hands_[1].dragging; }
+  // Pointer position on the panel, when the hand is over it.
+  bool cursor(int hand, float* u, float* v) const;
+  bool shifted() const { return shift_; }
+  bool caps_lock() const { return caps_lock_; }
+
+  // Advances whenever anything visible changes; the backend re-rasterizes
+  // and re-uploads only when this moves.
+  std::uint64_t revision() const { return revision_; }
+
+ private:
+  struct Hand {
+    int hovered = -1;
+    int pressed = -1;   // key under an active press, -1 otherwise
+    bool trigger_down = false;
+    bool captured = false;
+    bool over_panel = false;
+    bool over_handle = false;
+    bool dragging = false;
+    float drag_distance = 0.f;
+    pose::Vec3 drag_offset{};  // grab point from the panel centre, panel-local
+    float u = 0.f, v = 0.f;
+    std::uint64_t pressed_at_ns = 0;
+    std::uint64_t repeat_at_ns = 0;
+    int stick_direction = 0;  // -1 left, 1 right, 0 centred
+    std::uint64_t stick_repeat_at_ns = 0;
+    int scroll_direction = 0;  // emoji grid: -1 up, 1 down
+    std::uint64_t scroll_repeat_at_ns = 0;
+    // Dragging the emoji grid with the trigger scrolls it.
+    bool scrolling = false;
+    float scroll_anchor_v = 0.f;
+    int scroll_anchor = 0;
+  };
+
+  void RebuildLayout();
+  int KeyAt(float u, float v) const;
+  bool OverPanelBody(float u, float v) const;
+  static bool OverHandle(float u, float v);
+  std::string Output(const VirtualKey& key) const;
+  // Runs a key's action when it is pressed; text keys wait for the release.
+  void Activate(const VirtualKey& key, VirtualKeyboardOutput* output);
+  void Commit(const std::string& text, VirtualKeyboardOutput* output);
+  void OpenAccents(int hand, int key);
+  void CloseAccents();
+  void Drag(Hand* hand, const VirtualKeyboardPointer& pointer);
+  void ScrollEmoji(int row);
+  void RememberPlacement();
+  void Touch() { ++revision_; }
+
+  bool visible_ = false;
+  bool shift_ = false;
+  bool caps_lock_ = false;
+  pose::Pose panel_{};
+  pose::Pose head_{};
+  bool head_valid_ = false;
+  VirtualKeyboardText text_;
+  Hand hands_[2];
+  // A press the keyboard owned when it hid; held until that trigger releases.
+  bool release_pending_[2] = {false, false};
+  std::uint64_t cursor_drawn_ns_ = 0;
+  std::vector<VirtualKey> keys_;
+  VirtualKeyboardAccents accents_;
+  EmojiCatalog emoji_;
+  bool emoji_mode_ = false;
+  int emoji_group_ = 0;
+  int emoji_scroll_ = 0;
+  bool placement_valid_ = false;
+  bool placement_changed_ = false;
+  pose::Pose placement_{};
+  std::uint64_t revision_ = 1;
+};
+
+// Draws the keyboard into a tightly packed RGBA8 buffer
+// (VirtualKeyboard::kTextureWidth x kTextureHeight, sRGB-encoded, straight
+// alpha), styled like Roblox's in-experience menu. The panel is slightly
+// see-through with rounded corners; keys are opaque. Labels use Roblox's
+// Builder Sans and special keys its BuilderIcons when the payload has them,
+// else fontconfig's sans face. Glyphs are cached per label, so redraws after
+// the first are plain fills and blits.
+class VirtualKeyboardRasterizer {
+ public:
+  VirtualKeyboardRasterizer();
+  ~VirtualKeyboardRasterizer();
+  VirtualKeyboardRasterizer(const VirtualKeyboardRasterizer&) = delete;
+  VirtualKeyboardRasterizer& operator=(const VirtualKeyboardRasterizer&) =
+      delete;
+
+  // Returns false when no font could be opened; keys still draw, unlabelled.
+  bool Draw(const VirtualKeyboard& keyboard, std::vector<std::uint8_t>* rgba);
+
+ private:
+  struct Impl;
+  Impl* impl_ = nullptr;
+};
+
+}  // namespace mocktail::vr
+
+#endif  // MOCKTAIL_VR_VIRTUAL_KEYBOARD_H_
