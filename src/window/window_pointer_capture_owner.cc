@@ -158,8 +158,11 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   }
   const bool roblox_pans = !query_ok || !mouse_lock.reports_current_position ||
                            mouse_lock.current_position;
-  const bool right_drag_active =
-      right_button_held_ && game_session_active_ && roblox_pans;
+  const bool right_drag_active = right_button_held_ && game_session_active_ &&
+                                 (roblox_pans || right_drag_panning_);
+  right_drag_panning_ =
+      right_drag_active && !text_input_active &&
+      (right_drag_panning_ || (query_ok && mouse_lock.current_position));
   // Roblox can keep Shift Lock active while chat has text focus. Honor that
   // native lock so camera motion stays relative and cannot leave the window.
   // Text editing only suppresses the host's fallback RMB camera capture.
