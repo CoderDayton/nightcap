@@ -14,7 +14,7 @@ namespace {
 
 constexpr std::uint64_t kMebibyte = 1024U * 1024U;
 // Below this the guest default is already a reasonable share of the host.
-constexpr std::uint64_t kMinimumHostMemoryBytes = 4096U * kMebibyte;
+constexpr std::uint64_t kMinimumHostMemoryBytes = 2048U * kMebibyte;
 constexpr std::uint64_t kMinimumBudgetBytes = 256U * kMebibyte;
 constexpr std::uint64_t kMaximumBudgetBytes = 1536U * kMebibyte;
 constexpr std::string_view kVideoMemoryOverride =

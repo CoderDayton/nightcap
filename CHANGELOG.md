@@ -40,6 +40,8 @@ Release notes on GitHub are taken from the matching section here.
   or first person leaves the cursor at the center of the window, as on Windows.
 - The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
   the `.desktop` file, so the menu entry pointed at a file that does not exist.
+- PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.
+  The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
 
 ### Changed
 
