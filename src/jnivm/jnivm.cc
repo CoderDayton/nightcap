@@ -2630,6 +2630,60 @@ bool HandleRobloxExperienceLifecycleStaticVoidMethod(jclass clazz,
   return true;
 }
 
+bool IsRobloxPromptNativePurchase(jclass clazz, jmethodID method_id) {
+  const std::shared_ptr<Class> method_class = ClassFromJClass(clazz);
+  if (method_class == nullptr || method_id == nullptr ||
+      method_class->GetName() != kRobloxNativeGlJavaInterfaceClass) {
+    return false;
+  }
+  const JniMethod method = MethodOf(method_id);
+  const std::string_view signature(MethodSignature(method_id));
+  return (method == JniMethod::kPromptNativePurchase ||
+          method == JniMethod::kPromptNativePurchaseWithPayload ||
+          method == JniMethod::kPromptNativePurchaseWithPaymentSessionId) &&
+         signature.rfind("(JLjava/lang/String;", 0) == 0 &&
+         signature.size() >= 2 &&
+         signature.substr(signature.size() - 2) == ")V";
+}
+
+void DispatchRobloxPromptNativePurchase(jmethodID method_id, jlong player_id,
+                                        jstring product_id) {
+  std::string product;
+  {
+    std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
+    product = StringFromJString(product_id);
+  }
+  std::cerr << "  [store] " << MethodName(method_id)
+            << " requested; Google Play is not available\n";
+  VM* vm = CurrentVM();
+  if (vm != nullptr) {
+    vm->DispatchRobloxStorePurchase(player_id, product);
+  }
+}
+
+bool HandleRobloxPromptNativePurchaseV(jclass clazz, jmethodID method_id,
+                                       va_list args) {
+  if (!IsRobloxPromptNativePurchase(clazz, method_id)) {
+    return false;
+  }
+  const jlong player_id = va_arg(args, jlong);
+  const auto product_id = va_arg(args, jstring);
+  DispatchRobloxPromptNativePurchase(method_id, player_id, product_id);
+  return true;
+}
+
+bool HandleRobloxPromptNativePurchaseA(jclass clazz, jmethodID method_id,
+                                       const jvalue* args) {
+  if (!IsRobloxPromptNativePurchase(clazz, method_id)) {
+    return false;
+  }
+  if (args != nullptr) {
+    DispatchRobloxPromptNativePurchase(method_id, args[0].j,
+                                       static_cast<jstring>(args[1].l));
+  }
+  return true;
+}
+
 bool DispatchRobloxTextInputShow(jlong text_box, jboolean show_native_input,
                                  jbyteArray text, jobject info) {
   RobloxTextInputShowRequest request;
@@ -3454,6 +3508,9 @@ void HandleStaticVoidMethodV(JNIEnv *env, jclass clazz, jmethodID methodID,
   if (HandleRobloxTextInputStaticVoidMethodV(clazz, methodID, args)) {
     return;
   }
+  if (HandleRobloxPromptNativePurchaseV(clazz, methodID, args)) {
+    return;
+  }
   if (HandleRobloxExperienceLifecycleStaticVoidMethod(clazz, methodID)) {
     return;
   }
@@ -3542,6 +3599,9 @@ void HandleStaticVoidMethodV(JNIEnv *env, jclass clazz, jmethodID methodID,
 void HandleStaticVoidMethodA(JNIEnv *env, jclass clazz, jmethodID methodID,
                              const jvalue *args) {
   if (HandleRobloxTextInputStaticVoidMethodA(clazz, methodID, args)) {
+    return;
+  }
+  if (HandleRobloxPromptNativePurchaseA(clazz, methodID, args)) {
     return;
   }
   if (HandleRobloxExperienceLifecycleStaticVoidMethod(clazz, methodID)) {
@@ -5641,6 +5701,27 @@ void VM::DispatchRobloxAccountSwitch(bool signed_in) {
   }
   if (handler != nullptr) {
     handler(context, signed_in);
+  }
+}
+
+void VM::SetRobloxStorePurchaseHandler(void* context,
+                                       RobloxStorePurchaseHandler handler) {
+  std::lock_guard<std::mutex> lock(roblox_store_purchase_mutex_);
+  roblox_store_purchase_context_ = context;
+  roblox_store_purchase_handler_ = handler;
+}
+
+void VM::DispatchRobloxStorePurchase(jlong player_id,
+                                     const std::string& product_id) {
+  void* context = nullptr;
+  RobloxStorePurchaseHandler handler = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(roblox_store_purchase_mutex_);
+    context = roblox_store_purchase_context_;
+    handler = roblox_store_purchase_handler_;
+  }
+  if (handler != nullptr) {
+    handler(context, player_id, product_id);
   }
 }
 

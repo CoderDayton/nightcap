@@ -22,6 +22,11 @@ Release notes on GitHub are taken from the matching section here.
   Roblox also restarts Nightcap at the sign-in screen, so adding an account that Roblox can only
   add after signing everyone out finishes instead of loading forever.
 - A MangoHud setting under Performance (`performance.mangohud`) launches Nightcap with `MANGOHUD=1`.
+- Buying Robux opens roblox.com/upgrades/robux in your browser, since Nightcap has no Google
+  Play. This works from a package on the Robux page and from a game's purchase prompt. The game is
+  told nothing was bought, so its prompt closes instead of waiting. A desktop notification says
+  where the purchase went. Sign in to the same account in the browser, buy there, then try the
+  purchase in the game again.
 
 ### Fixed
 

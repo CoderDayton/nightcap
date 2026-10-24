@@ -68,6 +68,8 @@ using RobloxCredentialProvider = RobloxCredentialView (*)(const void *context);
 using RobloxCookieGetter = jstring (*)(JNIEnv* env, jclass clazz,
                                        jstring domain);
 using RobloxAccountSwitchHandler = void (*)(void* context, bool signed_in);
+using RobloxStorePurchaseHandler = void (*)(void* context, jlong player_id,
+                                            const std::string& product_id);
 
 jobject CreateAndroidConfiguration(JNIEnv *env);
 
@@ -306,6 +308,10 @@ public:
   bool CopyRobloxCredentialFromProvider(std::string *credential) const;
 
   void SetRobloxCookieGetter(RobloxCookieGetter getter);
+  void SetRobloxStorePurchaseHandler(void* context,
+                                     RobloxStorePurchaseHandler handler);
+  void DispatchRobloxStorePurchase(jlong player_id,
+                                   const std::string& product_id);
   bool RefreshRobloxCredentialFromEngine(JNIEnv* env);
   void SetRobloxAccountSwitchHandler(void* context,
                                      RobloxAccountSwitchHandler handler);
@@ -484,6 +490,10 @@ private:
   RobloxCookieGetter roblox_cookie_getter_ = nullptr;
   void* roblox_account_switch_context_ = nullptr;
   RobloxAccountSwitchHandler roblox_account_switch_handler_ = nullptr;
+
+  std::mutex roblox_store_purchase_mutex_;
+  void* roblox_store_purchase_context_ = nullptr;
+  RobloxStorePurchaseHandler roblox_store_purchase_handler_ = nullptr;
 
   struct RobloxCredentialSinkBinding {
     std::shared_ptr<void> context;

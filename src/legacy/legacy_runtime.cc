@@ -76,6 +76,7 @@
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
+#include "runtime/roblox_store_purchase.h"
 #include "runtime/roblox_experience_composition.h"
 #include "runtime/roblox_game_session_native_adapter.h"
 #include "runtime/roblox_mouse_behavior_query.h"
@@ -262,6 +263,14 @@ NativeNoArgFn g_pending_main_thread_start_lua_app_dm = nullptr;
 jclass g_native_gl_class_for_main_thread = nullptr;
 jnivm::VM* g_vm_for_main_thread_pump = nullptr;
 std::atomic<int> g_main_thread_message_pump_ready{0};
+mocktail::runtime::RobloxStorePurchaseQueue g_store_purchases;
+std::atomic<mocktail::runtime::RobloxInGamePurchaseFinishedFn>
+    g_in_game_purchase_finished{nullptr};
+
+void QueueStorePurchase(void*, jlong player_id,
+                        const std::string& product_id) {
+  g_store_purchases.Push(player_id, product_id);
+}
 uint64_t g_pending_main_thread_start_lua_due_ms = 0;
 bool g_pending_main_thread_start_lua_started = false;
 NativeSetTaskSchedulerBackgroundModeFn
@@ -1081,6 +1090,10 @@ void PumpRobloxMainThreadMessagesOnce() {
                   pump_start_ns, pump_end_ns, args, 1);
     }
   }
+  mocktail::runtime::FinishStorePurchasesInBrowser(
+      g_store_purchases.Take(), env, g_native_gl_class_for_main_thread,
+      g_in_game_purchase_finished.load(),
+      &mocktail::runtime::HandOffRobuxPurchaseToBrowser);
   if (__builtin_expect(trace_pump, 0)) {
     if (pump_count <= 10 || pump_count % 100 == 0) {
       std::cerr << "  [main] nativeCallMessagesFromMainThread returned #"
@@ -4952,6 +4965,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   g_native_gl_class_for_main_thread =
       reinterpret_cast<jclass>(native_gl_interface_class.get());
   g_vm_for_main_thread_pump = jni_vm.get();
+  jni_vm->SetRobloxStorePurchaseHandler(nullptr, &QueueStorePurchase);
   jni_vm->RegisterClass("com/roblox/engine/jni/NativeInputInterface");
   jni_vm->RegisterClass("com/roblox/engine/jni/NativeSettingsInterface");
   jni_vm->RegisterClass("com/roblox/engine/jni/NativeAppBridgeInterface");
@@ -6491,6 +6505,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
             "JNIAppLifecycleNativeAdapter_setActive"));
     g_native_call_messages_from_main_thread =
         native_call_messages_from_main_thread;
+    g_in_game_purchase_finished.store(
+        reinterpret_cast<mocktail::runtime::RobloxInGamePurchaseFinishedFn>(
+            linker::ResolveSymbol(
+                roblox_handle,
+                "Java_com_roblox_engine_jni_NativeGLInterface_"
+                "nativeInGamePurchaseFinishedV2")));
     std::cout << "  [engine] Stage6 symbol resolve done" << std::endl;
     std::cout << "    native_init_with_params="
               << reinterpret_cast<const void*>(native_init_with_params) << '\n'

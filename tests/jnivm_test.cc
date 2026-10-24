@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(__x86_64__)
@@ -3641,6 +3642,83 @@ TEST_F(JniVmTest, UnknownGameActivityCallbackIsRecordedOnEveryVoidPath) {
               JNI_TRUE)
         << name;
   }
+}
+
+struct StorePurchaseProbe {
+  std::vector<std::pair<jlong, std::string>> requests;
+};
+
+void RecordStorePurchase(void* context, jlong player_id,
+                         const std::string& product_id) {
+  static_cast<StorePurchaseProbe*>(context)->requests.emplace_back(
+      player_id, product_id);
+}
+
+void CallStaticVoidMethodVForStoreTest(JNIEnv* env, jclass clazz,
+                                       jmethodID method_id, ...) {
+  va_list args;
+  va_start(args, method_id);
+  env->functions->CallStaticVoidMethodV(env, clazz, method_id, args);
+  va_end(args);
+}
+
+TEST(JniVmStorePurchaseTest, PromptNativePurchaseReachesTheHostOnEveryPath) {
+  VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass native_gl =
+      env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+  ASSERT_NE(native_gl, nullptr);
+  StorePurchaseProbe probe;
+  vm.SetRobloxStorePurchaseHandler(&probe, &RecordStorePurchase);
+
+  jstring product = env->NewStringUTF("com.roblox.robux80");
+  jstring extra = env->NewStringUTF("extra");
+  struct Entry {
+    const char* name;
+    const char* signature;
+  };
+  const Entry entries[] = {
+      {"promptNativePurchase", "(JLjava/lang/String;)V"},
+      {"promptNativePurchase", "(JLjava/lang/String;Ljava/lang/String;)V"},
+      {"promptNativePurchaseWithPayload",
+       "(JLjava/lang/String;Ljava/lang/String;)V"},
+      {"promptNativePurchaseWithPaymentSessionId",
+       "(JLjava/lang/String;Ljava/lang/String;)V"},
+      {"promptNativePurchaseWithPaymentSessionId",
+       "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"},
+  };
+  for (const Entry& entry : entries) {
+    jmethodID method =
+        env->GetStaticMethodID(native_gl, entry.name, entry.signature);
+    ASSERT_NE(method, nullptr) << entry.name;
+    env->CallStaticVoidMethod(native_gl, method, jlong{42}, product, extra,
+                              extra);
+    CallStaticVoidMethodVForStoreTest(env, native_gl, method, jlong{43},
+                                      product, extra, extra);
+    jvalue args[4] = {};
+    args[0].j = 44;
+    args[1].l = product;
+    args[2].l = extra;
+    args[3].l = extra;
+    env->CallStaticVoidMethodA(native_gl, method, args);
+  }
+  ASSERT_EQ(probe.requests.size(), 15u);
+  for (std::size_t i = 0; i < probe.requests.size(); ++i) {
+    EXPECT_EQ(probe.requests[i].first, jlong{42} + static_cast<jlong>(i % 3));
+    EXPECT_EQ(probe.requests[i].second, "com.roblox.robux80");
+  }
+
+  jclass other = env->FindClass("java/lang/Object");
+  jmethodID other_method = env->GetStaticMethodID(
+      other, "promptNativePurchase", "(JLjava/lang/String;)V");
+  env->CallStaticVoidMethod(other, other_method, jlong{1}, product);
+  EXPECT_EQ(probe.requests.size(), 15u);
+
+  vm.SetRobloxStorePurchaseHandler(nullptr, nullptr);
+  jmethodID prompt = env->GetStaticMethodID(native_gl, "promptNativePurchase",
+                                            "(JLjava/lang/String;)V");
+  env->CallStaticVoidMethod(native_gl, prompt, jlong{1}, product);
+  EXPECT_EQ(probe.requests.size(), 15u);
 }
 
 } // namespace

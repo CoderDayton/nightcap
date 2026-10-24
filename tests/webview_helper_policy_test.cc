@@ -352,6 +352,50 @@ TEST(WebViewHelperPolicyTest, KeepsNativeUserAgentForVerificationRoutes) {
   }
 }
 
+TEST(WebViewHelperPolicyTest, RecognizesAndroidStorePurchaseNavigation) {
+  for (const char* url : {
+           "https://www.roblox.com/mobile-app-upgrades/buy?id=com.roblox.robux80",
+           "https://roblox.com/mobile-app-upgrades/buy?id=x&ctx=robux",
+           "HTTPS://WWW.ROBLOX.COM/Mobile-App-Upgrades/Buy?id=x",
+       }) {
+    EXPECT_TRUE(IsAndroidStorePurchaseNavigation(url)) << url;
+  }
+  for (const char* url : {
+           "https://www.roblox.com/upgrades/robux",
+           "https://www.roblox.com/mobile-app-upgrades/native-ios/bc",
+           "https://www.roblox.com/home?next=/mobile-app-upgrades/buy?id=x",
+           "https://evil.example/mobile-app-upgrades/buy?id=x",
+           "http://www.roblox.com/mobile-app-upgrades/buy?id=x",
+       }) {
+    EXPECT_FALSE(IsAndroidStorePurchaseNavigation(url)) << url;
+  }
+  EXPECT_FALSE(IsAndroidStorePurchaseNavigation(nullptr));
+}
+
+TEST(WebViewHelperPolicyTest, HandsOffStorePurchasesOnlyFromRobloxPages) {
+  const char* buy = "https://www.roblox.com/mobile-app-upgrades/buy?id=x";
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(
+                "https://www.roblox.com/upgrades/robux?showHeader=true", buy),
+            StorePurchaseNavigation::kHandOff);
+  EXPECT_EQ(ClassifyStorePurchaseNavigation("https://roblox.com/home", buy),
+            StorePurchaseNavigation::kHandOff);
+  for (const char* current : {
+           "https://evil.example/", "https://evilroblox.com/",
+           "about:blank", "http://www.roblox.com/upgrades/robux",
+       }) {
+    EXPECT_EQ(ClassifyStorePurchaseNavigation(current, buy),
+              StorePurchaseNavigation::kIgnore)
+        << current;
+  }
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(nullptr, buy),
+            StorePurchaseNavigation::kIgnore);
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(
+                "https://evil.example/", "https://www.roblox.com/home"),
+            StorePurchaseNavigation::kNone);
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(nullptr, nullptr),
+            StorePurchaseNavigation::kNone);
+}
+
 TEST(WebViewHelperPolicyTest, ShowsLoadErrorsForContentWithoutTelemetryNoise) {
   for (const char* uri : {
            "https://arkoselabs.roblox.com/v2/public-key/api.js",
