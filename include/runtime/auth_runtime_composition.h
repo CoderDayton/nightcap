@@ -82,6 +82,7 @@ struct AuthRuntimeComposition {
   SecureRobloxCredential credential;
   long http_status = 0;
   bool rejected_credential_retired = false;
+  bool clear_web_view_cookie = false;
   std::string error;
 
   explicit operator bool() const { return jni_vm != nullptr; }

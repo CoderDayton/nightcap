@@ -18,7 +18,9 @@ Release notes on GitHub are taken from the matching section here.
   Nightcap first, so the clear still runs.
 - Roblox's own account switcher is on for every account 13 or older. Roblox's servers turn it on
   for some accounts only, and Nightcap's app policy had it off for all. After a switch, Nightcap
-  saves the new sign-in and restarts as that account, as the Android app does.
+  saves the new sign-in and restarts as that account, as the Android app does. Signing out from
+  Roblox also restarts Nightcap at the sign-in screen, so adding an account that Roblox can only
+  add after signing everyone out finishes instead of loading forever.
 
 ### Fixed
 

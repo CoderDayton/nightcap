@@ -26,7 +26,8 @@ class RuntimeDependencies final {
         account_identity_(std::move(composition.account_identity)),
         roblox_credential_(std::move(composition.credential)),
         clear_persisted_web_view_cookie_(
-            composition.rejected_credential_retired),
+            composition.rejected_credential_retired ||
+            composition.clear_web_view_cookie),
         shutdown_before_platform_(shutdown_before_platform) {}
   ~RuntimeDependencies() {
     if (jni_vm_ != nullptr && shutdown_before_platform_ != nullptr) {

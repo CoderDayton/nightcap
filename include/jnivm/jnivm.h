@@ -67,7 +67,7 @@ struct RobloxCredentialView {
 using RobloxCredentialProvider = RobloxCredentialView (*)(const void *context);
 using RobloxCookieGetter = jstring (*)(JNIEnv* env, jclass clazz,
                                        jstring domain);
-using RobloxAccountSwitchHandler = void (*)(void* context);
+using RobloxAccountSwitchHandler = void (*)(void* context, bool signed_in);
 
 jobject CreateAndroidConfiguration(JNIEnv *env);
 
@@ -309,7 +309,7 @@ public:
   bool RefreshRobloxCredentialFromEngine(JNIEnv* env);
   void SetRobloxAccountSwitchHandler(void* context,
                                      RobloxAccountSwitchHandler handler);
-  void DispatchRobloxAccountSwitch();
+  void DispatchRobloxAccountSwitch(bool signed_in);
 
   void SetRobloxCredentialSink(std::shared_ptr<void> context,
                                const RobloxCredentialSinkCallbacks &callbacks);
