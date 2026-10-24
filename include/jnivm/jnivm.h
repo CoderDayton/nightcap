@@ -67,6 +67,7 @@ struct RobloxCredentialView {
 using RobloxCredentialProvider = RobloxCredentialView (*)(const void *context);
 using RobloxCookieGetter = jstring (*)(JNIEnv* env, jclass clazz,
                                        jstring domain);
+using RobloxAccountSwitchHandler = void (*)(void* context, bool signed_in);
 using RobloxStorePurchaseHandler = void (*)(void* context, jlong player_id,
                                             const std::string& product_id);
 
@@ -312,6 +313,9 @@ public:
   void DispatchRobloxStorePurchase(jlong player_id,
                                    const std::string& product_id);
   bool RefreshRobloxCredentialFromEngine(JNIEnv* env);
+  void SetRobloxAccountSwitchHandler(void* context,
+                                     RobloxAccountSwitchHandler handler);
+  void DispatchRobloxAccountSwitch(bool signed_in);
 
   void SetRobloxCredentialSink(std::shared_ptr<void> context,
                                const RobloxCredentialSinkCallbacks &callbacks);
@@ -484,6 +488,8 @@ private:
 
   mutable std::mutex roblox_cookie_getter_mutex_;
   RobloxCookieGetter roblox_cookie_getter_ = nullptr;
+  void* roblox_account_switch_context_ = nullptr;
+  RobloxAccountSwitchHandler roblox_account_switch_handler_ = nullptr;
 
   std::mutex roblox_store_purchase_mutex_;
   void* roblox_store_purchase_context_ = nullptr;

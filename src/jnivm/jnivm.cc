@@ -501,6 +501,9 @@ void ForwardDataModelNotificationToAppBridgeListener(jstring type,
   DeleteLocalJniReference(listener);
 }
 
+void HandleRobloxDidSwitchAccount(jobject obj, const char* name);
+void HandleRobloxDidLogOut(jobject obj, const char* name);
+
 void RecordDataModelNotification(jobject obj, jstring type, jstring data) {
   const std::string type_value = StringFromJString(type);
   const std::string data_value = StringFromJString(data);
@@ -518,6 +521,15 @@ void RecordDataModelNotification(jobject obj, jstring type, jstring data) {
     (void)vm->DispatchRobloxDataModelNotification(vm->GetJNIEnv(), type, data);
   }
   ForwardDataModelNotificationToAppBridgeListener(type, data);
+  if (type_value == "DID_SWITCH_ACCOUNT" || type_value == "DID_LOG_OUT") {
+    jobject helper = SingletonObject("com/roblox/client/startup/NativeHelper");
+    if (type_value == "DID_SWITCH_ACCOUNT") {
+      HandleRobloxDidSwitchAccount(helper,
+                                   "gameActivity_onDidSwitchAccountReceived");
+    } else {
+      HandleRobloxDidLogOut(helper, "gameActivity_onDidLogOutReceived");
+    }
+  }
 }
 
 jobject MakeNativeHelperObject(jobject activity) {
@@ -787,16 +799,17 @@ bool CookieAvailableForJava() {
   return available;
 }
 
-void SyncRobloxCookiesFromEngine(VM* vm) {
+bool SyncRobloxCookiesFromEngine(VM* vm) {
   if (vm == nullptr) {
-    return;
+    return false;
   }
   JNIEnv* env = vm->GetJNIEnv();
-  (void)vm->RefreshRobloxCredentialFromEngine(env);
+  const bool refreshed = vm->RefreshRobloxCredentialFromEngine(env);
   std::string header = CookieHeaderForJava();
   jstring cookie = static_cast<jstring>(MakeString(header.c_str()));
   (void)vm->DispatchRobloxCookieSync(env, cookie);
   ClearCookieString(&header);
+  return refreshed;
 }
 
 bool IsRobloxCookieSyncMethod(jobject obj, jmethodID method_id) {
@@ -811,6 +824,55 @@ bool IsRobloxDidLogInMethod(jobject obj, jmethodID method_id) {
          MethodOf(method_id) == JniMethod::kGameActivityOnDidLogInReceived &&
          std::strcmp(MethodSignature(method_id), "(Ljava/lang/String;)V") == 0 &&
          ObjectClassName(obj) == "com/roblox/client/startup/NativeHelper";
+}
+
+bool IsNativeHelperNotification(jobject obj, jmethodID method_id,
+                                JniMethod method) {
+  return obj != nullptr && method_id != nullptr &&
+         MethodOf(method_id) == method &&
+         std::strcmp(MethodSignature(method_id), "()V") == 0 &&
+         ObjectClassName(obj) == "com/roblox/client/startup/NativeHelper";
+}
+
+bool IsRobloxDidSwitchAccountMethod(jobject obj, jmethodID method_id) {
+  return IsNativeHelperNotification(
+      obj, method_id, JniMethod::kGameActivityOnDidSwitchAccountReceived);
+}
+
+bool IsRobloxDidLogOutMethod(jobject obj, jmethodID method_id) {
+  return IsNativeHelperNotification(
+      obj, method_id, JniMethod::kGameActivityOnDidLogOutReceived);
+}
+
+void HandleRobloxDidSwitchAccount(jobject obj, const char* name) {
+  VM* vm = CurrentVM();
+  const bool refreshed = SyncRobloxCookiesFromEngine(vm);
+  RecordNativeHelperCallback(obj, name);
+  if (refreshed) {
+    vm->DispatchRobloxAccountSwitch(true);
+  }
+}
+
+void HandleRobloxDidLogOut(jobject obj, const char* name) {
+  VM* vm = CurrentVM();
+  const bool was_signed_in =
+      vm != nullptr && vm->GetRobloxAuthIdentitySnapshot().user_id > 0;
+  std::string before = CookieHeaderForJava();
+  std::string signed_out_value = CookieValueFromHeader(before);
+  ClearCookieString(&before);
+  bool engine_signed_in = SyncRobloxCookiesFromEngine(vm);
+  if (engine_signed_in && !signed_out_value.empty()) {
+    std::string after = CookieHeaderForJava();
+    std::string after_value = CookieValueFromHeader(after);
+    engine_signed_in = after_value != signed_out_value;
+    ClearCookieString(&after);
+    ClearCookieString(&after_value);
+  }
+  ClearCookieString(&signed_out_value);
+  RecordNativeHelperCallback(obj, name);
+  if (engine_signed_in || was_signed_in) {
+    vm->DispatchRobloxAccountSwitch(engine_signed_in);
+  }
 }
 
 bool CookieObjectResultForMethodV(jmethodID method_id, va_list args,
@@ -1461,6 +1523,14 @@ void HandleVoidMethod(jobject obj, jmethodID method_id, va_list args) {
     RecordNativeHelperCallback(obj, name);
     return;
   }
+  if (IsRobloxDidSwitchAccountMethod(obj, method_id)) {
+    HandleRobloxDidSwitchAccount(obj, name);
+    return;
+  }
+  if (IsRobloxDidLogOutMethod(obj, method_id)) {
+    HandleRobloxDidLogOut(obj, name);
+    return;
+  }
   if (method == JniMethod::kGameActivityOnAppReady ||
       method == JniMethod::kGameActivityOnDidSignUp ||
       method == JniMethod::kGameActivityOnMotionEventListening ||
@@ -1471,7 +1541,6 @@ void HandleVoidMethod(jobject obj, jmethodID method_id, va_list args) {
     return;
   }
   if (method == JniMethod::kGameActivityOnDidLogOutReceived ||
-      method == JniMethod::kGameActivityOnDidSwitchAccountReceived ||
       method == JniMethod::kGameActivityOnLuaAppDidReturn ||
       method == JniMethod::kGameActivityOnLuaTextBoxPropertyChanged ||
       method == JniMethod::kGameActivityOnRestartLuaApp ||
@@ -3712,6 +3781,14 @@ void HandleVoidMethodA(jobject obj, jmethodID method_id, const jvalue *args) {
     SyncRobloxCookiesFromEngine(CurrentVM());
     return;
   }
+  if (IsRobloxDidSwitchAccountMethod(obj, method_id)) {
+    HandleRobloxDidSwitchAccount(obj, name);
+    return;
+  }
+  if (IsRobloxDidLogOutMethod(obj, method_id)) {
+    HandleRobloxDidLogOut(obj, name);
+    return;
+  }
   if (!args) {
     return;
   }
@@ -5605,6 +5682,26 @@ bool VM::CopyRobloxCredentialFromProvider(std::string* credential) const {
 void VM::SetRobloxCookieGetter(RobloxCookieGetter getter) {
   std::lock_guard<std::mutex> lock(roblox_cookie_getter_mutex_);
   roblox_cookie_getter_ = getter;
+}
+
+void VM::SetRobloxAccountSwitchHandler(void* context,
+                                       RobloxAccountSwitchHandler handler) {
+  std::lock_guard<std::mutex> lock(roblox_cookie_getter_mutex_);
+  roblox_account_switch_context_ = context;
+  roblox_account_switch_handler_ = handler;
+}
+
+void VM::DispatchRobloxAccountSwitch(bool signed_in) {
+  void* context = nullptr;
+  RobloxAccountSwitchHandler handler = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(roblox_cookie_getter_mutex_);
+    context = roblox_account_switch_context_;
+    handler = roblox_account_switch_handler_;
+  }
+  if (handler != nullptr) {
+    handler(context, signed_in);
+  }
 }
 
 void VM::SetRobloxStorePurchaseHandler(void* context,

@@ -192,6 +192,8 @@ void NormalizeDesktopLayout(nlohmann::json* policy) {
   (*policy)["ShouldSystemBarUsuallyBePresent"] = true;
   (*policy)["DevicePreferencesPersistentPresenceVariant"] = "windows";
   (*policy)["ShowUncheckedBadge"] = false;
+  (*policy)["AccountSwitcherEnabled"] = true;
+  (*policy)["ExcludeAccountSwitcher"] = false;
 }
 
 bool DecodePolicy(const nlohmann::json& encoded, nlohmann::json* policy) {

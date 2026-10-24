@@ -949,6 +949,16 @@ TEST(AuthRuntimeCompositionTest,
   EXPECT_EQ(ReadJavaString(env, java_cookie), dispatched_header);
 }
 
+TEST(AuthRuntimeCompositionTest, SignOutRestartClearsTheWebViewCookie) {
+  AuthRuntimeComposition composition;
+  composition.clear_web_view_cookie = true;
+  mocktail::legacy::RuntimeDependencies dependencies(std::move(composition));
+  EXPECT_TRUE(dependencies.clear_persisted_web_view_cookie());
+
+  mocktail::legacy::RuntimeDependencies guest(AuthRuntimeComposition{});
+  EXPECT_FALSE(guest.clear_persisted_web_view_cookie());
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

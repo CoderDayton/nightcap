@@ -183,14 +183,62 @@ class OtaPatchRestartWatch final {
   std::thread thread_;
 };
 
-void RestartForOtaPatches() {
+constexpr char kSignedOutRestartVariable[] = "MOCKTAIL_SIGNED_OUT_RESTART";
+std::atomic<bool> g_account_switch_restart{false};
+std::atomic<bool> g_signed_out_restart{false};
+std::filesystem::path g_account_cookie_file;
+
+void RequestAccountSwitchRestart(void*, bool signed_in) {
+  if (g_account_switch_restart.exchange(true)) {
+    return;
+  }
+  if (signed_in) {
+    std::cout << "  [auth] account switched; restarting signed in as the new "
+                 "account\n";
+  } else {
+    g_signed_out_restart = true;
+    std::error_code error;
+    std::filesystem::remove(g_account_cookie_file, error);
+    if (error) {
+      std::cerr << "  [auth] signed out, but the saved sign-in could not be "
+                   "removed: "
+                << error.message() << '\n';
+    }
+    std::cout << "  [auth] signed out; restarting at the Roblox sign-in "
+                 "screen\n";
+  }
+  std::cout << std::flush;
+  kill(getpid(), SIGTERM);
+}
+
+void RestartNightcap(bool after_ota_patches) {
   std::optional<mocktail::runtime::LaunchCommand> command =
       mocktail::runtime::ReadLaunchCommand(getpid());
   if (!command.has_value() || command->environment.empty()) {
     std::cerr << "  [runtime] cannot read this launch, so no restart\n";
     return;
   }
-  command->environment.push_back(std::string(kOtaRestartedVariable) + "=1");
+  if (after_ota_patches) {
+    command->environment.push_back(std::string(kOtaRestartedVariable) +
+                                   "=1");
+  }
+  std::vector<std::string>& environment = command->environment;
+  const std::string signed_out_prefix =
+      std::string(kSignedOutRestartVariable) + "=";
+  environment.erase(
+      std::remove_if(environment.begin(), environment.end(),
+                     [&](const std::string& variable) {
+                       return variable.rfind(signed_out_prefix, 0) == 0 ||
+                              (g_account_switch_restart &&
+                               (variable.rfind("MOCKTAIL_ROBLOX_COOKIES=", 0) ==
+                                    0 ||
+                                variable.rfind("MOCKTAIL_COOKIE_FILE=", 0) ==
+                                    0));
+                     }),
+      environment.end());
+  if (g_signed_out_restart) {
+    environment.push_back(signed_out_prefix + "1");
+  }
   std::cout.flush();
   std::cerr.flush();
   std::string error;
@@ -1301,6 +1349,11 @@ int main(int argc, char* argv[]) {
     android_window_callbacks.set_flags = &QueueAndroidWindowFlags;
     composition.jni_vm->SetAndroidWindowCallbacks(
         std::move(android_window_context), android_window_callbacks);
+    g_account_cookie_file = paths.cookie_file();
+    composition.clear_web_view_cookie =
+        environment.Get(kSignedOutRestartVariable) == "1";
+    composition.jni_vm->SetRobloxAccountSwitchHandler(
+        nullptr, &RequestAccountSwitchRestart);
     const mocktail::Status audio_status =
         mocktail::audio::InstallFmodJniAudioBridge(composition.jni_vm.get());
     if (!audio_status.ok()) {
@@ -1391,9 +1444,9 @@ int main(int argc, char* argv[]) {
       command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog.MarkSuccessful();
     support_bundle_guard.Disarm();
-    if (ota_restart_watch.restart_requested()) {
+    if (ota_restart_watch.restart_requested() || g_account_switch_restart) {
       session_log = mocktail::runtime::SessionLog();
-      RestartForOtaPatches();
+      RestartNightcap(ota_restart_watch.restart_requested());
     }
     // Guest atexit handlers target workers that cannot be joined. Host
     // shutdown is already complete here, so do not re-enter guest teardown.
