@@ -37,6 +37,7 @@ struct RobloxExperienceLaunchRequest {
   std::string join_attempt_id;
   std::string join_attempt_origin;
   std::string iso_context;
+  std::string game_id_to_exclude;
   std::string canonical_json;
 };
 
@@ -61,11 +62,13 @@ using GetExperienceLaunchIdFn = jstring (*)(JNIEnv *, jclass);
 using SubscribeExperienceLaunchRawFn = jobject (*)(JNIEnv *, jobject, jstring,
                                                    jobject, jboolean);
 using DeleteMessageBusConnectionFn = void (*)(JNIEnv *, jobject, jlong);
+using GetMessageBusLastRawFn = jstring (*)(JNIEnv *, jclass, jstring);
 
 struct RobloxExperienceMessageBusSymbols {
   GetExperienceLaunchIdFn get_launch_id = nullptr;
   SubscribeExperienceLaunchRawFn subscribe_raw = nullptr;
   DeleteMessageBusConnectionFn delete_connection = nullptr;
+  GetMessageBusLastRawFn get_last_raw = nullptr;
 
   bool complete() const {
     return get_launch_id != nullptr && subscribe_raw != nullptr &&
@@ -116,6 +119,8 @@ public:
   // adapters. It follows the same bounded parser and dispatch path.
   Status HandleOwnedMessage(std::string message);
 
+  Status ReadLastLaunch(RobloxExperienceLaunchRequest *request, bool *found);
+
   bool initialized() const;
 
 private:
@@ -137,6 +142,8 @@ private:
   jobject raw_callback_ = nullptr;
   jobject connection_ = nullptr;
   jlong connection_handle_ = 0;
+  std::string launch_id_;
+  std::string last_delivered_json_;
   std::shared_ptr<RawCallbackTarget> raw_callback_target_;
   std::size_t in_flight_dispatches_ = 0;
   bool initializing_ = false;

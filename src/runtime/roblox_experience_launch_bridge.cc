@@ -122,6 +122,7 @@ Status ParseRobloxExperienceLaunchJson(const std::string &json,
       {"joinAttemptOrigin",
        &RobloxExperienceLaunchRequest::join_attempt_origin},
       {"isoContext", &RobloxExperienceLaunchRequest::iso_context},
+      {"gameIdToExclude", &RobloxExperienceLaunchRequest::game_id_to_exclude},
   };
   for (const StringField &field : kStringFields) {
     if (!status.ok()) {
@@ -210,6 +211,11 @@ Status RobloxExperienceLaunchBridge::Initialize() {
         status.ok() ? Unavailable("ExperienceProtocol launch id is null")
                     : status);
   }
+  std::string launch_id_text;
+  if (const char *chars = env->GetStringUTFChars(launch_id, nullptr)) {
+    launch_id_text = chars;
+    env->ReleaseStringUTFChars(launch_id, chars);
+  }
 
   auto raw_callback_target = std::make_shared<RawCallbackTarget>();
   raw_callback_target->bridge = this;
@@ -291,6 +297,7 @@ Status RobloxExperienceLaunchBridge::Initialize() {
     raw_callback_ = raw_callback;
     connection_ = connection;
     connection_handle_ = connection_handle;
+    launch_id_ = std::move(launch_id_text);
     raw_callback_target_ = std::move(raw_callback_target);
     initialized_ = true;
     initializing_ = false;
@@ -386,8 +393,73 @@ Status RobloxExperienceLaunchBridge::HandleOwnedMessage(std::string message) {
   if (status.ok()) {
     status = sink_.dispatch(sink_.context, request);
   }
+  if (status.ok()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_delivered_json_ = request.canonical_json;
+  }
   EndDispatch();
   return status;
+}
+
+Status RobloxExperienceLaunchBridge::ReadLastLaunch(
+    RobloxExperienceLaunchRequest *request, bool *found) {
+  if (request == nullptr || found == nullptr) {
+    return Invalid("last experience launch output is null");
+  }
+  *found = false;
+  std::string launch_id;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_ || symbols_.get_last_raw == nullptr ||
+        launch_id_.empty()) {
+      return Status::Ok();
+    }
+    launch_id = launch_id_;
+  }
+  JNIEnv *env = nullptr;
+  Status status = environment_.Acquire(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  jstring channel = env->NewStringUTF(launch_id.c_str());
+  if (channel == nullptr) {
+    status = CheckJniException(env, "create ExperienceProtocol launch id");
+    return status.ok() ? Unavailable("could not create launch id string")
+                       : status;
+  }
+  jstring last = symbols_.get_last_raw(env, nullptr, channel);
+  env->DeleteLocalRef(channel);
+  status = CheckJniException(env, "read last ExperienceProtocol launch");
+  if (!status.ok() || last == nullptr) {
+    return status;
+  }
+  const jsize size = env->GetStringUTFLength(last);
+  if (size <= 0) {
+    env->DeleteLocalRef(last);
+    return Status::Ok();
+  }
+  if (static_cast<std::size_t>(size) > kMaximumExperienceLaunchJsonBytes) {
+    env->DeleteLocalRef(last);
+    return Invalid("last ExperienceProtocol launch is too large");
+  }
+  const char *chars = env->GetStringUTFChars(last, nullptr);
+  if (chars == nullptr) {
+    env->DeleteLocalRef(last);
+    return Unavailable("could not copy last ExperienceProtocol launch");
+  }
+  std::string owned(chars, static_cast<std::size_t>(size));
+  env->ReleaseStringUTFChars(last, chars);
+  env->DeleteLocalRef(last);
+  status = ParseRobloxExperienceLaunchJson(owned, request);
+  if (!status.ok()) {
+    return status;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (request->canonical_json != last_delivered_json_) {
+    last_delivered_json_ = request->canonical_json;
+    *found = true;
+  }
+  return Status::Ok();
 }
 
 bool RobloxExperienceLaunchBridge::initialized() const {
