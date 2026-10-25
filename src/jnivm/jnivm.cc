@@ -654,6 +654,14 @@ std::string NormalizeCookieHeader(const std::string& content) {
   }
   std::size_t name_pos = text.find(kCookieName);
   if (name_pos != std::string::npos) {
+    const std::size_t after_name = name_pos + std::strlen(kCookieName);
+    if (after_name < text.size() && text[after_name] == '\t') {
+      std::size_t end = text.find_first_of(";\r\n\t", after_name + 1);
+      std::string value = TrimString(text.substr(
+          after_name + 1,
+          end == std::string::npos ? std::string::npos : end - after_name - 1));
+      return value.empty() ? std::string() : std::string(kCookiePrefix) + value;
+    }
     std::string value = CookieValueAfterEquals(text, name_pos);
     return value.empty() ? std::string() : std::string(kCookiePrefix) + value;
   }
@@ -848,8 +856,8 @@ void HandleRobloxDidSwitchAccount(jobject obj, const char* name) {
   VM* vm = CurrentVM();
   const bool refreshed = SyncRobloxCookiesFromEngine(vm);
   RecordNativeHelperCallback(obj, name);
-  if (refreshed) {
-    vm->DispatchRobloxAccountSwitch(true);
+  if (vm != nullptr) {
+    vm->DispatchRobloxAccountSwitch(refreshed);
   }
 }
 

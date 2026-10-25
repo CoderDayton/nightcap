@@ -177,6 +177,13 @@ jstring QuickLoginCookieGetter(JNIEnv* env, jclass, jstring) {
       ".ROBLOSECURITY=_|quick-login-cookie; RBXEventTracker=ignored");
 }
 
+jstring EngineJarCookieGetter(JNIEnv* env, jclass, jstring) {
+  return env->NewStringUTF(
+      ".roblox.com\tTRUE\t/\tFALSE\t1827484320\tGuestData\tUserID=-1; "
+      "#HttpOnly_.roblox.com\tTRUE\t/\tTRUE\t0\t.ROBLOSECURITY\t"
+      "_|WARNING:-DO-NOT-SHARE-THIS.|_switched-account");
+}
+
 struct FmodAudioDeviceProbe {
   int init_calls = 0;
   int write_calls = 0;
@@ -2342,7 +2349,33 @@ TEST_F(JniVmTest, DidSwitchAccountSavesNewCookieThenNotifiesHost) {
   EXPECT_EQ(switch_probe.calls, 2);
 }
 
-TEST_F(JniVmTest, DidSwitchAccountWithoutEngineCookieDoesNotNotifyHost) {
+TEST_F(JniVmTest, DidSwitchAccountReadsCookieFromEngineNetscapeJar) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  vm_->SetRobloxCookieGetter(&EngineJarCookieGetter);
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_switch = env->GetMethodID(
+      helper_class, "gameActivity_onDidSwitchAccountReceived", "()V");
+  ASSERT_NE(did_switch, nullptr);
+
+  env->CallVoidMethod(helper, did_switch);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_TRUE(switch_probe.signed_in);
+  EXPECT_EQ(switch_probe.credential_at_switch,
+            ".ROBLOSECURITY=_|WARNING:-DO-NOT-SHARE-THIS.|_switched-account");
+}
+
+TEST_F(JniVmTest, DidSwitchAccountWithoutEngineCookieNotifiesHostSignedOut) {
   const std::string guest;
   vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
   auto credential_probe = std::make_shared<CredentialSinkProbe>();
@@ -2361,7 +2394,8 @@ TEST_F(JniVmTest, DidSwitchAccountWithoutEngineCookieDoesNotNotifyHost) {
   ASSERT_NE(did_switch, nullptr);
 
   env->CallVoidMethod(helper, did_switch);
-  EXPECT_EQ(switch_probe.calls, 0);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_FALSE(switch_probe.signed_in);
 }
 
 TEST_F(JniVmTest, DidLogOutWhileSignedInNotifiesHostSignedOut) {
