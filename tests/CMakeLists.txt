@@ -528,6 +528,14 @@ target_link_libraries(roblox_permissions_bridge_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_permissions_bridge_test)
 
+add_executable(roblox_app_storage_test roblox_app_storage_test.cc)
+target_link_libraries(roblox_app_storage_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(roblox_app_storage_test)
+
 add_executable(roblox_account_bridge_test roblox_account_bridge_test.cc)
 target_link_libraries(roblox_account_bridge_test PRIVATE
   Mocktail::LegacyJni
@@ -1274,6 +1282,7 @@ gtest_discover_tests(roblox_web_view_bridge_test)
 gtest_discover_tests(roblox_store_purchase_test)
 gtest_discover_tests(desktop_notification_test)
 gtest_discover_tests(roblox_permissions_bridge_test)
+gtest_discover_tests(roblox_app_storage_test)
 gtest_discover_tests(roblox_account_bridge_test)
 gtest_discover_tests(roblox_browser_service_bridge_test)
 gtest_discover_tests(roblox_fresh_game_launch_controller_test)
