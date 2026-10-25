@@ -4956,15 +4956,24 @@ bool VM::DispatchRobloxCookieSet(JNIEnv* env, jobjectArray cookies,
     std::lock_guard<std::mutex> lock(roblox_data_model_notification_mutex_);
     binding = roblox_data_model_notification_binding_;
   }
-  if (binding == nullptr || binding->context == nullptr ||
-      binding->callbacks.on_set_cookie == nullptr || env == nullptr ||
-      cookies == nullptr || url == nullptr) {
+  RobloxSetCookieObserverBinding observer;
+  {
+    std::lock_guard<std::mutex> lock(roblox_set_cookie_observer_mutex_);
+    observer = roblox_set_cookie_observer_binding_;
+  }
+  const bool notify = binding != nullptr && binding->context != nullptr &&
+                      binding->callbacks.on_set_cookie != nullptr;
+  const bool observe =
+      observer.context != nullptr && observer.callbacks.observe != nullptr;
+  if ((!notify && !observe) || env == nullptr || cookies == nullptr ||
+      url == nullptr) {
     return false;
   }
   const jsize cookie_count = env->GetArrayLength(cookies);
   if (cookie_count < 0 || cookie_count > kMaximumCookieSetCount) {
     return false;
   }
+  std::vector<std::string> raw_cookies;
   for (jsize index = 0; index < cookie_count; ++index) {
     auto cookie =
         static_cast<jstring>(env->GetObjectArrayElement(cookies, index));
@@ -4981,11 +4990,18 @@ bool VM::DispatchRobloxCookieSet(JNIEnv* env, jobjectArray cookies,
       env->DeleteLocalRef(cookie);
       continue;
     }
-    std::string raw_cookie(cookie_chars,
-                           static_cast<std::size_t>(cookie_size));
+    raw_cookies.emplace_back(cookie_chars,
+                             static_cast<std::size_t>(cookie_size));
     env->ReleaseStringUTFChars(cookie, cookie_chars);
     env->DeleteLocalRef(cookie);
-    std::string canonical_cookie = NormalizeCookieHeader(raw_cookie);
+  }
+  if (observe) {
+    observer.callbacks.observe(observer.context.get(), StringFromJString(url),
+                               raw_cookies);
+  }
+  for (std::string& raw_cookie : raw_cookies) {
+    std::string canonical_cookie =
+        notify ? NormalizeCookieHeader(raw_cookie) : std::string();
     ClearCookieString(&raw_cookie);
     if (canonical_cookie.empty()) {
       continue;
@@ -5771,6 +5787,23 @@ void VM::SetRobloxCredentialSink(
   std::lock_guard<std::mutex> lock(roblox_credential_sink_mutex_);
   roblox_credential_sink_binding_.context = std::move(context);
   roblox_credential_sink_binding_.callbacks = callbacks;
+}
+
+void VM::SetRobloxSetCookieObserver(
+    std::shared_ptr<void> context,
+    const RobloxSetCookieObserverCallbacks& callbacks) {
+  std::lock_guard<std::mutex> lock(roblox_set_cookie_observer_mutex_);
+  roblox_set_cookie_observer_binding_.context = std::move(context);
+  roblox_set_cookie_observer_binding_.callbacks = callbacks;
+}
+
+void VM::ClearRobloxSetCookieObserver() {
+  RobloxSetCookieObserverBinding old_binding;
+  {
+    std::lock_guard<std::mutex> lock(roblox_set_cookie_observer_mutex_);
+    old_binding = std::move(roblox_set_cookie_observer_binding_);
+    roblox_set_cookie_observer_binding_ = {};
+  }
 }
 
 void VM::ClearRobloxCredentialSink() {

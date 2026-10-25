@@ -438,6 +438,111 @@ TEST(AuthRuntimeCompositionTest,
 }
 
 TEST(AuthRuntimeCompositionTest,
+     NativeCookieCallbackKeepsOtherRobloxCookiesAcrossRestart) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
+  const RuntimePaths paths = PathsFor(environment, directory);
+  FakeHttpClient initial_http;
+  services::AuthService initial_auth_service(initial_http);
+  AuthRuntimeComposition composition =
+      ComposeAuthRuntime(environment, paths, initial_auth_service);
+  ASSERT_TRUE(composition);
+  EXPECT_TRUE(composition.saved_cookies.empty());
+
+  auto callback_probe = std::make_shared<NativeCookieCallbackProbe>();
+  jnivm::RobloxDataModelNotificationCallbacks callbacks;
+  callbacks.on_notification = &IgnoreDataModelNotification;
+  callbacks.on_set_cookie = &CaptureNativeCookie;
+  composition.jni_vm->SetRobloxDataModelNotificationCallbacks(callback_probe,
+                                                              callbacks);
+  {
+    const ScopedRobloxCredentialBinding binding(composition.jni_vm.get(),
+                                                composition.credential);
+    ASSERT_TRUE(binding.bound());
+    JNIEnv* env = composition.jni_vm->GetJNIEnv();
+    jclass handler_class = env->FindClass(
+        "com/roblox/universalapp/cookie/"
+        "JNICookieProtocol$OnSetCookieHandler");
+    jobject handler = env->AllocObject(handler_class);
+    jmethodID on_set_cookie = env->GetMethodID(
+        handler_class, "onSetCookie",
+        "([Ljava/lang/String;Ljava/lang/String;)V");
+    jclass string_class = env->FindClass("java/lang/String");
+    jobjectArray cookies = env->NewObjectArray(2, string_class, nullptr);
+    env->SetObjectArrayElement(
+        cookies, 0,
+        env->NewStringUTF(
+            ".ROBLOSECURITY=_|native-login-cookie; Domain=.roblox.com; "
+            "Path=/; Secure; HttpOnly"));
+    env->SetObjectArrayElement(
+        cookies, 1,
+        env->NewStringUTF("RBXSessionTracker=sessionid=abc; "
+                          "Domain=.roblox.com; Path=/; Secure"));
+    env->CallVoidMethod(
+        handler, on_set_cookie, cookies,
+        env->NewStringUTF(
+            "https://apis.roblox.com/account-switcher/v1/switch"));
+  }
+  composition.jni_vm->ClearRobloxDataModelNotificationCallbacks();
+
+  const std::filesystem::path jar_file = RobloxCookieJarFile(paths);
+  const std::string stored = ReadFile(jar_file);
+  EXPECT_NE(stored.find("RBXSessionTracker"), std::string::npos);
+  EXPECT_EQ(stored.find("ROBLOSECURITY"), std::string::npos);
+  EXPECT_EQ(std::filesystem::status(jar_file).permissions() &
+                std::filesystem::perms::all,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_write);
+
+  MapEnvironment restart_environment;
+  restart_environment.Set("HOME", directory.path().string());
+  FakeHttpClient restart_http;
+  restart_http.response = {
+      true,
+      200,
+      R"({"id":777,"name":"RestartUser","displayName":"Restart User"})",
+      {}};
+  services::AuthService restart_auth_service(restart_http);
+  const AuthRuntimeComposition restarted = ComposeAuthRuntime(
+      restart_environment, PathsFor(restart_environment, directory),
+      restart_auth_service);
+  ASSERT_TRUE(restarted) << restarted.error;
+  EXPECT_EQ(restarted.saved_cookies.view(), "RBXSessionTracker=sessionid=abc");
+}
+
+TEST(AuthRuntimeCompositionTest, StartupCookiesAddSavedJarToCredential) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  const RuntimePaths paths = PathsFor(environment, directory);
+  const std::string credential =
+      std::string(".ROBLOSECURITY=") + kCredential;
+  ASSERT_TRUE(PersistRobloxCookie(paths.cookie_file(), credential));
+  const std::filesystem::path jar_file = RobloxCookieJarFile(paths);
+  ASSERT_TRUE(WriteFile(
+      jar_file,
+      R"({"cookies":[{"name":"RBXSessionTracker","value":"sessionid=abc",)"
+      R"("domain":"roblox.com","path":"/"}]})"));
+  std::filesystem::permissions(jar_file,
+                               std::filesystem::perms::owner_read |
+                                   std::filesystem::perms::owner_write);
+  FakeHttpClient http;
+  http.response = {true, 200, R"({"id":1,"name":"A","displayName":"A"})", {}};
+  services::AuthService auth_service(http);
+  AuthRuntimeComposition composition =
+      ComposeAuthRuntime(environment, paths, auth_service);
+  ASSERT_TRUE(composition) << composition.error;
+
+  const mocktail::legacy::RuntimeDependencies dependencies(
+      std::move(composition));
+  EXPECT_EQ(dependencies.roblox_credential().view(), credential);
+  EXPECT_EQ(dependencies.startup_cookies().view(),
+            credential + "; RBXSessionTracker=sessionid=abc");
+}
+
+TEST(AuthRuntimeCompositionTest,
      RejectedEnvironmentCredentialNeverCreatesProductionVm) {
   TempDirectory directory;
   MapEnvironment environment;

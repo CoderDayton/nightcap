@@ -80,6 +80,8 @@ struct AuthRuntimeComposition {
   std::shared_ptr<jnivm::VM> jni_vm;
   jnivm::RobloxAuthIdentity account_identity;
   SecureRobloxCredential credential;
+  // Other roblox.com cookies saved from earlier runs, as a Cookie header.
+  SecureRobloxCredential saved_cookies;
   long http_status = 0;
   bool rejected_credential_retired = false;
   bool clear_web_view_cookie = false;
@@ -99,6 +101,9 @@ AuthRuntimeComposition ComposeAuthRuntime(
     const Environment& environment, const RuntimePaths& paths,
     services::AuthService& auth_service,
     std::shared_ptr<services::HttpClient> live_auth_http_client);
+
+// Private file holding the RobloxCookieJar next to the managed credential.
+std::filesystem::path RobloxCookieJarFile(const RuntimePaths& paths);
 
 // Persists a raw or prefixed Roblox credential to the given cookie file atomically.
 bool PersistRobloxCookie(const std::filesystem::path& path,

@@ -2662,6 +2662,60 @@ TEST_F(JniVmTest, CookieProtocolPersistsAndDispatchesExactSetHandler) {
   EXPECT_FALSE(vm_->DispatchRobloxCookieSet(env, cookies, url));
 }
 
+struct SetCookieObserverProbe {
+  int calls = 0;
+  std::string url;
+  std::vector<std::string> cookies;
+};
+
+void ProbeSetCookieObserver(void* context, const std::string& url,
+                            const std::vector<std::string>& cookies) {
+  auto* probe = static_cast<SetCookieObserverProbe*>(context);
+  ++probe->calls;
+  probe->url = url;
+  probe->cookies = cookies;
+}
+
+TEST_F(JniVmTest, SetCookieObserverGetsRawCookiesWithoutPlatformBinding) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  auto observer = std::make_shared<SetCookieObserverProbe>();
+  vm_->SetRobloxSetCookieObserver(
+      observer, RobloxSetCookieObserverCallbacks{&ProbeSetCookieObserver});
+
+  jclass handler_class = env->FindClass(
+      "com/roblox/universalapp/cookie/"
+      "JNICookieProtocol$OnSetCookieHandler");
+  jobject handler = env->AllocObject(handler_class);
+  jmethodID on_set_cookie = env->GetMethodID(
+      handler_class, "onSetCookie",
+      "([Ljava/lang/String;Ljava/lang/String;)V");
+  jclass string_class = env->FindClass("java/lang/String");
+  jobjectArray cookies = env->NewObjectArray(3, string_class, nullptr);
+  env->SetObjectArrayElement(
+      cookies, 0, env->NewStringUTF("RBXSessionTracker=sessionid=1; Path=/"));
+  env->SetObjectArrayElement(
+      cookies, 2, env->NewStringUTF(".ROBLOSECURITY=_|x; Domain=.roblox.com"));
+  jstring url = env->NewStringUTF(
+      "https://apis.roblox.com/account-switcher/v1/switch");
+
+  env->CallVoidMethod(handler, on_set_cookie, cookies, url);
+  EXPECT_EQ(observer->calls, 1);
+  EXPECT_EQ(observer->url,
+            "https://apis.roblox.com/account-switcher/v1/switch");
+  EXPECT_EQ(observer->cookies,
+            (std::vector<std::string>{"RBXSessionTracker=sessionid=1; Path=/",
+                                      ".ROBLOSECURITY=_|x; Domain=.roblox.com"}));
+  EXPECT_EQ(credential_probe->calls, 0);
+
+  vm_->ClearRobloxSetCookieObserver();
+  env->CallVoidMethod(handler, on_set_cookie, cookies, url);
+  EXPECT_EQ(observer->calls, 1);
+  EXPECT_FALSE(vm_->DispatchRobloxCookieSet(env, cookies, url));
+}
+
 TEST_F(JniVmTest, NativeGlJavaInterfaceStoresAppBridgeNotificationListener) {
   JNIEnv *env = vm_->GetJNIEnv();
   jclass gl_class =

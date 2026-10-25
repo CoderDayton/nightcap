@@ -322,6 +322,7 @@ struct EngineStartupContext {
   JavaVM* java_vm;
   jnivm::RobloxAuthIdentity account_identity;
   const mocktail::runtime::SecureRobloxCredential* roblox_credential;
+  const mocktail::runtime::SecureRobloxCredential* startup_cookies;
   mocktail::runtime::RobloxGameSessionRuntime* game_session_runtime;
   bool run_prepare_jni;
   bool run_set_asset_path;
@@ -3251,8 +3252,17 @@ void ConfigureNativeSettings(JNIEnv* env, jclass settings_class,
   jstring http_proxy_host_string = env->NewStringUTF(http_proxy_host.c_str());
   jstring cookie_base_url_string = env->NewStringUTF(cookie_base_url.c_str());
   jstring cookie_domain_string = env->NewStringUTF(cookie_domain.c_str());
+  const mocktail::runtime::SecureRobloxCredential* startup_cookies =
+      context->startup_cookies != nullptr ? context->startup_cookies
+                                          : credential;
+  if (startup_cookies != nullptr && credential != nullptr &&
+      startup_cookies->size() > credential->size()) {
+    std::cout << "  [engine] restoring saved Roblox cookies bytes="
+              << startup_cookies->size() - credential->size() << '\n'
+              << std::flush;
+  }
   jstring roblox_cookies_string = env->NewStringUTF(
-      credential != nullptr ? credential->c_str() : "");
+      startup_cookies != nullptr ? startup_cookies->c_str() : "");
   jstring cookie_manager_cookies_string =
       env->NewStringUTF(cookie_manager_cookies.c_str());
   jstring android_id_string = env->NewStringUTF(android_id.c_str());
@@ -6984,6 +6994,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         raw_vm,
         dependencies.account_identity(),
         &dependencies.roblox_credential(),
+        &dependencies.startup_cookies(),
         game_session_runtime.get(),
         run_prepare_jni,
         run_set_asset_path,

@@ -7,6 +7,7 @@
 #include "mocktail/status.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
+#include "runtime/roblox_cookie_jar.h"
 
 namespace jnivm {
 class VM;
@@ -25,6 +26,8 @@ class RuntimeDependencies final {
       : jni_vm_(std::move(composition.jni_vm)),
         account_identity_(std::move(composition.account_identity)),
         roblox_credential_(std::move(composition.credential)),
+        startup_cookies_(runtime::CombineRobloxStartupCookies(
+            roblox_credential_.view(), composition.saved_cookies.view())),
         clear_persisted_web_view_cookie_(
             composition.rejected_credential_retired ||
             composition.clear_web_view_cookie),
@@ -41,6 +44,7 @@ class RuntimeDependencies final {
       : jni_vm_(std::move(other.jni_vm_)),
         account_identity_(std::move(other.account_identity_)),
         roblox_credential_(std::move(other.roblox_credential_)),
+        startup_cookies_(std::move(other.startup_cookies_)),
         clear_persisted_web_view_cookie_(std::exchange(
             other.clear_persisted_web_view_cookie_, false)),
         shutdown_before_platform_(
@@ -55,6 +59,7 @@ class RuntimeDependencies final {
     jni_vm_ = std::move(other.jni_vm_);
     account_identity_ = std::move(other.account_identity_);
     roblox_credential_ = std::move(other.roblox_credential_);
+    startup_cookies_ = std::move(other.startup_cookies_);
     clear_persisted_web_view_cookie_ =
         std::exchange(other.clear_persisted_web_view_cookie_, false);
     shutdown_before_platform_ =
@@ -68,6 +73,10 @@ class RuntimeDependencies final {
   }
   const runtime::SecureRobloxCredential& roblox_credential() const {
     return roblox_credential_;
+  }
+  // Credential plus saved roblox.com cookies, for nativeSetMultipleCookies.
+  const runtime::SecureRobloxCredential& startup_cookies() const {
+    return startup_cookies_;
   }
   bool clear_persisted_web_view_cookie() const {
     return clear_persisted_web_view_cookie_;
@@ -85,6 +94,7 @@ class RuntimeDependencies final {
   std::shared_ptr<jnivm::VM> jni_vm_;
   jnivm::RobloxAuthIdentity account_identity_;
   runtime::SecureRobloxCredential roblox_credential_;
+  runtime::SecureRobloxCredential startup_cookies_;
   bool clear_persisted_web_view_cookie_ = false;
   ShutdownBeforePlatformCallback shutdown_before_platform_ = nullptr;
 };
