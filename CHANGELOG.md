@@ -33,6 +33,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Roblox web pages such as a game's server list no longer close right after opening on some NVIDIA
+  setups on Wayland. GTK's OpenGL setup crashed those windows, so Nightcap now turns it off for them.
 - Roblox's in-game Switch Server button joins a different server instead of returning you to the
   home screen. Roblox sends that launch as the game closes, and Nightcap now picks it up.
 - Fleasion replacements load again. With `integrations.fleasion.enabled`, Nightcap sets

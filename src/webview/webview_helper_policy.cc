@@ -138,6 +138,41 @@ bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
   return software_compositing && renderer_override == nullptr;
 }
 
+bool ExpectsWaylandDisplay(const char* wayland_display,
+                           const char* gdk_backend) {
+  if (wayland_display == nullptr || *wayland_display == '\0') {
+    return false;
+  }
+  if (gdk_backend == nullptr || *gdk_backend == '\0') {
+    return true;
+  }
+  const std::string_view backends(gdk_backend);
+  const std::string_view first = backends.substr(0, backends.find(','));
+  return first == "wayland" || first == "*";
+}
+
+std::optional<std::string> GdkDisableWithoutGl(bool software_compositing,
+                                               const char* current) {
+  if (!software_compositing) {
+    return std::nullopt;
+  }
+  if (current == nullptr || *current == '\0') {
+    return "gl";
+  }
+  std::string_view remaining(current);
+  while (!remaining.empty()) {
+    const std::size_t comma = remaining.find(',');
+    if (remaining.substr(0, comma) == "gl") {
+      return std::nullopt;
+    }
+    if (comma == std::string_view::npos) {
+      break;
+    }
+    remaining.remove_prefix(comma + 1);
+  }
+  return std::string(current) + ",gl";
+}
+
 const char* AndroidBridgeSource() { return kBridgeSource; }
 
 std::string BuildRobloxAndroidUserAgent() {
