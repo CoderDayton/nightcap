@@ -4,6 +4,7 @@
 #include <jsc/jsc.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -44,6 +45,14 @@ bool ShouldDisableWebViewHardwareAcceleration(
 // user chose one through GSK_RENDERER.
 bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
                                     const char* renderer_override);
+// GTK reads GDK_DISABLE once at startup, before the display is known, so the
+// display is predicted from the same variables GDK uses to pick a backend.
+bool ExpectsWaylandDisplay(const char* wayland_display, const char* gdk_backend);
+// GDK's EGL setup aborts in libepoxy on some NVIDIA hosts even with the Cairo
+// renderer. Returns the GDK_DISABLE value that also turns off GTK's GL, or
+// nullopt when it is already off or hardware compositing needs it.
+std::optional<std::string> GdkDisableWithoutGl(bool software_compositing,
+                                               const char* current);
 
 const char* AndroidBridgeSource();
 std::string BuildRobloxAndroidUserAgent();

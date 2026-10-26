@@ -4,6 +4,7 @@
 #include <jsc/jsc.h>
 
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -145,6 +146,34 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitGtkRendererEnvironment) {
       EXPECT_FALSE(ShouldForceSoftwareGtkRenderer(software_compositing, value));
     }
   }
+}
+
+TEST(WebViewHelperPolicyTest, ExpectsWaylandWhenGtkWouldPickIt) {
+  for (const char* backend : {static_cast<const char*>(nullptr), "", "wayland",
+                              "wayland,x11", "*"}) {
+    EXPECT_TRUE(ExpectsWaylandDisplay("wayland-0", backend))
+        << (backend == nullptr ? "(unset)" : backend);
+  }
+}
+
+TEST(WebViewHelperPolicyTest, ExpectsNoWaylandForX11OrMissingSocket) {
+  EXPECT_FALSE(ExpectsWaylandDisplay("wayland-0", "x11"));
+  EXPECT_FALSE(ExpectsWaylandDisplay("wayland-0", "x11,wayland"));
+  EXPECT_FALSE(ExpectsWaylandDisplay(nullptr, nullptr));
+  EXPECT_FALSE(ExpectsWaylandDisplay("", "wayland"));
+}
+
+TEST(WebViewHelperPolicyTest, DisablesGtkGlWithSoftwareCompositing) {
+  EXPECT_EQ(GdkDisableWithoutGl(true, nullptr), "gl");
+  EXPECT_EQ(GdkDisableWithoutGl(true, ""), "gl");
+  EXPECT_EQ(GdkDisableWithoutGl(true, "vulkan"), "vulkan,gl");
+}
+
+TEST(WebViewHelperPolicyTest, KeepsGdkDisableWhenGlIsOffOrHardwareCompositing) {
+  EXPECT_EQ(GdkDisableWithoutGl(true, "gl"), std::nullopt);
+  EXPECT_EQ(GdkDisableWithoutGl(true, "vulkan,gl"), std::nullopt);
+  EXPECT_EQ(GdkDisableWithoutGl(false, nullptr), std::nullopt);
+  EXPECT_EQ(GdkDisableWithoutGl(false, "vulkan"), std::nullopt);
 }
 
 TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {

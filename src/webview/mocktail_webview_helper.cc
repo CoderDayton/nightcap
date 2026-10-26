@@ -1466,6 +1466,9 @@ void Activate(GtkApplication* application, gpointer user_data) {
   std::cerr << "[webview] display=" << (wayland_display ? "wayland" : "other")
             << " compositing="
             << (state->disable_hardware_acceleration ? "software" : "default")
+            << " gdk_disable="
+            << mocktail::webview::BoundedLogToken(std::getenv("GDK_DISABLE"),
+                                                  "none")
             << '\n';
   if (!InitializeNetworkSession(state)) {
     state->startup_failed = true;
@@ -1532,6 +1535,17 @@ int main(int argc, char *argv[]) {
   }
   g_weak_ref_init(&state.primary_web_view, nullptr);
   g_weak_ref_init(&state.primary_window, nullptr);
+
+  if (const std::optional<std::string> gdk_disable =
+          mocktail::webview::GdkDisableWithoutGl(
+              mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
+                  mocktail::webview::ExpectsWaylandDisplay(
+                      std::getenv("WAYLAND_DISPLAY"),
+                      std::getenv("GDK_BACKEND")),
+                  std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE")),
+              std::getenv("GDK_DISABLE"))) {
+    setenv("GDK_DISABLE", gdk_disable->c_str(), 1);
+  }
 
   const char* flatpak_id = std::getenv("FLATPAK_ID");
   GtkApplication *application = gtk_application_new(
