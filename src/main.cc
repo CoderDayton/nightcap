@@ -45,6 +45,7 @@
 #include "runtime/platform_cache_migration.h"
 #include "runtime/process_diagnostics.h"
 #include "runtime/process_launch_policy.h"
+#include "runtime/roblox_app_storage.h"
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
@@ -184,29 +185,44 @@ class OtaPatchRestartWatch final {
 };
 
 constexpr char kSignedOutRestartVariable[] = "MOCKTAIL_SIGNED_OUT_RESTART";
+std::atomic<bool> g_account_switch_pending{false};
 std::atomic<bool> g_account_switch_restart{false};
 std::atomic<bool> g_signed_out_restart{false};
 std::filesystem::path g_account_cookie_file;
+std::filesystem::path g_app_storage_file;
 
 void RequestAccountSwitchRestart(void*, bool signed_in) {
-  if (g_account_switch_restart.exchange(true)) {
+  if (g_account_switch_pending.exchange(true)) {
     return;
   }
   if (signed_in) {
-    std::cout << "  [auth] account switched; restarting signed in as the new "
-                 "account\n";
-  } else {
-    g_signed_out_restart = true;
-    std::error_code error;
-    std::filesystem::remove(g_account_cookie_file, error);
-    if (error) {
-      std::cerr << "  [auth] signed out, but the saved sign-in could not be "
-                   "removed: "
-                << error.message() << '\n';
-    }
-    std::cout << "  [auth] signed out; restarting at the Roblox sign-in "
-                 "screen\n";
+    const auto since =
+        std::filesystem::file_time_type::clock::now() - std::chrono::seconds(2);
+    std::thread([app_storage = g_app_storage_file, since] {
+      const mocktail::runtime::SavedAccountBlob result =
+          mocktail::runtime::WaitForSavedRobloxAccountBlob(
+              app_storage, since, std::chrono::seconds(5));
+      std::cout << "  [auth] account switched; account blob "
+                << (result.saved ? "saved" : "not saved")
+                << " length=" << result.blob.size()
+                << "; restarting signed in as the new account\n"
+                << std::flush;
+      g_account_switch_restart = true;
+      kill(getpid(), SIGTERM);
+    }).detach();
+    return;
   }
+  g_account_switch_restart = true;
+  g_signed_out_restart = true;
+  std::error_code error;
+  std::filesystem::remove(g_account_cookie_file, error);
+  if (error) {
+    std::cerr << "  [auth] signed out, but the saved sign-in could not be "
+                 "removed: "
+              << error.message() << '\n';
+  }
+  std::cout << "  [auth] signed out; restarting at the Roblox sign-in "
+               "screen\n";
   std::cout << std::flush;
   kill(getpid(), SIGTERM);
 }
@@ -1350,6 +1366,11 @@ int main(int argc, char* argv[]) {
     composition.jni_vm->SetAndroidWindowCallbacks(
         std::move(android_window_context), android_window_callbacks);
     g_account_cookie_file = paths.cookie_file();
+    g_app_storage_file = app_storage_file;
+    std::cout << "  [auth] account blob at startup length="
+              << mocktail::runtime::ReadRobloxAccountBlob(g_app_storage_file)
+                     .size()
+              << '\n';
     composition.clear_web_view_cookie =
         environment.Get(kSignedOutRestartVariable) == "1";
     composition.jni_vm->SetRobloxAccountSwitchHandler(

@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -22,6 +23,7 @@
 
 #include "jnivm/jnivm.h"
 #include "runtime/environment.h"
+#include "runtime/roblox_cookie_jar.h"
 #include "runtime/runtime_paths.h"
 #include "services/auth_service.h"
 
@@ -341,6 +343,9 @@ bool PersistRobloxCredential(void* opaque, const char* data, size_t size) {
   return stored;
 }
 
+void InstallCookieJarPersistence(const std::shared_ptr<jnivm::VM>& vm,
+                                 const RuntimePaths& paths);
+
 void InstallCredentialPersistence(const std::shared_ptr<jnivm::VM>& vm,
                                   const RuntimePaths& paths,
                                   std::shared_ptr<services::HttpClient>
@@ -348,6 +353,7 @@ void InstallCredentialPersistence(const std::shared_ptr<jnivm::VM>& vm,
   if (vm == nullptr) {
     return;
   }
+  InstallCookieJarPersistence(vm, paths);
   auto context = std::make_shared<CookiePersistenceContext>();
   context->path = paths.cookie_file();
   context->vm = vm;
@@ -469,6 +475,51 @@ CookieLoadResult ReadCookieSource(const std::filesystem::path& path,
     result.source_path = path;
   }
   return result;
+}
+
+RobloxCookieJar LoadCookieJar(const std::filesystem::path& path) {
+  CookieLoadResult stored = ReadCookieFile(path, false);
+  RobloxCookieJar jar = RobloxCookieJar::Parse(stored.value);
+  ClearSensitiveString(&stored.value);
+  return jar;
+}
+
+struct CookieJarContext {
+  std::filesystem::path path;
+  std::mutex mutex;
+};
+
+void PersistRobloxSetCookies(void* opaque, const std::string& url,
+                             const std::vector<std::string>& set_cookies) {
+  auto* context = static_cast<CookieJarContext*>(opaque);
+  if (context == nullptr || set_cookies.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(context->mutex);
+  RobloxCookieJar jar = LoadCookieJar(context->path);
+  if (!jar.Apply(url, set_cookies, static_cast<std::int64_t>(std::time(nullptr)))) {
+    return;
+  }
+  std::string serialized = jar.Serialize();
+  if (!WritePrivateFileAtomically(context->path, serialized)) {
+    std::fprintf(stderr, "  [auth] could not save Roblox cookies\n");
+  }
+  ClearSensitiveString(&serialized);
+}
+
+void InstallCookieJarPersistence(const std::shared_ptr<jnivm::VM>& vm,
+                                 const RuntimePaths& paths) {
+  auto context = std::make_shared<CookieJarContext>();
+  context->path = RobloxCookieJarFile(paths);
+  vm->SetRobloxSetCookieObserver(
+      std::move(context),
+      jnivm::RobloxSetCookieObserverCallbacks{&PersistRobloxSetCookies});
+}
+
+SecureRobloxCredential LoadSavedRobloxCookies(const RuntimePaths& paths) {
+  const RobloxCookieJar jar = LoadCookieJar(RobloxCookieJarFile(paths));
+  return SecureRobloxCredential(
+      jar.StartupHeader(static_cast<std::int64_t>(std::time(nullptr))));
 }
 
 bool ReadDescriptorContents(int descriptor, std::string* contents) {
@@ -766,6 +817,10 @@ void ClearSensitiveString(std::string* value) {
 
 }  // namespace
 
+std::filesystem::path RobloxCookieJarFile(const RuntimePaths& paths) {
+  return paths.cookie_file().parent_path() / "roblox.cookies.json";
+}
+
 bool PersistRobloxCookie(const std::filesystem::path& path,
                          std::string_view cookie_value) {
   if (cookie_value.empty()) {
@@ -926,6 +981,7 @@ AuthRuntimeComposition ComposeAuthRuntime(
       composition.jni_vm = std::move(jni_vm);
       composition.account_identity = std::move(identity);
       composition.credential = std::move(credential);
+      composition.saved_cookies = LoadSavedRobloxCookies(paths);
       break;
     }
     case services::AuthSessionStatus::kGuest:

@@ -301,6 +301,8 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_web_view_bridge.cc
   src/runtime/roblox_permissions_bridge.cc
   src/runtime/roblox_account_bridge.cc
+  src/runtime/roblox_app_storage.cc
+  src/runtime/roblox_cookie_jar.cc
   src/runtime/roblox_message_bus_request_bridge.cc
   src/runtime/roblox_call_protocol_bridge.cc
   src/runtime/payload_update_preflight.cc

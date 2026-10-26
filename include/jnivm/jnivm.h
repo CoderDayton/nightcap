@@ -79,6 +79,12 @@ struct RobloxCredentialSinkCallbacks {
   bool (*store)(void *context, const char *data, std::size_t size) = nullptr;
 };
 
+// Receives every raw Set-Cookie value the engine reports, with its URL.
+struct RobloxSetCookieObserverCallbacks {
+  void (*observe)(void *context, const std::string &url,
+                  const std::vector<std::string> &set_cookies) = nullptr;
+};
+
 // The VM keeps the host context opaque. Receiver identities let the backend
 // track devices without retaining JNI local references.
 struct FmodAudioDeviceCallbacks {
@@ -322,6 +328,11 @@ public:
   void ClearRobloxCredentialSink();
   bool DispatchRobloxCredential(const char *data, std::size_t size);
 
+  void SetRobloxSetCookieObserver(
+      std::shared_ptr<void> context,
+      const RobloxSetCookieObserverCallbacks &callbacks);
+  void ClearRobloxSetCookieObserver();
+
   // Installs an org/fmod/AudioDevice backend. The VM retains context for
   // every in-flight callback and calls shutdown when the binding is cleared or
   // the VM is destroyed. Replacing or clearing a binding is only safe after
@@ -501,6 +512,13 @@ private:
   };
   mutable std::mutex roblox_credential_sink_mutex_;
   RobloxCredentialSinkBinding roblox_credential_sink_binding_;
+
+  struct RobloxSetCookieObserverBinding {
+    std::shared_ptr<void> context;
+    RobloxSetCookieObserverCallbacks callbacks;
+  };
+  mutable std::mutex roblox_set_cookie_observer_mutex_;
+  RobloxSetCookieObserverBinding roblox_set_cookie_observer_binding_;
 
   struct FmodAudioDeviceBinding {
     std::shared_ptr<void> context;
