@@ -6936,6 +6936,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   roblox_handle,
                   "Java_com_roblox_universalapp_messagebus_Connection_"
                   "deleteSharedPtr"));
+      message_bus_symbols.get_last_raw =
+          reinterpret_cast<mocktail::runtime::GetMessageBusLastRawFn>(
+              linker::ResolveSymbol(
+                  roblox_handle,
+                  "Java_com_roblox_universalapp_messagebus_MessageBus_"
+                  "getLastRaw"));
       const mocktail::runtime::RobloxPlatformWebSymbols platform_web_symbols =
           mocktail::runtime::ResolveRobloxPlatformWebSymbols(
               roblox_handle, message_bus_symbols.subscribe_raw,

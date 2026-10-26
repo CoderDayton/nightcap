@@ -33,6 +33,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Roblox's in-game Switch Server button joins a different server instead of returning you to the
+  home screen. Roblox sends that launch as the game closes, and Nightcap now picks it up.
 - Fleasion replacements load again. With `integrations.fleasion.enabled`, Nightcap sets
   `FFlagAssetProviderUseAssetDeliveryV3` to `False`, so Roblox requests assets through the endpoint
   Fleasion rewrites. A value in `~/.config/mocktail/fflags.json` still wins.

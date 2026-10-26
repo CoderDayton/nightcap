@@ -215,6 +215,7 @@ class RobloxExperienceComposition final {
   Status CloseUnclaimedSolvedChallenge();
   void HandleWebSurfaceExit(uint64_t process_generation);
   Status Dispatch(const RobloxExperienceLaunchRequest& request);
+  void DispatchLaunchKeptByMessageBus();
   Status PromoteAuthenticatedSession();
   Status RefreshLateSurface();
   void PublishPresentedPresence(uint64_t frame_serial);
