@@ -40,6 +40,16 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
                   std::uint32_t width, std::uint32_t height,
                   std::uint8_t* destination);
 
+// Grows a texture with a sharpened bicubic filter in premultiplied alpha. The
+// sharpening is clamped to the 2x2 source texels around each output texel so
+// it cannot ring, and texels whose 3x3 neighbourhood holds just two flat
+// colours stay nearest-neighbour so hard edges stay hard. width and height
+// must each be at least the source's.
+void UpscaleRgba(const std::uint8_t* source, std::uint32_t source_width,
+                 std::uint32_t source_height, std::size_t source_stride_bytes,
+                 std::uint32_t width, std::uint32_t height,
+                 std::uint8_t* destination);
+
 // Replacement textures keyed by the hash of a texture's level-0 compressed
 // bytes. An override lives at <override_dir>/<hash>.png. With a dump
 // directory, every level-0 texture seen is written once as

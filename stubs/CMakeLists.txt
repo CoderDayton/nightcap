@@ -112,6 +112,7 @@ add_library(stub_vulkan SHARED
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_driver_pin.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 configure_stub(stub_vulkan "libvulkan.so")

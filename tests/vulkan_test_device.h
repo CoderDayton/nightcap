@@ -21,6 +21,8 @@ struct VulkanTestDevice {
   VkQueue queue = VK_NULL_HANDLE;
   std::uint32_t family = 0;
   std::string name;
+  // The device was created with textureCompressionBC.
+  bool bc_textures = false;
 
   template <typename T>
   T Instance(const char* proc) const {
@@ -111,10 +113,17 @@ inline std::vector<VulkanTestDevice> OpenTestDevices() {
     queue_info.queueFamilyIndex = vk.family;
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
+    VkPhysicalDeviceFeatures supported{};
+    vk.Instance<PFN_vkGetPhysicalDeviceFeatures>(
+        "vkGetPhysicalDeviceFeatures")(candidate, &supported);
+    VkPhysicalDeviceFeatures features{};
+    features.textureCompressionBC = supported.textureCompressionBC;
+    vk.bc_textures = supported.textureCompressionBC == VK_TRUE;
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
+    device_info.pEnabledFeatures = &features;
     if (vk.Instance<PFN_vkCreateDevice>("vkCreateDevice")(
             candidate, &device_info, nullptr, &vk.device) != VK_SUCCESS) {
       continue;

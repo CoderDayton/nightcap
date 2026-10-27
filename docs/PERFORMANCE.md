@@ -133,14 +133,17 @@ runs cooler for a few frames per second less; measure before keeping it.
 smaller at N times their width and height. At the default that is 16 times the
 pixels per affected texture.
 
-Upscaling alone adds no detail. Each original pixel becomes an N×N block of the
-same colour, and the GPU's filtering already blends a small texture that much
-when it draws it. The extra size only shows when a replacement PNG in
+Upscaling adds no new detail. Textures grow with a sharpened bicubic filter,
+and texels between just two flat colours stay nearest-neighbour so hard edges
+stay hard. The extra size matters most when a replacement PNG in
 `~/.config/mocktail/textures` has more detail than the original.
 
-The cost lands in two places. Decoding and resampling is CPU work on up to 8
-threads while textures load, which shows up as a burst rather than a steady
-load. The enlarged textures then stay in GPU memory for the session and cost
+The cost lands in two places. With GPU decode on, the graphics card decodes
+and scales them, and on cards with BC support keeps them compressed as BC7.
+With GPU decode off, or with texture overrides, decoding and resampling is CPU
+work on up to 8 threads while textures load, which shows up as a burst rather
+than a steady load. The enlarged textures then stay in GPU memory for the
+session and cost
 extra sampling bandwidth on every frame that uses them. In Blade Ball the
 memory share is small: decoded textures came to 5.1 times their ETC2 size both
 with the default and with upscaling off. The `emulated texture (MB)` and

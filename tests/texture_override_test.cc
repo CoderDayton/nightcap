@@ -2,9 +2,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -159,6 +163,118 @@ TEST(TextureOverrideTest, ResampleMatchesBoxFilterForMixedSizes) {
       ASSERT_EQ(actual, ReferenceBoxResample(source, width, height))
           << source_width << "x" << source_height << " -> " << width << "x"
           << height;
+    }
+  }
+}
+
+std::vector<std::uint8_t> Upscale(const RgbaImage& source, std::uint32_t width,
+                                  std::uint32_t height) {
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(width) * height * 4);
+  UpscaleRgba(source.pixels.data(), source.width, source.height,
+              static_cast<std::size_t>(source.width) * 4, width, height,
+              out.data());
+  return out;
+}
+
+RgbaImage Filled(std::uint32_t width, std::uint32_t height) {
+  RgbaImage image;
+  image.width = width;
+  image.height = height;
+  image.pixels.resize(static_cast<std::size_t>(width) * height * 4);
+  return image;
+}
+
+// Pixel-art style edges between two flat colours stay hard.
+TEST(TextureOverrideTest, UpscaleKeepsTwoToneEdgesNearest) {
+  RgbaImage source = Filled(4, 4);
+  for (std::uint32_t i = 0; i < 16; ++i) {
+    const bool red = (i % 4 + i / 4) % 2 == 0;
+    const std::uint8_t texel[4] = {static_cast<std::uint8_t>(red ? 220 : 10),
+                                   20, static_cast<std::uint8_t>(red ? 0 : 230),
+                                   255};
+    std::memcpy(source.pixels.data() + i * 4, texel, 4);
+  }
+  std::vector<std::uint8_t> nearest(16 * 16 * 4);
+  ResampleRgba(source, 16, 16, nearest.data());
+  EXPECT_EQ(Upscale(source, 16, 16), nearest);
+}
+
+// Smooth content is interpolated, and sharpening never overshoots the
+// source texels around an output texel.
+TEST(TextureOverrideTest, UpscaleSmoothsGradientsWithoutOvershoot) {
+  RgbaImage source = Filled(8, 8);
+  for (std::uint32_t y = 0; y < 8; ++y) {
+    for (std::uint32_t x = 0; x < 8; ++x) {
+      const std::uint8_t texel[4] = {static_cast<std::uint8_t>(x * x * 3 + 20),
+                                     static_cast<std::uint8_t>(100 + y * 5),
+                                     90, 255};
+      std::memcpy(source.pixels.data() + (y * 8 + x) * 4, texel, 4);
+    }
+  }
+  const std::vector<std::uint8_t> out = Upscale(source, 32, 32);
+  std::set<int> reds;
+  for (std::uint32_t y = 0; y < 32; ++y) {
+    for (std::uint32_t x = 0; x < 32; ++x) {
+      const std::uint8_t* texel = out.data() + (y * 32 + x) * 4;
+      reds.insert(texel[0]);
+      const int sx = std::clamp(static_cast<int>(std::floor((x + 0.5) / 4 - 0.5)), 0, 7);
+      const int sy = std::clamp(static_cast<int>(std::floor((y + 0.5) / 4 - 0.5)), 0, 7);
+      for (int c = 0; c < 3; ++c) {
+        int low = 255;
+        int high = 0;
+        for (int dy = 0; dy < 2; ++dy) {
+          for (int dx = 0; dx < 2; ++dx) {
+            const int v = source.pixels[(std::min(sy + dy, 7) * 8 +
+                                         std::min(sx + dx, 7)) * 4 + c];
+            low = std::min(low, v);
+            high = std::max(high, v);
+          }
+        }
+        EXPECT_GE(texel[c], low - 1) << x << "," << y << " channel " << c;
+        EXPECT_LE(texel[c], high + 1) << x << "," << y << " channel " << c;
+      }
+      if (x > 0) {
+        EXPECT_GE(texel[0] + 1, texel[-4]) << x << "," << y;
+      }
+    }
+  }
+  EXPECT_GT(reds.size(), 24u);
+}
+
+TEST(TextureOverrideTest, UpscaleKeepsAFlatImageFlat) {
+  RgbaImage source = Filled(5, 3);
+  for (std::size_t i = 0; i < source.pixels.size(); i += 4) {
+    source.pixels[i] = 10;
+    source.pixels[i + 1] = 200;
+    source.pixels[i + 2] = 30;
+    source.pixels[i + 3] = 128;
+  }
+  const std::vector<std::uint8_t> out = Upscale(source, 20, 12);
+  for (std::size_t i = 0; i < out.size(); i += 4) {
+    ASSERT_NEAR(out[i], 10, 1) << i;
+    ASSERT_NEAR(out[i + 1], 200, 1) << i;
+    ASSERT_NEAR(out[i + 2], 30, 1) << i;
+    ASSERT_EQ(out[i + 3], 128) << i;
+  }
+}
+
+// Interpolation weighs colour by alpha, so the colour stored under
+// transparent texels does not bleed into the visible ones.
+TEST(TextureOverrideTest, UpscaleIgnoresTheColourOfTransparentTexels) {
+  RgbaImage source = Filled(8, 8);
+  for (std::uint32_t y = 0; y < 8; ++y) {
+    for (std::uint32_t x = 0; x < 8; ++x) {
+      const std::uint8_t alpha = static_cast<std::uint8_t>(x < 3 ? 0 : x * 30 + y);
+      const std::uint8_t texel[4] = {static_cast<std::uint8_t>(alpha ? 200 : 0),
+                                     static_cast<std::uint8_t>(alpha ? 0 : 255),
+                                     0, alpha};
+      std::memcpy(source.pixels.data() + (y * 8 + x) * 4, texel, 4);
+    }
+  }
+  const std::vector<std::uint8_t> out = Upscale(source, 32, 32);
+  for (std::size_t i = 0; i < out.size(); i += 4) {
+    if (out[i + 3] >= 8) {
+      EXPECT_LE(out[i + 1], 2) << i / 4;
     }
   }
 }
