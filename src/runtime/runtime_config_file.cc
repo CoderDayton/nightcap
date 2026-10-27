@@ -172,6 +172,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.backend",
       "graphics.frame_rate_limit",
       "graphics.vsync",
+      "graphics.present_mode",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
       "performance.memory_limit_mb",
@@ -337,6 +338,13 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_VSYNC"] = *vsync;
+  }
+  if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
+    if (!RuntimeConfig::IsValidPresentMode(*mode)) {
+      *error = "graphics.present_mode must be auto, fifo, mailbox, or immediate";
+      return false;
+    }
+    (*environment)["MOCKTAIL_PRESENT_MODE"] = *mode;
   }
   if (const auto multithreaded_rendering =
           value("performance.multithreaded_rendering");
@@ -775,6 +783,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
              result.config.vsync_mode() != "on" &&
              result.config.vsync_mode() != "off") {
     result.error = "VSync policy is invalid";
+  } else if (!RuntimeConfig::IsValidPresentMode(result.config.present_mode())) {
+    result.error = "graphics.present_mode must be auto, fifo, mailbox, or immediate";
   } else if (!result.config.audio_output_device_valid()) {
     result.error = "audio output device is invalid";
   } else if (!result.config.audio_input_device_valid()) {
@@ -799,6 +809,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
 
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error) {
+  if (!RuntimeConfig::IsValidPresentMode(config.present_mode())) {
+    if (error != nullptr) *error = "cannot export an invalid present mode";
+    return false;
+  }
   if (!config.fleasion_valid()) {
     if (error != nullptr) *error = "cannot export invalid Fleasion configuration";
     return false;
@@ -902,6 +916,7 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
                           FrameRateValue(config.frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
+      SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",
           config.performance().multithreaded_rendering ? "1" : "0", error) &&

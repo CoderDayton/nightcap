@@ -217,6 +217,33 @@ TEST(GraphicsLaunchPolicyTest, MakesOpenGlStrictAndVulkanIndependent) {
   ExpectGraphicsPolicyProbe("opengl");
 }
 
+TEST(GraphicsLaunchPolicyTest, DoesNotOverrideBackendPresentModeWithMesa) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    setenv("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan", 1);
+    setenv("MOCKTAIL_VSYNC", "on", 1);
+    setenv("MOCKTAIL_FRAME_RATE_LIMIT", "unlimited", 1);
+    const ProcessEnvironment environment;
+    for (const char* mode : {"auto", "fifo", "mailbox", "immediate"}) {
+      setenv("MOCKTAIL_PRESENT_MODE", mode, 1);
+      if (std::string(mode) == "auto") {
+        unsetenv("MESA_VK_WSI_PRESENT_MODE");
+      } else {
+        setenv("MESA_VK_WSI_PRESENT_MODE", "relaxed", 1);
+      }
+      if (!ApplyGraphicsLaunchPolicy(RuntimeConfig::FromEnvironment(environment)))
+        std::_Exit(40);
+      if (getenv("MESA_VK_WSI_PRESENT_MODE") != nullptr) std::_Exit(41);
+    }
+    std::_Exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
 void ExpectEtc2Policy(const char* drivers, const char* legacy,
                       const char* override_value, const char* expected,
                       const char* cpu_option = nullptr,

@@ -108,6 +108,11 @@ class RuntimeConfig {
   }
   const FrameRatePolicy& frame_rate() const { return frame_rate_; }
   const std::string& vsync_mode() const { return vsync_mode_; }
+  const std::string& present_mode() const { return present_mode_; }
+  static bool IsValidPresentMode(std::string_view mode) {
+    return mode == "auto" || mode == "fifo" || mode == "mailbox" ||
+           mode == "immediate";
+  }
   const PerformancePolicy& performance() const { return performance_; }
   const std::string& audio_output_device() const {
     return audio_output_device_;
@@ -158,6 +163,7 @@ class RuntimeConfig {
   std::optional<std::string> roblox_http_user_agent_;
   FrameRatePolicy frame_rate_;
   std::string vsync_mode_ = "auto";
+  std::string present_mode_ = "auto";
   PerformancePolicy performance_;
   std::string audio_output_device_ = "default";
   bool audio_output_device_valid_ = true;

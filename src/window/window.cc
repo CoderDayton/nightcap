@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -67,6 +68,8 @@ static constexpr EGLint EGL_DEPTH_SIZE_VAL = 0x3025;
 static constexpr EGLint EGL_STENCIL_SIZE_VAL = 0x3026;
 static constexpr EGLint EGL_CONTEXT_CLIENT_VERSION_VAL = 0x3098;
 static constexpr EGLint EGL_EXTENSIONS_VAL = 0x3055;
+static constexpr EGLint EGL_MIN_SWAP_INTERVAL_VAL = 0x303B;
+static constexpr EGLint EGL_MAX_SWAP_INTERVAL_VAL = 0x303C;
 static constexpr EGLint EGL_DEBUG_MSG_CRITICAL_KHR_VAL = 0x33B9;
 static constexpr EGLint EGL_DEBUG_MSG_ERROR_KHR_VAL = 0x33BA;
 static constexpr EGLint EGL_DEBUG_MSG_WARN_KHR_VAL = 0x33BB;
@@ -108,6 +111,9 @@ using PFN_eglCreateContext = EGLContext (*)(EGLDisplay, EGLConfig, EGLContext,
 using PFN_eglMakeCurrent = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface,
                                           EGLContext);
 using PFN_eglSwapBuffers = EGLBoolean (*)(EGLDisplay, EGLSurface);
+using PFN_eglSwapInterval = EGLBoolean (*)(EGLDisplay, EGLint);
+using PFN_eglGetConfigAttrib = EGLBoolean (*)(EGLDisplay, EGLConfig, EGLint,
+                                              EGLint*);
 using PFN_eglGetError = EGLint (*)();
 using PFN_eglDestroyContext = EGLBoolean (*)(EGLDisplay, EGLContext);
 using PFN_eglDestroySurface = EGLBoolean (*)(EGLDisplay, EGLSurface);
@@ -120,6 +126,9 @@ struct WindowState {
   EGLConfig egl_config = nullptr;
   EGLSurface egl_surface = nullptr;
   EGLContext egl_context = nullptr;
+  PFN_eglSwapInterval egl_swap_interval = nullptr;
+  int min_swap_interval = 1;
+  int max_swap_interval = 1;
   void* native_window = nullptr;
   int width = 1280;
   int height = 720;
@@ -1402,6 +1411,35 @@ bool Init(int width, int height, const char* title) {
         g_state.egl_context);
   }
 
+  g_state.egl_swap_interval = reinterpret_cast<PFN_eglSwapInterval>(
+      SDL_EGL_GetProcAddress("eglSwapInterval"));
+  const auto get_config_attrib = reinterpret_cast<PFN_eglGetConfigAttrib>(
+      SDL_EGL_GetProcAddress("eglGetConfigAttrib"));
+  EGLint min_interval = 1;
+  EGLint max_interval = 1;
+  if (get_config_attrib != nullptr &&
+      get_config_attrib(g_state.egl_display, g_state.egl_config,
+                        EGL_MIN_SWAP_INTERVAL_VAL, &min_interval) &&
+      get_config_attrib(g_state.egl_display, g_state.egl_config,
+                        EGL_MAX_SWAP_INTERVAL_VAL, &max_interval) &&
+      min_interval >= 0 && max_interval >= min_interval) {
+    g_state.min_swap_interval = min_interval;
+    g_state.max_swap_interval = max_interval;
+  }
+  if (graphics::CachedPresentModePolicy() !=
+          graphics::PresentModePolicy::kHostDefault && !SetSwapInterval(1)) {
+    SDL_GL_DestroyContext(sdl_context);
+    SDL_DestroyWindow(g_state.sdl_window);
+    g_state.sdl_window = nullptr;
+    g_state.egl_display = nullptr;
+    g_state.egl_config = nullptr;
+    g_state.egl_surface = nullptr;
+    g_state.egl_context = nullptr;
+    g_state.egl_swap_interval = nullptr;
+    SDL_Quit();
+    return false;
+  }
+
   ResolveNativeWindowHandle();
 
   // The render thread binds the context after the main thread releases it.
@@ -1618,6 +1656,10 @@ extern "C" void mocktail_window_show_if_hidden() { ShowIfHidden(); }
 
 extern "C" bool mocktail_window_swap_buffers() { return SwapBuffers(); }
 
+extern "C" bool mocktail_window_set_swap_interval(int interval) {
+  return SetSwapInterval(interval);
+}
+
 extern "C" bool mocktail_window_make_current() { return MakeCurrentOnThread(); }
 
 extern "C" bool mocktail_window_release_current() {
@@ -1640,6 +1682,39 @@ extern "C" int mocktail_window_height() {
 
 extern "C" void* mocktail_gl_proc_address(const char* name) {
   return GetGLProcAddress(name);
+}
+
+bool SetSwapInterval(int interval) {
+  if (g_state.egl_display == nullptr || g_state.egl_context == nullptr ||
+      g_state.egl_swap_interval == nullptr) {
+    return false;
+  }
+  const auto policy = graphics::CachedPresentModePolicy();
+  const int requested = graphics::ResolveSwapInterval(policy, interval);
+  if (policy != graphics::PresentModePolicy::kHostDefault && requested == 1 &&
+      (g_state.min_swap_interval > 1 || g_state.max_swap_interval < 1)) {
+    std::fprintf(stderr, "  [window] driver does not support swap interval 1\n");
+    return false;
+  }
+  int applied = std::clamp(requested, g_state.min_swap_interval,
+                            g_state.max_swap_interval);
+  if (!g_state.egl_swap_interval(g_state.egl_display, applied)) {
+    if (applied != 0 || g_state.max_swap_interval < 1 ||
+        !g_state.egl_swap_interval(g_state.egl_display, 1)) {
+      std::fprintf(stderr, "  [window] eglSwapInterval(%d) failed\n", applied);
+      return false;
+    }
+    applied = 1;
+  }
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    std::fprintf(stderr, "  [window] present_mode=%s swap_interval=%d%s\n",
+                 graphics::PresentModePolicyName(policy), applied,
+                 policy == graphics::PresentModePolicy::kMailbox
+                     ? " (EGL has no mailbox selection; using FIFO)"
+                     : applied != requested ? " (driver fallback)" : "");
+  }
+  return true;
 }
 
 bool SwapBuffers() {
@@ -2390,8 +2465,9 @@ bool PumpEvents() {
 }
 
 bool UnthrottledPresentationRequested() {
-  return graphics::CachedPresentModePolicy() ==
-         graphics::PresentModePolicy::kUnthrottled;
+  const auto policy = graphics::CachedPresentModePolicy();
+  return policy == graphics::PresentModePolicy::kUnthrottled ||
+         policy == graphics::PresentModePolicy::kImmediate;
 }
 
 uint64_t PaceInputPump() {
@@ -2464,6 +2540,9 @@ void Shutdown() {
   SDL_Quit();
   g_state.initialised = false;
   g_state.native_window = nullptr;
+  g_state.egl_swap_interval = nullptr;
+  g_state.min_swap_interval = 1;
+  g_state.max_swap_interval = 1;
   g_state.software_window = false;
   g_state.direct_vulkan = false;
   g_state.display_refresh = {};
