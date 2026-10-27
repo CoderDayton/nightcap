@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <vector>
@@ -284,7 +285,8 @@ TEST(TextureOverrideTest, LookupFindsPngNamedByHashAndCachesMisses) {
   ASSERT_FALSE(dir.path().empty());
   const RgbaImage image = Gradient(4, 4);
   const std::uint64_t hash = 0xfeedfacecafebeefULL;
-  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(hash) + ".png", image));
+  ASSERT_TRUE(
+      WritePngRgba(dir.path() + "/" + HashName(hash) + "_4x4.png", image));
 
   TextureOverrides overrides(dir.path(), "");
   EXPECT_TRUE(overrides.enabled());
@@ -297,6 +299,47 @@ TEST(TextureOverrideTest, LookupFindsPngNamedByHashAndCachesMisses) {
   TextureOverrides disabled("", "");
   EXPECT_FALSE(disabled.enabled());
   EXPECT_EQ(disabled.Lookup(hash), nullptr);
+}
+
+// The runtime always points the override dir at ~/.config/mocktail/textures,
+// so a folder without a usable override must not count as overrides in use.
+// A bare <hash>.png says nothing about which textures it fits, so it is
+// skipped.
+TEST(TextureOverrideTest, DisabledWithoutASizedOverridePng) {
+  TempDir dir;
+  ASSERT_FALSE(dir.path().empty());
+  EXPECT_FALSE(TextureOverrides(dir.path() + "/missing", "").enabled());
+  EXPECT_FALSE(TextureOverrides(dir.path(), "").enabled());
+  std::ofstream(dir.path() + "/readme.txt") << "x";
+  EXPECT_FALSE(TextureOverrides(dir.path(), "").enabled());
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(1) + ".png",
+                           Gradient(2, 2)));
+  TextureOverrides bare(dir.path(), "");
+  EXPECT_FALSE(bare.enabled());
+  EXPECT_EQ(bare.Lookup(1), nullptr);
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(1) + "_2x2.png",
+                           Gradient(2, 2)));
+  EXPECT_TRUE(TextureOverrides(dir.path(), "").enabled());
+}
+
+TEST(TextureOverrideTest, SizedNameLimitsWhichTexturesMayBeReplaced) {
+  TempDir dir;
+  ASSERT_FALSE(dir.path().empty());
+  const RgbaImage image = Gradient(4, 4);
+  const std::uint64_t hash = 0x75dcd1166a6cbaa9ULL;
+  ASSERT_TRUE(
+      WritePngRgba(dir.path() + "/" + HashName(hash) + "_32x32.png", image));
+  TextureOverrides sized(dir.path(), "");
+  EXPECT_TRUE(sized.enabled());
+  EXPECT_TRUE(sized.MayReplace(32, 32));
+  EXPECT_FALSE(sized.MayReplace(64, 64));
+  const auto found = sized.Lookup(hash);
+  ASSERT_NE(found, nullptr);
+  EXPECT_EQ(found->pixels, image.pixels);
+
+  TempDir dump;
+  EXPECT_TRUE(TextureOverrides("", dump.path()).MayReplace(64, 64));
+  EXPECT_FALSE(TextureOverrides("", "").MayReplace(32, 32));
 }
 
 TEST(TextureOverrideTest, DumpWritesOnePngPerHash) {

@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "mocktail/graphics/bc_decoder.h"
@@ -1070,6 +1073,46 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAPartialBlockMipFromItsOwnBlocks) {
   CloseTestDevices(&devices);
 }
 
+// Roblox's small UI textures: 60x33 ETC2 RGBA8 with a full mip chain.
+TEST(VulkanEtc2GpuEmulationTest, KeepsRobloxSmallTexturesCompressed) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    info.extent = {60, 33, 1};
+    info.mipLevels = 6;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImage image = VK_NULL_HANDLE;
+    ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
+              VK_SUCCESS);
+    const EmulatedTextureBytes bytes = emulation.TextureBytes();
+    // Host 240x132 BC7: one byte per texel over the mip chain, versus four
+    // for RGBA8.
+    EXPECT_LT(bytes.decoded, VkDeviceSize{240} * 132 * 2);
+    emulation.DestroyImage(vk.device, image, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
 // Copies between two upscaled BC7 images stay compressed, on host bounds.
 TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenUpscaledCompressedImages) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
@@ -1145,8 +1188,9 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenUpscaledCompressedImages) {
   CloseTestDevices(&devices);
 }
 
-// With texture overrides on, small colour images stay upscaled RGBA8.
-TEST(VulkanEtc2GpuEmulationTest, KeepsSmallImagesDecodedForOverrides) {
+// An override named for a 32x32 texture keeps 32x32 images upscaled RGBA8
+// for the CPU path; other sizes still become BC7.
+TEST(VulkanEtc2GpuEmulationTest, KeepsOnlyOverrideSizedImagesDecoded) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
     GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
@@ -1156,10 +1200,19 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsSmallImagesDecodedForOverrides) {
     if (!vk.bc_textures) {
       continue;
     }
-    ASSERT_EQ(setenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR",
-                     "/nonexistent/mocktail-overrides", 1),
-              0);
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("mocktail-overrides-" + std::to_string(getpid()));
+    std::filesystem::create_directories(dir);
+    RgbaImage replacement;
+    replacement.width = 2;
+    replacement.height = 2;
+    replacement.pixels.assign(16, 255);
+    ASSERT_TRUE(WritePngRgba((dir / "75dcd1166a6cbaa9_32x32.png").string(),
+                             replacement));
+    ASSERT_EQ(setenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR", dir.c_str(), 1), 0);
     VulkanEtc2Emulation emulation;
+    std::filesystem::remove_all(dir);
     ASSERT_EQ(unsetenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR"), 0);
     emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
                              vk.get_device_proc_addr, false, true);
@@ -1179,8 +1232,15 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsSmallImagesDecodedForOverrides) {
     VkImage image = VK_NULL_HANDLE;
     ASSERT_EQ(emulation.CreateImage(vk.device, &image_info, nullptr, &image),
               VK_SUCCESS);
+    image_info.extent = {16, 16, 1};
+    VkImage other = VK_NULL_HANDLE;
+    ASSERT_EQ(emulation.CreateImage(vk.device, &image_info, nullptr, &other),
+              VK_SUCCESS);
     const VkDeviceSize upscaled = 32 * kDefaultSmallTextureUpscale;
-    EXPECT_EQ(emulation.TextureBytes().decoded, upscaled * upscaled * 4);
+    const VkDeviceSize other_bc7 = 16 * kDefaultSmallTextureUpscale;
+    EXPECT_EQ(emulation.TextureBytes().decoded,
+              upscaled * upscaled * 4 + other_bc7 * other_bc7);
+    emulation.DestroyImage(vk.device, other, nullptr);
     emulation.DestroyImage(vk.device, image, nullptr);
     emulation.DestroyDevice(vk.device);
   }

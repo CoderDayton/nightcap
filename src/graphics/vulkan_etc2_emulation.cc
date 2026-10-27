@@ -262,6 +262,9 @@ struct ImageRecord {
   EmulatedTextureBytes bytes;
   // The host image is BC7/BC4/BC5 and uploads are transcoded on the GPU.
   bool transcoded = false;
+  // An override file names this image's size, so its uploads decode on the
+  // CPU where they can be hashed and replaced.
+  bool may_override = false;
   // Compressed blocks of each full-mip upload to a scaled image, by mip.
   // Copies into a BC image are transcoded from them.
   std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> blocks;
@@ -1247,7 +1250,7 @@ struct VulkanEtc2Emulation::State {
                      std::vector<GpuCopy<Region>>* copies) {
     copies->clear();
     if (dev.gpu == nullptr || dev.copy_buffer == nullptr ||
-        record.scale != 1 || overrides.enabled()) {
+        record.scale != 1 || record.may_override) {
       return false;
     }
     std::vector<Region> split;
@@ -1304,7 +1307,7 @@ struct VulkanEtc2Emulation::State {
     std::vector<Region> rewritten;
     VkDeviceSize total = 0;
     if (dev.gpu == nullptr || !dev.gpu->CanScale() ||
-        dev.copy_buffer == nullptr || overrides.enabled() ||
+        dev.copy_buffer == nullptr || record.may_override ||
         !PlanRegions(record, dev.device, source, destination, count, regions,
                      &rewritten, &uploads, &total)) {
       return false;
@@ -2161,6 +2164,10 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
     host_info.extent.width *= scale;
     host_info.extent.height *= scale;
   }
+  const bool may_override =
+      IsColorFormat(format.etc_format) && create_info->arrayLayers == 1 &&
+      state_->overrides.MayReplace(create_info->extent.width,
+                                   create_info->extent.height);
   constexpr VkImageUsageFlags kBcUsage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                          VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -2169,7 +2176,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // BC with linear tiling.
   bool transcoded =
       dev->bc_textures && dev->gpu != nullptr &&
-      dev->gpu->CanTranscode() && !state_->overrides.enabled() &&
+      dev->gpu->CanTranscode() && !may_override &&
       (scale == 1 || dev->gpu->CanScale()) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
       create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
@@ -2216,6 +2223,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.height = create_info->extent.height;
       record.bytes = bytes;
       record.transcoded = transcoded;
+      record.may_override = may_override;
       state_->texture_bytes.compressed += bytes.compressed;
       state_->texture_bytes.decoded += bytes.decoded;
       totals = state_->texture_bytes;

@@ -68,7 +68,9 @@ Release notes on GitHub are taken from the matching section here.
 ### Changed
 
 - ETC2 textures now decode on the graphics card instead of the CPU, so loading them no longer takes CPU
-  time from the game. Texture overrides still decode on the CPU. A self-test at startup falls back to
+  time from the game. Only textures the size of an override still decode on the CPU. Override files
+  must now be named `<hash>_<width>x<height>.png` with the original size, as the dump names them;
+  a bare `<hash>.png` is skipped and logged. A self-test at startup falls back to
   the CPU if the card's output differs, and `MOCKTAIL_ETC2_GPU_DECODE=0` turns it off. Cards with BC
   texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
   and small upscaled textures too. `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.

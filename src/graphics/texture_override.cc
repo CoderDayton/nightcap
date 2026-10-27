@@ -497,7 +497,45 @@ std::string EnvironmentString(const char* name) {
 
 TextureOverrides::TextureOverrides(std::string override_dir,
                                    std::string dump_dir)
-    : override_dir_(std::move(override_dir)), dump_dir_(std::move(dump_dir)) {}
+    : override_dir_(std::move(override_dir)), dump_dir_(std::move(dump_dir)) {
+  // An override costs matching textures their GPU decode and BC storage, so
+  // the folder only counts once it holds a PNG.
+  std::error_code error;
+  if (!override_dir_.empty()) {
+    for (std::filesystem::directory_iterator it(override_dir_, error), end;
+         !error && it != end; it.increment(error)) {
+      if (it->path().extension() != ".png") {
+        continue;
+      }
+      const std::string stem = it->path().stem().string();
+      unsigned long long hash = 0;
+      unsigned width = 0;
+      unsigned height = 0;
+      char tail = 0;
+      if (stem.size() > 17 && stem[16] == '_' &&
+          std::sscanf(stem.c_str(), "%16llx_%ux%u%c", &hash, &width, &height,
+                      &tail) == 3) {
+        files_[hash] = it->path().string();
+        sizes_.insert(std::uint64_t{width} << 32 | height);
+      } else {
+        std::fprintf(stderr,
+                     "  [vulkan] texture override skipped: %s; name it "
+                     "<hash>_<width>x<height>.png with the original size, as "
+                     "MOCKTAIL_TEXTURE_DUMP_DIR writes it\n",
+                     it->path().c_str());
+      }
+    }
+  }
+  if (files_.empty()) {
+    override_dir_.clear();
+  }
+}
+
+bool TextureOverrides::MayReplace(std::uint32_t width,
+                                  std::uint32_t height) const {
+  return dumping() ||
+         sizes_.count(std::uint64_t{width} << 32 | height) != 0;
+}
 
 TextureOverrides TextureOverrides::FromEnvironment() {
   return TextureOverrides(EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
@@ -515,7 +553,11 @@ std::shared_ptr<const RgbaImage> TextureOverrides::Lookup(std::uint64_t hash) {
   }
   std::shared_ptr<const RgbaImage> loaded;
   RgbaImage image;
-  const std::string path = override_dir_ + "/" + HashName(hash) + ".png";
+  const auto named = files_.find(hash);
+  if (named == files_.end()) {
+    return nullptr;
+  }
+  const std::string& path = named->second;
   if (ReadPngRgba(path, &image) && image.width > 0 && image.height > 0) {
     loaded = std::make_shared<const RgbaImage>(std::move(image));
     std::fprintf(stderr, "  [vulkan] texture override loaded: %s (%ux%u)\n",
