@@ -159,6 +159,17 @@ struct PseudoStringObject : PseudoJavaObject {
 
 }  // namespace
 
+static inline bool IsRawStringPointer(jstring str) {
+  const uintptr_t val = reinterpret_cast<uintptr_t>(str);
+  if (val < 0x10000) {
+    return false;
+  }
+  if (IsSegmentHandle(reinterpret_cast<jobject>(str))) {
+    return false;
+  }
+  return true;
+}
+
 jstring MakeString(const char* utf) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   auto cls = FallbackClassForName("java/lang/String");
@@ -189,8 +200,11 @@ std::string_view StringViewFromJString(jstring str) {
   if (string_object) {
     return string_object->value;
   }
+  if (!IsRawStringPointer(str)) {
+    return {};
+  }
   const char* utf = reinterpret_cast<const char*>(str);
-  return utf ? std::string_view(utf) : std::string_view();
+  return std::string_view(utf);
 }
 
 std::string StringFromJString(jstring str) {
@@ -262,17 +276,6 @@ jbyteArray JavaStringGetUtf8Bytes(jobject obj, jstring charset_name) {
     std::memcpy(array->bytes.data(), bytes.data(), bytes.size());
   }
   return result;
-}
-
-static inline bool IsRawStringPointer(jstring str) {
-  uintptr_t val = reinterpret_cast<uintptr_t>(str);
-  if (val < 0x10000) {
-    return false;
-  }
-  if (val < 0x10000000ULL && (val & 0xffff) == 0) {
-    return false;
-  }
-  return true;
 }
 
 const char* StringChars(jstring str) {
