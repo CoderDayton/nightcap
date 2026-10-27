@@ -1055,6 +1055,8 @@ bool Init(int width, int height, const char* title) {
   if (g_state.initialised) {
     return true;
   }
+  const int requested_width = width;
+  const int requested_height = height;
 
   const Status metadata_status = platform::ConfigureSdlApplicationMetadata();
   if (!metadata_status.ok()) {
@@ -1073,6 +1075,9 @@ bool Init(int width, int height, const char* title) {
   g_state.persisted_window = {};
   g_state.persisted_window.width = width;
   g_state.persisted_window.height = height;
+  g_state.persisted_window.configured_width = requested_width;
+  g_state.persisted_window.configured_height = requested_height;
+  g_state.persisted_window.has_configured_size = true;
   g_state.restored_fullscreen_sync_pending = false;
   if (g_state.state_persistence_active) {
     const WindowStateLoadResult restored = LoadWindowState(g_window_state_path);
@@ -1081,15 +1086,32 @@ bool Init(int width, int height, const char* title) {
                    restored.status.message().c_str());
     } else if (restored.found) {
       g_state.persisted_window = restored.state;
-      width = restored.state.width;
-      height = restored.state.height;
+      g_state.persisted_window.configured_width = requested_width;
+      g_state.persisted_window.configured_height = requested_height;
+      g_state.persisted_window.has_configured_size = true;
+      if (RestoredSizeApplies(restored.state, requested_width,
+                              requested_height)) {
+        width = restored.state.width;
+        height = restored.state.height;
+        std::fprintf(stderr,
+                     "  [window-state] restored logical=%dx%d fullscreen=%d "
+                     "maximized=%d position=%s\n",
+                     width, height, restored.state.fullscreen ? 1 : 0,
+                     restored.state.maximized ? 1 : 0,
+                     restored.state.has_position ? "saved" : "compositor");
+      } else {
+        g_state.persisted_window.width = width;
+        g_state.persisted_window.height = height;
+        std::fprintf(stderr,
+                     "  [window-state] configured logical=%dx%d replaces "
+                     "saved=%dx%d fullscreen=%d maximized=%d position=%s\n",
+                     width, height, restored.state.width,
+                     restored.state.height,
+                     restored.state.fullscreen ? 1 : 0,
+                     restored.state.maximized ? 1 : 0,
+                     restored.state.has_position ? "saved" : "compositor");
+      }
       g_state.restored_fullscreen_sync_pending = true;
-      std::fprintf(stderr,
-                   "  [window-state] restored logical=%dx%d fullscreen=%d "
-                   "maximized=%d position=%s\n",
-                   width, height, restored.state.fullscreen ? 1 : 0,
-                   restored.state.maximized ? 1 : 0,
-                   restored.state.has_position ? "saved" : "compositor");
     }
   }
   g_state.width = width;
@@ -1283,7 +1305,8 @@ bool Init(int width, int height, const char* title) {
                                         width, height, window_flags);
   if (!g_state.sdl_window) {
     fprintf(stderr, "  [window] SDL_CreateWindow failed: %s\n", SDL_GetError());
-    if (RetryWithAutoAngleFallback(width, height, title, "SDL_CreateWindow")) {
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
+                                   "SDL_CreateWindow")) {
       return true;
     }
     if (IsDisabledEnv("MOCKTAIL_SOFTWARE_WINDOW_FALLBACK")) {
@@ -1312,7 +1335,7 @@ bool Init(int width, int height, const char* title) {
             SDL_GetError());
     SDL_DestroyWindow(g_state.sdl_window);
     g_state.sdl_window = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "SDL_GL_CreateContext")) {
       return true;
     }
@@ -1329,7 +1352,7 @@ bool Init(int width, int height, const char* title) {
     SDL_GL_DestroyContext(sdl_context);
     SDL_DestroyWindow(g_state.sdl_window);
     g_state.sdl_window = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "SDL_GL_MakeCurrent")) {
       return true;
     }
@@ -1364,7 +1387,7 @@ bool Init(int width, int height, const char* title) {
     SDL_GL_DestroyContext(sdl_context);
     SDL_DestroyWindow(g_state.sdl_window);
     g_state.sdl_window = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "OpenGL ES version check")) {
       return true;
     }
@@ -1392,7 +1415,7 @@ bool Init(int width, int height, const char* title) {
     g_state.egl_config = nullptr;
     g_state.egl_surface = nullptr;
     g_state.egl_context = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "SDL_EGL handle query")) {
       return true;
     }
