@@ -33,6 +33,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- The security check after Sign In no longer shows a black window on X11 desktops such as Cinnamon. Roblox
+  web pages now use software rendering there too, as on Wayland.
 - Roblox web pages such as a game's server list no longer close right after opening on some NVIDIA
   setups on Wayland. GTK's OpenGL setup crashed those windows, so Nightcap now turns it off for them.
 - Roblox's in-game Switch Server button joins a different server instead of returning you to the

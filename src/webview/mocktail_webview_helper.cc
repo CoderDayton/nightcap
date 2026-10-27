@@ -1451,13 +1451,11 @@ void Activate(GtkApplication* application, gpointer user_data) {
 #ifdef GDK_WINDOWING_WAYLAND
   wayland_display = GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default());
 #endif
-  // Auth/challenge pages can finish loading while accelerated WebKit surfaces
-  // remain blank on wlroots/Mesa. Use software compositing for these small
-  // helper windows, including popups, without changing the game's renderer.
-  // Inspect GTK's actual display: an XWayland helper may inherit WAYLAND_DISPLAY.
+  // Software compositing for these small helper windows, including popups,
+  // without changing the game's renderer.
   state->disable_hardware_acceleration =
       mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
-          wayland_display, std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
+          std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
   // GTK picks its renderer when a window is realized, which is after this.
   if (mocktail::webview::ShouldForceSoftwareGtkRenderer(
           state->disable_hardware_acceleration, std::getenv("GSK_RENDERER"))) {
@@ -1539,9 +1537,6 @@ int main(int argc, char *argv[]) {
   if (const std::optional<std::string> gdk_disable =
           mocktail::webview::GdkDisableWithoutGl(
               mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
-                  mocktail::webview::ExpectsWaylandDisplay(
-                      std::getenv("WAYLAND_DISPLAY"),
-                      std::getenv("GDK_BACKEND")),
                   std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE")),
               std::getenv("GDK_DISABLE"))) {
     setenv("GDK_DISABLE", gdk_disable->c_str(), 1);

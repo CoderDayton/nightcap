@@ -126,11 +126,9 @@ bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
 }
 
 bool ShouldDisableWebViewHardwareAcceleration(
-    bool wayland_display, const char* compositing_override) {
-  if (compositing_override != nullptr) {
-    return std::string_view(compositing_override) != "0";
-  }
-  return wayland_display;
+    const char* compositing_override) {
+  return compositing_override == nullptr ||
+         std::string_view(compositing_override) != "0";
 }
 
 bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
@@ -138,18 +136,6 @@ bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
   return software_compositing && renderer_override == nullptr;
 }
 
-bool ExpectsWaylandDisplay(const char* wayland_display,
-                           const char* gdk_backend) {
-  if (wayland_display == nullptr || *wayland_display == '\0') {
-    return false;
-  }
-  if (gdk_backend == nullptr || *gdk_backend == '\0') {
-    return true;
-  }
-  const std::string_view backends(gdk_backend);
-  const std::string_view first = backends.substr(0, backends.find(','));
-  return first == "wayland" || first == "*";
-}
 
 std::optional<std::string> GdkDisableWithoutGl(bool software_compositing,
                                                const char* current) {
