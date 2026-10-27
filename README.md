@@ -181,7 +181,8 @@ inside Linuxulator; it is not a native FreeBSD binary. Building requires CMake
 3.20+, Git, pkg-config, LLD, binutils, a C++17 compiler, SDL 3.4+, SDL3_ttf,
 Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, libpng,
 minizip, Capstone 5, utf8proc, nlohmann/json, GTK4, libadwaita 1.6+, and
-WebKitGTK 6.0.
+WebKitGTK 6.0. FFmpeg's libavcodec is optional: without it, in-game video
+stays black.
 
 See the [FreeBSD Guide](packaging/freebsd/README.md) for setup and launch instructions.
 
@@ -195,7 +196,7 @@ sudo apt install build-essential cmake git ninja-build pkg-config lld \
   nlohmann-json3-dev libyaml-dev libpng-dev libelf-dev libminizip-dev \
   libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
   libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
-  libplacebo-dev zlib1g-dev
+  libplacebo-dev libavcodec-dev zlib1g-dev
 ```
 </details>
 
@@ -206,7 +207,7 @@ sudo apt install build-essential cmake git ninja-build pkg-config lld \
 sudo pacman -S --needed base-devel cmake git ninja pkgconf lld sdl3 sdl3_ttf \
   curl openssl nlohmann-json libyaml libpng libelf minizip capstone gtk4 \
   libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
-  libplacebo vulkan-headers vulkan-icd-loader zlib
+  libplacebo ffmpeg vulkan-headers vulkan-icd-loader zlib
 ```
 </details>
 
@@ -220,7 +221,7 @@ sudo dnf install gcc-c++ cmake git ninja-build pkgconf-pkg-config lld \
   minizip-ng-compat-devel \
   capstone-devel gtk4-devel libadwaita-devel webkitgtk6.0-devel \
   utf8proc-devel fontconfig-devel libglvnd-devel vulkan-headers \
-  vulkan-loader-devel libplacebo-devel zlib-ng-compat-devel
+  vulkan-loader-devel libplacebo-devel ffmpeg-free-devel zlib-ng-compat-devel
 ```
 </details>
 

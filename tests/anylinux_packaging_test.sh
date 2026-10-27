@@ -94,13 +94,15 @@ if [[ "$1" == --make-appimage ]]; then
   fi
   exit 0
 fi
-[[ "$#" == 8 && "$1" == /usr/bin/mocktail &&
+[[ "$#" == 10 && "$1" == /usr/bin/mocktail &&
    "$2" == /usr/lib/mocktail/mocktail_webview_helper &&
    "$3" == /usr/lib/mocktail/mocktail_failure_dialog &&
    "$4" == /usr/lib/mocktail/mocktail_settings &&
    "$5" == /usr/lib/mocktail/mocktail_updater &&
    "$6" == /usr/lib/mocktail && "$7" == /usr/share/mocktail &&
-   "$8" == /usr/bin/bash ]]
+   "$8" == /usr/bin/bash &&
+   "$9" == "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/libavcodec.so.62" &&
+   "${10}" == "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/libavutil.so.60" ]]
 [[ "${DESKTOP}" == /usr/share/applications/io.github.CoderDayton.nightcap.desktop ]]
 [[ "${MAIN_BIN}" == mocktail && "${STRACE_MODE}" == 1 ]]
 [[ "${STRACE_BINARY}" == mocktail && "${STRACE_FLAGS}" == --help ]]
@@ -120,6 +122,7 @@ cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/mocktail" "${APPDIR}/bin/mocktail"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libEGL.so"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libvulkan.so"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libmediandk.so"
+cp -- "$9" "${10}" "${APPDIR}/lib/"
 for metadata in roblox_compatibility roblox_bootstrap_sources \
     roblox_host_abi_reference roblox_signing_certificates; do
   printf '{}\n' >"${APPDIR}/share/mocktail/metadata/${metadata}.json"
@@ -152,6 +155,23 @@ export PATH="${TEMP_DIR}/fake-bin:${PATH}"
 export MOCKTAIL_ANYLINUX_SHARUN="${TEMP_DIR}/local inputs/sharun"
 export MOCKTAIL_ANYLINUX_C_SOURCE="${TEMP_DIR}/local inputs/anylinux.c"
 export MOCKTAIL_PACKAGING_FIXTURES="${TEMP_DIR}/fixtures"
+# libmediandk opens FFmpeg at runtime, so the packager must name it.
+export MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR="${TEMP_DIR}/fixtures/video"
+mkdir -p -- "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}"
+for library in libavcodec.so.62.11.100 libavutil.so.60.8.100; do
+  printf 'library fixture\n' >"${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/${library}"
+  ln -s -- "${library}" "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/${library%%.so.*}.so"
+  ln -s -- "${library}" \
+    "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/${library%.*.*}"
+done
+if (
+  MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR="${TEMP_DIR}/no-ffmpeg"
+  AnyLinuxVideoLibraries
+) >"${TEMP_DIR}/no-ffmpeg.log" 2>&1; then
+  printf 'packager accepted a build host without FFmpeg\n' >&2
+  exit 1
+fi
+grep -Fq 'libavcodec.so' "${TEMP_DIR}/no-ffmpeg.log"
 ANYLINUX_TOOL="${TEMP_DIR}/quick-sharun"
 ANYLINUX_APPIMAGETOOL="${TEMP_DIR}/fake-bin/fixture-appimagetool"
 ANYLINUX_WORK="${TEMP_DIR}/packaging"
@@ -239,6 +259,14 @@ if (AnyLinuxVerifyAppDir "${app_dir}") >"${TEMP_DIR}/missing-metadata.log" 2>&1;
   exit 1
 fi
 grep -Fq 'roblox_signing_certificates.json' "${TEMP_DIR}/missing-metadata.log"
+mv -- "${TEMP_DIR}/signing-certificates.json" \
+  "${app_dir}/share/mocktail/metadata/roblox_signing_certificates.json"
+rm -- "${app_dir}/lib/libavcodec.so.62"
+if (AnyLinuxVerifyAppDir "${app_dir}") >"${TEMP_DIR}/missing-video.log" 2>&1; then
+  printf 'packager accepted an AppImage without FFmpeg\n' >&2
+  exit 1
+fi
+grep -Fq 'libavcodec' "${TEMP_DIR}/missing-video.log"
 
 prefix="${TEMP_DIR}/install/usr"
 mkdir -p -- "${prefix}/lib/mocktail"

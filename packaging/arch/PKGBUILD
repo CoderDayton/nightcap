@@ -12,6 +12,7 @@ conflicts=('mocktail')
 depends=(
   'capstone'
   'curl'
+  'ffmpeg'
   'fontconfig'
   'gtk4'
   'libadwaita'

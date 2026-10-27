@@ -851,6 +851,13 @@ set(CPACK_RPM_PACKAGE_LICENSE "Apache-2.0")
 set(CPACK_RPM_PACKAGE_GROUP "Amusements/Games")
 set(CPACK_RPM_PACKAGE_AUTOREQPROV ON)
 
+# libmediandk opens libavcodec at runtime, which the automatic dependency
+# scans cannot see. The major must match the headers it was built with.
+if(MOCKTAIL_LIBAVCODEC_MAJOR)
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libavcodec${MOCKTAIL_LIBAVCODEC_MAJOR} | libavcodec-extra${MOCKTAIL_LIBAVCODEC_MAJOR}")
+  set(CPACK_RPM_PACKAGE_REQUIRES "libavcodec.so.${MOCKTAIL_LIBAVCODEC_MAJOR}()(64bit)")
+endif()
+
 # Every variant installs the same /usr/bin/mocktail and /usr/share/mocktail,
 # so only one of them can be present at a time.
 set(MOCKTAIL_PACKAGE_SIBLINGS ${MOCKTAIL_PACKAGE_NAMES})

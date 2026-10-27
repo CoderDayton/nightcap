@@ -119,6 +119,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+ffmpeg
 libpng
 util-linux'
       INSTALL_ARGS='-S --needed --noconfirm'
@@ -145,6 +146,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libavcodec
 libpng
 util-linux'
       if HostUsesMusl; then
@@ -174,6 +176,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+ffmpeg-libavcodec
 libpng
 coreutils
 findutils
