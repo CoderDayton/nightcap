@@ -119,19 +119,16 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitSandboxEnvironment) {
   }
 }
 
-TEST(WebViewHelperPolicyTest, UsesSoftwareCompositingOnlyForWaylandByDefault) {
-  EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(true, nullptr));
-  EXPECT_FALSE(ShouldDisableWebViewHardwareAcceleration(false, nullptr));
+// The security check page rendered black on Cinnamon (X11) with hardware
+// compositing, as it did on Wayland.
+TEST(WebViewHelperPolicyTest, UsesSoftwareCompositingByDefault) {
+  EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(nullptr));
 }
 
 TEST(WebViewHelperPolicyTest, HonorsExplicitCompositingEnvironment) {
-  for (bool wayland_display : {false, true}) {
-    EXPECT_FALSE(
-        ShouldDisableWebViewHardwareAcceleration(wayland_display, "0"));
-    for (const char* value : {"1", "", "false"}) {
-      EXPECT_TRUE(
-          ShouldDisableWebViewHardwareAcceleration(wayland_display, value));
-    }
+  EXPECT_FALSE(ShouldDisableWebViewHardwareAcceleration("0"));
+  for (const char* value : {"1", "", "false"}) {
+    EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(value));
   }
 }
 
@@ -146,21 +143,6 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitGtkRendererEnvironment) {
       EXPECT_FALSE(ShouldForceSoftwareGtkRenderer(software_compositing, value));
     }
   }
-}
-
-TEST(WebViewHelperPolicyTest, ExpectsWaylandWhenGtkWouldPickIt) {
-  for (const char* backend : {static_cast<const char*>(nullptr), "", "wayland",
-                              "wayland,x11", "*"}) {
-    EXPECT_TRUE(ExpectsWaylandDisplay("wayland-0", backend))
-        << (backend == nullptr ? "(unset)" : backend);
-  }
-}
-
-TEST(WebViewHelperPolicyTest, ExpectsNoWaylandForX11OrMissingSocket) {
-  EXPECT_FALSE(ExpectsWaylandDisplay("wayland-0", "x11"));
-  EXPECT_FALSE(ExpectsWaylandDisplay("wayland-0", "x11,wayland"));
-  EXPECT_FALSE(ExpectsWaylandDisplay(nullptr, nullptr));
-  EXPECT_FALSE(ExpectsWaylandDisplay("", "wayland"));
 }
 
 TEST(WebViewHelperPolicyTest, DisablesGtkGlWithSoftwareCompositing) {

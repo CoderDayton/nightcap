@@ -36,18 +36,16 @@ struct UriPolicyResult {
 // An explicit WebKit sandbox setting takes precedence over host defaults.
 bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
                                 const char* sandbox_override);
-// Match WebKit's WEBKIT_DISABLE_COMPOSITING_MODE override semantics.
-bool ShouldDisableWebViewHardwareAcceleration(
-    bool wayland_display, const char* compositing_override);
+// Auth and challenge pages can render black with WebKit's hardware
+// compositing, on Wayland and on X11 (seen on Cinnamon), so the helper uses
+// software compositing unless WEBKIT_DISABLE_COMPOSITING_MODE is "0".
+bool ShouldDisableWebViewHardwareAcceleration(const char* compositing_override);
 // GTK's GL renderer aborts in libepoxy when it snapshots a page switch on
 // hosts where its GL context cannot become current. With software compositing
 // the helper does not need GL for its UI, so use the Cairo renderer unless the
 // user chose one through GSK_RENDERER.
 bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
                                     const char* renderer_override);
-// GTK reads GDK_DISABLE once at startup, before the display is known, so the
-// display is predicted from the same variables GDK uses to pick a backend.
-bool ExpectsWaylandDisplay(const char* wayland_display, const char* gdk_backend);
 // GDK's EGL setup aborts in libepoxy on some NVIDIA hosts even with the Cairo
 // renderer. Returns the GDK_DISABLE value that also turns off GTK's GL, or
 // nullopt when it is already off or hardware compositing needs it.
