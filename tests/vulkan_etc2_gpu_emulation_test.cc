@@ -2,6 +2,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -1001,6 +1003,181 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsEveryMipOfAFullChainInBc7) {
   CloseTestDevices(&devices);
 }
 
+// Every mip of non-square and layered chains in each ETC2/EAC format keeps
+// its texels in BC: the mips a far draw samples must not come back black.
+TEST(VulkanEtc2GpuEmulationTest, KeepsEveryMipOfEachFormatAndShapeInBc) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  struct Format {
+    VkFormat vk;
+    EtcFormat etc;
+  };
+  struct Shape {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t layers;
+  };
+  const Format formats[] = {
+      {VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, EtcFormat::kEtc2Rgba8},
+      {VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK, EtcFormat::kEtc2Rgb8},
+      {VK_FORMAT_EAC_R11_UNORM_BLOCK, EtcFormat::kEacR11},
+      {VK_FORMAT_EAC_R11G11_UNORM_BLOCK, EtcFormat::kEacRg11},
+  };
+  const Shape shapes[] = {{256, 256, 1}, {256, 64, 1}, {64, 256, 1},
+                          {128, 128, 2}};
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    for (const Format& format : formats) {
+      for (const Shape& shape : shapes) {
+        SCOPED_TRACE(::testing::Message()
+                     << "format " << format.vk << " " << shape.width << "x"
+                     << shape.height << "x" << shape.layers);
+        VulkanEtc2Emulation emulation;
+        emulation.RegisterDevice(vk.device, vk.physical_device, true,
+                                 vk.memory, vk.get_device_proc_addr, false,
+                                 true);
+        emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+        ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+        std::uint32_t mips = 1;
+        while ((std::max(shape.width, shape.height) >> mips) != 0) {
+          ++mips;
+        }
+        VkImageCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = format.vk;
+        info.extent = {shape.width, shape.height, 1};
+        info.mipLevels = mips;
+        info.arrayLayers = shape.layers;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                     VK_IMAGE_USAGE_SAMPLED_BIT;
+        VkImage image = VK_NULL_HANDLE;
+        ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
+                  VK_SUCCESS);
+        VkMemoryRequirements requirements{};
+        vk.Device<PFN_vkGetImageMemoryRequirements>(
+            "vkGetImageMemoryRequirements")(vk.device, image, &requirements);
+        VkMemoryAllocateInfo allocate{};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex =
+            FindMemoryType(vk, requirements.memoryTypeBits, 0);
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        ASSERT_EQ(vk.Device<PFN_vkAllocateMemory>("vkAllocateMemory")(
+                      vk.device, &allocate, nullptr, &memory),
+                  VK_SUCCESS);
+        vk.Device<PFN_vkBindImageMemory>("vkBindImageMemory")(
+            vk.device, image, memory, 0);
+
+        const VkDeviceSize etc_block = EtcBlockBytes(format.etc);
+        const VkDeviceSize bc_block = BcBlockBytes(BcFormatFor(format.etc));
+        std::vector<UploadCase> cases;
+        std::vector<VkDeviceSize> source_offsets;
+        std::vector<VkDeviceSize> readback_offsets;
+        VkDeviceSize source_total = 0;
+        VkDeviceSize readback_total = 0;
+        for (std::uint32_t mip = 0; mip < mips; ++mip) {
+          UploadCase c;
+          c.etc = format.etc;
+          c.width = std::max<std::uint32_t>(1, shape.width >> mip);
+          c.height = std::max<std::uint32_t>(1, shape.height >> mip);
+          c.layers = shape.layers;
+          const VkDeviceSize blocks = VkDeviceSize{(c.width + 3) / 4} *
+                                      ((c.height + 3) / 4) * shape.layers;
+          cases.push_back(c);
+          source_offsets.push_back(source_total);
+          readback_offsets.push_back(readback_total);
+          source_total += (blocks * etc_block + 255) / 256 * 256;
+          readback_total += (blocks * bc_block + 255) / 256 * 256;
+        }
+        HostBuffer source = CreateHostBuffer(vk, source_total,
+                                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        ASSERT_EQ(emulation.BindBufferMemory(vk.device, source.buffer,
+                                             source.memory, 0),
+                  VK_SUCCESS);
+        ASSERT_EQ(emulation.MapMemory(vk.device, source.memory, 0,
+                                      VK_WHOLE_SIZE, 0, &source.mapped),
+                  VK_SUCCESS);
+        std::mt19937_64 random(shape.width * 131 + shape.height);
+        auto* bytes = static_cast<std::uint8_t*>(source.mapped);
+        for (VkDeviceSize i = 0; i < source_total; ++i) {
+          bytes[i] = static_cast<std::uint8_t>(random());
+        }
+        HostBuffer readback = CreateHostBuffer(
+            vk, readback_total, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        BindAndMap(vk, &readback);
+
+        TestCommands commands = BeginTestCommands(vk);
+        for (std::uint32_t mip = 0; mip < mips; ++mip) {
+          ImageBarrier(vk, commands.buffer, image, shape.layers,
+                       VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                       VK_ACCESS_TRANSFER_WRITE_BIT, mip);
+          VkBufferImageCopy region{};
+          region.bufferOffset = source_offsets[mip];
+          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0,
+                                     shape.layers};
+          region.imageExtent = {cases[mip].width, cases[mip].height, 1};
+          emulation.CmdCopyBufferToImage(vk.device, commands.buffer,
+                                         source.buffer, image,
+                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                         1, &region);
+          ImageBarrier(vk, commands.buffer, image, shape.layers,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_ACCESS_TRANSFER_READ_BIT, mip);
+        }
+        for (std::uint32_t mip = 0; mip < mips; ++mip) {
+          VkBufferImageCopy back{};
+          back.bufferOffset = readback_offsets[mip];
+          back.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0,
+                                   shape.layers};
+          back.imageExtent = {cases[mip].width, cases[mip].height, 1};
+          vk.Device<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(
+              commands.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+              readback.buffer, 1, &back);
+        }
+        HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_ACCESS_TRANSFER_WRITE_BIT);
+        vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(
+            commands.buffer);
+        ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, commands.buffer));
+
+        for (std::uint32_t mip = 0; mip < mips; ++mip) {
+          SCOPED_TRACE(::testing::Message() << "mip " << mip);
+          UploadCase c = cases[mip];
+          c.offset = source_offsets[mip];
+          EXPECT_GE(Psnr(c,
+                         DecodeBcReadback(
+                             c, static_cast<std::uint8_t*>(readback.mapped) +
+                                    readback_offsets[mip]),
+                         DecodeOnCpu(c, bytes)),
+                    12.0);
+        }
+
+        emulation.ReleaseCommandBuffer(commands.buffer);
+        DestroyTestCommands(vk, commands);
+        DestroyHostBuffer(vk, readback);
+        DestroyEtcSource(&emulation, vk, source);
+        emulation.DestroyImage(vk.device, image, nullptr);
+        vk.Device<PFN_vkFreeMemory>("vkFreeMemory")(vk.device, memory,
+                                                    nullptr);
+        emulation.DestroyDevice(vk.device);
+      }
+    }
+  }
+  CloseTestDevices(&devices);
+}
+
 // A mip uploaded before level 0 is encoded from its own blocks.
 TEST(VulkanEtc2GpuEmulationTest, UpscalesAMipUploadedBeforeLevelZeroIntoBc7) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
@@ -1869,6 +2046,857 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsRobloxSmallTexturesCompressed) {
     // for RGBA8.
     EXPECT_LT(bytes.decoded, VkDeviceSize{240} * 132 * 2);
     emulation.DestroyImage(vk.device, image, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// Roblox drops a far texture to a smaller copy: a mip of a full-size BC7
+// image is copied into a small image, which is upscaled. The copy has to
+// arrive rather than leave the small texture black.
+TEST(VulkanEtc2GpuEmulationTest, CopiesAFullSizeMipIntoAnUpscaledImage) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    constexpr std::uint32_t kBig = 128;
+    constexpr std::uint32_t kSmall = 32;
+    const std::uint32_t host = kSmall * kDefaultSmallTextureUpscale;
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
+    const TestImage small = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage again = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
+    std::vector<HostBuffer> sources;
+    for (std::uint32_t mip = 0; mip < 3; ++mip) {
+      sources.push_back(CreateRandomEtcSource(&emulation, vk, kBig >> mip));
+    }
+    HostBuffer readback =
+        CreateHostBuffer(vk, Bc7MipBytes(host) + Bc7MipBytes(kSmall),
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands commands = BeginTestCommands(vk);
+    for (std::uint32_t mip = 0; mip < 3; ++mip) {
+      UploadMip(&emulation, vk, commands.buffer, sources[mip].buffer,
+                big.image, mip, kBig >> mip);
+    }
+    ImageBarrier(vk, commands.buffer, small.image, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 2, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {kSmall, kSmall, 1};
+    emulation.CmdCopyImage(vk.device, commands.buffer, big.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, small.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    ImageBarrier(vk, commands.buffer, small.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    ReadMipBc7(vk, commands.buffer, small.image, 0, host, readback.buffer, 0);
+    // Back into the tail of a full-size image, as when the texture is
+    // raised again.
+    ImageBarrier(vk, commands.buffer, again.image, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, 2);
+    VkImageCopy back = region;
+    back.srcSubresource.mipLevel = 0;
+    back.dstSubresource.mipLevel = 2;
+    emulation.CmdCopyImage(vk.device, commands.buffer, small.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, again.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &back);
+    ImageBarrier(vk, commands.buffer, again.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
+    ReadMipBc7(vk, commands.buffer, again.image, 2, kSmall, readback.buffer,
+               Bc7MipBytes(host));
+    HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+    ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, commands.buffer));
+
+    UploadCase expected;
+    expected.etc = EtcFormat::kEtc2Rgb8;
+    expected.width = kSmall;
+    expected.height = kSmall;
+    UploadCase actual = expected;
+    actual.width = host;
+    actual.height = host;
+    const auto mean = [](const std::vector<std::uint8_t>& texels) {
+      double sum = 0;
+      for (std::size_t i = 0; i < texels.size(); i += 4) {
+        sum += texels[i] + texels[i + 1] + texels[i + 2];
+      }
+      return sum / (texels.size() / 4 * 3);
+    };
+    const double want = mean(DecodeOnCpu(
+        expected, static_cast<std::uint8_t*>(sources[2].mapped)));
+    const double got = mean(DecodeBcReadback(
+        actual, static_cast<std::uint8_t*>(readback.mapped)));
+    EXPECT_NEAR(got, want, 12.0);
+    EXPECT_GE(Psnr(expected,
+                   DecodeBcReadback(
+                       expected, static_cast<std::uint8_t*>(readback.mapped) +
+                                     Bc7MipBytes(host)),
+                   DecodeOnCpu(expected, static_cast<std::uint8_t*>(
+                                             sources[2].mapped))),
+              21.0);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyHostBuffer(vk, readback);
+    for (const HostBuffer& source : sources) {
+      DestroyEtcSource(&emulation, vk, source);
+    }
+    DestroyTestImage(&emulation, vk, again);
+    DestroyTestImage(&emulation, vk, small);
+    DestroyTestImage(&emulation, vk, big);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// Part of a full-size BC7 mip copied into an upscaled image arrives, and
+// a copy of the result back into a full-size tail mip carries the same
+// texels.
+TEST(VulkanEtc2GpuEmulationTest, CopiesAPartOfAMipIntoAnUpscaledImage) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    constexpr std::uint32_t kBig = 128;
+    constexpr std::uint32_t kSmall = 32;
+    constexpr std::uint32_t kOffset = 16;
+    const std::uint32_t host = kSmall * kDefaultSmallTextureUpscale;
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 2);
+    const TestImage small = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage again = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
+    std::vector<HostBuffer> sources;
+    for (std::uint32_t mip = 0; mip < 2; ++mip) {
+      sources.push_back(CreateRandomEtcSource(&emulation, vk, kBig >> mip));
+    }
+    HostBuffer readback =
+        CreateHostBuffer(vk, Bc7MipBytes(host) + Bc7MipBytes(kSmall),
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands commands = BeginTestCommands(vk);
+    for (std::uint32_t mip = 0; mip < 2; ++mip) {
+      UploadMip(&emulation, vk, commands.buffer, sources[mip].buffer,
+                big.image, mip, kBig >> mip);
+    }
+    ImageBarrier(vk, commands.buffer, small.image, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1};
+    region.srcOffset = {kOffset, kOffset, 0};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {kSmall, kSmall, 1};
+    emulation.CmdCopyImage(vk.device, commands.buffer, big.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, small.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    ImageBarrier(vk, commands.buffer, small.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    ReadMipBc7(vk, commands.buffer, small.image, 0, host, readback.buffer, 0);
+    ImageBarrier(vk, commands.buffer, again.image, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, 2);
+    VkImageCopy back{};
+    back.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    back.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 2, 0, 1};
+    back.extent = {kSmall, kSmall, 1};
+    emulation.CmdCopyImage(vk.device, commands.buffer, small.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, again.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &back);
+    ImageBarrier(vk, commands.buffer, again.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
+    ReadMipBc7(vk, commands.buffer, again.image, 2, kSmall, readback.buffer,
+               Bc7MipBytes(host));
+    HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+    ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, commands.buffer));
+
+    UploadCase mip1;
+    mip1.etc = EtcFormat::kEtc2Rgb8;
+    mip1.width = kBig / 2;
+    mip1.height = kBig / 2;
+    const std::vector<std::uint8_t> whole =
+        DecodeOnCpu(mip1, static_cast<std::uint8_t*>(sources[1].mapped));
+    std::vector<std::uint8_t> part;
+    for (std::uint32_t y = kOffset; y < kOffset + kSmall; ++y) {
+      const auto row = whole.begin() + (std::size_t{y} * mip1.width + kOffset) * 4;
+      part.insert(part.end(), row, row + kSmall * 4);
+    }
+    UploadCase expected;
+    expected.etc = EtcFormat::kEtc2Rgb8;
+    expected.width = kSmall;
+    expected.height = kSmall;
+    UploadCase upscaled = expected;
+    upscaled.width = host;
+    upscaled.height = host;
+    const auto mean = [](const std::vector<std::uint8_t>& texels) {
+      double sum = 0;
+      for (std::size_t i = 0; i < texels.size(); i += 4) {
+        sum += texels[i] + texels[i + 1] + texels[i + 2];
+      }
+      return sum / (texels.size() / 4 * 3);
+    };
+    EXPECT_NEAR(mean(DecodeBcReadback(
+                    upscaled, static_cast<std::uint8_t*>(readback.mapped))),
+                mean(part), 12.0);
+    EXPECT_GE(Psnr(expected,
+                   DecodeBcReadback(
+                       expected, static_cast<std::uint8_t*>(readback.mapped) +
+                                     Bc7MipBytes(host)),
+                   part),
+              21.0);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyHostBuffer(vk, readback);
+    for (const HostBuffer& source : sources) {
+      DestroyEtcSource(&emulation, vk, source);
+    }
+    DestroyTestImage(&emulation, vk, again);
+    DestroyTestImage(&emulation, vk, small);
+    DestroyTestImage(&emulation, vk, big);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+void StartBcEmulation(VulkanEtc2Emulation* emulation,
+                      const VulkanTestDevice& vk, bool timeline = false) {
+  emulation->RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                            vk.get_device_proc_addr, timeline, true);
+  emulation->RegisterQueue(vk.device, vk.queue, vk.family);
+  ASSERT_TRUE(emulation->EnableGpuDecode(vk.device, vk.queue, vk.family));
+}
+
+void EndAndSubmit(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
+                  VkCommandBuffer command_buffer) {
+  vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(command_buffer);
+  ASSERT_TRUE(SubmitThroughEmulation(emulation, vk, command_buffer));
+}
+
+void CopyImage(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
+               VkCommandBuffer command_buffer, VkImage source,
+               std::uint32_t source_mip, VkOffset3D source_offset,
+               VkImage destination, std::uint32_t destination_mip,
+               VkOffset3D destination_offset, std::uint32_t size,
+               bool fresh_destination = true) {
+  if (fresh_destination) {
+    ImageBarrier(vk, command_buffer, destination, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, destination_mip);
+  } else {
+    ImageBarrier(vk, command_buffer, destination, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                 destination_mip);
+  }
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, source_mip, 0, 1};
+  region.srcOffset = source_offset;
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, destination_mip, 0, 1};
+  region.dstOffset = destination_offset;
+  region.extent = {size, size, 1};
+  emulation->CmdCopyImage(vk.device, command_buffer, source,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  ImageBarrier(vk, command_buffer, destination, 1,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+               VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+               destination_mip);
+}
+
+UploadCase Rgb8Case(std::uint32_t size) {
+  UploadCase c;
+  c.etc = EtcFormat::kEtc2Rgb8;
+  c.width = size;
+  c.height = size;
+  return c;
+}
+
+double MeanRgb(const std::vector<std::uint8_t>& texels) {
+  double sum = 0;
+  for (std::size_t i = 0; i < texels.size(); i += 4) {
+    sum += texels[i] + texels[i + 1] + texels[i + 2];
+  }
+  return sum / (texels.size() / 4 * 3);
+}
+
+// Keeping the blocks of a BC image's small mips is CPU work the GPU copy
+// never reads, so the submit does not wait on it, and a later copy into an
+// upscaled image still finds them.
+TEST(VulkanEtc2GpuEmulationTest, KeepsSmallMipBlocksWithoutAGpuWait) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures || !vk.timeline) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk, true);
+    constexpr std::uint32_t kBig = 128;
+    constexpr std::uint32_t kSmall = 32;
+    const std::uint32_t host = kSmall * kDefaultSmallTextureUpscale;
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
+    const TestImage small = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    std::vector<HostBuffer> sources;
+    for (std::uint32_t mip = 0; mip < 3; ++mip) {
+      sources.push_back(CreateRandomEtcSource(&emulation, vk, kBig >> mip));
+    }
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(host),
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands upload = BeginTestCommands(vk);
+    for (std::uint32_t mip = 0; mip < 3; ++mip) {
+      UploadMip(&emulation, vk, upload.buffer, sources[mip].buffer, big.image,
+                mip, kBig >> mip);
+    }
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(upload.buffer);
+    const Etc2SubmitWait wait =
+        emulation.PrepareSubmit(&upload.buffer, 1, true, vk.queue);
+    EXPECT_EQ(wait.semaphore, VK_NULL_HANDLE);
+    std::vector<VkCommandBuffer> submitted = wait.decode_commands;
+    submitted.push_back(upload.buffer);
+    ASSERT_TRUE(SubmitAndWait(vk, submitted));
+
+    TestCommands copy = BeginTestCommands(vk);
+    CopyImage(&emulation, vk, copy.buffer, big.image, 2, {0, 0, 0},
+              small.image, 0, {0, 0, 0}, kSmall);
+    ReadMipBc7(vk, copy.buffer, small.image, 0, host, readback.buffer, 0);
+    HostReadBarrier(vk, copy.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(copy.buffer);
+    const Etc2SubmitWait copy_wait =
+        emulation.PrepareSubmit(&copy.buffer, 1, true, vk.queue);
+    if (copy_wait.semaphore != VK_NULL_HANDLE) {
+      VkSemaphoreWaitInfo wait_info{};
+      wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+      wait_info.semaphoreCount = 1;
+      wait_info.pSemaphores = &copy_wait.semaphore;
+      wait_info.pValues = &copy_wait.value;
+      ASSERT_EQ(vk.Device<PFN_vkWaitSemaphores>("vkWaitSemaphores")(
+                    vk.device, &wait_info, UINT64_MAX),
+                VK_SUCCESS);
+    }
+    submitted = copy_wait.decode_commands;
+    submitted.push_back(copy.buffer);
+    ASSERT_TRUE(SubmitAndWait(vk, submitted));
+
+    EXPECT_NEAR(MeanRgb(DecodeBcReadback(
+                    Rgb8Case(host),
+                    static_cast<std::uint8_t*>(readback.mapped))),
+                MeanRgb(DecodeOnCpu(
+                    Rgb8Case(kSmall),
+                    static_cast<std::uint8_t*>(sources[2].mapped))),
+                12.0);
+
+    emulation.ReleaseCommandBuffer(upload.buffer);
+    emulation.ReleaseCommandBuffer(copy.buffer);
+    DestroyTestCommands(vk, upload);
+    DestroyTestCommands(vk, copy);
+    DestroyHostBuffer(vk, readback);
+    for (const HostBuffer& source : sources) {
+      DestroyEtcSource(&emulation, vk, source);
+    }
+    DestroyTestImage(&emulation, vk, small);
+    DestroyTestImage(&emulation, vk, big);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// An upload from memory the host cannot map still reaches the GPU, and the
+// CPU never tries to map that memory to keep its blocks.
+TEST(VulkanEtc2GpuEmulationTest, KeepsNoBlocksFromMemoryTheHostCannotRead) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    constexpr std::uint32_t kBig = 128;
+    constexpr std::uint32_t kMip = 2;
+    constexpr std::uint32_t kSize = kBig >> kMip;
+    const VkDeviceSize bytes = VkDeviceSize{kSize / 4} * (kSize / 4) * 8;
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = bytes;
+    info.usage =
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer device_buffer = VK_NULL_HANDLE;
+    ASSERT_EQ(vk.Device<PFN_vkCreateBuffer>("vkCreateBuffer")(
+                  vk.device, &info, nullptr, &device_buffer),
+              VK_SUCCESS);
+    VkMemoryRequirements requirements{};
+    vk.Device<PFN_vkGetBufferMemoryRequirements>(
+        "vkGetBufferMemoryRequirements")(vk.device, device_buffer,
+                                         &requirements);
+    std::uint32_t type = UINT32_MAX;
+    for (std::uint32_t i = 0; i < vk.memory.memoryTypeCount; ++i) {
+      const VkMemoryPropertyFlags flags = vk.memory.memoryTypes[i].propertyFlags;
+      if ((requirements.memoryTypeBits & (1U << i)) != 0 &&
+          (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+        type = i;
+        break;
+      }
+    }
+    if (type == UINT32_MAX) {
+      vk.Device<PFN_vkDestroyBuffer>("vkDestroyBuffer")(vk.device,
+                                                        device_buffer, nullptr);
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk);
+    VkMemoryAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = type;
+    VkDeviceMemory device_memory = VK_NULL_HANDLE;
+    ASSERT_EQ(vk.Device<PFN_vkAllocateMemory>("vkAllocateMemory")(
+                  vk.device, &allocate, nullptr, &device_memory),
+              VK_SUCCESS);
+    emulation.TrackAllocation(vk.device, &allocate, device_memory);
+    ASSERT_EQ(emulation.BindBufferMemory(vk.device, device_buffer,
+                                         device_memory, 0),
+              VK_SUCCESS);
+    HostBuffer blocks =
+        CreateHostBuffer(vk, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    BindAndMap(vk, &blocks);
+    std::mt19937_64 random(kSize);
+    for (VkDeviceSize i = 0; i < bytes; ++i) {
+      static_cast<std::uint8_t*>(blocks.mapped)[i] =
+          static_cast<std::uint8_t>(random());
+    }
+    TestCommands fill = BeginTestCommands(vk);
+    const VkBufferCopy whole{0, 0, bytes};
+    vk.Device<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(
+        fill.buffer, blocks.buffer, device_buffer, 1, &whole);
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(fill.buffer);
+    ASSERT_TRUE(SubmitAndWait(vk, {fill.buffer}));
+
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(kSize),
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+    const std::uint64_t unmappable =
+        Etc2FailureCount("could not map an unmapped upload source");
+    TestCommands upload = BeginTestCommands(vk);
+    UploadMip(&emulation, vk, upload.buffer, device_buffer, big.image, kMip,
+              kSize);
+    ReadMipBc7(vk, upload.buffer, big.image, kMip, kSize, readback.buffer, 0);
+    HostReadBarrier(vk, upload.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    EndAndSubmit(&emulation, vk, upload.buffer);
+
+    EXPECT_EQ(Etc2FailureCount("could not map an unmapped upload source"),
+              unmappable);
+    EXPECT_GE(Psnr(Rgb8Case(kSize),
+                   DecodeBcReadback(Rgb8Case(kSize), static_cast<std::uint8_t*>(
+                                                         readback.mapped)),
+                   DecodeOnCpu(Rgb8Case(kSize),
+                               static_cast<std::uint8_t*>(blocks.mapped))),
+              21.0);
+
+    emulation.ReleaseCommandBuffer(upload.buffer);
+    DestroyTestCommands(vk, upload);
+    DestroyTestCommands(vk, fill);
+    DestroyHostBuffer(vk, readback);
+    DestroyHostBuffer(vk, blocks);
+    DestroyTestImage(&emulation, vk, big);
+    emulation.DestroyBuffer(vk.device, device_buffer, nullptr);
+    emulation.FreeMemory(vk.device, device_memory, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// Only mips small enough to keep their blocks can be copied into an upscaled
+// image. A copy from a larger mip is skipped when it is recorded, with its
+// own reason, instead of filling the image with zeros at submit.
+TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAMipTooLargeToKeep) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk);
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, 1);
+    const TestImage small = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 1);
+    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, 128);
+    const std::uint64_t zeroed =
+        Etc2FailureCount("copied into a compressed image without its source");
+    const std::uint64_t skipped =
+        Etc2FailureCount("skipped a copy from a mip too large to keep");
+
+    TestCommands commands = BeginTestCommands(vk);
+    UploadMip(&emulation, vk, commands.buffer, source.buffer, big.image, 0,
+              128);
+    CopyImage(&emulation, vk, commands.buffer, big.image, 0, {32, 32, 0},
+              small.image, 0, {0, 0, 0}, 32);
+    EndAndSubmit(&emulation, vk, commands.buffer);
+
+    EXPECT_EQ(
+        Etc2FailureCount("copied into a compressed image without its source"),
+        zeroed);
+    EXPECT_EQ(Etc2FailureCount("skipped a copy from a mip too large to keep"),
+              skipped + 1);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyEtcSource(&emulation, vk, source);
+    DestroyTestImage(&emulation, vk, small);
+    DestroyTestImage(&emulation, vk, big);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// A partial copy between upscaled images patches the destination's kept
+// blocks, so a later copy out of it carries both parts.
+TEST(VulkanEtc2GpuEmulationTest, PatchesKeptBlocksOnAPartialCopy) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk);
+    constexpr std::uint32_t kSmall = 32;
+    constexpr std::uint32_t kPart = 16;
+    const TestImage first = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage second = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, 3);
+    const HostBuffer first_source =
+        CreateRandomEtcSource(&emulation, vk, kSmall);
+    // Refilled from another seed, since sources are seeded by size.
+    const HostBuffer second_blocks =
+        CreateRandomEtcSource(&emulation, vk, kSmall);
+    std::mt19937_64 random(99);
+    auto* second_bytes = static_cast<std::uint8_t*>(second_blocks.mapped);
+    for (std::size_t i = 0; i < std::size_t{kSmall / 4} * (kSmall / 4) * 8;
+         ++i) {
+      second_bytes[i] = static_cast<std::uint8_t>(random());
+    }
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(kSmall),
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands commands = BeginTestCommands(vk);
+    UploadMip(&emulation, vk, commands.buffer, first_source.buffer,
+              first.image, 0, kSmall);
+    UploadMip(&emulation, vk, commands.buffer, second_blocks.buffer,
+              second.image, 0, kSmall);
+    CopyImage(&emulation, vk, commands.buffer, first.image, 0, {0, 0, 0},
+              second.image, 0, {kPart, 0, 0}, kPart, false);
+    CopyImage(&emulation, vk, commands.buffer, second.image, 0, {0, 0, 0},
+              big.image, 2, {0, 0, 0}, kSmall);
+    ReadMipBc7(vk, commands.buffer, big.image, 2, kSmall, readback.buffer, 0);
+    HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    EndAndSubmit(&emulation, vk, commands.buffer);
+
+    std::vector<std::uint8_t> expected = DecodeOnCpu(Rgb8Case(kSmall), second_bytes);
+    const std::vector<std::uint8_t> part = DecodeOnCpu(
+        Rgb8Case(kSmall), static_cast<std::uint8_t*>(first_source.mapped));
+    for (std::uint32_t y = 0; y < kPart; ++y) {
+      std::memcpy(expected.data() + (std::size_t{y} * kSmall + kPart) * 4,
+                  part.data() + std::size_t{y} * kSmall * 4, kPart * 4);
+    }
+    EXPECT_GE(Psnr(Rgb8Case(kSmall),
+                   DecodeBcReadback(Rgb8Case(kSmall),
+                                    static_cast<std::uint8_t*>(readback.mapped)),
+                   expected),
+              21.0);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyHostBuffer(vk, readback);
+    DestroyEtcSource(&emulation, vk, second_blocks);
+    DestroyEtcSource(&emulation, vk, first_source);
+    DestroyTestImage(&emulation, vk, big);
+    DestroyTestImage(&emulation, vk, second);
+    DestroyTestImage(&emulation, vk, first);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// A tail mip of a full-size image filled by a copy from a small texture keeps
+// those blocks, so copying that mip into another small texture carries them.
+TEST(VulkanEtc2GpuEmulationTest, KeepsBlocksOfATailMipFilledByACopy) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk);
+    constexpr std::uint32_t kSmall = 32;
+    const TestImage placeholder = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage full = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, 3);
+    const TestImage lowered = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage raised = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, 3);
+    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, kSmall);
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(kSmall),
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands commands = BeginTestCommands(vk);
+    UploadMip(&emulation, vk, commands.buffer, source.buffer,
+              placeholder.image, 0, kSmall);
+    CopyImage(&emulation, vk, commands.buffer, placeholder.image, 0,
+              {0, 0, 0}, full.image, 2, {0, 0, 0}, kSmall);
+    CopyImage(&emulation, vk, commands.buffer, full.image, 2, {0, 0, 0},
+              lowered.image, 0, {0, 0, 0}, kSmall);
+    CopyImage(&emulation, vk, commands.buffer, lowered.image, 0, {0, 0, 0},
+              raised.image, 2, {0, 0, 0}, kSmall);
+    ReadMipBc7(vk, commands.buffer, raised.image, 2, kSmall, readback.buffer,
+               0);
+    HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    EndAndSubmit(&emulation, vk, commands.buffer);
+
+    EXPECT_GE(Psnr(Rgb8Case(kSmall),
+                   DecodeBcReadback(Rgb8Case(kSmall),
+                                    static_cast<std::uint8_t*>(readback.mapped)),
+                   DecodeOnCpu(Rgb8Case(kSmall),
+                               static_cast<std::uint8_t*>(source.mapped))),
+              21.0);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyHostBuffer(vk, readback);
+    DestroyEtcSource(&emulation, vk, source);
+    DestroyTestImage(&emulation, vk, raised);
+    DestroyTestImage(&emulation, vk, lowered);
+    DestroyTestImage(&emulation, vk, full);
+    DestroyTestImage(&emulation, vk, placeholder);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// Benchmark, run by hand with --gtest_also_run_disabled_tests: the submit
+// cost of 128px chains with only level 0 against full chains, whose 64px and
+// smaller mips keep their blocks. The gap bounds the cost of keeping them.
+TEST(VulkanEtc2GpuEmulationTest, DISABLED_BenchmarkKeepingSmallMipBlocks) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  for (VulkanTestDevice& vk : devices) {
+    if (!vk.bc_textures || !vk.timeline) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk, true);
+    constexpr std::uint32_t kTextures = 256;
+    constexpr std::uint32_t kMips = 8;
+    std::vector<TestImage> images;
+    for (std::uint32_t i = 0; i < kTextures; ++i) {
+      images.push_back(CreateTestImage(
+          &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, kMips));
+    }
+    std::vector<HostBuffer> sources;
+    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+      sources.push_back(
+          CreateRandomEtcSource(&emulation, vk, std::max(4U, 128U >> mip)));
+    }
+    for (const std::uint32_t mips : {1U, kMips}) {
+      std::vector<double> times;
+      for (int run = 0; run < 7; ++run) {
+        TestCommands commands = BeginTestCommands(vk);
+        for (const TestImage& image : images) {
+          for (std::uint32_t mip = 0; mip < mips; ++mip) {
+            UploadMip(&emulation, vk, commands.buffer, sources[mip].buffer,
+                      image.image, mip, std::max(1U, 128U >> mip));
+          }
+        }
+        vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(
+            commands.buffer);
+        const auto start = std::chrono::steady_clock::now();
+        const Etc2SubmitWait wait =
+            emulation.PrepareSubmit(&commands.buffer, 1, true, vk.queue);
+        times.push_back(std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start)
+                            .count());
+        EXPECT_EQ(wait.semaphore, VK_NULL_HANDLE);
+        std::vector<VkCommandBuffer> submitted = wait.decode_commands;
+        submitted.push_back(commands.buffer);
+        ASSERT_TRUE(SubmitAndWait(vk, submitted));
+        emulation.ReleaseCommandBuffer(commands.buffer);
+        DestroyTestCommands(vk, commands);
+      }
+      std::sort(times.begin(), times.end());
+      std::printf("%s: %u textures, mips 0-%u: PrepareSubmit median %.3f ms\n",
+                  vk.name.c_str(), kTextures, mips - 1, times[times.size() / 2]);
+    }
+    for (const HostBuffer& source : sources) {
+      DestroyEtcSource(&emulation, vk, source);
+    }
+    for (const TestImage& image : images) {
+      DestroyTestImage(&emulation, vk, image);
+    }
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// A small texture filled by a copy from another small one, then copied into
+// the tail mip of a full-size BC7 image, keeps its texels on the way.
+TEST(VulkanEtc2GpuEmulationTest, CopiesACopiedPlaceholderIntoATailMip) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    constexpr std::uint32_t kBig = 128;
+    constexpr std::uint32_t kSmall = 32;
+    const TestImage first = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage second = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSmall, 1);
+    const TestImage big = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
+    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, kSmall);
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(kSmall),
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands commands = BeginTestCommands(vk);
+    UploadLevel(&emulation, vk, commands.buffer, source.buffer, first.image,
+                kSmall);
+    ImageBarrier(vk, commands.buffer, second.image, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {kSmall, kSmall, 1};
+    emulation.CmdCopyImage(vk.device, commands.buffer, first.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, second.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    ImageBarrier(vk, commands.buffer, second.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    ImageBarrier(vk, commands.buffer, big.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, 2);
+    region.dstSubresource.mipLevel = 2;
+    emulation.CmdCopyImage(vk.device, commands.buffer, second.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, big.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    ImageBarrier(vk, commands.buffer, big.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
+    ReadMipBc7(vk, commands.buffer, big.image, 2, kSmall, readback.buffer, 0);
+    HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+    ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, commands.buffer));
+
+    UploadCase c;
+    c.etc = EtcFormat::kEtc2Rgb8;
+    c.width = kSmall;
+    c.height = kSmall;
+    EXPECT_GE(Psnr(c,
+                   DecodeBcReadback(
+                       c, static_cast<std::uint8_t*>(readback.mapped)),
+                   DecodeOnCpu(c, static_cast<std::uint8_t*>(source.mapped))),
+              21.0);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyHostBuffer(vk, readback);
+    DestroyEtcSource(&emulation, vk, source);
+    DestroyTestImage(&emulation, vk, big);
+    DestroyTestImage(&emulation, vk, second);
+    DestroyTestImage(&emulation, vk, first);
     emulation.DestroyDevice(vk.device);
   }
   CloseTestDevices(&devices);

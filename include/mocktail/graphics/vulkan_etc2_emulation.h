@@ -78,6 +78,10 @@ struct Etc2SubmitWait {
   std::vector<VkCommandBuffer> decode_commands;
 };
 
+// How many times this process has hit the ETC2 failure `message`, including
+// the times past its log cap.
+std::uint64_t Etc2FailureCount(const char* message);
+
 // Reports ETC2/EAC support on hosts without native ETC2 (desktop GPUs) and
 // stores those textures decoded. Images are created with the host format;
 // each staged upload into one is redirected to a host-visible staging buffer
@@ -125,6 +129,10 @@ class VulkanEtc2Emulation final {
                            const VkImageViewCreateInfo* create_info,
                            const VkAllocationCallbacks* allocator,
                            VkImageView* view);
+  // Called after a successful vkAllocateMemory, so the CPU never maps memory
+  // the host cannot read.
+  void TrackAllocation(VkDevice device, const VkMemoryAllocateInfo* info,
+                       VkDeviceMemory memory);
   VkResult BindBufferMemory(VkDevice device, VkBuffer buffer,
                             VkDeviceMemory memory, VkDeviceSize offset);
   VkResult BindBufferMemory2(VkDevice device, std::uint32_t count,
@@ -173,7 +181,9 @@ class VulkanEtc2Emulation final {
   //
   // Returns `{VK_NULL_HANDLE, 0}` when there was nothing to decode, when
   // `allow_async` is false, or when the device has no timeline semaphore. In
-  // those cases every upload is already decoded when this returns.
+  // those cases every upload is already decoded when this returns. It also
+  // returns no semaphore when the uploads only keep ETC2 blocks for later
+  // copies, which the GPU never reads.
   Etc2SubmitWait PrepareSubmit(const VkCommandBuffer* command_buffers,
                                std::uint32_t count, bool allow_async = false,
                                VkQueue queue = VK_NULL_HANDLE);

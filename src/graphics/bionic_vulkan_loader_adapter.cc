@@ -1266,6 +1266,9 @@ VkResult VKAPI_CALL ProfiledAllocateMemory(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkAllocateMemory", "memory");
   const VkResult result = host(device, allocate_info, allocator, memory);
+  if (result == VK_SUCCESS && memory != nullptr) {
+    State().etc2.TrackAllocation(device, allocate_info, *memory);
+  }
   scope.Arg("bytes", allocate_info != nullptr
                          ? static_cast<std::int64_t>(
                                allocate_info->allocationSize)

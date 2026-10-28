@@ -476,6 +476,59 @@ TEST_F(Etc2GpuTranscodeTest, RandomBlocksMeetTheQualityFloor) {
   }
 }
 
+// Each ETC2 colour mode encodes within the random-block floor on its own, so
+// a mode the encoder mishandles cannot hide behind the others' average.
+TEST_F(Etc2GpuTranscodeTest, EveryColourModeMeetsTheQualityFloor) {
+  constexpr std::uint32_t kBlocks = 1 << 16;
+  const char* const kModes[] = {"individual", "differential", "T", "H",
+                                "planar"};
+  for (VulkanTestDevice& vk : devices_) {
+    SCOPED_TRACE(vk.name);
+    std::unique_ptr<Etc2GpuDecoder> decoder = Decoder(vk);
+    ASSERT_NE(decoder, nullptr);
+    for (const EtcFormat format :
+         {EtcFormat::kEtc2Rgb8, EtcFormat::kEtc2Rgba8}) {
+      const std::size_t block_bytes = EtcBlockBytes(format);
+      const std::size_t rgb = format == EtcFormat::kEtc2Rgba8 ? 8 : 0;
+      const std::vector<std::uint8_t> etc =
+          RandomBlocks(format, kBlocks, 29 + static_cast<int>(format));
+      std::vector<std::uint8_t> by_mode[5];
+      for (std::uint32_t b = 0; b < kBlocks; ++b) {
+        const std::uint8_t* block = etc.data() + b * block_bytes;
+        const std::uint8_t* word = block + rgb;
+        const auto overflows = [](std::uint8_t byte) {
+          const int base = byte >> 3;
+          const int delta = (byte & 7) >= 4 ? (byte & 7) - 8 : (byte & 7);
+          return base + delta < 0 || base + delta > 31;
+        };
+        int mode = 0;
+        if ((word[3] & 2) != 0) {
+          mode = overflows(word[0])   ? 2
+                 : overflows(word[1]) ? 3
+                 : overflows(word[2]) ? 4
+                                      : 1;
+        }
+        by_mode[mode].insert(by_mode[mode].end(), block, block + block_bytes);
+      }
+      for (int mode = 0; mode < 5; ++mode) {
+        SCOPED_TRACE(::testing::Message() << static_cast<int>(format) << " "
+                                          << kModes[mode]);
+        const std::uint32_t count =
+            static_cast<std::uint32_t>(by_mode[mode].size() / block_bytes);
+        ASSERT_GT(count, 0U);
+        const std::vector<std::uint8_t> bc = Transcode(
+            vk, *decoder, by_mode[mode], TightJob(format, count));
+        ASSERT_FALSE(bc.empty());
+        const Quality q = Measure(format, by_mode[mode], bc.data(), count);
+        std::printf("  format %d %s: %u blocks, %.2f dB, max error %d\n",
+                    static_cast<int>(format), kModes[mode], count, q.psnr,
+                    q.max_error);
+        EXPECT_GE(q.psnr, format == EtcFormat::kEtc2Rgb8 ? 24.0 : 20.0);
+      }
+    }
+  }
+}
+
 // Measured 43.2 dB, worst texel 17 levels. Random halves use the widest
 // modifier tables far more than real textures do (see the APK test).
 TEST_F(Etc2GpuTranscodeTest, UnclampedHalvesKeepTheirDetail) {
