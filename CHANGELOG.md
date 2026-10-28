@@ -8,8 +8,9 @@ Release notes on GitHub are taken from the matching section here.
 ### Added
 
 - In-game video plays, such as livestream screens in events. It used to stay black because Android's
-  video decoder was missing; Nightcap now decodes H.264, HEVC, VP8 and VP9 with FFmpeg, which is a new
-  dependency. The log shows `[media]` lines for each video.
+  video decoder was missing; Nightcap now decodes H.264, HEVC, VP8 and VP9 video and AAC audio with
+  FFmpeg, which is a new dependency. Videos with a sound track no longer fail to load. The log shows
+  `[media]` lines for each video.
 - An optional popup shows the game server's location for a few seconds after each join
   (`overlay.location`), and `overlay.location_offset` moves it down. A separate performance
   overlay keeps your frame rate (`overlay.fps`) and ping (`overlay.ping`) on screen, and
