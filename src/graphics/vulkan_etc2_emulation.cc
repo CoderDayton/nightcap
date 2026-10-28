@@ -265,8 +265,8 @@ struct ImageRecord {
   // An override file names this image's size, so its uploads decode on the
   // CPU where they can be hashed and replaced.
   bool may_override = false;
-  // Compressed blocks of each full-mip upload to a scaled image, by mip.
-  // Copies into a BC image are transcoded from them.
+  // Compressed blocks of each full-mip upload to a scaled or decoded image,
+  // by mip. Copies into a BC image are transcoded from them.
   std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> blocks;
 };
 
@@ -913,6 +913,13 @@ bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
           region.imageOffset.x == 0 && region.imageOffset.y == 0 &&
           upload.source_width == std::max<std::uint32_t>(1, record.width >> mip) &&
           upload.source_height == std::max<std::uint32_t>(1, record.height >> mip);
+    } else {
+      const std::uint32_t mip = region.imageSubresource.mipLevel;
+      upload.full_mip =
+          region.imageSubresource.layerCount == 1 &&
+          region.imageOffset.x == 0 && region.imageOffset.y == 0 &&
+          upload.width == std::max<std::uint32_t>(1, record.width >> mip) &&
+          upload.height == std::max<std::uint32_t>(1, record.height >> mip);
     }
     rewritten->push_back(copy);
     uploads->push_back(upload);
@@ -1011,6 +1018,9 @@ struct VulkanEtc2Emulation::State {
                 std::size_t{upload.width} * 4, upload.target_width,
                 upload.target_height, upload.target);
     } else {
+      // The blocks are kept so a later copy into a BC image can re-encode
+      // them.
+      StoreScaledUpload(upload, compressed, nullptr);
       std::memcpy(upload.target, decoded, upload.decoded);
     }
   }
@@ -1249,8 +1259,13 @@ struct VulkanEtc2Emulation::State {
                      const Region* regions,
                      std::vector<GpuCopy<Region>>* copies) {
     copies->clear();
+    // A decoded image beside BC ones decodes on the CPU, which keeps its
+    // blocks for the copies into a BC image that the GPU path cannot see.
+    const bool decoded_beside_bc =
+        !record.transcoded && IsColorFormat(record.format.etc_format) &&
+        dev.bc_textures && dev.gpu != nullptr && dev.gpu->CanTranscode();
     if (dev.gpu == nullptr || dev.copy_buffer == nullptr ||
-        record.scale != 1 || record.may_override) {
+        record.scale != 1 || record.may_override || decoded_beside_bc) {
       return false;
     }
     std::vector<Region> split;
@@ -2715,7 +2730,8 @@ bool VulkanEtc2Emulation::State::RedirectImageCopy(
                               source_record, destination, destination_layout,
                               destination_record, count, regions);
     }
-    if (source_scaled && !destination_scaled) {
+    if (!destination_scaled && source_found &&
+        (source_scaled || !source_record.transcoded)) {
       TranscodeCopy(dev, command_buffer, source, source_record, destination,
                     destination_record, destination_layout, count, regions);
     } else {
