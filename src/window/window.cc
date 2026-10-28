@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -68,6 +69,8 @@ static constexpr EGLint EGL_DEPTH_SIZE_VAL = 0x3025;
 static constexpr EGLint EGL_STENCIL_SIZE_VAL = 0x3026;
 static constexpr EGLint EGL_CONTEXT_CLIENT_VERSION_VAL = 0x3098;
 static constexpr EGLint EGL_EXTENSIONS_VAL = 0x3055;
+static constexpr EGLint EGL_MIN_SWAP_INTERVAL_VAL = 0x303B;
+static constexpr EGLint EGL_MAX_SWAP_INTERVAL_VAL = 0x303C;
 static constexpr EGLint EGL_DEBUG_MSG_CRITICAL_KHR_VAL = 0x33B9;
 static constexpr EGLint EGL_DEBUG_MSG_ERROR_KHR_VAL = 0x33BA;
 static constexpr EGLint EGL_DEBUG_MSG_WARN_KHR_VAL = 0x33BB;
@@ -109,6 +112,9 @@ using PFN_eglCreateContext = EGLContext (*)(EGLDisplay, EGLConfig, EGLContext,
 using PFN_eglMakeCurrent = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface,
                                           EGLContext);
 using PFN_eglSwapBuffers = EGLBoolean (*)(EGLDisplay, EGLSurface);
+using PFN_eglSwapInterval = EGLBoolean (*)(EGLDisplay, EGLint);
+using PFN_eglGetConfigAttrib = EGLBoolean (*)(EGLDisplay, EGLConfig, EGLint,
+                                              EGLint*);
 using PFN_eglGetError = EGLint (*)();
 using PFN_eglDestroyContext = EGLBoolean (*)(EGLDisplay, EGLContext);
 using PFN_eglDestroySurface = EGLBoolean (*)(EGLDisplay, EGLSurface);
@@ -121,6 +127,9 @@ struct WindowState {
   EGLConfig egl_config = nullptr;
   EGLSurface egl_surface = nullptr;
   EGLContext egl_context = nullptr;
+  PFN_eglSwapInterval egl_swap_interval = nullptr;
+  int min_swap_interval = 1;
+  int max_swap_interval = 1;
   void* native_window = nullptr;
   int width = 1280;
   int height = 720;
@@ -1071,6 +1080,8 @@ bool Init(int width, int height, const char* title) {
   if (g_state.initialised) {
     return true;
   }
+  const int requested_width = width;
+  const int requested_height = height;
 
   const Status metadata_status = platform::ConfigureSdlApplicationMetadata();
   if (!metadata_status.ok()) {
@@ -1089,6 +1100,9 @@ bool Init(int width, int height, const char* title) {
   g_state.persisted_window = {};
   g_state.persisted_window.width = width;
   g_state.persisted_window.height = height;
+  g_state.persisted_window.configured_width = requested_width;
+  g_state.persisted_window.configured_height = requested_height;
+  g_state.persisted_window.has_configured_size = true;
   g_state.restored_fullscreen_sync_pending = false;
   if (g_state.state_persistence_active) {
     const WindowStateLoadResult restored = LoadWindowState(g_window_state_path);
@@ -1097,15 +1111,32 @@ bool Init(int width, int height, const char* title) {
                    restored.status.message().c_str());
     } else if (restored.found) {
       g_state.persisted_window = restored.state;
-      width = restored.state.width;
-      height = restored.state.height;
+      g_state.persisted_window.configured_width = requested_width;
+      g_state.persisted_window.configured_height = requested_height;
+      g_state.persisted_window.has_configured_size = true;
+      if (RestoredSizeApplies(restored.state, requested_width,
+                              requested_height)) {
+        width = restored.state.width;
+        height = restored.state.height;
+        std::fprintf(stderr,
+                     "  [window-state] restored logical=%dx%d fullscreen=%d "
+                     "maximized=%d position=%s\n",
+                     width, height, restored.state.fullscreen ? 1 : 0,
+                     restored.state.maximized ? 1 : 0,
+                     restored.state.has_position ? "saved" : "compositor");
+      } else {
+        g_state.persisted_window.width = width;
+        g_state.persisted_window.height = height;
+        std::fprintf(stderr,
+                     "  [window-state] configured logical=%dx%d replaces "
+                     "saved=%dx%d fullscreen=%d maximized=%d position=%s\n",
+                     width, height, restored.state.width,
+                     restored.state.height,
+                     restored.state.fullscreen ? 1 : 0,
+                     restored.state.maximized ? 1 : 0,
+                     restored.state.has_position ? "saved" : "compositor");
+      }
       g_state.restored_fullscreen_sync_pending = true;
-      std::fprintf(stderr,
-                   "  [window-state] restored logical=%dx%d fullscreen=%d "
-                   "maximized=%d position=%s\n",
-                   width, height, restored.state.fullscreen ? 1 : 0,
-                   restored.state.maximized ? 1 : 0,
-                   restored.state.has_position ? "saved" : "compositor");
     }
   }
   g_state.width = width;
@@ -1299,7 +1330,8 @@ bool Init(int width, int height, const char* title) {
                                         width, height, window_flags);
   if (!g_state.sdl_window) {
     fprintf(stderr, "  [window] SDL_CreateWindow failed: %s\n", SDL_GetError());
-    if (RetryWithAutoAngleFallback(width, height, title, "SDL_CreateWindow")) {
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
+                                   "SDL_CreateWindow")) {
       return true;
     }
     if (IsDisabledEnv("MOCKTAIL_SOFTWARE_WINDOW_FALLBACK")) {
@@ -1328,7 +1360,7 @@ bool Init(int width, int height, const char* title) {
             SDL_GetError());
     SDL_DestroyWindow(g_state.sdl_window);
     g_state.sdl_window = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "SDL_GL_CreateContext")) {
       return true;
     }
@@ -1345,7 +1377,7 @@ bool Init(int width, int height, const char* title) {
     SDL_GL_DestroyContext(sdl_context);
     SDL_DestroyWindow(g_state.sdl_window);
     g_state.sdl_window = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "SDL_GL_MakeCurrent")) {
       return true;
     }
@@ -1380,7 +1412,7 @@ bool Init(int width, int height, const char* title) {
     SDL_GL_DestroyContext(sdl_context);
     SDL_DestroyWindow(g_state.sdl_window);
     g_state.sdl_window = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "OpenGL ES version check")) {
       return true;
     }
@@ -1408,7 +1440,7 @@ bool Init(int width, int height, const char* title) {
     g_state.egl_config = nullptr;
     g_state.egl_surface = nullptr;
     g_state.egl_context = nullptr;
-    if (RetryWithAutoAngleFallback(width, height, title,
+    if (RetryWithAutoAngleFallback(requested_width, requested_height, title,
                                    "SDL_EGL handle query")) {
       return true;
     }
@@ -1425,6 +1457,36 @@ bool Init(int width, int height, const char* title) {
         "  [window] EGL handles display=%p config=%p surface=%p context=%p\n",
         g_state.egl_display, g_state.egl_config, g_state.egl_surface,
         g_state.egl_context);
+  }
+
+  g_state.egl_swap_interval = reinterpret_cast<PFN_eglSwapInterval>(
+      SDL_EGL_GetProcAddress("eglSwapInterval"));
+  const auto get_config_attrib = reinterpret_cast<PFN_eglGetConfigAttrib>(
+      SDL_EGL_GetProcAddress("eglGetConfigAttrib"));
+  EGLint min_interval = 1;
+  EGLint max_interval = 1;
+  if (get_config_attrib != nullptr &&
+      get_config_attrib(g_state.egl_display, g_state.egl_config,
+                        EGL_MIN_SWAP_INTERVAL_VAL, &min_interval) &&
+      get_config_attrib(g_state.egl_display, g_state.egl_config,
+                        EGL_MAX_SWAP_INTERVAL_VAL, &max_interval) &&
+      min_interval >= 0 && max_interval >= min_interval) {
+    g_state.min_swap_interval = min_interval;
+    g_state.max_swap_interval = max_interval;
+  }
+  if (graphics::ExplicitPresentMode(graphics::CachedPresentModePolicy())
+          .has_value() &&
+      !SetSwapInterval(1)) {
+    SDL_GL_DestroyContext(sdl_context);
+    SDL_DestroyWindow(g_state.sdl_window);
+    g_state.sdl_window = nullptr;
+    g_state.egl_display = nullptr;
+    g_state.egl_config = nullptr;
+    g_state.egl_surface = nullptr;
+    g_state.egl_context = nullptr;
+    g_state.egl_swap_interval = nullptr;
+    SDL_Quit();
+    return false;
   }
 
   ResolveNativeWindowHandle();
@@ -1688,6 +1750,10 @@ extern "C" void mocktail_window_show_if_hidden() { ShowIfHidden(); }
 
 extern "C" bool mocktail_window_swap_buffers() { return SwapBuffers(); }
 
+extern "C" bool mocktail_window_set_swap_interval(int interval) {
+  return SetSwapInterval(interval);
+}
+
 extern "C" bool mocktail_window_make_current() { return MakeCurrentOnThread(); }
 
 extern "C" bool mocktail_window_release_current() {
@@ -1710,6 +1776,43 @@ extern "C" int mocktail_window_height() {
 
 extern "C" void* mocktail_gl_proc_address(const char* name) {
   return GetGLProcAddress(name);
+}
+
+bool SetSwapInterval(int interval) {
+  const auto policy = graphics::CachedPresentModePolicy();
+  // Only an explicit present_mode drives EGL; auto keeps the prior no-op.
+  if (!graphics::ExplicitPresentMode(policy).has_value()) {
+    return true;
+  }
+  if (g_state.egl_display == nullptr || g_state.egl_context == nullptr ||
+      g_state.egl_swap_interval == nullptr) {
+    return false;
+  }
+  const int requested = graphics::ResolveSwapInterval(policy, interval);
+  if (requested == 1 &&
+      (g_state.min_swap_interval > 1 || g_state.max_swap_interval < 1)) {
+    std::fprintf(stderr, "  [window] driver does not support swap interval 1\n");
+    return false;
+  }
+  int applied = std::clamp(requested, g_state.min_swap_interval,
+                            g_state.max_swap_interval);
+  if (!g_state.egl_swap_interval(g_state.egl_display, applied)) {
+    if (applied != 0 || g_state.max_swap_interval < 1 ||
+        !g_state.egl_swap_interval(g_state.egl_display, 1)) {
+      std::fprintf(stderr, "  [window] eglSwapInterval(%d) failed\n", applied);
+      return false;
+    }
+    applied = 1;
+  }
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    std::fprintf(stderr, "  [window] present_mode=%s swap_interval=%d%s\n",
+                 graphics::PresentModePolicyName(policy), applied,
+                 policy == graphics::PresentModePolicy::kMailbox
+                     ? " (EGL has no mailbox selection; using FIFO)"
+                     : applied != requested ? " (driver fallback)" : "");
+  }
+  return true;
 }
 
 bool SwapBuffers() {
@@ -2492,8 +2595,9 @@ bool PumpEvents() {
 }
 
 bool UnthrottledPresentationRequested() {
-  return graphics::CachedPresentModePolicy() ==
-         graphics::PresentModePolicy::kUnthrottled;
+  const auto policy = graphics::CachedPresentModePolicy();
+  return policy == graphics::PresentModePolicy::kUnthrottled ||
+         policy == graphics::PresentModePolicy::kImmediate;
 }
 
 uint64_t PaceInputPump() {
@@ -2566,6 +2670,9 @@ void Shutdown() {
   SDL_Quit();
   g_state.initialised = false;
   g_state.native_window = nullptr;
+  g_state.egl_swap_interval = nullptr;
+  g_state.min_swap_interval = 1;
+  g_state.max_swap_interval = 1;
   g_state.software_window = false;
   g_state.direct_vulkan = false;
   g_state.display_refresh = {};

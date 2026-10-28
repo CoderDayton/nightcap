@@ -89,6 +89,22 @@ target_include_directories(stub_log PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 add_library(stub_mediandk SHARED libmediandk_stub.cc)
 configure_stub(stub_mediandk "libmediandk.so")
+# In-game video (VideoFrame) decodes through FFmpeg; without it every video
+# stays black.
+pkg_check_modules(FFMPEG IMPORTED_TARGET libavcodec libavutil)
+if(FFMPEG_FOUND)
+  target_compile_definitions(stub_mediandk PRIVATE MOCKTAIL_MEDIANDK_FFMPEG=1)
+  # Headers only: the library opens libavcodec itself at runtime.
+  target_include_directories(stub_mediandk PRIVATE ${FFMPEG_INCLUDE_DIRS})
+  target_link_libraries(stub_mediandk PRIVATE ${CMAKE_DL_LIBS}
+    Threads::Threads)
+  set(MOCKTAIL_MEDIANDK_FFMPEG ON PARENT_SCOPE)
+  set(MOCKTAIL_FFMPEG_INCLUDE_DIRS ${FFMPEG_INCLUDE_DIRS} PARENT_SCOPE)
+  string(REGEX MATCH "^[0-9]+" libavcodec_major "${FFMPEG_libavcodec_VERSION}")
+  set(MOCKTAIL_LIBAVCODEC_MAJOR ${libavcodec_major} PARENT_SCOPE)
+else()
+  message(WARNING "libavcodec not found: in-game video will stay black")
+endif()
 
 add_library(stub_openmax SHARED libopensl_stub.cc)
 configure_stub(stub_openmax "libOpenMAXAL.so")

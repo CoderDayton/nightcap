@@ -320,6 +320,15 @@ std::string SelectVulkanIcdManifest(
 
 bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
                                std::string* error) {
+  if (!RuntimeConfig::IsValidPresentMode(config.present_mode())) {
+    if (error != nullptr) *error = "cannot apply an invalid present mode";
+    return false;
+  }
+  if (config.present_mode() != "auto" &&
+      unsetenv("MESA_VK_WSI_PRESENT_MODE") != 0) {
+    if (error != nullptr) *error = "cannot clear Mesa present mode override";
+    return false;
+  }
   if (config.graphics_backend() == GraphicsBackend::kUnknown) {
     if (error != nullptr) {
       *error = "cannot apply an unknown graphics backend";
@@ -344,13 +353,14 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
   }
 
   if (direct_vulkan) {
-    const char* wsi_mode =
-        UnthrottledPresentation(config) ? "immediate" : "mailbox";
     const std::vector<HostGpu> gpus = DetectHostGpus();
     if (!SetDefault("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
                     kVulkanClientSettingsOverrides, error) ||
         !SetDefault("ANV_SYS_MEM_LIMIT", AnvSysMemLimitPercent(), error) ||
-        !SetDefault("MESA_VK_WSI_PRESENT_MODE", wsi_mode, error) ||
+        (config.present_mode() == "auto" &&
+         !SetDefault("MESA_VK_WSI_PRESENT_MODE",
+                     UnthrottledPresentation(config) ? "immediate" : "mailbox",
+                     error)) ||
         // Move GEM_EXECBUFFER2 off the application thread onto Mesa's submit
         // worker so the render thread is not stuck in i915 ioctl.
         !SetDefault("MESA_VK_ENABLE_SUBMIT_THREAD", "1", error) ||

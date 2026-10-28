@@ -51,6 +51,14 @@ TEST(InputPumpPacingRuntimeTest, UnthrottledPresentationDoesNotParkThePump) {
       << " ns, which delays the engine's main-thread replies";
 }
 
+// Without an explicit present_mode, eglSwapInterval stays a successful no-op,
+// as it was before present_mode existed. Needs no window.
+TEST(SwapIntervalTest, AutoPresentModeAcceptsSwapIntervalAsNoOp) {
+  ASSERT_EQ(unsetenv("MOCKTAIL_PRESENT_MODE"), 0);
+  EXPECT_TRUE(SetSwapInterval(0));
+  EXPECT_TRUE(SetSwapInterval(1));
+}
+
 // The present mode policy is cached process-wide on first use, so a second
 // Init in this binary reports the mode selected above. The throttled cadence
 // is covered by the pacer's own arithmetic tests.

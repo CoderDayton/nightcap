@@ -1329,6 +1329,17 @@ gtest_discover_tests(etc2_decoder_test)
 gtest_discover_tests(etc2_gpu_decoder_test)
 gtest_discover_tests(etc2_gpu_transcode_test)
 gtest_discover_tests(texture_override_test)
+if(MOCKTAIL_MEDIANDK_FFMPEG)
+  add_executable(mediandk_decoder_test mediandk_decoder_test.cc)
+  target_compile_definitions(mediandk_decoder_test PRIVATE
+    MOCKTAIL_MEDIA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/media")
+  target_include_directories(mediandk_decoder_test PRIVATE
+    ${MOCKTAIL_FFMPEG_INCLUDE_DIRS})
+  target_link_libraries(mediandk_decoder_test PRIVATE GTest::gtest_main
+    stub_mediandk ${CMAKE_DL_LIBS})
+  mocktail_apply_compile_options(mediandk_decoder_test)
+  gtest_discover_tests(mediandk_decoder_test)
+endif()
 gtest_discover_tests(texture_resample_test)
 gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)

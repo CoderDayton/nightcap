@@ -118,6 +118,10 @@ AnyLinuxVerifyAppDir() {
     [[ -r "${app_dir}/lib/mocktail/${entry}" ]] ||
       AnyLinuxDie "Android adapter was not deployed in its private directory: ${entry}"
   done
+  for entry in libavcodec libavutil; do
+    compgen -G "${app_dir}/lib/${entry}.so.*" >/dev/null ||
+      AnyLinuxDie "quick-sharun did not deploy ${entry} for in-game video"
+  done
   for entry in roblox_compatibility.json roblox_bootstrap_sources.json \
       roblox_host_abi_reference.json roblox_signing_certificates.json; do
     [[ -r "${app_dir}/share/mocktail/metadata/${entry}" ]] ||
@@ -128,6 +132,19 @@ AnyLinuxVerifyAppDir() {
       "${app_dir}/share/mocktail/helpers/mocktail_freebsd_socket_helper" ||
       AnyLinuxDie "the static FreeBSD helper was changed or omitted"
   fi
+}
+
+# libmediandk opens FFmpeg itself when a game plays video, so neither the
+# library scan nor the --help strace run finds it. Prints the soname paths.
+AnyLinuxVideoLibraries() {
+  local dir="${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR:-/usr/lib}" name real version
+  for name in libavcodec libavutil; do
+    real="$(readlink -f -- "${dir}/${name}.so" || true)"
+    [[ -f "${real}" ]] ||
+      AnyLinuxDie "in-game video needs ${dir}/${name}.so (FFmpeg)"
+    version="${real##*/"${name}".so.}"
+    printf '%s\n' "${dir}/${name}.so.${version%%.*}"
+  done
 }
 
 AnyLinuxPrepareInstallTree() {
@@ -144,6 +161,10 @@ AnyLinuxPrepareInstallTree() {
 
 AnyLinuxDeploy() {
   AnyLinuxVerifyInstalled
+  local video_output
+  local -a video_libraries
+  video_output="$(AnyLinuxVideoLibraries)"
+  mapfile -t video_libraries <<<"${video_output}"
   local app_dir="${ANYLINUX_WORK}/AppDir"
   mkdir -p -- "${app_dir}" "${ANYLINUX_WORK}/tmp"
   # .env is runtime configuration, not a custom AppRun. The generated
@@ -197,7 +218,8 @@ EOF
     /usr/lib/mocktail/mocktail_failure_dialog \
     /usr/lib/mocktail/mocktail_settings \
     /usr/lib/mocktail/mocktail_updater \
-    /usr/lib/mocktail /usr/share/mocktail /usr/bin/bash
+    /usr/lib/mocktail /usr/share/mocktail /usr/bin/bash \
+    "${video_libraries[@]}"
   AnyLinuxVerifyAppDir "${app_dir}"
 
   # Use the upstream creation entry point, rather than maintaining a second
