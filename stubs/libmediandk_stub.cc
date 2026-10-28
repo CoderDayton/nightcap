@@ -1,7 +1,8 @@
-// libmediandk for Roblox. Video decoders run on FFmpeg in byte-buffer mode
-// and hand back I420 (COLOR_FormatYUV420Planar), the layout Roblox's
-// VideoFrame reads through the stride, slice-height and crop keys. Encoders
-// are not provided.
+// libmediandk for Roblox. Decoders run on FFmpeg in byte-buffer mode. Video
+// comes back as I420 (COLOR_FormatYUV420Planar), the layout Roblox's
+// VideoFrame reads through the stride, slice-height and crop keys; AAC audio
+// comes back as interleaved 16-bit PCM, as Android's decoder gives it.
+// Encoders are not provided.
 
 #include <dlfcn.h>
 #include <sys/types.h>
@@ -22,6 +23,7 @@
 #if MOCKTAIL_MEDIANDK_FFMPEG
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
 }
 #endif
@@ -53,6 +55,7 @@ constexpr ssize_t kOutputFormatChanged = -2;
 constexpr uint32_t kFlagCodecConfig = 2;
 constexpr uint32_t kFlagEndOfStream = 4;
 constexpr int32_t kColorFormatYuv420Planar = 19;
+constexpr int32_t kPcmEncoding16Bit = 2;
 constexpr int kInputBuffers = 4;
 // Decoded frames waiting for Roblox; input is held back past this.
 constexpr size_t kMaxReadyOutputs = 4;
@@ -84,6 +87,8 @@ struct Ffmpeg {
   decltype(&av_frame_free) frame_free;
   decltype(&av_frame_unref) frame_unref;
   decltype(&av_get_pix_fmt_name) pix_fmt_name;
+  decltype(&av_get_sample_fmt_name) sample_fmt_name;
+  decltype(&av_mallocz) mallocz;
 };
 
 const Ffmpeg* LoadFfmpeg() {
@@ -122,6 +127,8 @@ const Ffmpeg* LoadFfmpeg() {
     bind(avutil, "av_frame_free", &api.frame_free);
     bind(avutil, "av_frame_unref", &api.frame_unref);
     bind(avutil, "av_get_pix_fmt_name", &api.pix_fmt_name);
+    bind(avutil, "av_get_sample_fmt_name", &api.sample_fmt_name);
+    bind(avutil, "av_mallocz", &api.mallocz);
     if (!ok) {
       std::fprintf(stderr, "  [media] %s is missing functions video needs\n",
                    avcodec_name.c_str());
@@ -144,10 +151,13 @@ struct AMediaCodec {
     uint32_t flags = 0;
     int width = 0;
     int height = 0;
+    int sample_rate = 0;
+    int channels = 0;
     bool in_use = false;
   };
 
   std::string mime;
+  bool audio = false;
   const AVCodec* codec = nullptr;
   AVCodecContext* context = nullptr;
   AVPacket* packet = nullptr;
@@ -159,14 +169,25 @@ struct AMediaCodec {
   bool input_free[kInputBuffers] = {};
   std::vector<uint8_t> csd;     // from configure, resent after each flush
   std::vector<uint8_t> config;
+  // Settings for a fresh context. Audio csd is the AudioSpecificConfig,
+  // which FFmpeg takes as extradata, not in the packet.
+  int width = 0;
+  int height = 0;
+  int sample_rate = 0;
+  int channels = 0;
+  std::vector<uint8_t> extradata;
   std::vector<Output> outputs;
   std::deque<size_t> ready;
   // A frame whose size differs from the reported one is preceded by
   // INFO_OUTPUT_FORMAT_CHANGED.
   int decoded_width = 0;
   int decoded_height = 0;
+  int decoded_sample_rate = 0;
+  int decoded_channels = 0;
   int reported_width = 0;
   int reported_height = 0;
+  int reported_sample_rate = 0;
+  int reported_channels = 0;
   bool opened = false;
   bool logged_format = false;
   bool draining = false;
@@ -181,7 +202,46 @@ const AVCodec* FindDecoder(const char* mime) {
   if (m == "video/hevc") return ff->find_decoder(AV_CODEC_ID_HEVC);
   if (m == "video/x-vnd.on2.vp8") return ff->find_decoder(AV_CODEC_ID_VP8);
   if (m == "video/x-vnd.on2.vp9") return ff->find_decoder(AV_CODEC_ID_VP9);
+  // Android's name for raw AAC access units; LATM framing is not used.
+  if (m == "audio/mp4a-latm") return ff->find_decoder(AV_CODEC_ID_AAC);
   return nullptr;
+}
+
+// Opens a fresh FFmpeg context from the codec's stored settings.
+bool OpenContext(AMediaCodec* c) {
+  // Always a new context: one that failed to open still holds extradata.
+  ff->free_context(&c->context);
+  c->context = ff->alloc_context(c->codec);
+  c->opened = false;
+  if (c->context == nullptr) return false;
+  AVCodecContext* context = c->context;
+  if (c->audio) {
+    if (c->sample_rate > 0) context->sample_rate = c->sample_rate;
+    if (c->channels > 0) {
+      context->ch_layout.order = AV_CHANNEL_ORDER_UNSPEC;
+      context->ch_layout.nb_channels = c->channels;
+    }
+    if (!c->extradata.empty()) {
+      const size_t size = c->extradata.size();
+      context->extradata = static_cast<uint8_t*>(
+          ff->mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE));
+      if (context->extradata == nullptr) return false;
+      std::memcpy(context->extradata, c->extradata.data(), size);
+      context->extradata_size = static_cast<int>(size);
+    }
+  } else {
+    context->width = c->width;
+    context->height = c->height;
+  }
+  context->thread_count = c->audio ? 1 : 0;
+  context->pkt_timebase = AVRational{1, 1000000};
+  if (ff->open(context, c->codec, nullptr) < 0) {
+    std::fprintf(stderr, "  [media] %s: could not open %s\n", c->mime.c_str(),
+                 c->codec->name);
+    return false;
+  }
+  c->opened = true;
+  return true;
 }
 
 // I420 stride and slice height, kept even so the chroma planes divide evenly.
@@ -199,8 +259,83 @@ size_t TakeOutputSlot(AMediaCodec* c) {
   return c->outputs.size() - 1;
 }
 
+int64_t FramePts(const AVFrame* f) {
+  return f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp
+                                                    : f->pts;
+}
+
+int16_t ToPcm16(float sample) {
+  const float scaled = sample * 32768.0f;
+  if (!(scaled > -32768.0f)) return -32768;  // also NaN
+  if (scaled >= 32767.0f) return 32767;
+  return static_cast<int16_t>(scaled);
+}
+
+// Copies one decoded audio frame into an interleaved 16-bit PCM output
+// buffer. Caller holds mutex.
+void EmitAudio(AMediaCodec* c, const AVFrame* f) {
+  const auto format = static_cast<AVSampleFormat>(f->format);
+  const int channels = f->ch_layout.nb_channels;
+  const bool supported =
+      format == AV_SAMPLE_FMT_FLTP || format == AV_SAMPLE_FMT_FLT ||
+      format == AV_SAMPLE_FMT_S16P || format == AV_SAMPLE_FMT_S16;
+  if (!supported || channels <= 0 || f->nb_samples <= 0) {
+    if (!supported && !c->logged_format) {
+      const char* name = ff->sample_fmt_name(format);
+      std::fprintf(stderr, "  [media] %s sample format %s is not supported\n",
+                   c->mime.c_str(), name != nullptr ? name : "unknown");
+      c->logged_format = true;
+    }
+    return;
+  }
+  if (f->sample_rate != c->decoded_sample_rate ||
+      channels != c->decoded_channels) {
+    c->decoded_sample_rate = f->sample_rate;
+    c->decoded_channels = channels;
+    std::fprintf(stderr, "  [media] %s decoding %d Hz, %d ch\n",
+                 c->mime.c_str(), f->sample_rate, channels);
+  }
+  const size_t samples = size_t(f->nb_samples);
+  const size_t slot = TakeOutputSlot(c);
+  AMediaCodec::Output& out = c->outputs[slot];
+  out.width = out.height = 0;
+  out.sample_rate = f->sample_rate;
+  out.channels = channels;
+  out.data.resize(samples * channels * sizeof(int16_t));
+  out.pts = FramePts(f);
+  out.flags = 0;
+  auto* dst = reinterpret_cast<int16_t*>(out.data.data());
+  for (size_t i = 0; i < samples; ++i) {
+    for (int ch = 0; ch < channels; ++ch) {
+      int16_t value = 0;
+      switch (format) {
+        case AV_SAMPLE_FMT_FLTP:
+          value = ToPcm16(reinterpret_cast<const float*>(f->extended_data[ch])[i]);
+          break;
+        case AV_SAMPLE_FMT_FLT:
+          value = ToPcm16(
+              reinterpret_cast<const float*>(f->extended_data[0])[i * channels + ch]);
+          break;
+        case AV_SAMPLE_FMT_S16P:
+          value = reinterpret_cast<const int16_t*>(f->extended_data[ch])[i];
+          break;
+        default:
+          value = reinterpret_cast<const int16_t*>(
+              f->extended_data[0])[i * channels + ch];
+          break;
+      }
+      dst[i * channels + ch] = value;
+    }
+  }
+  c->ready.push_back(slot);
+}
+
 // Copies one decoded frame into an I420 output buffer. Caller holds mutex.
 void EmitFrame(AMediaCodec* c, const AVFrame* f) {
+  if (c->audio) {
+    EmitAudio(c, f);
+    return;
+  }
   const auto format = static_cast<AVPixelFormat>(f->format);
   if (format != AV_PIX_FMT_YUV420P && format != AV_PIX_FMT_YUVJ420P) {
     if (!c->logged_format) {
@@ -223,9 +358,9 @@ void EmitFrame(AMediaCodec* c, const AVFrame* f) {
   AMediaCodec::Output& out = c->outputs[slot];
   out.width = f->width;
   out.height = f->height;
+  out.sample_rate = out.channels = 0;
   out.data.assign(luma + luma / 2, 128);
-  out.pts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp
-                                                      : f->pts;
+  out.pts = FramePts(f);
   out.flags = 0;
   uint8_t* dst[3] = {out.data.data(), out.data.data() + luma,
                      out.data.data() + luma + luma / 4};
@@ -250,6 +385,8 @@ void ReceiveFrames(AMediaCodec* c) {
       c->outputs[slot].pts = 0;
       c->outputs[slot].width = 0;
       c->outputs[slot].height = 0;
+      c->outputs[slot].sample_rate = 0;
+      c->outputs[slot].channels = 0;
       c->outputs[slot].flags = kFlagEndOfStream;
       c->ready.push_back(slot);
       return;
@@ -301,6 +438,7 @@ AMediaCodec* AMediaCodec_createDecoderByType(const char* mime) {
   }
   auto* c = new AMediaCodec;
   c->mime = mime;
+  c->audio = c->mime.rfind("audio/", 0) == 0;
   c->codec = decoder;
   c->context = ff->alloc_context(decoder);
   c->packet = ff->packet_alloc();
@@ -324,26 +462,19 @@ media_status_t AMediaCodec_configure(AMediaCodec* c, const AMediaFormat* format,
                  c->mime.c_str());
     return AMEDIA_ERROR_UNKNOWN;
   }
-  // A codec configured again after stop() needs a fresh FFmpeg context.
-  if (c->opened) {
-    ff->free_context(&c->context);
-    c->context = ff->alloc_context(c->codec);
-    c->opened = false;
-    if (c->context == nullptr) return AMEDIA_ERROR_UNKNOWN;
-  }
   size_t input_bytes = kMinInputBytes;
-  if (format != nullptr) {
-    const auto size = format->ints.find("max-input-size");
-    if (size != format->ints.end() && size->second > 0) {
-      input_bytes = std::max(input_bytes, size_t(size->second));
-    }
-    for (const char* key : {"width", "height"}) {
-      const auto v = format->ints.find(key);
-      if (v != format->ints.end()) {
-        (key[0] == 'w' ? c->context->width : c->context->height) = v->second;
-      }
-    }
+  const auto get_int = [&](const char* key) {
+    if (format == nullptr) return 0;
+    const auto v = format->ints.find(key);
+    return v != format->ints.end() ? v->second : 0;
+  };
+  if (get_int("max-input-size") > 0) {
+    input_bytes = std::max(input_bytes, size_t(get_int("max-input-size")));
   }
+  c->width = get_int("width");
+  c->height = get_int("height");
+  c->sample_rate = get_int("sample-rate");
+  c->channels = get_int("channel-count");
   {
     std::lock_guard<std::mutex> lock(c->mutex);
     c->csd.clear();
@@ -354,21 +485,24 @@ media_status_t AMediaCodec_configure(AMediaCodec* c, const AMediaFormat* format,
         c->csd.insert(c->csd.end(), csd->second.begin(), csd->second.end());
       }
     }
+    if (c->audio) {
+      c->extradata = c->csd;
+      c->csd.clear();
+    }
     c->config = c->csd;
   }
   for (std::vector<uint8_t>& input : c->inputs) {
     input.assign(input_bytes, 0);
   }
-  c->context->thread_count = 0;
-  c->context->pkt_timebase = AVRational{1, 1000000};
-  if (ff->open(c->context, c->codec, nullptr) < 0) {
-    std::fprintf(stderr, "  [media] %s: could not open %s\n", c->mime.c_str(),
-                 c->codec->name);
-    return AMEDIA_ERROR_UNKNOWN;
+  // A codec configured again after stop() gets a fresh FFmpeg context.
+  if (!OpenContext(c)) return AMEDIA_ERROR_UNKNOWN;
+  if (c->audio) {
+    std::fprintf(stderr, "  [media] %s configured %d Hz, %d ch\n",
+                 c->mime.c_str(), c->sample_rate, c->channels);
+  } else {
+    std::fprintf(stderr, "  [media] %s configured %dx%d\n", c->mime.c_str(),
+                 c->width, c->height);
   }
-  c->opened = true;
-  std::fprintf(stderr, "  [media] %s configured %dx%d\n", c->mime.c_str(),
-               c->context->width, c->context->height);
   return AMEDIA_OK;
 }
 
@@ -378,7 +512,9 @@ media_status_t AMediaCodec_start(AMediaCodec* c) {
   std::lock_guard<std::mutex> lock(c->mutex);
   ResetBuffers(c);
   c->decoded_width = c->decoded_height = 0;
+  c->decoded_sample_rate = c->decoded_channels = 0;
   c->reported_width = c->reported_height = 0;
+  c->reported_sample_rate = c->reported_channels = 0;
   return AMEDIA_OK;
 }
 
@@ -440,9 +576,23 @@ media_status_t AMediaCodec_queueInputBuffer(AMediaCodec* c, size_t index,
     return AMEDIA_ERROR_INVALID_PARAMETER;
   }
   std::lock_guard<std::mutex> lock(c->mutex);
+  // A failed reopen leaves no usable context.
+  if (!c->opened) {
+    c->input_free[index] = true;
+    c->changed.notify_all();
+    return AMEDIA_ERROR_UNKNOWN;
+  }
   const uint8_t* data = c->inputs[index].data() + offset;
   if (c->draining) {
     // Input after end-of-stream is dropped, as MediaCodec does.
+  } else if ((flags & kFlagCodecConfig) && c->audio) {
+    // The AudioSpecificConfig must reach FFmpeg as extradata.
+    c->extradata.assign(data, data + size);
+    if (!OpenContext(c)) {
+      c->input_free[index] = true;
+      c->changed.notify_all();
+      return AMEDIA_ERROR_UNKNOWN;
+    }
   } else if (flags & kFlagCodecConfig) {
     c->config.insert(c->config.end(), data, data + size);
   } else if (size > 0) {
@@ -477,6 +627,12 @@ ssize_t AMediaCodec_dequeueOutputBuffer(AMediaCodec* c,
     c->reported_height = out.height;
     return kOutputFormatChanged;
   }
+  if (out.channels != 0 && (out.sample_rate != c->reported_sample_rate ||
+                            out.channels != c->reported_channels)) {
+    c->reported_sample_rate = out.sample_rate;
+    c->reported_channels = out.channels;
+    return kOutputFormatChanged;
+  }
   c->ready.pop_front();
   c->changed.notify_all();
   info->offset = 0;
@@ -508,6 +664,17 @@ AMediaFormat* AMediaCodec_getOutputFormat(AMediaCodec* c) {
   auto* format = new AMediaFormat;
   if (c == nullptr) return format;
   std::lock_guard<std::mutex> lock(c->mutex);
+  if (c->audio) {
+    format->strings["mime"] = "audio/raw";
+    // Configured values stand until the first decoded frame reports its own.
+    const bool reported = c->reported_channels != 0;
+    format->ints["sample-rate"] =
+        reported ? c->reported_sample_rate : c->sample_rate;
+    format->ints["channel-count"] =
+        reported ? c->reported_channels : c->channels;
+    format->ints["pcm-encoding"] = kPcmEncoding16Bit;
+    return format;
+  }
   format->strings["mime"] = "video/raw";
   const int width = c->reported_width;
   const int height = c->reported_height;

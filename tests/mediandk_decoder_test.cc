@@ -1,6 +1,6 @@
 // Decodes small clips through the libmediandk shim the way Roblox's
 // VideoFrame does: byte-buffer mode, I420 output read via stride,
-// slice-height and crop keys.
+// slice-height and crop keys, and 16-bit PCM for the audio track.
 
 #include <gtest/gtest.h>
 
@@ -11,6 +11,7 @@ extern "C" {
 #include <libavcodec/version_major.h>
 }
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -56,7 +57,9 @@ namespace {
 
 constexpr ssize_t kTryAgainLater = -1;
 constexpr ssize_t kFormatChanged = -2;
+constexpr uint32_t kCodecConfig = 2;
 constexpr uint32_t kEndOfStream = 4;
+constexpr int32_t kPcm16Bit = 2;
 constexpr int32_t kColorFormatYuv420Planar = 19;
 
 std::vector<uint8_t> ReadFixture(const std::string& name) {
@@ -126,6 +129,138 @@ std::vector<std::vector<uint8_t>> IvfFrames(const std::vector<uint8_t>& ivf) {
     at += size;
   }
   return frames;
+}
+
+// Splits ADTS into raw AAC frames and builds the AudioSpecificConfig an MP4
+// demuxer would hand over as csd-0.
+std::vector<std::vector<uint8_t>> AdtsFrames(const std::vector<uint8_t>& adts,
+                                             std::vector<uint8_t>* asc) {
+  std::vector<std::vector<uint8_t>> frames;
+  size_t at = 0;
+  while (at + 7 <= adts.size() && adts[at] == 0xff &&
+         (adts[at + 1] & 0xf0) == 0xf0) {
+    const uint8_t* h = adts.data() + at;
+    const size_t header = (h[1] & 1) ? 7 : 9;
+    const size_t length =
+        (size_t(h[3] & 3) << 11) | (size_t(h[4]) << 3) | (h[5] >> 5);
+    if (length < header || at + length > adts.size()) break;
+    if (asc->empty()) {
+      const int object = (h[2] >> 6) + 1;
+      const int rate = (h[2] >> 2) & 0xf;
+      const int channels = ((h[2] & 1) << 2) | (h[3] >> 6);
+      *asc = {uint8_t(object << 3 | rate >> 1),
+              uint8_t((rate & 1) << 7 | channels << 3)};
+    }
+    frames.emplace_back(adts.begin() + at + header, adts.begin() + at + length);
+    at += length;
+  }
+  return frames;
+}
+
+struct DecodedAudio {
+  int32_t sample_rate = 0;
+  int32_t channels = 0;
+  int32_t pcm_encoding = 0;
+  int format_changes = 0;
+  std::vector<int16_t> pcm;  // interleaved
+  bool sizes_whole_frames = true;
+  bool saw_end = false;
+};
+
+// csd_in_format: csd-0 on the format, else queued as a codec-config buffer.
+DecodedAudio DecodeAac(bool csd_in_format) {
+  DecodedAudio out;
+  std::vector<uint8_t> asc;
+  const auto frames = AdtsFrames(ReadFixture("sine_l_48k.aac"), &asc);
+  EXPECT_GE(frames.size(), 8u);
+  AMediaCodec* codec = AMediaCodec_createDecoderByType("audio/mp4a-latm");
+  EXPECT_NE(codec, nullptr);
+  if (codec == nullptr) return out;
+  AMediaFormat* format = AMediaFormat_new();
+  AMediaFormat_setString(format, "mime", "audio/mp4a-latm");
+  AMediaFormat_setInt32(format, "sample-rate", 48000);
+  AMediaFormat_setInt32(format, "channel-count", 2);
+  if (csd_in_format) {
+    AMediaFormat_setBuffer(format, "csd-0", asc.data(), asc.size());
+  }
+  EXPECT_EQ(AMediaCodec_configure(codec, format, nullptr, nullptr, 0), 0);
+  AMediaFormat_delete(format);
+  EXPECT_EQ(AMediaCodec_start(codec), 0);
+
+  std::vector<std::vector<uint8_t>> in;
+  std::vector<uint32_t> flags;
+  if (!csd_in_format) {
+    in.push_back(asc);
+    flags.push_back(kCodecConfig);
+  }
+  for (const auto& frame : frames) {
+    in.push_back(frame);
+    flags.push_back(0);
+  }
+  size_t next = 0;
+  bool sent_end = false;
+  for (int spins = 0; spins < 1000 && !out.saw_end; ++spins) {
+    if (!sent_end) {
+      const ssize_t index = AMediaCodec_dequeueInputBuffer(codec, 0);
+      if (index >= 0) {
+        uint8_t* buffer = AMediaCodec_getInputBuffer(codec, index, nullptr);
+        const size_t size = next < in.size() ? in[next].size() : 0;
+        if (size > 0) std::memcpy(buffer, in[next].data(), size);
+        const uint32_t f = next < in.size() ? flags[next] : kEndOfStream;
+        EXPECT_EQ(AMediaCodec_queueInputBuffer(codec, index, 0, size,
+                                               next * 21333, f),
+                  0);
+        sent_end = next == in.size();
+        ++next;
+      }
+    }
+    AMediaCodecBufferInfo info{};
+    const ssize_t index = AMediaCodec_dequeueOutputBuffer(codec, &info, 1000);
+    if (index == kFormatChanged) {
+      AMediaFormat* f = AMediaCodec_getOutputFormat(codec);
+      AMediaFormat_getInt32(f, "sample-rate", &out.sample_rate);
+      AMediaFormat_getInt32(f, "channel-count", &out.channels);
+      AMediaFormat_getInt32(f, "pcm-encoding", &out.pcm_encoding);
+      AMediaFormat_delete(f);
+      ++out.format_changes;
+      continue;
+    }
+    if (index == kTryAgainLater || index < 0) continue;
+    size_t size = 0;
+    const uint8_t* data = AMediaCodec_getOutputBuffer(codec, index, &size);
+    if (info.size > 0 && data != nullptr) {
+      if (out.channels == 0 || info.size % (2 * out.channels) != 0) {
+        out.sizes_whole_frames = false;
+      }
+      const size_t at = out.pcm.size();
+      out.pcm.resize(at + info.size / 2);
+      std::memcpy(out.pcm.data() + at, data + info.offset, info.size / 2 * 2);
+    }
+    out.saw_end = (info.flags & kEndOfStream) != 0;
+    AMediaCodec_releaseOutputBuffer(codec, index, false);
+  }
+  AMediaCodec_stop(codec);
+  AMediaCodec_delete(codec);
+  return out;
+}
+
+// The fixture is a 0.25 s, 1 kHz sine on the left channel and silence on
+// the right, so a swapped or planar layout shows up as signal on the right.
+void ExpectLeftSine(const DecodedAudio& d) {
+  EXPECT_EQ(d.format_changes, 1);
+  EXPECT_EQ(d.sample_rate, 48000);
+  EXPECT_EQ(d.channels, 2);
+  EXPECT_EQ(d.pcm_encoding, kPcm16Bit);
+  EXPECT_TRUE(d.sizes_whole_frames);
+  EXPECT_TRUE(d.saw_end);
+  ASSERT_GE(d.pcm.size(), size_t(2 * 48000 / 5));
+  int left_peak = 0, right_peak = 0;
+  for (size_t i = 0; i + 1 < d.pcm.size(); i += 2) {
+    left_peak = std::max(left_peak, std::abs(int(d.pcm[i])));
+    right_peak = std::max(right_peak, std::abs(int(d.pcm[i + 1])));
+  }
+  EXPECT_GT(left_peak, 3000);
+  EXPECT_LT(right_peak, 300);
 }
 
 struct Decoded {
@@ -332,6 +467,37 @@ TEST(MediaNdkDecoderTest, DecodesVp9ToI420) {
   const auto frames = IvfFrames(ReadFixture("blue_64x48.ivf"));
   ASSERT_EQ(frames.size(), 4u);
   ExpectSolid(Decode("video/x-vnd.on2.vp9", frames), 41, 240, 110);
+}
+
+// VideoFrame drops the whole video when its audio decoder can't be made.
+TEST(MediaNdkDecoderTest, DecodesAacToInterleavedPcm16) {
+  ExpectLeftSine(DecodeAac(/*csd_in_format=*/true));
+}
+
+TEST(MediaNdkDecoderTest, DecodesAacWithCsdAsCodecConfigBuffer) {
+  ExpectLeftSine(DecodeAac(/*csd_in_format=*/false));
+}
+
+// MediaCodec's output format holds the configured values until the first
+// INFO_OUTPUT_FORMAT_CHANGED.
+TEST(MediaNdkDecoderTest, ReportsConfiguredAudioFormatBeforeOutput) {
+  AMediaCodec* codec = AMediaCodec_createDecoderByType("audio/mp4a-latm");
+  ASSERT_NE(codec, nullptr);
+  AMediaFormat* format = AMediaFormat_new();
+  AMediaFormat_setInt32(format, "sample-rate", 48000);
+  AMediaFormat_setInt32(format, "channel-count", 2);
+  ASSERT_EQ(AMediaCodec_configure(codec, format, nullptr, nullptr, 0), 0);
+  AMediaFormat_delete(format);
+  ASSERT_EQ(AMediaCodec_start(codec), 0);
+  AMediaFormat* out = AMediaCodec_getOutputFormat(codec);
+  int32_t rate = 0, channels = 0;
+  AMediaFormat_getInt32(out, "sample-rate", &rate);
+  AMediaFormat_getInt32(out, "channel-count", &channels);
+  AMediaFormat_delete(out);
+  EXPECT_EQ(rate, 48000);
+  EXPECT_EQ(channels, 2);
+  AMediaCodec_stop(codec);
+  AMediaCodec_delete(codec);
 }
 
 TEST(MediaNdkDecoderTest, RejectsUnknownMime) {
