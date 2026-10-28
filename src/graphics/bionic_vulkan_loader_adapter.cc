@@ -2008,7 +2008,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
   VkSwapchainCreateInfoKHR host_info = *create_info;
   const mocktail::graphics::PresentModePolicy present_policy =
       mocktail::graphics::CachedPresentModePolicy();
+  const auto explicit_mode = mocktail::graphics::ExplicitPresentMode(present_policy);
+  auto image_count_policy = present_policy;
   if (present_policy != mocktail::graphics::PresentModePolicy::kHostDefault) {
+    bool mode_selected = false;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR host_caps = nullptr;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR host_modes_query = nullptr;
     {
@@ -2038,15 +2041,27 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
             if (!mode_logged.exchange(true, std::memory_order_relaxed)) {
               std::fprintf(
                   stderr,
-                  "  [vulkan] swapchain presentMode requested=%s applied=%s\n",
+                  "  [vulkan] present_mode=%s requested=%s applied=%s%s\n",
+                  mocktail::graphics::PresentModePolicyName(present_policy),
                   mocktail::graphics::PresentModeKhrName(
                       create_info->presentMode),
-                  mocktail::graphics::PresentModeKhrName(selected.front()));
+                  mocktail::graphics::PresentModeKhrName(selected.front()),
+                  explicit_mode && selected.front() != *explicit_mode
+                      ? " (requested mode unsupported; using FIFO)" : "");
             }
             host_info.presentMode = selected.front();
+            mode_selected = true;
+            if (explicit_mode && selected.front() != *explicit_mode) {
+              image_count_policy = mocktail::graphics::PresentModePolicy::kFifo;
+            }
           }
         }
       }
+    }
+    if (explicit_mode && !mode_selected) {
+      std::fprintf(stderr, "  [vulkan] cannot resolve present_mode=%s for surface\n",
+                   mocktail::graphics::PresentModePolicyName(present_policy));
+      return VK_ERROR_INITIALIZATION_FAILED;
     }
     VkSurfaceCapabilitiesKHR capabilities{};
     if (host_caps != nullptr && physical_device != VK_NULL_HANDLE &&
@@ -2054,7 +2069,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
             VK_SUCCESS) {
       const std::uint32_t preferred =
           mocktail::graphics::PreferSwapchainMinImageCount(
-              present_policy, create_info->minImageCount,
+              image_count_policy, create_info->minImageCount,
               capabilities.minImageCount, capabilities.maxImageCount);
       if (preferred != host_info.minImageCount) {
         host_info.minImageCount = preferred;

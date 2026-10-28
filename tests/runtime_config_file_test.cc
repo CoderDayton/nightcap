@@ -104,6 +104,7 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
   EXPECT_EQ(loaded.config.vsync_mode(), "auto");
+  EXPECT_EQ(loaded.config.present_mode(), "auto");
   EXPECT_FALSE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().memory_limit_mb, 0U);
   EXPECT_EQ(loaded.config.performance().game_mode, GameModePolicy::kAuto);
@@ -520,6 +521,7 @@ graphics:
   backend: vulkan
   frame_rate_limit: unlimited
   vsync: off
+  present_mode: mailbox
 performance:
   multithreaded_rendering: true
   physics_worker_mode: latency
@@ -571,6 +573,7 @@ updates:
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnlimited);
   EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.present_mode(), "mailbox");
   EXPECT_EQ(loaded.config.theme_mode(), "dark");
   EXPECT_TRUE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().physics_worker_mode,
@@ -689,6 +692,7 @@ graphics:
   backend: system
   frame_rate_limit: 60
   vsync: on
+  present_mode: fifo
 performance:
   multithreaded_rendering: true
   physics_worker_mode: latency
@@ -711,6 +715,7 @@ network:
       {"MOCKTAIL_GRAPHICS_BACKEND", "vulkan"},
       {"MOCKTAIL_FRAME_RATE_LIMIT", "144"},
       {"MOCKTAIL_VSYNC", "off"},
+      {"MOCKTAIL_PRESENT_MODE", "immediate"},
       {"MOCKTAIL_MULTITHREADED_RENDERING", "0"},
       {"MOCKTAIL_PHYSICS_WORKER_MODE", "auto"},
       {"MOCKTAIL_MEMORY_LIMIT_MB", "8192"},
@@ -730,6 +735,7 @@ network:
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.frame_rate().fixed_fps, 144);
   EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.present_mode(), "immediate");
   EXPECT_FALSE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().physics_worker_mode,
             PhysicsWorkerMode::kAuto);
@@ -1313,6 +1319,32 @@ graphics:
 
   EXPECT_FALSE(loaded);
   EXPECT_NE(loaded.error.find("frame_rate_limit"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, ValidatesAndExportsPresentModes) {
+  TemporaryDirectory temporary;
+  for (const char* mode : {"auto", "fifo", "mailbox", "immediate", "fastest"}) {
+    SCOPED_TRACE(mode);
+    const auto file = temporary.Write(
+        std::string("version: 1\ngraphics:\n  present_mode: ") + mode + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    if (std::string(mode) == "fastest") {
+      EXPECT_FALSE(loaded);
+      EXPECT_NE(loaded.error.find("present_mode"), std::string::npos);
+    } else {
+      ASSERT_TRUE(loaded) << loaded.error;
+      std::string error;
+      ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+      EXPECT_STREQ(getenv("MOCKTAIL_PRESENT_MODE"), mode);
+    }
+  }
+  const auto file = temporary.Write("version: 1\n");
+  const MapEnvironment invalid({{"MOCKTAIL_PRESENT_MODE", "fastest"}});
+  EXPECT_FALSE(LoadRuntimeConfig(invalid, file));
+  std::string error;
+  EXPECT_FALSE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(invalid), &error));
+  unsetenv("MOCKTAIL_PRESENT_MODE");
 }
 
 TEST(RuntimeConfigFileTest, RejectsNonBooleanPerformancePolicy) {
