@@ -50,9 +50,6 @@ struct FflagsMergeResult {
   std::string error;
 };
 
-// The largest fflags file LoadAndMergeFflagsFile reads.
-inline constexpr std::uintmax_t kMaximumFflagsFileBytes = 64U * 1024U;
-
 // Loads a flat, optional fflags JSON file underneath caller-provided values.
 // count is the number of file entries added after caller values take
 // precedence.

@@ -789,13 +789,13 @@ TEST_F(SettingsModelTest, AnFFlagsFileThatIsNotTextIsNotOpened) {
   }
 }
 
-TEST_F(SettingsModelTest, AnFFlagsFileOverTheReadLimitIsNotOpened) {
+TEST_F(SettingsModelTest, AnFFlagsFileLargerThan64KiBIsOpened) {
   const std::string bytes = "{}" + std::string(64 * 1024, ' ');
   std::ofstream(FFlagsFile(), std::ios::binary) << bytes;
   FFlagsDocument document(FFlagsFile());
   std::string error;
-  EXPECT_FALSE(document.Load(&error));
-  EXPECT_NE(error.find("64 KiB"), std::string::npos) << error;
+  EXPECT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Text(), bytes);
   EXPECT_EQ(ReadFFlags(), bytes);
 }
 

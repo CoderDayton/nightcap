@@ -1420,15 +1420,7 @@ FFlagsDocument::FFlagsDocument(std::filesystem::path file)
     : file_(std::move(file)) {}
 
 runtime::RuntimeConfigText FFlagsDocument::Read() const {
-  // No more of the file is read than Nightcap itself reads.
-  runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(
-      file_, static_cast<std::size_t>(services::kMaximumFflagsFileBytes));
-  if (read && read.text.size() > services::kMaximumFflagsFileBytes) {
-    read.error = "fflags.json is larger than 64 KiB, the most Nightcap "
-                 "reads. Shorten or remove " +
-                 file_.string();
-  }
-  return read;
+  return runtime::ReadOptionalTextFile(file_);
 }
 
 bool FFlagsDocument::Load(std::string* error) {
