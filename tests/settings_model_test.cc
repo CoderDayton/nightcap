@@ -158,6 +158,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "device.keyboard", "runtime.headless", "runtime.roblox_library",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
            "graphics.vsync", "graphics.texture_compression",
+           "graphics.small_texture_upscale",
            "performance.multithreaded_rendering",
            "performance.physics_worker_mode", "performance.memory_limit_mb",
            "performance.gamemode", "performance.mangohud",

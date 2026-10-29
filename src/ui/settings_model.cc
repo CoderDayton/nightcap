@@ -530,6 +530,20 @@ const std::vector<SettingsPage>& SettingsPages() {
                   "You gain:\n"
                   "• May fix broken or black textures\n\n"
                   "Requires a restart to take effect."),
+                {"graphics.small_texture_upscale",
+                 "Small texture upscale",
+                 "Sharpens textures of 64px or less. Adaptive picks the "
+                 "factor from your GPU's speed and holds back while it is "
+                 "busy. Requires a restart.",
+                 SettingKind::kChoice,
+                 {
+                     {"adaptive", "Adaptive"},
+                     {"1", "1× (off)"},
+                     {"2", "2×"},
+                     {"4", "4×"},
+                 },
+                 "adaptive",
+                 {}},
             }},
            {"Display",
             {

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <cstring>
 #include <random>
 #include <string>
@@ -186,6 +187,58 @@ TEST(Etc2GpuDecoderTest, SelfTestPassesOnEveryDevice) {
     ASSERT_NE(decoder, nullptr) << error;
     EXPECT_TRUE(decoder->SelfTest(vk.queue, vk.family, vk.memory, &error))
         << error;
+  }
+  CloseTestDevices(&devices);
+}
+
+TEST(Etc2GpuDecoderTest, MeasuresEncodeSpeedOnEveryDevice) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    std::string error;
+    std::unique_ptr<Etc2GpuDecoder> decoder =
+        Etc2GpuDecoder::Create(vk.device, vk.get_device_proc_addr, &error);
+    ASSERT_NE(decoder, nullptr) << error;
+    if (!decoder->CanTranscode() || !decoder->CanScale()) {
+      continue;
+    }
+    Etc2GpuSpeed speed;
+    ASSERT_TRUE(decoder->MeasureSpeed(vk.queue, vk.family, vk.memory, true,
+                                      &speed, &error))
+        << error;
+    EXPECT_GT(speed.transcode_ns, 0.0);
+    EXPECT_GT(speed.upscale_ns, 0.0);
+    std::printf("%s: transcode %.2f ns/block, upscale %.2f ns/block\n",
+                vk.name.c_str(), speed.transcode_ns, speed.upscale_ns);
+  }
+  CloseTestDevices(&devices);
+}
+
+TEST(Etc2GpuDecoderTest, MeasuresDecodeAndScaleWithoutEncoding) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    std::string error;
+    std::unique_ptr<Etc2GpuDecoder> decoder =
+        Etc2GpuDecoder::Create(vk.device, vk.get_device_proc_addr, &error);
+    ASSERT_NE(decoder, nullptr) << error;
+    if (!decoder->CanScale()) {
+      continue;
+    }
+    Etc2GpuSpeed speed;
+    ASSERT_TRUE(decoder->MeasureSpeed(vk.queue, vk.family, vk.memory, false,
+                                      &speed, &error))
+        << error;
+    EXPECT_EQ(speed.transcode_ns, 0.0);
+    EXPECT_GT(speed.upscale_ns, 0.0);
+    std::printf("%s: decode and scale %.2f ns/block\n", vk.name.c_str(),
+                speed.upscale_ns);
   }
   CloseTestDevices(&devices);
 }

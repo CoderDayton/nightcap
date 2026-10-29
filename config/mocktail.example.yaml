@@ -55,6 +55,10 @@ graphics:
   # Boolean (default: true): keep ETC2/EAC textures compressed as BC7/BC4/BC5
   # on the GPU to use less video memory. Set false if textures look wrong.
   # texture_compression: true
+  # String (default: adaptive): upscale for textures of 64px or less, as
+  # adaptive, 1, 2, or 4. adaptive picks up to 4 from the GPU's encode speed
+  # and steps down while the GPU is busy encoding.
+  # small_texture_upscale: adaptive
 
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every

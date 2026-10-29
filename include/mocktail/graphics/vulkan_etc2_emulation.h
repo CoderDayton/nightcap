@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "mocktail/graphics/etc2_decoder.h"
+#include "mocktail/graphics/etc2_gpu_decoder.h"
 
 namespace mocktail::graphics {
 
@@ -59,11 +60,46 @@ bool Etc2BcTranscodeEnabled(const char* value);
 // kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
 // 1 leaves them alone; 2..8 create them that many times larger and resample
 // every upload, so a texture override can carry more detail than the
-// original. Unset or non-numeric values use kDefaultSmallTextureUpscale;
-// numeric values out of range are clamped.
+// original. Unset or non-numeric values ("adaptive") return
+// kAdaptiveSmallTextureUpscale; numeric values out of range are clamped.
 inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
 inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
+inline constexpr std::uint32_t kAdaptiveSmallTextureUpscale = 0;
 std::uint32_t SmallTextureUpscale(const char* value);
+
+// Every mip level and layer; `scale` multiplies level-0 width and height.
+VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
+                                std::uint32_t mip_levels, std::uint32_t layers,
+                                std::uint32_t scale);
+
+// The largest of 4, 2 and 1, the factors the setting offers, whose 64x64 BC7
+// chain encodes within kAdaptiveUpscaleTextureNs; 0 ns (unmeasured) gives 1,
+// as an unknown card may be too slow for any upscale.
+inline constexpr double kAdaptiveUpscaleTextureNs = 0.5e6;
+std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns);
+
+// GPU-time token bucket. A cost above the burst runs from a full bucket and
+// leaves it negative until wall time pays it back. Take asks before work is
+// planned; Charge books work already recorded; Refund returns a Take whose
+// work never ran.
+inline constexpr double kEncodeBudgetShare = 0.1;
+inline constexpr double kEncodeBudgetBurstNs = 16e6;
+class Etc2EncodeBudget {
+ public:
+  Etc2EncodeBudget(double share, double burst_ns)
+      : share_(share), burst_ns_(burst_ns), available_ns_(burst_ns) {}
+  bool Take(double cost_ns, std::uint64_t now_ns);
+  void Charge(double cost_ns, std::uint64_t now_ns);
+  void Refund(double cost_ns);
+
+ private:
+  void Refill(std::uint64_t now_ns);
+
+  double share_;
+  double burst_ns_;
+  double available_ns_;
+  std::uint64_t last_ns_ = 0;
+};
 
 // Staging for decoded uploads is carved out of host-visible blocks this
 // large; an upload that needs more gets a block of its own.
@@ -194,6 +230,8 @@ class VulkanEtc2Emulation final {
   // Traced as the "emulated texture (MB)" and "compressed texture (MB)"
   // counters.
   EmulatedTextureBytes TextureBytes() const;
+  // The startup speed probe's result; zero when it did not run.
+  Etc2GpuSpeed GpuSpeed(VkDevice device) const;
 
   struct State;
 

@@ -1,5 +1,7 @@
 #include "mocktail/graphics/etc2_gpu_decoder.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -44,6 +46,7 @@ struct Etc2GpuDecoder::Procs {
   PFN_vkBeginCommandBuffer begin_command_buffer = nullptr;
   PFN_vkEndCommandBuffer end_command_buffer = nullptr;
   PFN_vkCmdPipelineBarrier cmd_pipeline_barrier = nullptr;
+  PFN_vkCmdCopyBuffer cmd_copy_buffer = nullptr;
   PFN_vkQueueSubmit queue_submit = nullptr;
   PFN_vkQueueWaitIdle queue_wait_idle = nullptr;
 };
@@ -197,6 +200,7 @@ std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
       !Load(get, device, "vkBeginCommandBuffer", &p.begin_command_buffer) ||
       !Load(get, device, "vkEndCommandBuffer", &p.end_command_buffer) ||
       !Load(get, device, "vkCmdPipelineBarrier", &p.cmd_pipeline_barrier) ||
+      !Load(get, device, "vkCmdCopyBuffer", &p.cmd_copy_buffer) ||
       !Load(get, device, "vkQueueSubmit", &p.queue_submit) ||
       !Load(get, device, "vkQueueWaitIdle", &p.queue_wait_idle)) {
     *error = "missing Vulkan compute entry points";
@@ -514,33 +518,11 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
     return ok;
   };
 
-  VkBufferCreateInfo buffer_info{};
-  buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  buffer_info.size = total;
-  buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  if (p.create_buffer(device_, &buffer_info, nullptr, &buffer) != VK_SUCCESS) {
-    return finish(false, "self-test buffer creation failed");
-  }
-  VkMemoryRequirements requirements{};
-  p.get_buffer_memory_requirements(device_, buffer, &requirements);
   constexpr VkMemoryPropertyFlags kHost =
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VkMemoryAllocateInfo allocate{};
-  allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  allocate.allocationSize = requirements.size;
-  allocate.memoryTypeIndex = UINT32_MAX;
-  for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-    if ((requirements.memoryTypeBits & (1U << i)) != 0 &&
-        (memory.memoryTypes[i].propertyFlags & kHost) == kHost) {
-      allocate.memoryTypeIndex = i;
-      break;
-    }
-  }
   void* mapped = nullptr;
-  if (allocate.memoryTypeIndex == UINT32_MAX ||
-      p.allocate_memory(device_, &allocate, nullptr, &buffer_memory) !=
-          VK_SUCCESS ||
-      p.bind_buffer_memory(device_, buffer, buffer_memory, 0) != VK_SUCCESS ||
+  if (!CreateBuffer(total, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, memory, kHost,
+                    kHost, &buffer, &buffer_memory) ||
       p.map_memory(device_, buffer_memory, 0, VK_WHOLE_SIZE, 0, &mapped) !=
           VK_SUCCESS) {
     return finish(false, "self-test memory setup failed");
@@ -628,6 +610,301 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
     DisableTranscode();
   }
   return finish(true, nullptr);
+}
+
+namespace {
+
+// Speed probe: 256x256 textures transcoded, and 64x64 textures, the largest
+// small texture, upscaled 4x. Each workload runs a few times and the fastest
+// run counts, so first-use costs drop out.
+constexpr std::uint32_t kProbeTranscodes = 4;
+constexpr std::uint32_t kProbeTranscodeBlocks = 64;
+constexpr std::uint32_t kProbeUpscales = 8;
+constexpr std::uint32_t kProbeSmallBlocks = 16;
+constexpr std::uint32_t kProbeScale = 4;
+constexpr int kProbeRuns = 3;
+constexpr int kProbeEmptyRuns = 8;
+
+VkDeviceSize AlignProbe(VkDeviceSize bytes) { return (bytes + 255) / 256 * 256; }
+
+}
+
+bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
+                                  const VkPhysicalDeviceMemoryProperties& memory,
+                                  bool encode, Etc2GpuSpeed* speed,
+                                  std::string* error) {
+  if ((encode && transcode_pipeline_ == VK_NULL_HANDLE) ||
+      scale_pipeline_ == VK_NULL_HANDLE) {
+    *error = "transcode or scale pipeline unavailable";
+    return false;
+  }
+  constexpr EtcFormat kFormat = EtcFormat::kEtc2Rgba8;
+  const VkDeviceSize block_bytes = EtcBlockBytes(kFormat);
+  VkDeviceSize total = 0;
+  std::vector<Etc2GpuJob> transcodes;
+  for (std::uint32_t i = 0; encode && i < kProbeTranscodes; ++i) {
+    Etc2GpuJob job;
+    job.format = kFormat;
+    job.transcode = true;
+    job.blocks_wide = kProbeTranscodeBlocks;
+    job.blocks_high = kProbeTranscodeBlocks;
+    job.source_row_blocks = kProbeTranscodeBlocks;
+    job.source_layer_blocks = kProbeTranscodeBlocks * kProbeTranscodeBlocks;
+    job.source_offset = total;
+    total += AlignProbe(job.source_layer_blocks * block_bytes);
+    job.destination_offset = total;
+    total += AlignProbe(Etc2GpuOutputBytes(job));
+    transcodes.push_back(job);
+  }
+  // Laid out as the emulation stages them: a scale header and the blocks,
+  // then the decoded, scaled and encoded results.
+  constexpr std::uint32_t kTarget = kProbeSmallBlocks * 4 * kProbeScale;
+  std::vector<VkDeviceSize> headers;
+  std::vector<Etc2GpuJob> decodes;
+  std::vector<Etc2GpuJob> scales;
+  std::vector<Etc2GpuJob> encodes;
+  for (std::uint32_t i = 0; i < kProbeUpscales; ++i) {
+    headers.push_back(total);
+    Etc2GpuJob decode;
+    decode.format = kFormat;
+    decode.blocks_wide = kProbeSmallBlocks;
+    decode.blocks_high = kProbeSmallBlocks;
+    decode.source_row_blocks = kProbeSmallBlocks;
+    decode.source_layer_blocks = kProbeSmallBlocks * kProbeSmallBlocks;
+    decode.source_offset = total + kEtc2ScaleHeaderBytes;
+    total += AlignProbe(kEtc2ScaleHeaderBytes +
+                        decode.source_layer_blocks * block_bytes);
+    decode.destination_offset = total;
+    total += AlignProbe(Etc2GpuOutputBytes(decode));
+    Etc2GpuJob scale;
+    scale.format = kFormat;
+    scale.scale = true;
+    scale.scale_width = kTarget;
+    scale.scale_height = kTarget;
+    scale.blocks_wide = kTarget / 4;
+    scale.blocks_high = kTarget / 4;
+    scale.source_offset = headers.back();
+    scale.scale_texels_offset = decode.destination_offset;
+    scale.destination_offset = total;
+    total += AlignProbe(Etc2GpuOutputBytes(scale));
+    decodes.push_back(decode);
+    scales.push_back(scale);
+    if (!encode) {
+      continue;
+    }
+    Etc2GpuJob encoding;
+    encoding.format = kFormat;
+    encoding.rgba_source = true;
+    encoding.transcode = true;
+    encoding.blocks_wide = kTarget / 4;
+    encoding.blocks_high = kTarget / 4;
+    encoding.source_row_blocks = kTarget / 4;
+    encoding.source_layer_blocks = (kTarget / 4) * (kTarget / 4);
+    encoding.source_offset = scale.destination_offset;
+    encoding.destination_offset = total;
+    total += AlignProbe(Etc2GpuOutputBytes(encoding));
+    encodes.push_back(encoding);
+  }
+
+  const Procs& p = *procs_;
+  VkBuffer upload = VK_NULL_HANDLE;
+  VkDeviceMemory upload_memory = VK_NULL_HANDLE;
+  VkBuffer work = VK_NULL_HANDLE;
+  VkDeviceMemory work_memory = VK_NULL_HANDLE;
+  VkCommandPool pool = VK_NULL_HANDLE;
+  Etc2GpuBinding binding;
+  const auto finish = [&](bool ok, const char* message) {
+    if (pool != VK_NULL_HANDLE) {
+      p.destroy_command_pool(device_, pool, nullptr);
+    }
+    DestroyBinding(binding);
+    for (VkBuffer buffer : {upload, work}) {
+      if (buffer != VK_NULL_HANDLE) {
+        p.destroy_buffer(device_, buffer, nullptr);
+      }
+    }
+    for (VkDeviceMemory allocation : {upload_memory, work_memory}) {
+      if (allocation != VK_NULL_HANDLE) {
+        p.free_memory(device_, allocation, nullptr);
+      }
+    }
+    if (!ok) {
+      *error = message;
+    }
+    return ok;
+  };
+  constexpr VkMemoryPropertyFlags kHost =
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  void* mapped = nullptr;
+  if (!CreateBuffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, memory, kHost,
+                    kHost, &upload, &upload_memory) ||
+      !CreateBuffer(total,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &work,
+                    &work_memory) ||
+      p.map_memory(device_, upload_memory, 0, VK_WHOLE_SIZE, 0, &mapped) !=
+          VK_SUCCESS) {
+    return finish(false, "speed probe memory setup failed");
+  }
+  auto* bytes = static_cast<std::uint8_t*>(mapped);
+  std::uint64_t state = 0x2545F4914F6CDD1DULL;
+  for (VkDeviceSize i = 0; i < total; ++i) {
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    bytes[i] = static_cast<std::uint8_t>(state >> 24);
+  }
+  constexpr std::uint32_t kTexels = kProbeSmallBlocks * 4;
+  const std::uint32_t header[4] = {kTexels, kTexels, 0, 0};
+  for (VkDeviceSize offset : headers) {
+    std::memcpy(bytes + offset, header, sizeof(header));
+  }
+
+  VkCommandPoolCreateInfo pool_info{};
+  pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_info.queueFamilyIndex = queue_family;
+  VkCommandBuffer buffers[4] = {};
+  VkCommandBufferAllocateInfo command_info{};
+  command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  command_info.commandBufferCount = 4;
+  if (p.create_command_pool(device_, &pool_info, nullptr, &pool) !=
+      VK_SUCCESS) {
+    pool = VK_NULL_HANDLE;
+    return finish(false, "speed probe command pool creation failed");
+  }
+  command_info.commandPool = pool;
+  VkCommandBufferBeginInfo begin{};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  const auto barrier = [&](VkCommandBuffer command_buffer,
+                           VkPipelineStageFlags source_stage,
+                           VkAccessFlags source_access) {
+    VkMemoryBarrier memory_barrier{};
+    memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memory_barrier.srcAccessMask = source_access;
+    memory_barrier.dstAccessMask =
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    p.cmd_pipeline_barrier(command_buffer, source_stage,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memory_barrier, 0, nullptr, 0, nullptr);
+  };
+  constexpr VkPipelineStageFlags kCompute = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  constexpr VkAccessFlags kWrite = VK_ACCESS_SHADER_WRITE_BIT;
+  bool ok = p.allocate_command_buffers(device_, &command_info, buffers) ==
+                VK_SUCCESS &&
+            CreateBinding(work, work, &binding);
+  if (ok) {
+    ok = p.begin_command_buffer(buffers[0], &begin) == VK_SUCCESS;
+    if (ok) {
+      const VkBufferCopy copy{0, 0, total};
+      p.cmd_copy_buffer(buffers[0], upload, work, 1, &copy);
+      barrier(buffers[0], VK_PIPELINE_STAGE_TRANSFER_BIT,
+              VK_ACCESS_TRANSFER_WRITE_BIT);
+      ok = p.end_command_buffer(buffers[0]) == VK_SUCCESS;
+    }
+    ok = ok && p.begin_command_buffer(buffers[1], &begin) == VK_SUCCESS &&
+         Record(buffers[1], binding, transcodes.data(), transcodes.size()) &&
+         p.end_command_buffer(buffers[1]) == VK_SUCCESS;
+    ok = ok && p.begin_command_buffer(buffers[2], &begin) == VK_SUCCESS &&
+         Record(buffers[2], binding, decodes.data(), decodes.size());
+    if (ok) {
+      barrier(buffers[2], kCompute, kWrite);
+      ok = Record(buffers[2], binding, scales.data(), scales.size());
+    }
+    if (ok) {
+      barrier(buffers[2], kCompute, kWrite);
+      ok = Record(buffers[2], binding, encodes.data(), encodes.size()) &&
+           p.end_command_buffer(buffers[2]) == VK_SUCCESS;
+    }
+    ok = ok && p.begin_command_buffer(buffers[3], &begin) == VK_SUCCESS &&
+         p.end_command_buffer(buffers[3]) == VK_SUCCESS;
+  }
+  if (!ok) {
+    return finish(false, "speed probe recording failed");
+  }
+  // Wall time of a submit and wait; the fastest of a few runs.
+  const auto time = [&](VkCommandBuffer command_buffer, int runs,
+                        double* best_ns) {
+    for (int run = 0; run < runs; ++run) {
+      VkSubmitInfo submit{};
+      submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      submit.commandBufferCount = 1;
+      submit.pCommandBuffers = &command_buffer;
+      const auto start = std::chrono::steady_clock::now();
+      if (p.queue_submit(queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+          p.queue_wait_idle(queue) != VK_SUCCESS) {
+        return false;
+      }
+      const double ns = std::chrono::duration<double, std::nano>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
+      *best_ns = run == 0 ? ns : std::min(*best_ns, ns);
+    }
+    return true;
+  };
+  double copy_ns = 0;
+  double empty_ns = 0;
+  double transcode_ns = 0;
+  double upscale_ns = 0;
+  if (!time(buffers[0], 1, &copy_ns) ||
+      !time(buffers[3], kProbeEmptyRuns, &empty_ns) ||
+      (encode && !time(buffers[1], kProbeRuns, &transcode_ns)) ||
+      !time(buffers[2], kProbeRuns, &upscale_ns)) {
+    return finish(false, "speed probe submit failed");
+  }
+  // An empty submit's round trip is latency, not work. On a busy machine one
+  // can take as long as the work, so at most half a measurement goes.
+  const auto work_ns = [empty_ns](double measured) {
+    return std::max(measured - empty_ns, measured / 2);
+  };
+  speed->transcode_ns =
+      encode ? work_ns(transcode_ns) / (kProbeTranscodes *
+                                        kProbeTranscodeBlocks *
+                                        kProbeTranscodeBlocks)
+             : 0;
+  speed->upscale_ns = work_ns(upscale_ns) /
+                      (kProbeUpscales * (kTarget / 4) * (kTarget / 4));
+  return finish(true, nullptr);
+}
+
+bool Etc2GpuDecoder::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                                  const VkPhysicalDeviceMemoryProperties& memory,
+                                  VkMemoryPropertyFlags want,
+                                  VkMemoryPropertyFlags fallback,
+                                  VkBuffer* buffer, VkDeviceMemory* allocation) {
+  const Procs& p = *procs_;
+  VkBufferCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.size = size;
+  info.usage = usage;
+  if (p.create_buffer(device_, &info, nullptr, buffer) != VK_SUCCESS) {
+    *buffer = VK_NULL_HANDLE;
+    return false;
+  }
+  VkMemoryRequirements requirements{};
+  p.get_buffer_memory_requirements(device_, *buffer, &requirements);
+  VkMemoryAllocateInfo allocate{};
+  allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocate.allocationSize = requirements.size;
+  allocate.memoryTypeIndex = UINT32_MAX;
+  for (VkMemoryPropertyFlags flags : {want, fallback}) {
+    for (std::uint32_t i = 0; i < memory.memoryTypeCount &&
+                              allocate.memoryTypeIndex == UINT32_MAX;
+         ++i) {
+      if ((requirements.memoryTypeBits & (1U << i)) != 0 &&
+          (memory.memoryTypes[i].propertyFlags & flags) == flags) {
+        allocate.memoryTypeIndex = i;
+      }
+    }
+  }
+  if (allocate.memoryTypeIndex == UINT32_MAX ||
+      p.allocate_memory(device_, &allocate, nullptr, allocation) !=
+          VK_SUCCESS) {
+    *allocation = VK_NULL_HANDLE;
+    return false;
+  }
+  return p.bind_buffer_memory(device_, *buffer, *allocation, 0) == VK_SUCCESS;
 }
 
 void Etc2GpuDecoder::DisableTranscode() {
