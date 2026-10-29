@@ -78,7 +78,8 @@ Release notes on GitHub are taken from the matching section here.
   a bare `<hash>.png` is skipped and logged. A self-test at startup falls back to
   the CPU if the card's output differs, and `MOCKTAIL_ETC2_GPU_DECODE=0` turns it off. Cards with BC
   texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
-  and small upscaled textures too. `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
+  and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
+  `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
 - Small textures are upscaled on the graphics card with a smoothing filter that keeps hard two-colour
   edges sharp, instead of nearest-neighbour on the CPU.
 

@@ -25,6 +25,13 @@ Setting Live(Setting setting) {
   return setting;
 }
 
+Setting ConfirmOff(Setting setting, std::string_view title,
+                   std::string_view body) {
+  setting.confirm_off_title = title;
+  setting.confirm_off_body = body;
+  return setting;
+}
+
 // The touch switch. The file holds it inside the device block, which the
 // loader does not let input.touch_enabled be combined with.
 constexpr std::string_view kTouchKey = "device.touch";
@@ -508,6 +515,21 @@ const std::vector<SettingsPage>& SettingsPages() {
                  },
                  "",
                  {}},
+                ConfirmOff(
+                  {"graphics.texture_compression",
+                  "Compress Textures",
+                  "Keeps textures compressed on the GPU to conserve video memory. "
+                  "Disable if you experience texture glitches. Requires a restart.",
+                  SettingKind::kToggle,
+                  {},
+                  "true",
+                  {}},
+                  "Turn Off Texture Compression?",
+                  "You lose:\n"
+                  "• Up to 50% VRAM savings\n\n"
+                  "You gain:\n"
+                  "• May fix broken or black textures\n\n"
+                  "Requires a restart to take effect."),
             }},
            {"Display",
             {

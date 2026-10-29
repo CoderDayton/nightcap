@@ -71,6 +71,9 @@ graphics:
   # presents through the lowest-latency synchronized mode the driver offers
   # unless frame_rate_limit is unlimited.
   # vsync: off
+  # Boolean (default: true): keep ETC2/EAC textures compressed as BC7/BC4/BC5
+  # on the GPU to use less video memory. Set false if textures look wrong.
+  # texture_compression: true
 
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every
