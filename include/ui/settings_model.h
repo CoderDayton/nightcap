@@ -61,6 +61,9 @@ struct Setting {
   // What a kNumber row shows in place of 0, when 0 turns the setting off.
   std::string_view zero_label = {};
   bool live = false;
+  // A kToggle that asks before it is turned off. Empty for no question.
+  std::string_view confirm_off_title = {};
+  std::string_view confirm_off_body = {};
 };
 
 struct SettingsGroup {

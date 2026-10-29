@@ -1,11 +1,16 @@
 #include "mocktail/graphics/etc2_gpu_decoder.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <vector>
 
 #include "generated/etc2_decode_spv.h"
+#include "generated/etc2_scale_spv.h"
+#include "generated/etc2_transcode_spv.h"
+#include "mocktail/graphics/bc_decoder.h"
 
 namespace mocktail::graphics {
 
@@ -57,6 +62,55 @@ struct PushConstants {
 };
 
 constexpr std::uint32_t kGroupBlocks = 8;
+// Broken BC packing decodes to noise, far below this; real encodes of random
+// blocks sit well above it.
+constexpr double kMinTranscodePsnr = 20.0;
+
+// Compares a tight, single-layer transcode job with the CPU decode of the
+// same blocks.
+bool TranscodeCloseToCpu(const Etc2GpuJob& job, const std::uint8_t* source,
+                         const std::uint8_t* output) {
+  const BcFormat bc = BcFormatFor(job.format);
+  const std::size_t texel_bytes = EtcDecodedTexelBytes(job.format);
+  const bool color = texel_bytes == 4 && bc == BcFormat::kBc7;
+  const bool is_signed =
+      bc == BcFormat::kBc4Signed || bc == BcFormat::kBc5Signed;
+  std::uint8_t want[64];
+  std::uint8_t got[64];
+  double squared = 0;
+  double samples = 0;
+  const std::size_t blocks =
+      std::size_t{job.blocks_wide} * job.blocks_high * job.layers;
+  for (std::size_t b = 0; b < blocks; ++b) {
+    const std::size_t column = b % job.blocks_wide;
+    const std::size_t row = b / job.blocks_wide % job.blocks_high;
+    const std::size_t layer = b / job.blocks_wide / job.blocks_high;
+    const std::size_t read = layer * job.source_layer_blocks +
+                             row * job.source_row_blocks + column;
+    if (!DecodeEtcImage(job.format, source + read * EtcBlockBytes(job.format),
+                        EtcBlockBytes(job.format), 4, 4, want, sizeof(want)) ||
+        !DecodeBcBlock(bc, output + b * BcBlockBytes(bc), got)) {
+      return false;
+    }
+    const std::size_t values = color ? 64 : 16 * texel_bytes / 2;
+    for (std::size_t v = 0; v < values; ++v) {
+      double error = 0;
+      if (color) {
+        error = (want[v] - got[v]) / 255.0;
+      } else {
+        const int a = want[v * 2] | (want[v * 2 + 1] << 8);
+        const int c = got[v * 2] | (got[v * 2 + 1] << 8);
+        error = is_signed ? (static_cast<std::int16_t>(a) -
+                             static_cast<std::int16_t>(c)) / 32767.0
+                          : (a - c) / 65535.0;
+      }
+      squared += error * error;
+      samples += 1;
+    }
+  }
+  const double mse = squared / samples;
+  return mse == 0 || 10 * std::log10(1 / mse) >= kMinTranscodePsnr;
+}
 constexpr VkDeviceSize kMaxWordOffset = std::numeric_limits<std::uint32_t>::max();
 
 template <typename T>
@@ -78,9 +132,22 @@ VkDeviceSize Etc2GpuLayerBytes(EtcFormat format, std::uint32_t blocks_wide,
          EtcDecodedTexelBytes(format);
 }
 
-VkDeviceSize Etc2GpuDecodedBytes(const Etc2GpuJob& job) {
-  return Etc2GpuLayerBytes(job.format, job.blocks_wide, job.blocks_high) *
-         job.layers;
+namespace {
+
+VkDeviceSize OutputLayerBytes(const Etc2GpuJob& job) {
+  if (job.scale) {
+    return VkDeviceSize{job.blocks_wide} * job.blocks_high * 16 * 4;
+  }
+  return job.transcode
+             ? VkDeviceSize{job.blocks_wide} * job.blocks_high *
+                   BcBlockBytes(BcFormatFor(job.format))
+             : Etc2GpuLayerBytes(job.format, job.blocks_wide, job.blocks_high);
+}
+
+}
+
+VkDeviceSize Etc2GpuOutputBytes(const Etc2GpuJob& job) {
+  return OutputLayerBytes(job) * job.layers;
 }
 
 std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
@@ -189,12 +256,45 @@ std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
     *error = "vkCreateComputePipelines failed";
     return nullptr;
   }
+
+  shader.codeSize = sizeof(kEtc2TranscodeSpv);
+  shader.pCode = kEtc2TranscodeSpv;
+  if (p.create_shader_module(device, &shader, nullptr,
+                             &decoder->transcode_shader_) == VK_SUCCESS) {
+    pipeline.stage.module = decoder->transcode_shader_;
+    if (p.create_compute_pipelines(device, VK_NULL_HANDLE, 1, &pipeline,
+                                   nullptr, &decoder->transcode_pipeline_) !=
+        VK_SUCCESS) {
+      decoder->transcode_pipeline_ = VK_NULL_HANDLE;
+    }
+  }
+  shader.codeSize = sizeof(kEtc2ScaleSpv);
+  shader.pCode = kEtc2ScaleSpv;
+  if (p.create_shader_module(device, &shader, nullptr,
+                             &decoder->scale_shader_) == VK_SUCCESS) {
+    pipeline.stage.module = decoder->scale_shader_;
+    if (p.create_compute_pipelines(device, VK_NULL_HANDLE, 1, &pipeline,
+                                   nullptr, &decoder->scale_pipeline_) !=
+        VK_SUCCESS) {
+      decoder->scale_pipeline_ = VK_NULL_HANDLE;
+    }
+  }
   return decoder;
 }
 
 Etc2GpuDecoder::~Etc2GpuDecoder() {
   if (procs_ == nullptr) {
     return;
+  }
+  DisableTranscode();
+  if (transcode_shader_ != VK_NULL_HANDLE) {
+    procs_->destroy_shader_module(device_, transcode_shader_, nullptr);
+  }
+  if (scale_pipeline_ != VK_NULL_HANDLE) {
+    procs_->destroy_pipeline(device_, scale_pipeline_, nullptr);
+  }
+  if (scale_shader_ != VK_NULL_HANDLE) {
+    procs_->destroy_shader_module(device_, scale_shader_, nullptr);
   }
   if (pipeline_ != VK_NULL_HANDLE) {
     procs_->destroy_pipeline(device_, pipeline_, nullptr);
@@ -260,9 +360,26 @@ bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
                             const Etc2GpuJob* jobs, std::size_t count) {
   for (std::size_t i = 0; i < count; ++i) {
     const Etc2GpuJob& job = jobs[i];
-    const VkDeviceSize layer_bytes =
-        Etc2GpuLayerBytes(job.format, job.blocks_wide, job.blocks_high);
-    if (job.blocks_wide == 0 || job.blocks_high == 0 || job.layers == 0 ||
+    const VkDeviceSize layer_bytes = OutputLayerBytes(job);
+    if (job.scale) {
+      if (scale_pipeline_ == VK_NULL_HANDLE || job.transcode ||
+          job.rgba_source || job.layers != 1 || job.scale_width == 0 ||
+          job.scale_height == 0 || job.blocks_wide != (job.scale_width + 3) / 4 ||
+          job.blocks_high != (job.scale_height + 3) / 4 ||
+          job.source_offset % 4 != 0 || job.destination_offset % 4 != 0 ||
+          job.scale_texels_offset % 4 != 0 ||
+          job.source_offset / 4 > kMaxWordOffset ||
+          job.scale_texels_offset / 4 > kMaxWordOffset ||
+          job.destination_offset / 4 > kMaxWordOffset ||
+          layer_bytes / 4 > kMaxWordOffset) {
+        return false;
+      }
+      continue;
+    }
+    if ((job.transcode && transcode_pipeline_ == VK_NULL_HANDLE) ||
+        (job.rgba_source &&
+         (!job.transcode || BcFormatFor(job.format) != BcFormat::kBc7)) ||
+        job.blocks_wide == 0 || job.blocks_high == 0 || job.layers == 0 ||
         job.source_offset % 4 != 0 || job.destination_offset % 4 != 0 ||
         job.source_row_blocks < job.blocks_wide ||
         job.source_layer_blocks <
@@ -274,32 +391,47 @@ bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
       return false;
     }
   }
-  procs_->cmd_bind_pipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipeline_);
-  procs_->cmd_bind_descriptor_sets(command_buffer,
-                                   VK_PIPELINE_BIND_POINT_COMPUTE,
-                                   pipeline_layout_, 0, 1, &binding.set, 0,
-                                   nullptr);
+  VkPipeline bound = VK_NULL_HANDLE;
   for (std::size_t i = 0; i < count; ++i) {
     const Etc2GpuJob& job = jobs[i];
+    const VkPipeline wanted = job.scale       ? scale_pipeline_
+                              : job.transcode ? transcode_pipeline_
+                                              : pipeline_;
+    if (wanted != bound) {
+      procs_->cmd_bind_pipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                wanted);
+      if (bound == VK_NULL_HANDLE) {
+        procs_->cmd_bind_descriptor_sets(command_buffer,
+                                         VK_PIPELINE_BIND_POINT_COMPUTE,
+                                         pipeline_layout_, 0, 1, &binding.set,
+                                         0, nullptr);
+      }
+      bound = wanted;
+    }
+    // The transcode shader's format code for RGBA8 texels.
+    constexpr std::uint32_t kRgbaTexels = 7;
+    // The scale shader reads the target size where the others read the
+    // source strides, and runs one invocation per texel.
     const PushConstants push{
-        static_cast<std::uint32_t>(job.format),
+        job.rgba_source ? kRgbaTexels : static_cast<std::uint32_t>(job.format),
         job.blocks_wide,
         job.blocks_high,
         static_cast<std::uint32_t>(job.source_offset / 4),
-        job.source_row_blocks,
-        job.source_layer_blocks,
+        job.scale ? job.scale_width : job.source_row_blocks,
+        job.scale ? job.scale_height : job.source_layer_blocks,
         static_cast<std::uint32_t>(job.destination_offset / 4),
         static_cast<std::uint32_t>(
-            Etc2GpuLayerBytes(job.format, job.blocks_wide, job.blocks_high) /
-            4)};
+            !job.scale ? OutputLayerBytes(job) / 4
+            : job.scale_texels_offset != 0
+                ? job.scale_texels_offset / 4
+                : (job.source_offset + kEtc2ScaleHeaderBytes) / 4)};
     procs_->cmd_push_constants(command_buffer, pipeline_layout_,
                                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
                                &push);
+    const std::uint32_t group = job.scale ? kGroupBlocks / 4 : kGroupBlocks;
     procs_->cmd_dispatch(command_buffer,
-                         (job.blocks_wide + kGroupBlocks - 1) / kGroupBlocks,
-                         (job.blocks_high + kGroupBlocks - 1) / kGroupBlocks,
-                         job.layers);
+                         (job.blocks_wide + group - 1) / group,
+                         (job.blocks_high + group - 1) / group, job.layers);
   }
   return true;
 }
@@ -338,10 +470,18 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
                     EtcBlockBytes(format);
     jobs.push_back(job);
   }
+  if (transcode_pipeline_ != VK_NULL_HANDLE) {
+    const std::size_t decoded_jobs = jobs.size();
+    for (std::size_t i = 0; i < decoded_jobs; ++i) {
+      Etc2GpuJob job = jobs[i];
+      job.transcode = true;
+      jobs.push_back(job);
+    }
+  }
   VkDeviceSize total = source_bytes;
   for (Etc2GpuJob& job : jobs) {
     job.destination_offset = total;
-    total += Etc2GpuDecodedBytes(job);
+    total += Etc2GpuOutputBytes(job);
   }
   std::vector<std::uint8_t> source(source_bytes);
   std::uint64_t state = 0x9E3779B97F4A7C15ULL;
@@ -452,7 +592,14 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
 
   std::vector<std::uint8_t> tight;
   std::vector<std::uint8_t> expected;
+  bool transcode_ok = true;
   for (const Etc2GpuJob& job : jobs) {
+    if (job.transcode) {
+      transcode_ok = transcode_ok &&
+                     TranscodeCloseToCpu(job, source.data() + job.source_offset,
+                                         bytes + job.destination_offset);
+      continue;
+    }
     const std::size_t block_bytes = EtcBlockBytes(job.format);
     const std::size_t row_bytes = std::size_t{job.blocks_wide} * block_bytes;
     const VkDeviceSize layer_bytes =
@@ -477,7 +624,17 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
       }
     }
   }
+  if (!transcode_ok) {
+    DisableTranscode();
+  }
   return finish(true, nullptr);
+}
+
+void Etc2GpuDecoder::DisableTranscode() {
+  if (transcode_pipeline_ != VK_NULL_HANDLE) {
+    procs_->destroy_pipeline(device_, transcode_pipeline_, nullptr);
+    transcode_pipeline_ = VK_NULL_HANDLE;
+  }
 }
 
 }

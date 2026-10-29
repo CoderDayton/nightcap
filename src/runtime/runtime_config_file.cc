@@ -172,6 +172,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.backend",
       "graphics.frame_rate_limit",
       "graphics.vsync",
+      "graphics.texture_compression",
       "graphics.present_mode",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
@@ -393,6 +394,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_VSYNC"] = *vsync;
+  }
+  if (const auto compression = value("graphics.texture_compression");
+      compression.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*compression, &parsed)) {
+      *error = "graphics.texture_compression must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
   }
   if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
     if (!RuntimeConfig::IsValidPresentMode(*mode)) {
@@ -1061,6 +1071,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
                           FrameRateValue(config.frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
+      SetEnvironmentValue("MOCKTAIL_ETC2_BC_TRANSCODE",
+                          config.texture_compression() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

@@ -80,7 +80,7 @@ void ExpectMatchesCpu(EtcFormat format, std::uint32_t width,
         Etc2GpuDecoder::Create(vk.device, vk.get_device_proc_addr, &error);
     ASSERT_NE(decoder, nullptr) << error;
     const VkDeviceSize destination_bytes =
-        job.destination_offset + Etc2GpuDecodedBytes(job);
+        job.destination_offset + Etc2GpuOutputBytes(job);
     HostBuffer src = CreateHostBuffer(vk, source_bytes,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     HostBuffer dst = CreateHostBuffer(vk, destination_bytes,
@@ -136,7 +136,7 @@ TEST(Etc2GpuDecoderTest, PadsRowsAndLayersToWholeBlocks) {
   job.blocks_wide = 3;
   job.blocks_high = 2;
   job.layers = 5;
-  EXPECT_EQ(Etc2GpuDecodedBytes(job), 5U * 12 * 8 * 4);
+  EXPECT_EQ(Etc2GpuOutputBytes(job), 5U * 12 * 8 * 4);
 }
 
 TEST(Etc2GpuDecoderTest, Rgb8MatchesCpuOnAMillionRandomBlocks) {

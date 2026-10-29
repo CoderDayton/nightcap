@@ -565,9 +565,41 @@ void OnReset(GtkButton*, gpointer user_data) {
   ShowSaved(row, before, saved, error);
 }
 
+void OnConfirmOffResponse(AdwAlertDialog*, const char* response,
+                          gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  if (g_strcmp0(response, "off") == 0) {
+    Apply(row, "false");
+  } else {
+    // The switch already moved; put it back to what the file holds.
+    RefreshRows(row->window);
+  }
+}
+
+void AskBeforeTurningOff(Row* row) {
+  const Setting& setting = *row->setting;
+  AdwDialog* question = adw_alert_dialog_new(
+      std::string(setting.confirm_off_title).c_str(),
+      std::string(setting.confirm_off_body).c_str());
+  adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(question), "keep", "Keep On",
+                                 "off", "Turn Off", nullptr);
+  adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(question), "off",
+                                           ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(question), "keep");
+  adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(question), "keep");
+  g_signal_connect(question, "response", G_CALLBACK(OnConfirmOffResponse), row);
+  adw_dialog_present(question, row->window->widget);
+}
+
 void OnToggleChanged(GObject* object, GParamSpec*, gpointer user_data) {
-  Apply(static_cast<Row*>(user_data),
-        adw_switch_row_get_active(ADW_SWITCH_ROW(object)) ? "true" : "false");
+  Row* row = static_cast<Row*>(user_data);
+  const bool active = adw_switch_row_get_active(ADW_SWITCH_ROW(object));
+  if (!active && !row->window->refreshing &&
+      !row->setting->confirm_off_body.empty()) {
+    AskBeforeTurningOff(row);
+    return;
+  }
+  Apply(row, active ? "true" : "false");
 }
 
 void OnExpanderToggled(GObject* object, GParamSpec*, gpointer user_data) {

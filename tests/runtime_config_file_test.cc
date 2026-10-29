@@ -1347,6 +1347,53 @@ TEST(RuntimeConfigFileTest, ValidatesAndExportsPresentModes) {
   unsetenv("MOCKTAIL_PRESENT_MODE");
 }
 
+TEST(RuntimeConfigFileTest, LoadsTextureCompressionFromFile) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  texture_compression: false
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.texture_compression());
+}
+
+TEST(RuntimeConfigFileTest, ExportsTextureCompressionPolicy) {
+  unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
+  std::string error;
+  const RuntimeConfig enabled =
+      RuntimeConfig::FromEnvironment(MapEnvironment());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(enabled, &error)) << error;
+  ASSERT_NE(getenv("MOCKTAIL_ETC2_BC_TRANSCODE"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_BC_TRANSCODE"), "1");
+
+  const RuntimeConfig disabled = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_ETC2_BC_TRANSCODE", "0"}}));
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(disabled, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_BC_TRANSCODE"), "0");
+  unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
+}
+
+TEST(RuntimeConfigFileTest, RejectsNonBooleanTextureCompression) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  texture_compression: maybe
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("graphics.texture_compression"),
+            std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, RejectsNonBooleanPerformancePolicy) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(

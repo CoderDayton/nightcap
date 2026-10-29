@@ -1266,6 +1266,9 @@ VkResult VKAPI_CALL ProfiledAllocateMemory(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkAllocateMemory", "memory");
   const VkResult result = host(device, allocate_info, allocator, memory);
+  if (result == VK_SUCCESS && memory != nullptr) {
+    State().etc2.TrackAllocation(device, allocate_info, *memory);
+  }
   scope.Arg("bytes", allocate_info != nullptr
                          ? static_cast<std::int64_t>(
                                allocate_info->allocationSize)
@@ -1812,6 +1815,37 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
       requested_features2->features.textureCompressionETC2 = VK_FALSE;
     }
   }
+  // BC images need textureCompressionBC, which an Android app never asks for.
+  // Software Vulkan transcodes about a hundred times slower than a GPU, so
+  // it keeps decoding.
+  bool bc_textures = false;
+  VkBool32 requested_features2_bc = VK_FALSE;
+  if (etc2_emulated &&
+      mocktail::graphics::Etc2BcTranscodeEnabled(
+          std::getenv("MOCKTAIL_ETC2_BC_TRANSCODE")) &&
+      properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
+    VkPhysicalDeviceFeatures supported{};
+    if (const auto host_get_features =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+                HostInstanceProc(instance, "vkGetPhysicalDeviceFeatures"));
+        host_get_features != nullptr) {
+      host_get_features(physical_device, &supported);
+    }
+    bc_textures = supported.textureCompressionBC == VK_TRUE;
+  }
+  if (bc_textures) {
+    enabled.root.features.textureCompressionBC = VK_TRUE;
+    if (requested_features2 != nullptr) {
+      requested_features2_bc = requested_features2->features.textureCompressionBC;
+      requested_features2->features.textureCompressionBC = VK_TRUE;
+    } else {
+      if (create_info->pEnabledFeatures == nullptr) {
+        host_enabled_features = {};
+      }
+      host_enabled_features.textureCompressionBC = VK_TRUE;
+      host_info.pEnabledFeatures = &host_enabled_features;
+    }
+  }
   enabled.root.pNext = &enabled.vulkan11;
   enabled.vulkan11.pNext = &enabled.vulkan12;
   enabled.vulkan12.pNext = nullptr;
@@ -1850,6 +1884,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   if (requested_features2 != nullptr) {
     requested_features2->features.textureCompressionETC2 =
         requested_features2_etc2;
+    if (bc_textures) {
+      requested_features2->features.textureCompressionBC =
+          requested_features2_bc;
+    }
   }
   if (result != VK_SUCCESS) {
     return result;
@@ -1866,7 +1904,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   }
   State().etc2.RegisterDevice(*device, physical_device, etc2_emulated,
                               memory_properties, host_get_device_proc_addr,
-                              enabled.vulkan12.timelineSemaphore == VK_TRUE);
+                              enabled.vulkan12.timelineSemaphore == VK_TRUE,
+                              bc_textures);
 
   std::uint32_t queue_family_count = 0;
   const auto host_get_queue_families =

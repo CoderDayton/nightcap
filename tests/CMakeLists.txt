@@ -713,6 +713,7 @@ mocktail_apply_compile_options(etc2_decoder_test)
 add_executable(etc2_gpu_decoder_test
   etc2_gpu_decoder_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
 )
 target_include_directories(etc2_gpu_decoder_test PRIVATE
@@ -722,7 +723,22 @@ target_link_libraries(etc2_gpu_decoder_test PRIVATE GTest::gtest_main
   Threads::Threads dl)
 mocktail_apply_compile_options(etc2_gpu_decoder_test)
 
+add_executable(etc2_gpu_transcode_test
+  etc2_gpu_transcode_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(etc2_gpu_transcode_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(etc2_gpu_transcode_test PRIVATE GTest::gtest_main
+  Threads::Threads dl)
+mocktail_apply_compile_options(etc2_gpu_transcode_test)
+
 pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
+target_link_libraries(etc2_gpu_transcode_test PRIVATE PkgConfig::LIBPNG)
 
 add_executable(texture_override_test
   texture_override_test.cc
@@ -780,6 +796,7 @@ add_executable(vulkan_etc2_emulation_test
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 target_include_directories(vulkan_etc2_emulation_test PRIVATE
@@ -795,6 +812,7 @@ add_executable(vulkan_etc2_gpu_emulation_test
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 target_include_directories(vulkan_etc2_gpu_emulation_test PRIVATE
@@ -1309,6 +1327,7 @@ gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(etc2_decoder_test)
 gtest_discover_tests(etc2_gpu_decoder_test)
+gtest_discover_tests(etc2_gpu_transcode_test)
 gtest_discover_tests(texture_override_test)
 if(MOCKTAIL_MEDIANDK_FFMPEG)
   add_executable(mediandk_decoder_test mediandk_decoder_test.cc)

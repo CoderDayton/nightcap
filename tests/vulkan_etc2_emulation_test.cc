@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -52,6 +53,13 @@ TEST(VulkanEtc2EmulationTest, AdvertisesEtc2UnlessSwitchedOff) {
   EXPECT_TRUE(Etc2SupportAdvertised(""));
   EXPECT_TRUE(Etc2SupportAdvertised("1"));
   EXPECT_FALSE(Etc2SupportAdvertised("0"));
+}
+
+TEST(VulkanEtc2EmulationTest, TranscodesToBcUnlessSwitchedOff) {
+  EXPECT_TRUE(Etc2BcTranscodeEnabled(nullptr));
+  EXPECT_TRUE(Etc2BcTranscodeEnabled(""));
+  EXPECT_TRUE(Etc2BcTranscodeEnabled("1"));
+  EXPECT_FALSE(Etc2BcTranscodeEnabled("0"));
 }
 
 TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
@@ -562,19 +570,13 @@ TEST(VulkanEtc2EmulationTest, UpscalesSmallTexturesAndTheirUploads) {
                                              0,    0,    0,    0};
   std::memcpy(g_source.data(), block.data(), block.size());
   emulation.PrepareSubmit(&command_buffer, 1);
-  // The host region is 8x8: every 4x4 texel repeated 2x2.
-  std::array<std::uint8_t, 4 * 4 * 4> expected{};
+  // The host region is the 4x4 texels grown to 8x8 by the adaptive upscaler.
+  std::array<std::uint8_t, 4 * 4 * 4> decoded{};
   ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, block.data(), block.size(),
-                             4, 4, expected.data(), expected.size()));
-  for (std::size_t y = 0; y < 8; ++y) {
-    for (std::size_t x = 0; x < 8; ++x) {
-      for (std::size_t channel = 0; channel < 4; ++channel) {
-        ASSERT_EQ(g_staging[(y * 8 + x) * 4 + channel],
-                  expected[((y / 2) * 4 + x / 2) * 4 + channel])
-            << x << "," << y;
-      }
-    }
-  }
+                             4, 4, decoded.data(), decoded.size()));
+  std::array<std::uint8_t, 8 * 8 * 4> expected{};
+  UpscaleRgba(decoded.data(), 4, 4, 16, 8, 8, expected.data());
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), g_staging.begin()));
   EXPECT_EQ(g_staging[8 * 8 * 4], 0xAA);
   emulation.ReleaseCommandBuffer(command_buffer);
 }
