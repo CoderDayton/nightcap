@@ -66,7 +66,7 @@ current `main` branch. It is maintained by
 [@dim-ghub](https://github.com/dim-ghub):
 
 ```bash
-yay -S nightcap-git
+paru -S nightcap-git    # or: yay -S nightcap-git
 ```
 
 ## Install with Flatpak
