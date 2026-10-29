@@ -667,6 +667,11 @@ target_link_libraries(auth_runtime_composition_test PRIVATE
   GTest::gtest_main
 )
 mocktail_apply_compile_options(auth_runtime_composition_test)
+add_dependencies(auth_runtime_composition_test mocktail_cookie_helper)
+if(LIBSECRET_FOUND)
+  target_compile_definitions(auth_runtime_composition_test PRIVATE
+    MOCKTAIL_TEST_LIBSECRET=1)
+endif()
 
 add_executable(client_settings_service_test client_settings_service_test.cc)
 target_link_libraries(client_settings_service_test PRIVATE

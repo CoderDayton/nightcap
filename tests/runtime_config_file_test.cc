@@ -101,6 +101,7 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_TRUE(loaded.file_loaded);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
+  EXPECT_FALSE(loaded.config.use_libsecret());
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
   EXPECT_EQ(loaded.config.vsync_mode(), "auto");
   EXPECT_EQ(loaded.config.present_mode(), "auto");
@@ -263,7 +264,22 @@ TEST(RuntimeConfigFileTest, UsesDefaultsWhenFileDoesNotExist) {
   EXPECT_FALSE(loaded.file_loaded);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
+  EXPECT_FALSE(loaded.config.use_libsecret());
   EXPECT_EQ(loaded.config.roblox_library_path(), "rbx_bin/libroblox.so");
+}
+
+TEST(RuntimeConfigFileTest, LibsecretUsesYamlBoolean) {
+  TemporaryDirectory temporary;
+  for (const auto value : {"true", "false"}) {
+    const auto file = temporary.Write(std::string("auth:\n  use_libsecret: ") + value + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    ASSERT_TRUE(loaded) << loaded.error;
+    EXPECT_EQ(loaded.config.use_libsecret(), std::string_view(value) == "true");
+  }
+  const auto file = temporary.Write("auth:\n  use_libsecret: auto\n");
+  const auto invalid = LoadRuntimeConfig(MapEnvironment(), file);
+  EXPECT_FALSE(invalid);
+  EXPECT_EQ(invalid.error, "auth.use_libsecret must be true or false");
 }
 
 TEST(RuntimeConfigFileTest, RejectsSymlinkAndOversizedConfiguration) {

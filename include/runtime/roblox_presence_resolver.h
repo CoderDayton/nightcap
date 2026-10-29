@@ -2,6 +2,7 @@
 #define MOCKTAIL_RUNTIME_ROBLOX_PRESENCE_RESOLVER_H_
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "mocktail/status.h"
@@ -9,15 +10,15 @@
 namespace mocktail {
 namespace runtime {
 
+class RobloxSecretStore;
+
 struct ResolvedFollowUserPlace {
   int64_t place_id = 0;
   std::string game_instance_id;  // Roblox's "gameId" for the running session.
 };
 
-// Reads the session cookie mocktail already persists at
-// ~/.local/share/mocktail/auth/roblox.cookie (or $XDG_DATA_HOME
-// equivalent). Returns an empty string if no session is stored.
-std::string ReadStoredRoblosecurityCookie();
+std::string ReadStoredRoblosecurityCookie(
+    std::shared_ptr<RobloxSecretStore> secrets = nullptr);
 
 // Calls Roblox's presence API to find what place/instance a user is
 // currently in. `auth_cookie` is the runtime's already-authenticated

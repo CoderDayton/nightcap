@@ -24,6 +24,7 @@
   libglvnd,
   libplacebo,
   libpng,
+  libsecret,
   libsoup_3,
   libutf8proc,
   libyaml,
@@ -94,6 +95,7 @@ stdenv.mkDerivation (finalAttrs: {
     libglvnd
     libplacebo
     libpng
+    libsecret
     libsoup_3
     libutf8proc
     libyaml

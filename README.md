@@ -133,6 +133,7 @@ Building requires CMake 3.20+, Git, pkg-config, LLD, binutils, a C++17
 compiler, SDL 3.4+, SDL3_ttf,
 Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, minizip,
 Capstone 5, utf8proc, nlohmann/json, GTK4, libadwaita 1.6+, and WebKitGTK 6.0.
+Optional: libsecret.
 
 See the [FreeBSD Guide](packaging/freebsd/README.md) for setup and launch instructions.
 
@@ -144,7 +145,7 @@ sudo apt update
 sudo apt install build-essential cmake git ninja-build pkg-config lld \
   libsdl3-dev libsdl3-ttf-dev libcurl4-openssl-dev libssl-dev \
   nlohmann-json3-dev libyaml-dev libelf-dev libminizip-dev \
-  libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+  libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsecret-1-dev \
   libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
   libplacebo-dev libpng-dev zlib1g-dev
 ```
@@ -156,7 +157,7 @@ sudo apt install build-essential cmake git ninja-build pkg-config lld \
 ```bash
 sudo pacman -S --needed base-devel cmake git ninja pkgconf lld sdl3 sdl3_ttf \
   curl openssl nlohmann-json libyaml libelf minizip capstone gtk4 \
-  libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
+  libadwaita libsecret webkitgtk-6.0 libutf8proc fontconfig libglvnd \
   libplacebo vulkan-headers vulkan-icd-loader zlib
 ```
 </details>
@@ -168,7 +169,7 @@ sudo pacman -S --needed base-devel cmake git ninja pkgconf lld sdl3 sdl3_ttf \
 sudo dnf install gcc-c++ cmake git ninja-build pkgconf-pkg-config lld \
   SDL3-devel SDL3_ttf-devel libcurl-devel openssl-devel \
   nlohmann-json-devel libyaml-devel elfutils-libelf-devel minizip-ng-compat-devel \
-  capstone-devel gtk4-devel libadwaita-devel webkitgtk6.0-devel \
+  capstone-devel gtk4-devel libadwaita-devel webkitgtk6.0-devel libsecret-devel \
   utf8proc-devel fontconfig-devel libglvnd-devel vulkan-headers \
   vulkan-loader-devel libplacebo-devel zlib-ng-compat-devel
 ```

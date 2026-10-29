@@ -82,6 +82,7 @@ class RuntimeConfig {
   static RuntimeConfig FromEnvironment(const Environment& environment);
 
   bool headless() const { return headless_; }
+  bool use_libsecret() const { return use_libsecret_; }
   const std::filesystem::path& roblox_library_path() const {
     return roblox_library_path_;
   }
@@ -152,6 +153,7 @@ class RuntimeConfig {
 
  private:
   bool headless_ = false;
+  bool use_libsecret_ = false;
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;
   std::string graphics_backend_name_ = "direct-vulkan";

@@ -236,9 +236,6 @@ TEST(RobloxLaunchUriTest, RejectsUnsupportedSchemesRoutesAndLaunchModes) {
            "3Frequest%3DRequestGame%26placeId%3D1",
            "roblox-player:1+launchmode:play+placelauncherurl:"
            "https%3A%2F%2Fwww.roblox.com%2FGame%2FPlaceLauncher.ashx%"
-           "3Frequest%3DRequestFollowUser%26userId%3D42",
-           "roblox-player:1+launchmode:play+placelauncherurl:"
-           "https%3A%2F%2Fwww.roblox.com%2FGame%2FPlaceLauncher.ashx%"
            "3FplaceId%3D1",
        }) {
     ExpectRejected(uri);

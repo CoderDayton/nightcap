@@ -38,6 +38,7 @@
 #include "runtime/platform_cache_migration.h"
 #include "runtime/process_diagnostics.h"
 #include "runtime/process_launch_policy.h"
+#include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
@@ -279,6 +280,11 @@ int main(int argc, char* argv[]) {
   }
 
   const mocktail::runtime::ProcessEnvironment environment;
+  mocktail::runtime::SetRobloxCookieWarningHandler(
+      [](std::string_view message) {
+        (void)mocktail::runtime::ShowWarningDialog(
+            mocktail::runtime::ProcessEnvironment(), message);
+      });
   const std::string built_in_compatibility_manifest = environment.GetOr(
       "MOCKTAIL_UPDATE_COMPATIBILITY_PATH",
       environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
@@ -931,8 +937,6 @@ int main(int argc, char* argv[]) {
     if (environment.HasNonEmpty("MOCKTAIL_COOKIE_FILE")) {
       tracker_cookie_file = environment.GetOr("MOCKTAIL_COOKIE_FILE", "");
       tracker_cookie_owned = false;
-    } else if (mocktail::runtime::RuntimePaths::Exists(paths.cookie_file())) {
-      tracker_cookie_file = paths.cookie_file();
     }
     const mocktail::services::BrowserTrackerResult browser_tracker_result =
         browser_tracker.EnsureInitialized(app_storage_file, tracker_cookie_file,
@@ -1115,6 +1119,8 @@ int main(int argc, char* argv[]) {
               << launch_broker_shutdown_status.message() << '\n';
     runtime_status = EXIT_FAILURE;
   }
+  if (dependencies.jni_vm() != nullptr)
+    dependencies.jni_vm()->ClearRobloxCredentialSink();
   if (runtime_status != EXIT_SUCCESS) {
     failure_dialog.SetMessage("Roblox stopped with error code " +
                               std::to_string(runtime_status) + ".");

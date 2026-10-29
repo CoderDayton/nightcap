@@ -205,6 +205,7 @@ std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy,
 RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   RuntimeConfig config;
   config.headless_ = LegacyEnabled(environment, "MOCKTAIL_HEADLESS");
+  config.use_libsecret_ = environment.GetOr("MOCKTAIL_USE_LIBSECRET", "0") == "1";
   config.roblox_library_path_ = environment.GetOr(
       "ROBLOX_LIB_PATH", config.roblox_library_path_.string());
   config.graphics_backend_name_ = environment.GetOr(

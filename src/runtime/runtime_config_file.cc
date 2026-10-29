@@ -167,6 +167,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "device.mouse",
       "device.keyboard",
       "runtime.headless",
+      "auth.use_libsecret",
       "runtime.roblox_library",
       "appearance.theme",
       "graphics.backend",
@@ -516,6 +517,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
                "integrations.discord_rpc.enabled",
                "MOCKTAIL_DISCORD_RPC_ENABLED"),
            {"integrations.fleasion.enabled", "MOCKTAIL_FLEASION_ENABLED"},
+           {"auth.use_libsecret", "MOCKTAIL_USE_LIBSECRET"},
            {"integrations.discord_rpc.show_place_name",
             "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME"},
            {"integrations.discord_rpc.show_elapsed_time",
@@ -698,7 +700,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
           *error = "device must be a preset scalar or detailed mapping";
           valid = false;
         }
-      } else if (key == "runtime" || key == "appearance" ||
+      } else if (key == "runtime" || key == "appearance" || key == "auth" ||
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network") {
