@@ -8,10 +8,12 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -37,6 +39,26 @@ public:
 
 private:
   std::filesystem::path path_;
+};
+
+class ScopedVariable final {
+public:
+  ScopedVariable(const char* name, const std::string& value) : name_(name) {
+    if (const char* previous = std::getenv(name)) previous_ = previous;
+    EXPECT_EQ(setenv(name, value.c_str(), 1), 0);
+  }
+
+  ~ScopedVariable() {
+    if (previous_) {
+      (void)setenv(name_.c_str(), previous_->c_str(), 1);
+    } else {
+      (void)unsetenv(name_.c_str());
+    }
+  }
+
+private:
+  std::string name_;
+  std::optional<std::string> previous_;
 };
 
 bool WriteExecutable(const std::filesystem::path &path,
@@ -327,6 +349,35 @@ TEST(WebViewHelperLauncherTest, SendsNormalizedInternalRouteToHelper) {
       "https://www.roblox.com/games/servers-section/987654321";
   EXPECT_EQ(request, "MOCKTAIL-WEBVIEW 1\n" + std::to_string(canonical.size()) +
                          "\n" + canonical);
+}
+
+TEST(WebViewHelperLauncherTest, KeepsLargeFlagOverridesOnlyInParent) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  const std::filesystem::path helper = temporary.path() / "fake-helper";
+  const std::filesystem::path output = temporary.path() / "environment";
+  ASSERT_TRUE(WriteExecutable(
+      helper,
+      "#!/bin/sh\n"
+      "[ \"${MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON+x}\" != x ] || exit 1\n"
+      "printf '%s' \"$MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON_EXTRA\" > '" +
+          output.string() + "'\n"));
+
+  constexpr const char* name = "MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON";
+  const std::string json = "{\"FStringExample\":\"" +
+                           std::string(4 * 1024 * 1024, 'x') + "\"}";
+  ScopedVariable overrides(name, json);
+  ScopedVariable other("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON_EXTRA",
+                       "preserved");
+  auto exit_probe = std::make_shared<ExitProbe>();
+  const auto result = LaunchWebViewHelper(
+      helper, "https://www.roblox.com/login",
+      WebViewHelperExitObserver{exit_probe, &RecordExit});
+  ASSERT_TRUE(result) << result.error;
+  ASSERT_TRUE(WaitForExit(exit_probe, std::chrono::seconds(2)));
+  EXPECT_EQ(ReadFile(output), "preserved");
+  ASSERT_NE(std::getenv(name), nullptr);
+  EXPECT_TRUE(json == std::getenv(name));
 }
 
 TEST(WebViewHelperLauncherTest, ReturnsWithoutWaitingForHelperWindow) {

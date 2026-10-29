@@ -1,5 +1,7 @@
 #include "runtime/payload_update_preflight.h"
 
+#include "runtime/helper_environment.h"
+
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/socket.h>
@@ -174,8 +176,9 @@ class UpdateProgressMonitor final {
     pid_t child = -1;
     int spawn_status = action_status;
     if (spawn_status == 0) {
+      const auto child_environment = BuildHelperEnvironment(environ);
       spawn_status = posix_spawn(&child, helper.c_str(), &actions, nullptr,
-                                 arguments, environ);
+                                 arguments, child_environment.data());
     }
     posix_spawn_file_actions_destroy(&actions);
     close(sockets[1]);
