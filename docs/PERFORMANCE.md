@@ -129,9 +129,41 @@ runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
-`MOCKTAIL_SMALL_TEXTURE_UPSCALE` (default `4`) stores ETC2 textures of 64px or
-smaller at N times their width and height. At the default that is 16 times the
-pixels per affected texture.
+`graphics.small_texture_upscale` (Small texture upscale in the settings
+window, `MOCKTAIL_SMALL_TEXTURE_UPSCALE` for one run) stores ETC2 textures of
+64px or smaller at N times their width and height. 4 is 16 times the pixels
+per affected texture.
+
+The default, `adaptive`, sizes this to the graphics card. At startup Nightcap
+times the card's BC7 encoder on a few textures, minus the round trip of an
+empty submit, and picks 4, 2 or 1: the largest at which a 64px texture
+encodes in 0.5 ms. An RTX 4090 measures about 9 ns per block and gets 4;
+llvmpipe measures about 700 ns and gets 1. With texture compression off it
+times only the decode and scale, which is all those textures cost. Without a
+measurement (GPU decode off, or the probe fails) it uses 1.
+
+Every BC encode draws from a budget of a tenth of wall time, with a 16 ms
+burst. Creating a texture prepays its first upload; later uploads, re-uploads
+included, are charged as they are recorded, and a texture destroyed before
+its upload gives its prepayment back. When the budget runs dry, new textures
+step down to a smaller factor, then stay decoded at their own size, as with
+texture compression off, until it refills. A fixed `1`, `2` or `4` keeps
+that factor and, when held back, stays decoded at it.
+`MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off; with a fixed factor
+too, the startup measurement is skipped.
+
+The session log shows the measured speed once:
+
+```text
+[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale adaptive up to 4x; encode budget on
+```
+
+It also shows, every 5 seconds while textures are created, how many landed at
+each factor, how many stayed decoded, and the estimated GPU time:
+
+```text
+[vulkan] BC encodes over 5.0 s: 4x 300, 2x 50, 1x 40, kept decoded 22; est 38.1 ms GPU
+```
 
 Upscaling adds no new detail. Textures grow with a sharpened bicubic filter,
 and texels between just two flat colours stay nearest-neighbour so hard edges
@@ -158,7 +190,7 @@ the render thread. In the trace this is the `etc2 decode` slice on its own
 thread, with only a negligible `etc2 gather` left on the submitting one. A
 device without that feature decodes inline as before.
 
-Set it to `1` to turn upscaling off:
+Set it to `1` to turn upscaling off for one run:
 
 ```bash
 MOCKTAIL_SMALL_TEXTURE_UPSCALE=1 mocktail

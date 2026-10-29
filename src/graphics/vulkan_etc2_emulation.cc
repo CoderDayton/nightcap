@@ -158,13 +158,76 @@ bool Etc2SupportAdvertised() {
 
 std::uint32_t SmallTextureUpscale(const char* value) {
   if (value == nullptr || value[0] < '0' || value[0] > '9') {
-    return kDefaultSmallTextureUpscale;
+    return kAdaptiveSmallTextureUpscale;
   }
   const long parsed = std::strtol(value, nullptr, 10);
   if (parsed < 1) {
     return 1;
   }
   return parsed > 8 ? 8 : static_cast<std::uint32_t>(parsed);
+}
+
+VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
+                                std::uint32_t mip_levels, std::uint32_t layers,
+                                std::uint32_t scale) {
+  const auto blocks = [&](std::uint32_t size, std::uint32_t mip) {
+    return (std::max<VkDeviceSize>(1, VkDeviceSize{size} * scale >> mip) + 3) /
+           4;
+  };
+  VkDeviceSize total = 0;
+  for (std::uint32_t mip = 0; mip < mip_levels && mip < 32; ++mip) {
+    total += blocks(extent.width, mip) * blocks(extent.height, mip);
+  }
+  return total * layers;
+}
+
+std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns) {
+  if (upscale_ns <= 0) {
+    return 1;
+  }
+  // A full chain: 64x64 has 7 levels.
+  constexpr VkExtent3D kLargestSmall{kSmallTextureMaxExtent,
+                                     kSmallTextureMaxExtent, 1};
+  constexpr std::uint32_t kLevels = 7;
+  for (std::uint32_t scale = kDefaultSmallTextureUpscale; scale > 1;
+       scale /= 2) {
+    if (static_cast<double>(
+            Etc2HostBlockCount(kLargestSmall, kLevels, 1, scale)) *
+            upscale_ns <=
+        kAdaptiveUpscaleTextureNs) {
+      return scale;
+    }
+  }
+  return 1;
+}
+
+void Etc2EncodeBudget::Refill(std::uint64_t now_ns) {
+  if (last_ns_ != 0 && now_ns > last_ns_) {
+    available_ns_ = std::min(
+        burst_ns_,
+        available_ns_ + static_cast<double>(now_ns - last_ns_) * share_);
+  }
+  if (now_ns > last_ns_) {
+    last_ns_ = now_ns;
+  }
+}
+
+void Etc2EncodeBudget::Charge(double cost_ns, std::uint64_t now_ns) {
+  Refill(now_ns);
+  available_ns_ -= cost_ns;
+}
+
+void Etc2EncodeBudget::Refund(double cost_ns) {
+  available_ns_ = std::min(burst_ns_, available_ns_ + cost_ns);
+}
+
+bool Etc2EncodeBudget::Take(double cost_ns, std::uint64_t now_ns) {
+  Refill(now_ns);
+  if (available_ns_ < std::min(cost_ns, burst_ns_)) {
+    return false;
+  }
+  available_ns_ -= cost_ns;
+  return true;
 }
 
 namespace {
@@ -179,6 +242,46 @@ unsigned DecodeWorkerCount() {
   static const unsigned count =
       std::min(8U, std::max(1U, std::thread::hardware_concurrency() / 2));
   return count;
+}
+
+// Images whose encode the budget decided since `since_ns`, by host scale.
+struct EncodeStats {
+  std::uint64_t by_scale[9] = {};
+  std::uint64_t held_back = 0;
+  double estimated_ns = 0;
+  std::uint64_t since_ns = 0;
+};
+
+constexpr std::uint64_t kEncodeLogIntervalNs = 5'000'000'000;
+
+// A line every kEncodeLogIntervalNs while images are created, so a session
+// log shows what the budget held back on the reporter's GPU.
+std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
+  if (stats->since_ns == 0) {
+    stats->since_ns = now;
+  }
+  if (now - stats->since_ns < kEncodeLogIntervalNs) {
+    return {};
+  }
+  std::string line = "  [vulkan] BC encodes over ";
+  char part[64];
+  std::snprintf(part, sizeof(part), "%.1f s:",
+                static_cast<double>(now - stats->since_ns) / 1e9);
+  line += part;
+  for (std::uint32_t scale = 8; scale >= 1; --scale) {
+    if (stats->by_scale[scale] != 0) {
+      std::snprintf(part, sizeof(part), " %ux %llu,", scale,
+                    static_cast<unsigned long long>(stats->by_scale[scale]));
+      line += part;
+    }
+  }
+  std::snprintf(part, sizeof(part), " kept decoded %llu; est %.1f ms GPU\n",
+                static_cast<unsigned long long>(stats->held_back),
+                stats->estimated_ns / 1e6);
+  line += part;
+  *stats = {};
+  stats->since_ns = now;
+  return line;
 }
 
 struct HostDevice {
@@ -222,6 +325,12 @@ struct HostDevice {
   // on the GPU instead of on the submitting thread. Null when the device was
   // created without the timelineSemaphore feature.
   VkSemaphore timeline = VK_NULL_HANDLE;
+  // From the startup probe; zero leaves encodes unbudgeted.
+  Etc2GpuSpeed speed;
+  std::uint32_t adaptive_upscale = 1;
+  // Guarded by State::mutex.
+  mutable Etc2EncodeBudget budget{kEncodeBudgetShare, kEncodeBudgetBurstNs};
+  mutable EncodeStats stats;
 };
 
 template <typename Function>
@@ -262,6 +371,8 @@ struct ImageRecord {
   EmulatedTextureBytes bytes;
   // The host image is BC7/BC4/BC5 and uploads are transcoded on the GPU.
   bool transcoded = false;
+  // Encode budget taken at creation and not yet spent by an upload.
+  double prepaid_ns = 0;
   // An override file names this image's size, so its uploads decode on the
   // CPU where they can be hashed and replaced.
   bool may_override = false;
@@ -1060,6 +1171,61 @@ struct VulkanEtc2Emulation::State {
   TextureOverrides overrides = TextureOverrides::FromEnvironment();
   const std::uint32_t upscale =
       SmallTextureUpscale(std::getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"));
+  const bool encode_budget =
+      OnUnlessZero(std::getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"));
+
+  // Prepays an image's first full upload, probe-measured ns per block times
+  // the host chain's blocks, at the largest scale the budget affords:
+  // `*scale` only, or halving to 1 when `adaptive`. Returns the prepaid ns.
+  // Zero leaves the image decoded, at 1x when `adaptive` so it adds no GPU
+  // scale work either.
+  double BudgetEncode(const HostDevice& dev, const VkImageCreateInfo& info,
+                      bool adaptive, std::uint32_t* scale) {
+    std::string line;
+    double prepaid = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      // Read under the lock so the budget and log never see time go back.
+      const std::uint64_t now = TraceClockNanos();
+      for (std::uint32_t candidate = *scale;;
+           candidate = std::max<std::uint32_t>(1, candidate / 2)) {
+        const double cost =
+            static_cast<double>(Etc2HostBlockCount(
+                info.extent, info.mipLevels, info.arrayLayers, candidate)) *
+            (candidate > 1 ? dev.speed.upscale_ns : dev.speed.transcode_ns);
+        if (dev.budget.Take(cost, now)) {
+          *scale = candidate;
+          ++dev.stats.by_scale[std::min<std::uint32_t>(candidate, 8)];
+          prepaid = cost;
+          break;
+        }
+        if (!adaptive || candidate == 1) {
+          break;
+        }
+      }
+      if (prepaid == 0) {
+        ++dev.stats.held_back;
+        if (adaptive) {
+          *scale = 1;
+        }
+      }
+      line = TakeEncodeLog(&dev.stats, now);
+    }
+    if (!line.empty()) {
+      std::fputs(line.c_str(), stderr);
+    }
+    return prepaid;
+  }
+
+  void RefundEncode(const HostDevice& dev, double prepaid,
+                    std::uint32_t scale) {
+    if (prepaid > 0) {
+      std::lock_guard<std::mutex> lock(mutex);
+      dev.budget.Refund(prepaid);
+      std::uint64_t& counted = dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+      counted -= counted > 0 ? 1 : 0;
+    }
+  }
 
   // Level-0 colour uploads are hashed, dumped and matched against override
   // files; the match is kept on the image so its mip levels follow.
@@ -1413,8 +1579,8 @@ struct VulkanEtc2Emulation::State {
       gpu.job.transcode = record.transcoded;
       gpus.push_back(gpu);
     }
-    if (!StageGpuJobs(dev, command_buffer, std::move(gpus), rewritten,
-                      copies)) {
+    if (!StageGpuJobs(dev, command_buffer, destination, std::move(gpus),
+                      rewritten, copies)) {
       return false;
     }
     // Small mips of a BC image keep their blocks on the CPU, so a copy into
@@ -1490,8 +1656,8 @@ struct VulkanEtc2Emulation::State {
       gpu.source_span = upload.target_bytes;
       gpus.push_back(gpu);
     }
-    if (!StageGpuJobs(dev, command_buffer, std::move(gpus), rewritten,
-                      copies)) {
+    if (!StageGpuJobs(dev, command_buffer, destination, std::move(gpus),
+                      rewritten, copies)) {
       ReleaseStaging({texels});
       return false;
     }
@@ -1502,9 +1668,21 @@ struct VulkanEtc2Emulation::State {
   // Transcoded jobs are grouped into device-local ranges under the cap.
   template <typename Region>
   bool StageGpuJobs(const HostDevice& dev, VkCommandBuffer command_buffer,
-                    std::vector<GpuUpload> gpus,
+                    VkImage image, std::vector<GpuUpload> gpus,
                     const std::vector<Region>& rewritten,
                     std::vector<GpuCopy<Region>>* copies) {
+    double encode_ns = 0;
+    const auto blocks = [](const Etc2GpuJob& job) {
+      return static_cast<double>(job.blocks_wide) * job.blocks_high *
+             job.layers;
+    };
+    for (const GpuUpload& gpu : gpus) {
+      if (encode_budget && gpu.encode) {
+        encode_ns += blocks(gpu.encoding) * dev.speed.upscale_ns;
+      } else if (encode_budget && gpu.job.transcode) {
+        encode_ns += blocks(gpu.job) * dev.speed.transcode_ns;
+      }
+    }
     const auto align = [](VkDeviceSize bytes) {
       return (bytes + kStagingAlignment - 1) / kStagingAlignment *
              kStagingAlignment;
@@ -1577,6 +1755,16 @@ struct VulkanEtc2Emulation::State {
       }
     }
     std::lock_guard<std::mutex> lock(mutex);
+    if (encode_ns > 0 && encode_budget) {
+      // Re-uploads too: only the first is prepaid at creation.
+      double prepaid = 0;
+      if (const auto record = images.find(image); record != images.end()) {
+        prepaid = std::min(record->second.prepaid_ns, encode_ns);
+        record->second.prepaid_ns -= prepaid;
+      }
+      dev.budget.Charge(encode_ns - prepaid, TraceClockNanos());
+      dev.stats.estimated_ns += encode_ns;
+    }
     CommandRecord& command = commands[command_buffer];
     for (const std::vector<GpuUpload>& group : groups) {
       command.gpu_uploads.insert(command.gpu_uploads.end(), group.begin(),
@@ -2355,15 +2543,14 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   VkImageCreateInfo host_info = *create_info;
   host_info.flags &= ~static_cast<VkImageCreateFlags>(
       VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+  const bool adaptive = state_->upscale == kAdaptiveSmallTextureUpscale;
   std::uint32_t scale = 1;
-  if (state_->upscale > 1 && IsColorFormat(format.etc_format) &&
+  if (IsColorFormat(format.etc_format) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
       create_info->arrayLayers == 1 && create_info->extent.depth == 1 &&
       create_info->extent.width <= kSmallTextureMaxExtent &&
       create_info->extent.height <= kSmallTextureMaxExtent) {
-    scale = state_->upscale;
-    host_info.extent.width *= scale;
-    host_info.extent.height *= scale;
+    scale = adaptive ? dev->adaptive_upscale : state_->upscale;
   }
   const bool may_override =
       IsColorFormat(format.etc_format) && create_info->arrayLayers == 1 &&
@@ -2375,6 +2562,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // A mutable image may carry a view format list naming ETC2 formats, which
   // only the decoded path has always passed through. Drivers rarely support
   // BC with linear tiling.
+  VkFormat bc_format = VK_FORMAT_UNDEFINED;
   bool transcoded =
       dev->bc_textures && dev->gpu != nullptr &&
       dev->gpu->CanTranscode() && !may_override &&
@@ -2383,10 +2571,22 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
       (create_info->usage & ~kBcUsage) == 0 &&
       (create_info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) == 0 &&
-      BcHostFormat(create_info->format, &format.host_format);
+      BcHostFormat(create_info->format, &bc_format);
+  double prepaid = 0;
+  if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
+    prepaid = state_->BudgetEncode(*dev, *create_info, adaptive, &scale);
+    transcoded = prepaid > 0;
+  }
+  if (transcoded) {
+    format.host_format = bc_format;
+  }
+  host_info.extent.width *= scale;
+  host_info.extent.height *= scale;
   host_info.format = format.host_format;
   VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (transcoded && result != VK_SUCCESS) {
+    state_->RefundEncode(*dev, prepaid, scale);
+    prepaid = 0;
     transcoded = false;
     LookupEmulatedEtc2Format(create_info->format, &format);
     host_info.format = format.host_format;
@@ -2400,16 +2600,10 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       bytes = {};
     }
     if (transcoded) {
-      bytes.decoded = 0;
-      for (std::uint32_t mip = 0; mip < create_info->mipLevels; ++mip) {
-        const auto blocks = [&](std::uint32_t extent) {
-          return (std::max<std::uint32_t>(1, (extent * scale) >> mip) + 3) / 4;
-        };
-        bytes.decoded += VkDeviceSize{blocks(create_info->extent.width)} *
-                         blocks(create_info->extent.height) *
-                         create_info->arrayLayers *
-                         BcBlockBytes(BcFormatFor(format.etc_format));
-      }
+      bytes.decoded =
+          Etc2HostBlockCount(create_info->extent, create_info->mipLevels,
+                             create_info->arrayLayers, scale) *
+          BcBlockBytes(BcFormatFor(format.etc_format));
     }
     EmulatedTextureBytes totals;
     std::uint64_t now = 0;
@@ -2424,6 +2618,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.height = create_info->extent.height;
       record.bytes = bytes;
       record.transcoded = transcoded;
+      record.prepaid_ns = prepaid;
       record.may_override = may_override;
       state_->texture_bytes.compressed += bytes.compressed;
       state_->texture_bytes.decoded += bytes.decoded;
@@ -2458,6 +2653,7 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
       std::lock_guard<std::mutex> lock(state_->mutex);
       const auto it = state_->images.find(image);
       if (it != state_->images.end()) {
+        dev->budget.Refund(it->second.prepaid_ns);
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
         state_->images.erase(it);
@@ -2476,6 +2672,11 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
 EmulatedTextureBytes VulkanEtc2Emulation::TextureBytes() const {
   std::lock_guard<std::mutex> lock(state_->mutex);
   return state_->texture_bytes;
+}
+
+Etc2GpuSpeed VulkanEtc2Emulation::GpuSpeed(VkDevice device) const {
+  const HostDevice* dev = state_->Find(device);
+  return dev == nullptr ? Etc2GpuSpeed{} : dev->speed;
 }
 
 VkResult VulkanEtc2Emulation::CreateImageView(
@@ -2986,8 +3187,8 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
     gpu.source_offset += texels.offset;
   }
   std::vector<GpuCopy<VkBufferImageCopy>> copies;
-  if (!StageGpuJobs(dev, command_buffer, std::move(gpus), rewritten,
-                    &copies)) {
+  if (!StageGpuJobs(dev, command_buffer, destination, std::move(gpus),
+                    rewritten, &copies)) {
     ReleaseStaging({texels});
     LogFailure("skipped a copy into an upscaled compressed image");
     return;
@@ -3278,17 +3479,45 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
                  error.c_str());
     return false;
   }
-  dev->gpu = std::move(decoder);
   std::fprintf(stderr, "  [vulkan] ETC2 GPU decode enabled\n");
   if (dev->bc_textures) {
     std::fprintf(stderr,
-                 dev->gpu->CanTranscode()
+                 decoder->CanTranscode()
                      ? "  [vulkan] ETC2/EAC textures stay compressed as "
                        "BC7/BC4/BC5\n"
                      : "  [vulkan] BC transcode unavailable or failed its "
                        "self-test; "
                        "textures stay decoded\n");
   }
+  const bool adaptive = state_->upscale == kAdaptiveSmallTextureUpscale;
+  // Measured before the decoder is published, so CreateImage never sees it
+  // without the speed and factor that go with it.
+  // Without BC, small textures are only decoded and scaled, so that is what
+  // the probe times.
+  const bool encode = dev->bc_textures && decoder->CanTranscode();
+  if (decoder->CanScale() && (adaptive || state_->encode_budget)) {
+    Etc2GpuSpeed speed;
+    if (decoder->MeasureSpeed(queue, queue_family, dev->memory, encode,
+                              &speed, &error)) {
+      dev->speed = speed;
+      dev->adaptive_upscale = AdaptiveSmallTextureUpscale(speed.upscale_ns);
+      std::fprintf(stderr,
+                   "  [vulkan] BC encode speed: transcode %.1f ns/block, "
+                   "upscale %.1f ns/block%s; small texture upscale %s%ux; "
+                   "encode budget %s\n",
+                   speed.transcode_ns, speed.upscale_ns,
+                   encode ? "" : " (decode and scale only)",
+                   adaptive ? "adaptive up to " : "",
+                   adaptive ? dev->adaptive_upscale : state_->upscale,
+                   state_->encode_budget && encode ? "on" : "off");
+    } else {
+      std::fprintf(stderr,
+                   "  [vulkan] BC encode speed probe failed (%s); encodes "
+                   "are not budgeted and adaptive upscale stays at 1x\n",
+                   error.c_str());
+    }
+  }
+  dev->gpu = std::move(decoder);
   return true;
 }
 

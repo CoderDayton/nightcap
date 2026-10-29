@@ -173,6 +173,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.frame_rate_limit",
       "graphics.vsync",
       "graphics.texture_compression",
+      "graphics.small_texture_upscale",
       "graphics.present_mode",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
@@ -403,6 +404,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
+  }
+  if (const auto upscale = value("graphics.small_texture_upscale");
+      upscale.has_value()) {
+    if (*upscale != "adaptive" && *upscale != "1" && *upscale != "2" &&
+        *upscale != "4") {
+      *error = "graphics.small_texture_upscale must be adaptive, 1, 2, or 4";
+      return false;
+    }
+    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] = *upscale;
   }
   if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
     if (!RuntimeConfig::IsValidPresentMode(*mode)) {
@@ -1073,6 +1083,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue("MOCKTAIL_ETC2_BC_TRANSCODE",
                           config.texture_compression() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_SMALL_TEXTURE_UPSCALE",
+                          config.small_texture_upscale(), error) &&
       SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

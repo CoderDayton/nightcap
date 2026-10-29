@@ -63,13 +63,87 @@ TEST(VulkanEtc2EmulationTest, TranscodesToBcUnlessSwitchedOff) {
 }
 
 TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
-  EXPECT_EQ(SmallTextureUpscale(nullptr), 4u);
-  EXPECT_EQ(SmallTextureUpscale(""), 4u);
-  EXPECT_EQ(SmallTextureUpscale("abc"), 4u);
+  EXPECT_EQ(SmallTextureUpscale(nullptr), kAdaptiveSmallTextureUpscale);
+  EXPECT_EQ(SmallTextureUpscale(""), kAdaptiveSmallTextureUpscale);
+  EXPECT_EQ(SmallTextureUpscale("abc"), kAdaptiveSmallTextureUpscale);
+  EXPECT_EQ(SmallTextureUpscale("adaptive"), kAdaptiveSmallTextureUpscale);
   EXPECT_EQ(SmallTextureUpscale("0"), 1u);
   EXPECT_EQ(SmallTextureUpscale("1"), 1u);
   EXPECT_EQ(SmallTextureUpscale("2"), 2u);
   EXPECT_EQ(SmallTextureUpscale("99"), 8u);
+}
+
+TEST(VulkanEtc2EmulationTest, CountsHostBlocksOfAScaledChain) {
+  // 256, 128, 64, 32, 16, 8 and 4 texels square.
+  EXPECT_EQ(Etc2HostBlockCount({64, 64, 1}, 7, 1, 4), 5461u);
+  // 64 down to 1 texel; the last three levels take a block each.
+  EXPECT_EQ(Etc2HostBlockCount({64, 64, 1}, 7, 1, 1), 343u);
+  EXPECT_EQ(Etc2HostBlockCount({64, 32, 1}, 1, 3, 2), 3u * 32 * 16);
+}
+
+TEST(VulkanEtc2EmulationTest, PicksTheLargestUpscaleTheGpuEncodesInTime) {
+  // A 64x64 chain costs at most kAdaptiveUpscaleTextureNs: 5461 blocks at
+  // 4x, 1366 at 2x. Only the factors the setting offers are picked.
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(9.2), 4u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(91.0), 4u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(120.0), 2u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(300.0), 2u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(400.0), 1u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(726.0), 1u);
+  // Without a measurement the card may be too slow for any upscale.
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(0.0), 1u);
+}
+
+TEST(VulkanEtc2EmulationTest, EncodeBudgetRefillsWithWallTime) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  EXPECT_TRUE(budget.Take(10e6, kStart));
+  EXPECT_TRUE(budget.Take(6e6, kStart));
+  EXPECT_FALSE(budget.Take(1e3, kStart));
+  // 10 ms of wall time refills 1 ms.
+  EXPECT_TRUE(budget.Take(1e6, kStart + 10'000'000));
+  EXPECT_FALSE(budget.Take(1e3, kStart + 10'000'000));
+}
+
+TEST(VulkanEtc2EmulationTest, EncodeBudgetHoldsAtMostItsBurst) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  EXPECT_TRUE(budget.Take(16e6, kStart));
+  // An hour idle still refills only the burst.
+  const std::uint64_t later = kStart + 3'600'000'000'000;
+  EXPECT_TRUE(budget.Take(16e6, later));
+  EXPECT_FALSE(budget.Take(1e3, later));
+}
+
+TEST(VulkanEtc2EmulationTest, EncodeBudgetLetsALargeEncodeRunWhenFull) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  // More than the burst runs from a full budget and is paid back over time.
+  EXPECT_TRUE(budget.Take(48e6, kStart));
+  EXPECT_FALSE(budget.Take(1e3, kStart + 300'000'000));
+  EXPECT_TRUE(budget.Take(1e3, kStart + 330'000'000));
+}
+
+TEST(VulkanEtc2EmulationTest, EncodeBudgetChargesWorkAlreadyRecorded) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  // A charge is never refused and can leave the budget in debt.
+  budget.Charge(20e6, kStart);
+  EXPECT_FALSE(budget.Take(1e3, kStart + 30'000'000));
+  EXPECT_TRUE(budget.Take(1e3, kStart + 50'000'000));
+}
+
+TEST(VulkanEtc2EmulationTest, EncodeBudgetTakesBackARefund) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  EXPECT_TRUE(budget.Take(16e6, kStart));
+  budget.Refund(10e6);
+  EXPECT_TRUE(budget.Take(10e6, kStart));
+  EXPECT_FALSE(budget.Take(1e3, kStart));
+  // A refund fills the budget no further than its burst.
+  budget.Refund(100e6);
+  EXPECT_TRUE(budget.Take(16e6, kStart));
+  EXPECT_FALSE(budget.Take(1e3, kStart));
 }
 
 TEST(VulkanEtc2EmulationTest, IgnoresOtherFormats) {

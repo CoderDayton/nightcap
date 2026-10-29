@@ -58,6 +58,7 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_EQ(*config.roblox_http_user_agent(), kRobloxDesktopHttpUserAgent);
   EXPECT_EQ(config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
   EXPECT_TRUE(config.texture_compression());
+  EXPECT_EQ(config.small_texture_upscale(), "adaptive");
   EXPECT_FALSE(config.performance().multithreaded_rendering);
   EXPECT_GT(config.performance().physical_core_count, 0);
   EXPECT_EQ(config.performance().memory_limit_mb, 0U);
@@ -112,6 +113,7 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
       {"MOCKTAIL_DESKTOP_PLAYABILITY", "0"},
       {"MOCKTAIL_FRAME_RATE_LIMIT", "144"},
       {"MOCKTAIL_ETC2_BC_TRANSCODE", "0"},
+      {"MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2"},
       {"MOCKTAIL_MULTITHREADED_RENDERING", "true"},
       {"MOCKTAIL_MEMORY_LIMIT_MB", "6144"},
       {"MOCKTAIL_GAMEMODE", "off"},
@@ -149,6 +151,7 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
   EXPECT_FALSE(config.roblox_http_user_agent().has_value());
   EXPECT_EQ(config.frame_rate().fixed_fps, 144);
   EXPECT_FALSE(config.texture_compression());
+  EXPECT_EQ(config.small_texture_upscale(), "2");
   EXPECT_TRUE(config.performance().multithreaded_rendering);
   EXPECT_GT(config.performance().physical_core_count, 0);
   EXPECT_EQ(config.performance().memory_limit_mb, 6144U);

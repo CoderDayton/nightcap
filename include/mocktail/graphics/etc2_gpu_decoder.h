@@ -45,6 +45,15 @@ VkDeviceSize Etc2GpuLayerBytes(EtcFormat format, std::uint32_t blocks_wide,
                                std::uint32_t blocks_high);
 VkDeviceSize Etc2GpuOutputBytes(const Etc2GpuJob& job);
 
+// GPU time per 4x4 block written, from timed dispatches of the real jobs.
+struct Etc2GpuSpeed {
+  // ETC2 RGBA8 blocks transcoded to BC7.
+  double transcode_ns = 0;
+  // A small texture decoded, upscaled 4x and encoded to BC7, per output
+  // block.
+  double upscale_ns = 0;
+};
+
 struct Etc2GpuBinding {
   VkDescriptorPool pool = VK_NULL_HANDLE;
   VkDescriptorSet set = VK_NULL_HANDLE;
@@ -73,6 +82,12 @@ class Etc2GpuDecoder final {
                 const VkPhysicalDeviceMemoryProperties& memory,
                 std::string* error);
 
+  // Times transcode and upscale jobs on `queue`. Without `encode` only the
+  // decode and scale of an upscale are timed, and transcode_ns stays 0.
+  bool MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
+                    const VkPhysicalDeviceMemoryProperties& memory,
+                    bool encode, Etc2GpuSpeed* speed, std::string* error);
+
   bool CanTranscode() const { return transcode_pipeline_ != VK_NULL_HANDLE; }
   bool CanScale() const { return scale_pipeline_ != VK_NULL_HANDLE; }
 
@@ -81,6 +96,11 @@ class Etc2GpuDecoder final {
  private:
   Etc2GpuDecoder() = default;
   void DisableTranscode();
+  // Bound to the first memory type with `want`, else with `fallback`.
+  bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                    const VkPhysicalDeviceMemoryProperties& memory,
+                    VkMemoryPropertyFlags want, VkMemoryPropertyFlags fallback,
+                    VkBuffer* buffer, VkDeviceMemory* allocation);
 
   VkDevice device_ = VK_NULL_HANDLE;
   std::unique_ptr<Procs> procs_;

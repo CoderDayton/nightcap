@@ -1378,6 +1378,56 @@ TEST(RuntimeConfigFileTest, ExportsTextureCompressionPolicy) {
   unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
 }
 
+TEST(RuntimeConfigFileTest, LoadsSmallTextureUpscaleFromFile) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  small_texture_upscale: 2
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.small_texture_upscale(), "2");
+}
+
+TEST(RuntimeConfigFileTest, ExportsSmallTextureUpscale) {
+  unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
+      << error;
+  ASSERT_NE(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "adaptive");
+
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(
+          MapEnvironment({{"MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4"}})),
+      &error))
+      << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "4");
+  unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
+}
+
+TEST(RuntimeConfigFileTest, RejectsUnsupportedSmallTextureUpscale) {
+  for (const char* value : {"3", "8", "fast"}) {
+    SCOPED_TRACE(value);
+    TemporaryDirectory temporary;
+    const std::filesystem::path file = temporary.Write(
+        std::string("version: 1\ngraphics:\n  small_texture_upscale: ") +
+        value + "\n");
+
+    const RuntimeConfigLoadResult loaded =
+        LoadRuntimeConfig(MapEnvironment(), file);
+
+    EXPECT_FALSE(loaded);
+    EXPECT_NE(loaded.error.find("graphics.small_texture_upscale"),
+              std::string::npos);
+  }
+}
+
 TEST(RuntimeConfigFileTest, RejectsNonBooleanTextureCompression) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(

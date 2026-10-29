@@ -392,6 +392,8 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   config.vsync_mode_ = environment.GetOr("MOCKTAIL_VSYNC", "auto");
   config.texture_compression_ =
       environment.GetOr("MOCKTAIL_ETC2_BC_TRANSCODE", "1") != "0";
+  config.small_texture_upscale_ =
+      environment.GetOr("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "adaptive");
   config.mangohud_ = environment.GetOr("MANGOHUD", "0") == "1";
   config.present_mode_ = environment.GetOr("MOCKTAIL_PRESENT_MODE", "auto");
   config.performance_ = ParsePerformancePolicy(

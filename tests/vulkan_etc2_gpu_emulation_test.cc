@@ -35,6 +35,33 @@ using mocktail::testing::SubmitAndWait;
 using mocktail::testing::TestCommands;
 using mocktail::testing::VulkanTestDevice;
 
+// A fixed upscale and no encode budget, so expectations hold on any GPU.
+class FixedUpscaleEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1);
+    setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1);
+  }
+};
+[[maybe_unused]] ::testing::Environment* const kFixedUpscale =
+    ::testing::AddGlobalTestEnvironment(new FixedUpscaleEnvironment);
+
+// Adaptive upscale with the encode budget on for one test. The fixed setting
+// comes back even when an assertion returns early.
+class ScopedAdaptiveUpscale final {
+ public:
+  ScopedAdaptiveUpscale() {
+    unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
+    unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET");
+  }
+  ~ScopedAdaptiveUpscale() {
+    setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1);
+    setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1);
+  }
+  ScopedAdaptiveUpscale(const ScopedAdaptiveUpscale&) = delete;
+  ScopedAdaptiveUpscale& operator=(const ScopedAdaptiveUpscale&) = delete;
+};
+
 struct UploadCase {
   VkFormat format = VK_FORMAT_UNDEFINED;
   EtcFormat etc = EtcFormat::kEtc2Rgb8;
@@ -2046,6 +2073,241 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsRobloxSmallTexturesCompressed) {
     // for RGBA8.
     EXPECT_LT(bytes.decoded, VkDeviceSize{240} * 132 * 2);
     emulation.DestroyImage(vk.device, image, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+TEST(VulkanEtc2GpuEmulationTest, AdaptiveUpscaleStepsDownOnceTheBudgetIsSpent) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  const ScopedAdaptiveUpscale adaptive;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    info.extent = {64, 64, 1};
+    info.mipLevels = 7;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // Creating chains back to back outruns any burst within a few thousand.
+    std::vector<VkImage> images;
+    VkDeviceSize first = 0;
+    bool stepped_down = false;
+    for (int i = 0; i < 4000 && !stepped_down; ++i) {
+      const VkDeviceSize before = emulation.TextureBytes().decoded;
+      VkImage image = VK_NULL_HANDLE;
+      ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
+                VK_SUCCESS);
+      images.push_back(image);
+      const VkDeviceSize bytes = emulation.TextureBytes().decoded - before;
+      if (i == 0) {
+        first = bytes;
+      } else {
+        stepped_down = bytes != first;
+      }
+    }
+    EXPECT_TRUE(stepped_down) << images.size() << " images";
+    for (VkImage image : images) {
+      emulation.DestroyImage(vk.device, image, nullptr);
+    }
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+VkImageCreateInfo Etc2ImageInfo(std::uint32_t size, std::uint32_t mips) {
+  VkImageCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+  info.extent = {size, size, 1};
+  info.mipLevels = mips;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  return info;
+}
+
+// Host bytes an image adds to the emulation's texture total.
+VkDeviceSize CreatedBytes(VulkanEtc2Emulation& emulation, VkDevice device,
+                          const VkImageCreateInfo& info,
+                          std::vector<VkImage>* images) {
+  const VkDeviceSize before = emulation.TextureBytes().decoded;
+  VkImage image = VK_NULL_HANDLE;
+  EXPECT_EQ(emulation.CreateImage(device, &info, nullptr, &image), VK_SUCCESS);
+  images->push_back(image);
+  return emulation.TextureBytes().decoded - before;
+}
+
+TEST(VulkanEtc2GpuEmulationTest, AdaptiveUpscaleSizesDecodedSmallTextures) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  const ScopedAdaptiveUpscale adaptive;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    // Texture compression off: small textures are decoded and scaled only.
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, false);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    const Etc2GpuSpeed speed = emulation.GpuSpeed(vk.device);
+    EXPECT_EQ(speed.transcode_ns, 0.0);
+    EXPECT_GT(speed.upscale_ns, 0.0);
+    const VkImageCreateInfo small = Etc2ImageInfo(64, 7);
+    VkDeviceSize compressed = 0;
+    VkDeviceSize decoded = 0;
+    ASSERT_TRUE(Etc2ImageByteCounts(
+        EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
+        AdaptiveSmallTextureUpscale(speed.upscale_ns), &compressed, &decoded));
+    std::vector<VkImage> images;
+    EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
+    for (VkImage image : images) {
+      emulation.DestroyImage(vk.device, image, nullptr);
+    }
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtItsOwnSize) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  const ScopedAdaptiveUpscale adaptive;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    std::vector<VkImage> images;
+    // An 8192x8192 chain, 5.6 million blocks, costs several bursts even on
+    // an RTX 4090 and leaves the budget in debt for longer than the test.
+    CreatedBytes(emulation, vk.device, Etc2ImageInfo(8192, 14), &images);
+    const VkImageCreateInfo small = Etc2ImageInfo(64, 7);
+    VkDeviceSize compressed = 0;
+    VkDeviceSize decoded = 0;
+    ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
+                                    1, &compressed, &decoded));
+    EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
+    for (VkImage image : images) {
+      emulation.DestroyImage(vk.device, image, nullptr);
+    }
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+TEST(VulkanEtc2GpuEmulationTest, ChargesRepeatedUploadsToTheEncodeBudget) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  const ScopedAdaptiveUpscale adaptive;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    std::vector<VkImage> images;
+    const VkImageCreateInfo small = Etc2ImageInfo(64, 7);
+    const VkDeviceSize fresh =
+        CreatedBytes(emulation, vk.device, small, &images);
+
+    constexpr std::uint32_t kSize = 512;
+    const VkImageCreateInfo large = Etc2ImageInfo(kSize, 1);
+    CreatedBytes(emulation, vk.device, large, &images);
+    const VkImage image = images.back();
+    VkMemoryRequirements requirements{};
+    vk.Device<PFN_vkGetImageMemoryRequirements>("vkGetImageMemoryRequirements")(
+        vk.device, image, &requirements);
+    VkMemoryAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex =
+        FindMemoryType(vk, requirements.memoryTypeBits, 0);
+    VkDeviceMemory image_memory = VK_NULL_HANDLE;
+    ASSERT_EQ(vk.Device<PFN_vkAllocateMemory>("vkAllocateMemory")(
+                  vk.device, &allocate, nullptr, &image_memory),
+              VK_SUCCESS);
+    vk.Device<PFN_vkBindImageMemory>("vkBindImageMemory")(vk.device, image,
+                                                          image_memory, 0);
+    const VkDeviceSize source_bytes =
+        VkDeviceSize{kSize / 4} * (kSize / 4) * 16;
+    HostBuffer source =
+        CreateHostBuffer(vk, source_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    ASSERT_EQ(emulation.BindBufferMemory(vk.device, source.buffer,
+                                         source.memory, 0),
+              VK_SUCCESS);
+    ASSERT_EQ(emulation.MapMemory(vk.device, source.memory, 0, VK_WHOLE_SIZE,
+                                  0, &source.mapped),
+              VK_SUCCESS);
+    std::memset(source.mapped, 0x5A, source_bytes);
+
+    // Creating the image paid for one upload; the rest add up to twice the
+    // burst at the measured speed.
+    const double upload_ns = static_cast<double>(kSize / 4) * (kSize / 4) *
+                             emulation.GpuSpeed(vk.device).transcode_ns;
+    ASSERT_GT(upload_ns, 0.0);
+    const int uploads = 1 + static_cast<int>(2 * kEncodeBudgetBurstNs / upload_ns);
+    ASSERT_LE(uploads, 1000) << "probe measured " << upload_ns << " ns";
+    TestCommands commands = BeginTestCommands(vk);
+    ImageBarrier(vk, commands.buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {kSize, kSize, 1};
+    for (int upload = 0; upload <= uploads; ++upload) {
+      emulation.CmdCopyBufferToImage(vk.device, commands.buffer, source.buffer,
+                                     image,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                     &region);
+    }
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+    EXPECT_NE(CreatedBytes(emulation, vk.device, small, &images), fresh);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    emulation.UnmapMemory(vk.device, source.memory);
+    emulation.DestroyBuffer(vk.device, source.buffer, nullptr);
+    emulation.FreeMemory(vk.device, source.memory, nullptr);
+    for (VkImage created : images) {
+      emulation.DestroyImage(vk.device, created, nullptr);
+    }
+    vk.Device<PFN_vkFreeMemory>("vkFreeMemory")(vk.device, image_memory,
+                                                nullptr);
     emulation.DestroyDevice(vk.device);
   }
   CloseTestDevices(&devices);
