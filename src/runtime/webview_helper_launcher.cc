@@ -1,5 +1,7 @@
 #include "runtime/webview_helper_launcher.h"
 
+#include "runtime/helper_environment.h"
+
 #include <arpa/inet.h>
 #include <curl/curl.h>
 #include <netinet/in.h>
@@ -1102,8 +1104,9 @@ WebViewHelperLaunchResult LaunchWebViewHelper(
   std::string helper_string = helper.string();
   char *arguments[] = {helper_string.data(), nullptr};
   if (spawn_status == 0) {
+    const auto child_environment = BuildHelperEnvironment(environ);
     spawn_status = posix_spawn(&child, helper.c_str(), &actions, nullptr,
-                               arguments, environ);
+                               arguments, child_environment.data());
   }
   posix_spawn_file_actions_destroy(&actions);
   if (spawn_status != 0) {
