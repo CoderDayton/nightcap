@@ -27,7 +27,8 @@ bool Etc2SupportAdvertised(const char* value);
 bool Etc2SupportAdvertised();
 
 inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
-inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
+// Preserve the guest's mip sizes and LOD selection unless upscaling is explicit.
+inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 1;
 std::uint32_t SmallTextureUpscale(const char* value);
 
 class VulkanEtc2Emulation final {

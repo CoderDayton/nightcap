@@ -164,6 +164,21 @@ target_link_libraries(vulkan_etc2_emulation_test PRIVATE
 )
 mocktail_apply_compile_options(vulkan_etc2_emulation_test)
 
+add_library(vulkan_host_fixture SHARED fixtures/vulkan_host_fixture.cc)
+target_link_libraries(vulkan_host_fixture PRIVATE Vulkan::Headers)
+mocktail_apply_compile_options(vulkan_host_fixture)
+
+add_executable(vulkan_loader_adapter_test vulkan_loader_adapter_test.cc)
+target_link_libraries(vulkan_loader_adapter_test PRIVATE
+  Vulkan::Headers GTest::gtest_main ${CMAKE_DL_LIBS}
+)
+target_compile_definitions(vulkan_loader_adapter_test PRIVATE
+  MOCKTAIL_VULKAN_HOST_FIXTURE="$<TARGET_FILE:vulkan_host_fixture>"
+  MOCKTAIL_VULKAN_ADAPTER="$<TARGET_FILE:stub_vulkan>"
+)
+add_dependencies(vulkan_loader_adapter_test stub_vulkan vulkan_host_fixture)
+mocktail_apply_compile_options(vulkan_loader_adapter_test)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -949,6 +964,7 @@ gtest_discover_tests(texture_memory_policy_test)
 gtest_discover_tests(texture_resample_test)
 gtest_discover_tests(etc2_decoder_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)
+gtest_discover_tests(vulkan_loader_adapter_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)

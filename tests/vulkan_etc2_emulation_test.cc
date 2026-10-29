@@ -48,7 +48,11 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
 
   void Start(bool emulated, const char* upscale) {
     if (emulation) emulation->DestroyDevice(device);
-    setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", upscale, 1);
+    if (upscale != nullptr) {
+      setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", upscale, 1);
+    } else {
+      unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
+    }
     emulation = std::make_unique<VulkanEtc2Emulation>();
     emulation->RegisterDevice(device, Handle<VkPhysicalDevice>(2), emulated,
                               memory_properties, GetProc);
@@ -76,14 +80,14 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
   }
 
   VkImage CreateImage(std::uint32_t width, std::uint32_t height,
-                      std::uint32_t layers = 1) {
+                      std::uint32_t layers = 1, std::uint32_t mips = 1) {
     VkImageCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
     info.extent = {width, height, 1};
     info.arrayLayers = layers;
-    info.mipLevels = 1;
+    info.mipLevels = mips;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     VkImage image = VK_NULL_HANDLE;
     EXPECT_EQ(emulation->CreateImage(device, &info, nullptr, &image),
@@ -188,9 +192,22 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
   }
 
   static void VKAPI_CALL HostCopy(VkCommandBuffer command, VkBuffer buffer,
-                                  VkImage, VkImageLayout, std::uint32_t,
-                                  const VkBufferImageCopy*) {
+                                  VkImage, VkImageLayout, std::uint32_t count,
+                                  const VkBufferImageCopy* regions) {
     active->recorded[command] = buffer;
+    active->upload_regions[command] = {regions, regions + count};
+  }
+
+  static void VKAPI_CALL HostCopyImage(
+      VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
+      std::uint32_t count, const VkImageCopy* regions) {
+    active->image_copies.assign(regions, regions + count);
+  }
+
+  static void VKAPI_CALL HostBlitImage(
+      VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
+      std::uint32_t, const VkImageBlit*, VkFilter) {
+    ++active->blit_calls;
   }
 
   static void VKAPI_CALL HostExecute(VkCommandBuffer, std::uint32_t,
@@ -216,6 +233,8 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
          reinterpret_cast<PFN_vkVoidFunction>(HostDestroyBuffer)},
         {"vkCmdCopyBufferToImage",
          reinterpret_cast<PFN_vkVoidFunction>(HostCopy)},
+        {"vkCmdCopyImage", reinterpret_cast<PFN_vkVoidFunction>(HostCopyImage)},
+        {"vkCmdBlitImage", reinterpret_cast<PFN_vkVoidFunction>(HostBlitImage)},
         {"vkCmdExecuteCommands",
          reinterpret_cast<PFN_vkVoidFunction>(HostExecute)},
     };
@@ -238,6 +257,10 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
       bindings;
   std::unordered_map<VkDeviceMemory, std::vector<std::uint8_t>> memory_bytes;
   std::unordered_map<VkCommandBuffer, VkBuffer> recorded;
+  std::unordered_map<VkCommandBuffer, std::vector<VkBufferImageCopy>>
+      upload_regions;
+  std::vector<VkImageCopy> image_copies;
+  unsigned blit_calls = 0;
   std::unique_ptr<VulkanEtc2Emulation> emulation;
 };
 
@@ -328,6 +351,77 @@ TEST_P(VulkanEtc2Test, UpscalingStillProducesTheSamePixels) {
   ResampleRgba(decoded.data(), 16, 16, 64, 64, expected.data());
   emulation->PrepareSubmit(&command, 1);
   EXPECT_EQ(Output(command), expected);
+}
+
+TEST_P(VulkanEtc2Test, DefaultPreservesStreamedMipChain) {
+  Start(true, nullptr);
+  constexpr std::uint32_t kMips = 7;
+  const auto image = CreateImage(64, 64, 1, kMips);
+  EXPECT_EQ(last_image.format, VK_FORMAT_R8G8B8A8_UNORM);
+  EXPECT_EQ(last_image.extent.width, 64U);
+  EXPECT_EQ(last_image.extent.height, 64U);
+  EXPECT_EQ(last_image.mipLevels, kMips);
+
+  std::vector<VkBufferImageCopy> regions;
+  VkDeviceSize compressed_bytes = 0;
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    const std::uint32_t size = 64U >> mip;
+    VkBufferImageCopy region{};
+    region.bufferOffset = compressed_bytes;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+    region.imageExtent = {size, size, 1};
+    regions.push_back(region);
+    compressed_bytes += ((size + 3) / 4) * ((size + 3) / 4) * 16;
+  }
+  const auto source = CreateSource(compressed_bytes);
+  std::vector<std::uint8_t> expected;
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    const std::uint32_t size = regions[mip].imageExtent.width;
+    auto* pixels = source.data + regions[mip].bufferOffset;
+    // Each mip has different content: regenerating from mip 0 loses it.
+    std::memset(pixels, 0x12 + mip * 17,
+                ((size + 3) / 4) * ((size + 3) / 4) * 16);
+    const auto decoded = Decode(pixels, size, size);
+    expected.insert(expected.end(), decoded.begin(), decoded.end());
+  }
+  const auto command = Handle<VkCommandBuffer>(10);
+  emulation->CmdCopyBufferToImage(
+      device, command, source.buffer, image,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips, regions.data());
+  emulation->PrepareSubmit(&command, 1);
+  const auto& uploads = upload_regions.at(command);
+  ASSERT_EQ(uploads.size(), kMips);
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    SCOPED_TRACE(mip);
+    EXPECT_EQ(uploads[mip].imageSubresource.mipLevel, mip);
+    EXPECT_EQ(uploads[mip].imageExtent.width, 64U >> mip);
+    EXPECT_EQ(uploads[mip].imageExtent.height, 64U >> mip);
+  }
+  EXPECT_TRUE(Output(command) == expected);
+
+  // Streaming a sharper level copies the existing tail into a larger image.
+  const auto larger = CreateImage(128, 128, 1, kMips + 1);
+  std::vector<VkImageCopy> copies;
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    VkImageCopy copy{};
+    copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+    copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip + 1, 0, 1};
+    copy.extent = regions[mip].imageExtent;
+    copies.push_back(copy);
+  }
+  emulation->CmdCopyImage(device, command, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, larger,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
+                          copies.data());
+  EXPECT_EQ(blit_calls, 0U);
+  ASSERT_EQ(image_copies.size(), kMips);
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    SCOPED_TRACE(mip);
+    EXPECT_EQ(image_copies[mip].srcSubresource.mipLevel, mip);
+    EXPECT_EQ(image_copies[mip].dstSubresource.mipLevel, mip + 1);
+    EXPECT_EQ(image_copies[mip].extent.width, 64U >> mip);
+    EXPECT_EQ(image_copies[mip].extent.height, 64U >> mip);
+  }
 }
 
 TEST_P(VulkanEtc2Test, NativeSupportPassesThroughWithoutCpuUploads) {
