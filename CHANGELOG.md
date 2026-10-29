@@ -70,6 +70,8 @@ Release notes on GitHub are taken from the matching section here.
   a download server, the error points to a new FAQ entry with the commands to switch DNS servers.
 - PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.
   The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
+- Large `fflags.json` files load, and the settings window opens them. Both used to refuse a file over
+  64 KiB.
 
 ### Changed
 
