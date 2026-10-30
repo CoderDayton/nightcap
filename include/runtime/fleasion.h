@@ -24,6 +24,10 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
                                    const Environment& environment,
                                    const RuntimePaths& paths);
 
+// True when something accepts TCP connections on 127.0.0.1:`port` within
+// `timeout_ms`. Env mode needs Fleasion's proxy up before Roblox starts.
+bool FleasionProxyReachable(int port, int timeout_ms);
+
 bool WebsiteJoinNeedsFreshLaunch(const RuntimeConfig& config);
 
 bool MergeFleasionClientSettingsOverrides(std::string_view base_json,

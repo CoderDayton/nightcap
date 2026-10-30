@@ -7,6 +7,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- The Fleasion page in Settings shows a badge for its proxy: Running, Not running, or Not checked for
+  hosts routing. It updates while the window is open, and hovering it shows the full message.
 - In-game video plays, such as livestream screens in events. It used to stay black because Android's
   video decoder was missing; Nightcap now decodes H.264, HEVC, VP8 and VP9 video and AAC audio with
   FFmpeg, which is a new dependency. Videos with a sound track no longer fail to load. The log shows
@@ -37,6 +39,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy
+  port, for example when Fleasion runs in hosts mode. Nightcap now warns and starts without Fleasion.
 - The security check after Sign In no longer shows a black window on X11 desktops such as Cinnamon. Roblox
   web pages now use software rendering there too, as on Wayland.
 - Roblox web pages such as a game's server list no longer close right after opening on some NVIDIA
