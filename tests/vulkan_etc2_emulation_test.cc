@@ -253,12 +253,17 @@ std::uint32_t g_destroy_buffer_calls = 0;
 std::uint32_t g_free_memory_calls = 0;
 VkImageBlit g_blit{};
 VkFilter g_blit_filter = VK_FILTER_NEAREST;
+std::uint32_t g_blit_calls = 0;
+std::uint32_t g_created_mip_levels = 0;
+std::vector<VkBufferImageCopy> g_uploaded_regions;
+std::vector<VkImageCopy> g_image_copies;
 
 VKAPI_ATTR VkResult VKAPI_CALL FakeCreateImage(VkDevice,
                                                const VkImageCreateInfo* info,
                                                const VkAllocationCallbacks*,
                                                VkImage* image) {
   g_created_extent = info->extent;
+  g_created_mip_levels = info->mipLevels;
   *image = FakeHandle<VkImage>(g_next_image++);
   return VK_SUCCESS;
 }
@@ -268,8 +273,10 @@ VKAPI_ATTR void VKAPI_CALL FakeDestroyImage(VkDevice, VkImage,
 
 VKAPI_ATTR void VKAPI_CALL FakeCopyImage(VkCommandBuffer, VkImage,
                                          VkImageLayout, VkImage, VkImageLayout,
-                                         std::uint32_t, const VkImageCopy*) {
+                                         std::uint32_t count,
+                                         const VkImageCopy* copies) {
   ++g_copy_image_calls;
+  g_image_copies.assign(copies, copies + count);
 }
 
 VKAPI_ATTR void VKAPI_CALL FakeBlitImage(VkCommandBuffer, VkImage,
@@ -279,6 +286,7 @@ VKAPI_ATTR void VKAPI_CALL FakeBlitImage(VkCommandBuffer, VkImage,
                                          VkFilter filter) {
   g_blit = count > 0 ? blits[0] : VkImageBlit{};
   g_blit_filter = filter;
+  ++g_blit_calls;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL FakeCreateBuffer(VkDevice,
@@ -364,6 +372,7 @@ VKAPI_ATTR void VKAPI_CALL FakeCopyBufferToImage(
     VkCommandBuffer, VkBuffer buffer, VkImage, VkImageLayout,
     std::uint32_t count, const VkBufferImageCopy* regions) {
   g_copied_extent = count > 0 ? regions[0].imageExtent : VkExtent3D{};
+  g_uploaded_regions.assign(regions, regions + count);
   g_barriers_before_copy = g_pending_barriers;
   if (count > 0) {
     g_staged_copies.push_back({buffer, regions[0].bufferOffset});
@@ -865,6 +874,148 @@ TEST(VulkanEtc2EmulationTest, FillsScaledMipsFromLevelZeroRecordedLast) {
     ASSERT_EQ(g_staging[index], expected[index]) << index;
   }
   emulation.ReleaseCommandBuffer(command_buffer);
+}
+
+// Ported from upstream's DefaultPreservesStreamedMipChain. Roblox streams a
+// texture's levels, each with its own content, and moves the levels it has
+// into a larger image as a sharper one arrives. `upscale` is the
+// MOCKTAIL_SMALL_TEXTURE_UPSCALE value, or null for the default.
+void ExpectStreamedMipChainKept(const char* upscale) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2a);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x22a);
+  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x72a);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  if (upscale != nullptr) {
+    ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", upscale, 1), 0);
+  } else {
+    ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  }
+
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VulkanEtc2Emulation emulation;
+  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x3a), true,
+                           memory, FakeGetDeviceProcAddr);
+
+  // 8x8 with 4 levels, so every level fits the 64-byte source.
+  constexpr std::uint32_t kMips = 4;
+  VkImageCreateInfo image_info{};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.extent = {8, 8, 1};
+  image_info.mipLevels = kMips;
+  image_info.arrayLayers = 1;
+  VkImage image = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+  EXPECT_EQ(g_created_extent.width, 8u);
+  EXPECT_EQ(g_created_extent.height, 8u);
+  EXPECT_EQ(g_created_mip_levels, kMips);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
+            VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
+                                &mapped),
+            VK_SUCCESS);
+
+  // Each level gets its own colour: rebuilding a level from level 0 loses it.
+  std::array<VkBufferImageCopy, kMips> regions{};
+  std::vector<std::vector<std::uint8_t>> expected(kMips);
+  VkDeviceSize offset = 0;
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    const std::uint32_t size = 8u >> mip;
+    const std::uint32_t blocks = ((size + 3) / 4) * ((size + 3) / 4);
+    const std::array<std::uint8_t, 8> block = {
+        static_cast<std::uint8_t>(0x80 + mip * 0x10),
+        static_cast<std::uint8_t>(0x80 + mip * 0x10),
+        static_cast<std::uint8_t>(0x80 + mip * 0x10),
+        0x02,
+        0,
+        0,
+        0,
+        0};
+    for (std::uint32_t index = 0; index < blocks; ++index) {
+      std::memcpy(g_source.data() + offset + index * 8, block.data(), 8);
+    }
+    expected[mip].resize(size * size * 4);
+    ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, g_source.data() + offset,
+                               blocks * 8, size, size, expected[mip].data(),
+                               expected[mip].size()));
+    regions[mip].bufferOffset = offset;
+    regions[mip].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+    regions[mip].imageExtent = {size, size, 1};
+    offset += blocks * 8;
+  }
+  ASSERT_NE(expected[0], expected[1]);
+  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
+                                 regions.data());
+  emulation.PrepareSubmit(&command_buffer, 1);
+  ASSERT_EQ(g_uploaded_regions.size(), kMips);
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    SCOPED_TRACE(mip);
+    const VkBufferImageCopy& uploaded = g_uploaded_regions[mip];
+    EXPECT_EQ(uploaded.imageSubresource.mipLevel, mip);
+    EXPECT_EQ(uploaded.imageExtent.width, 8u >> mip);
+    EXPECT_EQ(uploaded.imageExtent.height, 8u >> mip);
+    EXPECT_TRUE(std::equal(expected[mip].begin(), expected[mip].end(),
+                           g_staging.begin() + uploaded.bufferOffset));
+  }
+  emulation.ReleaseCommandBuffer(command_buffer);
+
+  // A sharper level arrives: the existing levels move down one in a 16x16
+  // image, copied as they are rather than scaled.
+  image_info.extent = {16, 16, 1};
+  image_info.mipLevels = kMips + 1;
+  VkImage larger = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &larger),
+            VK_SUCCESS);
+  std::array<VkImageCopy, kMips> copies{};
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    copies[mip].srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+    copies[mip].dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip + 1, 0, 1};
+    copies[mip].extent = {8u >> mip, 8u >> mip, 1};
+  }
+  g_blit_calls = 0;
+  g_image_copies.clear();
+  emulation.CmdCopyImage(device, command_buffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, larger,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
+                         copies.data());
+  EXPECT_EQ(g_blit_calls, 0u);
+  ASSERT_EQ(g_image_copies.size(), kMips);
+  for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+    SCOPED_TRACE(mip);
+    EXPECT_EQ(g_image_copies[mip].srcSubresource.mipLevel, mip);
+    EXPECT_EQ(g_image_copies[mip].dstSubresource.mipLevel, mip + 1);
+    EXPECT_EQ(g_image_copies[mip].extent.width, 8u >> mip);
+    EXPECT_EQ(g_image_copies[mip].extent.height, 8u >> mip);
+  }
+  emulation.DestroyImage(device, larger, nullptr);
+  emulation.DestroyImage(device, image, nullptr);
+}
+
+// Adaptive cannot time this fake GPU, so it falls back to 1x.
+TEST(VulkanEtc2EmulationTest, UnmeasuredAdaptiveUpscaleKeepsTheStreamedMipChain) {
+  ExpectStreamedMipChainKept(nullptr);
+}
+
+TEST(VulkanEtc2EmulationTest, OneTimesUpscaleKeepsTheStreamedMipChain) {
+  ExpectStreamedMipChainKept("1");
+}
+
+// Fails today, and Adaptive picks 4x on fast GPUs: every level is uploaded
+// scaled and filled from level 0, and moving levels into a larger image
+// blits instead of copying. Upstream went to 1x by default for this.
+TEST(VulkanEtc2EmulationTest,
+     DISABLED_FourTimesUpscaleKeepsTheStreamedMipChain) {
+  ExpectStreamedMipChainKept("4");
 }
 
 TEST(VulkanEtc2EmulationTest, ReusesStagingBuffersAcrossCommandBuffers) {
