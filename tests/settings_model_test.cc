@@ -1418,6 +1418,40 @@ TEST_F(SettingsModelTest, ClearingOnLaunchNeedsFleasion) {
       document.IsActive("integrations.fleasion.clear_cache_on_launch"));
 }
 
+TEST(FleasionStatusTest, IsOffWhileFleasionIsOffOrTheModeIsUnknown) {
+  EXPECT_EQ(GetFleasionState(false, "env", true), FleasionState::kOff);
+  EXPECT_EQ(GetFleasionState(false, "hosts", false), FleasionState::kOff);
+  EXPECT_EQ(GetFleasionState(true, "other", true), FleasionState::kOff);
+}
+
+TEST(FleasionStatusTest, ProxyRoutingReportsWhetherTheProxyAnswers) {
+  EXPECT_EQ(GetFleasionState(true, "env", true), FleasionState::kRunning);
+  EXPECT_EQ(GetFleasionState(true, "env", false), FleasionState::kNotRunning);
+}
+
+TEST(FleasionStatusTest, HostsRoutingCannotBeChecked) {
+  EXPECT_EQ(GetFleasionState(true, "hosts", false),
+            FleasionState::kNotChecked);
+}
+
+TEST(FleasionStatusTest, TheBadgeIsShortAndEmptyWhileOff) {
+  EXPECT_EQ(FleasionBadge(FleasionState::kOff), "");
+  EXPECT_EQ(FleasionBadge(FleasionState::kRunning), "Running");
+  EXPECT_EQ(FleasionBadge(FleasionState::kNotRunning), "Not running");
+  EXPECT_EQ(FleasionBadge(FleasionState::kNotChecked), "Not checked");
+}
+
+TEST(FleasionStatusTest, TheTooltipExplainsEachState) {
+  EXPECT_EQ(FleasionStatus(FleasionState::kOff, 58443), "");
+  EXPECT_EQ(FleasionStatus(FleasionState::kRunning, 58443),
+            "Fleasion's proxy is running on port 58443.");
+  EXPECT_EQ(FleasionStatus(FleasionState::kNotRunning, 58443),
+            "Fleasion's proxy is not running on port 58443. Start Fleasion "
+            "first.");
+  EXPECT_EQ(FleasionStatus(FleasionState::kNotChecked, 58443),
+            "Hosts routing can't be checked from here.");
+}
+
 TEST(SettingsPagesTest, TextGroupsExplainTheirPlaceholders) {
   for (const SettingsPage& page : SettingsPages()) {
     for (const SettingsGroup& group : page.groups) {

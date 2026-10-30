@@ -1,6 +1,7 @@
 #include <SDL3/SDL.h>
 #include <adwaita.h>
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
@@ -13,6 +14,8 @@
 #include "mocktail/platform/application_id.h"
 #include "mocktail/platform/sdl_window_icon_data.h"
 #include "runtime/environment.h"
+#include "runtime/fleasion.h"
+#include "runtime/session_log.h"
 #include "runtime/roblox_cache.h"
 #include "runtime/running_instance.h"
 #include "runtime/runtime_paths.h"
@@ -24,6 +27,7 @@ namespace {
 using mocktail::ui::ChoiceIndex;
 using mocktail::ui::DeviceChoice;
 using mocktail::ui::FFlagsDocument;
+using mocktail::ui::FleasionState;
 using mocktail::ui::FrameRate;
 using mocktail::ui::FrameRateMode;
 using mocktail::ui::kNoChoice;
@@ -37,9 +41,21 @@ using mocktail::platform::kApplicationId;
 
 constexpr char kWindowStyle[] = R"(
 .navigation-sidebar > row { min-height: 44px; margin: 1px 6px; padding: 0 14px; }
+.sidebar-title { font-size: 1.15em; text-shadow: 0 1px 2px alpha(black, 0.35); }
+.sidebar-logo { -gtk-icon-shadow: 0 1px 2px alpha(black, 0.35); }
 .notice-bar {
   min-height: 54px; padding-right: 6px; background-color: @window_bg_color;
   box-shadow: inset 0 1px alpha(@window_fg_color, 0.1);
+}
+.status-badge {
+  border-radius: 99px; padding: 2px 10px; font-weight: bold;
+  font-size: smaller; background-color: alpha(@window_fg_color, 0.1);
+}
+.status-badge.ok {
+  background-color: alpha(@success_color, 0.2); color: @success_color;
+}
+.status-badge.warn {
+  background-color: alpha(@warning_color, 0.2); color: @warning_color;
 }
 )";
 
@@ -67,6 +83,8 @@ struct Row {
   // The text a kText row was last filled with. A field that holds anything
   // else has an edit that is not saved yet.
   std::string shown;
+  // The badge on an expander row that shows a status, such as Fleasion's.
+  GtkWidget* badge = nullptr;
 };
 
 struct SettingsWindow {
@@ -107,6 +125,9 @@ struct SettingsWindow {
   bool refreshing = false;
   Row* stepped = nullptr;
   guint stepped_timer = 0;
+  guint fleasion_timer = 0;
+  // Set while a probe of Fleasion's proxy is running.
+  bool fleasion_probing = false;
   std::filesystem::path android_data_root;
   std::filesystem::path roblox_data_lock;
   Row* cache = nullptr;
@@ -274,6 +295,120 @@ void ShowChanged(SettingsWindow* window) {
   }
 }
 
+// The file's value for `key`, or the setting's default when the file has none.
+std::string ValueOrDefault(SettingsWindow* window, std::string_view key) {
+  std::string value = window->document.Value(key);
+  if (!value.empty()) return value;
+  for (const Row& row : window->rows) {
+    if (row.setting->key == key) return Text(row.setting->default_value);
+  }
+  return value;
+}
+
+int FleasionPort(SettingsWindow* window) {
+  return static_cast<int>(g_ascii_strtod(
+      ValueOrDefault(window, "integrations.fleasion.proxy_port").c_str(),
+      nullptr));
+}
+
+void ShowFleasionState(const Row& row, FleasionState state, int port) {
+  const std::string badge = mocktail::ui::FleasionBadge(state);
+  const std::string status = mocktail::ui::FleasionStatus(state, port);
+  // The timer shows the same state again and again; leave the widgets alone.
+  const char* tooltip = gtk_widget_get_tooltip_text(row.badge);
+  if (gtk_widget_get_visible(row.badge) == (state != FleasionState::kOff) &&
+      badge == gtk_label_get_text(GTK_LABEL(row.badge)) &&
+      status == (tooltip != nullptr ? tooltip : "")) {
+    return;
+  }
+  gtk_label_set_text(GTK_LABEL(row.badge), badge.c_str());
+  gtk_widget_set_tooltip_text(row.badge,
+                              status.empty() ? nullptr : status.c_str());
+  gtk_widget_set_visible(row.badge, state != FleasionState::kOff);
+  gtk_widget_remove_css_class(row.badge, "ok");
+  gtk_widget_remove_css_class(row.badge, "warn");
+  if (state == FleasionState::kRunning) {
+    gtk_widget_add_css_class(row.badge, "ok");
+  } else if (state == FleasionState::kNotRunning) {
+    gtk_widget_add_css_class(row.badge, "warn");
+  }
+}
+
+void RefreshFleasionStatus(SettingsWindow* window);
+
+// A connect to Fleasion's proxy port, made off the main thread.
+struct FleasionProbe {
+  SettingsWindow* window = nullptr;
+  Row* row = nullptr;
+  int port = 0;
+  bool reachable = false;
+};
+
+void ProbeFleasion(GTask* task, gpointer, gpointer data, GCancellable*) {
+  auto* probe = static_cast<FleasionProbe*>(data);
+  probe->reachable =
+      mocktail::runtime::FleasionProxyReachable(probe->port, 100);
+  g_task_return_boolean(task, TRUE);
+}
+
+void OnFleasionProbed(GObject*, GAsyncResult* result, gpointer) {
+  auto* probe = static_cast<FleasionProbe*>(
+      g_task_get_task_data(G_TASK(result)));
+  probe->window->fleasion_probing = false;
+  if (probe->window->closed) return;
+  // The port changed while this probe ran, so its answer is for another port.
+  if (FleasionPort(probe->window) != probe->port) {
+    RefreshFleasionStatus(probe->window);
+    return;
+  }
+  ShowFleasionState(
+      *probe->row,
+      mocktail::ui::GetFleasionState(true, "env", probe->reachable),
+      probe->port);
+}
+
+// Puts whether Fleasion's proxy answers under its switch. Only Proxy routing
+// is probed, and only while the Fleasion page is showing.
+void RefreshFleasionStatus(SettingsWindow* window) {
+  for (Row& row : window->rows) {
+    if (row.setting->key != "integrations.fleasion.enabled" ||
+        row.badge == nullptr) {
+      continue;
+    }
+    const bool enabled = mocktail::ui::ToggleState(
+        *row.setting, window->document.Value(row.setting->key));
+    const std::string mode =
+        ValueOrDefault(window, "integrations.fleasion.proxy_mode");
+    const int port = FleasionPort(window);
+    // Showing the page triggers a refresh, so a hidden page does no work.
+    if (!gtk_widget_get_mapped(row.widget)) continue;
+    if (!enabled || mode != "env") {
+      ShowFleasionState(row, mocktail::ui::GetFleasionState(enabled, mode, false),
+                        port);
+    } else if (!window->fleasion_probing) {
+      window->fleasion_probing = true;
+      auto* probe = new FleasionProbe{window, &row, port, false};
+      GTask* task = g_task_new(nullptr, nullptr, OnFleasionProbed, nullptr);
+      g_task_set_task_data(task, probe, [](gpointer data) {
+        delete static_cast<FleasionProbe*>(data);
+      });
+      g_task_run_in_thread(task, ProbeFleasion);
+      g_object_unref(task);
+    }
+  }
+}
+
+void OnFleasionPageMapped(GtkWidget*, gpointer user_data) {
+  RefreshFleasionStatus(static_cast<SettingsWindow*>(user_data));
+}
+
+gboolean OnFleasionTimer(gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  if (window->closed) return G_SOURCE_REMOVE;
+  RefreshFleasionStatus(window);
+  return G_SOURCE_CONTINUE;
+}
+
 // Shows every row as the file has it. Text typed into a row and not saved
 // yet stays, except in `saved_row`, whose text was just saved.
 void RefreshRows(SettingsWindow* window, const Row* saved_row = nullptr) {
@@ -283,6 +418,7 @@ void RefreshRows(SettingsWindow* window, const Row* saved_row = nullptr) {
   }
   window->refreshing = false;
   ShowChanged(window);
+  RefreshFleasionStatus(window);
 }
 
 void ShowError(SettingsWindow* window, const std::string& error) {
@@ -1187,6 +1323,40 @@ void OnPageActivated(GtkListBox*, GtkListBoxRow*, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->split, TRUE);
 }
 
+// Breeze lacks some of Adwaita's icon names, so fall back to ones it has.
+std::string SidebarIconName(const std::string& name) {
+  static const std::pair<const char*, std::array<const char*, 2>> kFallbacks[] = {
+      {"power-profile-performance-symbolic",
+       {"speedometer-symbolic", "utilities-system-monitor-symbolic"}},
+      {"application-x-addon-symbolic",
+       {"extension-symbolic", "applications-system-symbolic"}},
+  };
+  GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
+  if (gtk_icon_theme_has_icon(theme, name.c_str())) return name;
+  for (const auto& [primary, alternates] : kFallbacks) {
+    if (name != primary) continue;
+    for (const char* alternate : alternates) {
+      if (gtk_icon_theme_has_icon(theme, alternate)) return alternate;
+    }
+  }
+  return name;
+}
+
+// KDE's layout adds the window icon to each header bar, doubling the artwork.
+// Empty when the layout has no icon.
+std::string DecorationLayoutWithoutIcon() {
+  gchar* layout = nullptr;
+  g_object_get(gtk_settings_get_default(), "gtk-decoration-layout", &layout,
+               nullptr);
+  std::string text = layout != nullptr ? layout : "";
+  g_free(layout);
+  const size_t at = text.find("icon");
+  if (at == std::string::npos) return {};
+  text.erase(at, 4);
+  if (at < text.size() && text[at] == ',') text.erase(at, 1);
+  return text;
+}
+
 // The Nightcap artwork beside the name. The artwork is built in, so it shows
 // whether or not the icon theme has Nightcap's icon installed.
 GtkWidget* BuildSidebarTitle() {
@@ -1197,13 +1367,15 @@ GtkWidget* BuildSidebarTitle() {
       mocktail::platform::internal::kMocktailWindowIconPngSize);
   if (GdkTexture* texture = gdk_texture_new_from_bytes(bytes, nullptr)) {
     GtkWidget* image = gtk_image_new_from_paintable(GDK_PAINTABLE(texture));
-    gtk_image_set_pixel_size(GTK_IMAGE(image), 24);
+    gtk_image_set_pixel_size(GTK_IMAGE(image), 28);
+    gtk_widget_add_css_class(image, "sidebar-logo");
     gtk_box_append(GTK_BOX(box), image);
     g_object_unref(texture);
   }
   g_bytes_unref(bytes);
   GtkWidget* label = gtk_label_new("Nightcap");
   gtk_widget_add_css_class(label, "title");
+  gtk_widget_add_css_class(label, "sidebar-title");
   gtk_box_append(GTK_BOX(box), label);
   return box;
 }
@@ -1217,7 +1389,8 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
   for (const SettingsPage& page : mocktail::ui::SettingsPages()) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_box_append(GTK_BOX(box),
-                   gtk_image_new_from_icon_name(Text(page.icon_name).c_str()));
+                   gtk_image_new_from_icon_name(
+                       SidebarIconName(Text(page.icon_name)).c_str()));
     GtkWidget* label = gtk_label_new(Text(page.title).c_str());
     gtk_label_set_xalign(GTK_LABEL(label), 0);
     gtk_widget_set_hexpand(label, TRUE);
@@ -1236,6 +1409,10 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
   // The artwork and name sit at the left, in line with the rows below.
   GtkWidget* header = adw_header_bar_new();
   adw_header_bar_set_show_title(ADW_HEADER_BAR(header), FALSE);
+  const std::string layout = DecorationLayoutWithoutIcon();
+  if (!layout.empty()) {
+    adw_header_bar_set_decoration_layout(ADW_HEADER_BAR(header), layout.c_str());
+  }
   GtkWidget* title = BuildSidebarTitle();
   gtk_widget_set_margin_start(title, 4);
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), title);
@@ -1289,6 +1466,37 @@ GtkWidget* BuildNotice(SettingsWindow* window) {
   return revealer;
 }
 
+std::string BuildVersionText() {
+  return mocktail::runtime::FormatBuildVersion(
+      mocktail::runtime::CurrentSessionBuildInformation());
+}
+
+void OnCopyVersion(GtkButton* button, gpointer user_data) {
+  gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(button)),
+                         ("Nightcap " + BuildVersionText()).c_str());
+  AdwToast* toast = adw_toast_new("Copied the version");
+  adw_toast_set_timeout(toast, 2);
+  adw_toast_overlay_add_toast(
+      static_cast<SettingsWindow*>(user_data)->toasts, toast);
+}
+
+GtkWidget* BuildAboutGroup(SettingsWindow* window) {
+  GtkWidget* group = adw_preferences_group_new();
+  adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "About");
+  GtkWidget* row = adw_action_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Version");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(row), BuildVersionText().c_str());
+  adw_action_row_set_subtitle_selectable(ADW_ACTION_ROW(row), TRUE);
+  GtkWidget* copy = gtk_button_new_from_icon_name("edit-copy-symbolic");
+  gtk_widget_set_valign(copy, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text(copy, "Copy for a bug report");
+  gtk_widget_add_css_class(copy, "flat");
+  g_signal_connect(copy, "clicked", G_CALLBACK(OnCopyVersion), window);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(row), copy);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+  return group;
+}
+
 GtkWidget* BuildPages(SettingsWindow* window) {
   GtkWidget* stack = gtk_stack_new();
   window->stack = GTK_STACK(stack);
@@ -1327,6 +1535,16 @@ GtkWidget* BuildPages(SettingsWindow* window) {
           adw_expander_row_set_show_enable_switch(ADW_EXPANDER_ROW(container),
                                                   TRUE);
           AddRow(window, container, group.settings.front(), true);
+          if (group.settings.front().key == "integrations.fleasion.enabled") {
+            GtkWidget* badge = gtk_label_new("");
+            gtk_widget_add_css_class(badge, "status-badge");
+            gtk_widget_set_valign(badge, GTK_ALIGN_CENTER);
+            gtk_widget_set_visible(badge, FALSE);
+            adw_expander_row_add_suffix(ADW_EXPANDER_ROW(container), badge);
+            window->rows.back().badge = badge;
+            g_signal_connect(container, "map",
+                             G_CALLBACK(OnFleasionPageMapped), window);
+          }
           first = 1;
         }
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group_widget),
@@ -1337,6 +1555,9 @@ GtkWidget* BuildPages(SettingsWindow* window) {
         AddRow(window, container, group.settings[index]);
       }
       gtk_box_append(GTK_BOX(groups), group_widget);
+    }
+    if (page.name == "advanced") {
+      gtk_box_append(GTK_BOX(groups), BuildAboutGroup(window));
     }
     gtk_stack_add_named(GTK_STACK(stack), page_widget,
                         Text(page.name).c_str());
@@ -1442,6 +1663,10 @@ gboolean OnCloseRequest(GtkWindow*, gpointer user_data) {
 void OnWindowDestroy(GtkWidget*, gpointer user_data) {
   auto* window = static_cast<SettingsWindow*>(user_data);
   window->closed = true;
+  if (window->fleasion_timer != 0) {
+    g_source_remove(window->fleasion_timer);
+    window->fleasion_timer = 0;
+  }
   if (window->stepped_timer != 0) {
     g_source_remove(window->stepped_timer);
     window->stepped_timer = 0;
@@ -1480,6 +1705,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
     FindAudioDevices(window);
     content = BuildSplitView(window, ADW_APPLICATION_WINDOW(window_widget));
     RefreshRows(window);
+    window->fleasion_timer = g_timeout_add_seconds(2, OnFleasionTimer, window);
   } else {
     content = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(content),

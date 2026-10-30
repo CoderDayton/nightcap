@@ -260,6 +260,36 @@ TEST(SessionLogTest, CpuDiagnosticsPreservesExistingSignalDisposition) {
       ::testing::ExitedWithCode(0), "existing SIGXCPU handler retained");
 }
 
+SessionBuildInformation BuildOf(const char* revision, const char* commit,
+                                const char* dirty) {
+  SessionBuildInformation build;
+  build.version = "0.4.0";
+  build.revision = revision;
+  build.git_commit = commit;
+  build.git_dirty = dirty;
+  return build;
+}
+
+TEST(BuildVersionTest, ShowsVersionRevisionAndShortCommit) {
+  EXPECT_EQ(FormatBuildVersion(BuildOf("54", "8bb1521abc12", "false")),
+            "0.4.0 r54 (8bb1521)");
+}
+
+TEST(BuildVersionTest, MarksAModifiedTree) {
+  EXPECT_EQ(FormatBuildVersion(BuildOf("54", "8bb1521abc12", "true")),
+            "0.4.0 r54 (8bb1521, modified)");
+}
+
+TEST(BuildVersionTest, OmitsRevisionOnATaggedRelease) {
+  EXPECT_EQ(FormatBuildVersion(BuildOf("0", "8bb1521abc12", "false")),
+            "0.4.0 (8bb1521)");
+}
+
+TEST(BuildVersionTest, OmitsWhatTheBuildCouldNotLearn) {
+  EXPECT_EQ(FormatBuildVersion(BuildOf("unknown", "unknown", "unknown")),
+            "0.4.0");
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

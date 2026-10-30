@@ -3,6 +3,10 @@
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -148,6 +152,35 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
   if (size <= 0 || !WriteBundle(result.bundle, bytes, static_cast<std::size_t>(size)))
     result.error = "cannot write generated Fleasion CA bundle: " + result.bundle.string();
   return result;
+}
+
+bool FleasionProxyReachable(int port, int timeout_ms) {
+  if (port < 1 || port > 65535) return false;
+  const int descriptor =
+      socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (descriptor < 0) return true;
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(static_cast<uint16_t>(port));
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  bool reachable = false;
+  if (connect(descriptor, reinterpret_cast<sockaddr*>(&address),
+              sizeof(address)) == 0) {
+    reachable = true;
+  } else if (errno == EINPROGRESS) {
+    pollfd wait{descriptor, POLLOUT, 0};
+    int error = 0;
+    socklen_t length = sizeof(error);
+    int ready;
+    do {
+      ready = poll(&wait, 1, timeout_ms);
+    } while (ready < 0 && errno == EINTR);
+    reachable = ready > 0 &&
+                getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &error, &length) == 0 &&
+                error == 0;
+  }
+  close(descriptor);
+  return reachable;
 }
 
 bool WebsiteJoinNeedsFreshLaunch(const RuntimeConfig& config) {

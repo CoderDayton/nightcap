@@ -19,6 +19,8 @@ find_package(Threads REQUIRED)
 
 set(MOCKTAIL_BUILD_GIT_COMMIT "unknown")
 set(MOCKTAIL_BUILD_GIT_DIRTY "unknown")
+# Commits since the latest release tag; stays unknown without tags, as in a shallow clone.
+set(MOCKTAIL_BUILD_REVISION "unknown")
 find_package(Git QUIET)
 if(Git_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
   execute_process(
@@ -33,6 +35,18 @@ if(Git_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
      MOCKTAIL_GIT_REV_PARSE_OUTPUT MATCHES "^[0-9a-fA-F]+$")
     string(TOLOWER "${MOCKTAIL_GIT_REV_PARSE_OUTPUT}"
       MOCKTAIL_BUILD_GIT_COMMIT)
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" describe --tags --long --match "v[0-9]*"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      RESULT_VARIABLE MOCKTAIL_GIT_DESCRIBE_RESULT
+      OUTPUT_VARIABLE MOCKTAIL_GIT_DESCRIBE_OUTPUT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    if(MOCKTAIL_GIT_DESCRIBE_RESULT EQUAL 0 AND
+       MOCKTAIL_GIT_DESCRIBE_OUTPUT MATCHES "-([0-9]+)-g[0-9a-f]+$")
+      set(MOCKTAIL_BUILD_REVISION "${CMAKE_MATCH_1}")
+    endif()
     execute_process(
       COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=normal
       WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -341,6 +355,7 @@ set_property(SOURCE src/runtime/session_log.cc APPEND PROPERTY
   COMPILE_DEFINITIONS
   "MOCKTAIL_PROJECT_VERSION=\"${PROJECT_VERSION}\""
   "MOCKTAIL_BUILD_GIT_COMMIT=\"${MOCKTAIL_BUILD_GIT_COMMIT}\""
+  "MOCKTAIL_BUILD_REVISION=\"${MOCKTAIL_BUILD_REVISION}\""
   "MOCKTAIL_BUILD_GIT_DIRTY=\"${MOCKTAIL_BUILD_GIT_DIRTY}\""
   "MOCKTAIL_BUILD_TYPE=\"$<CONFIG>\""
   "MOCKTAIL_BUILD_COMPILER_ID=\"${CMAKE_CXX_COMPILER_ID}\""

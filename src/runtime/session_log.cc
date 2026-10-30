@@ -518,6 +518,7 @@ GraphicsHardware DetectGraphicsHardware() {
 SessionBuildInformation CurrentSessionBuildInformation() {
   SessionBuildInformation information;
   information.version = MOCKTAIL_PROJECT_VERSION;
+  information.revision = MOCKTAIL_BUILD_REVISION;
   information.git_commit = MOCKTAIL_BUILD_GIT_COMMIT;
   information.git_dirty = MOCKTAIL_BUILD_GIT_DIRTY;
   information.build_type = MOCKTAIL_BUILD_TYPE;
@@ -526,6 +527,19 @@ SessionBuildInformation CurrentSessionBuildInformation() {
   information.target = std::string(MOCKTAIL_BUILD_TARGET_SYSTEM) + "/" +
                        MOCKTAIL_BUILD_TARGET_PROCESSOR;
   return information;
+}
+
+std::string FormatBuildVersion(const SessionBuildInformation& build) {
+  std::string text = build.version;
+  if (build.revision != "unknown" && build.revision != "0") {
+    text += " r" + build.revision;
+  }
+  if (build.git_commit != "unknown") {
+    text += " (" + build.git_commit.substr(0, 7);
+    if (build.git_dirty == "true") text += ", modified";
+    text += ')';
+  }
+  return text;
 }
 
 SessionLog::~SessionLog() { Stop(); }

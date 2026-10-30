@@ -113,6 +113,26 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
 // Whether a toggle is on for `value`, the file's value or empty when unset.
 bool ToggleState(const Setting& setting, std::string_view value);
 
+// What the Fleasion switch's badge shows. Only Proxy routing ("env") can be
+// checked from here.
+enum class FleasionState {
+  kOff,
+  kRunning,
+  kNotRunning,
+  kNotChecked,
+};
+
+// `mode` is "env" or "hosts"; anything else, like Fleasion being off, is kOff.
+// `proxy_reachable` is what a connect to Fleasion's proxy port found.
+FleasionState GetFleasionState(bool enabled, std::string_view mode,
+                               bool proxy_reachable);
+
+// "Running", "Not running" or "Not checked". Empty for kOff.
+std::string FleasionBadge(FleasionState state);
+
+// The badge's tooltip. Empty for kOff.
+std::string FleasionStatus(FleasionState state, int port);
+
 enum class FrameRateMode {
   kRoblox,
   kDisplay,

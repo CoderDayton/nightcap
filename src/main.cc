@@ -408,6 +408,13 @@ int main(int argc, char* argv[]) {
         command_line.options.program_name);
     return EXIT_SUCCESS;
   }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kVersion) {
+    std::cout << "Nightcap "
+              << mocktail::runtime::FormatBuildVersion(
+                     mocktail::runtime::CurrentSessionBuildInformation())
+              << '\n';
+    return EXIT_SUCCESS;
+  }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kSettings) {
     // The window reports a broken config itself, so it starts before the
     // config is loaded.
@@ -711,6 +718,24 @@ int main(int argc, char* argv[]) {
     mocktail::runtime::InstallCpuLimitDiagnostics();
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kStartup);
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      runtime_config.config.fleasion_enabled() &&
+      runtime_config.config.fleasion_proxy_mode() == "env" &&
+      !mocktail::runtime::FleasionProxyReachable(
+          runtime_config.config.fleasion_proxy_port(), 250)) {
+    std::cerr << "  [fleasion] nothing is listening on 127.0.0.1:"
+              << runtime_config.config.fleasion_proxy_port()
+              << "; running without Fleasion this session. Start Fleasion, or"
+                 " set its routing mode (env or hosts) to match Nightcap's\n";
+    // The env override also reaches the updater and canary children, and the
+    // reload drops the proxy that Fleasion's env mode would have forced on.
+    setenv("MOCKTAIL_FLEASION_ENABLED", "0", 1);
+    runtime_config = mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
+    if (!runtime_config) {
+      std::cerr << "[FATAL] Cannot apply Fleasion: " << runtime_config.error << '\n';
+      return EXIT_FAILURE;
+    }
   }
   if (runtime_config.config.fleasion_enabled()) {
     const auto fleasion = mocktail::runtime::PrepareFleasion(

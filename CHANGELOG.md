@@ -7,6 +7,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- `mocktail --version` prints the build, and Settings > Advanced > About shows it with a copy button,
+  as the version, the revision since the last release and the commit, like `0.4.0 r54 (8bb1521)`.
+- The Fleasion page in Settings shows a badge for its proxy: Running, Not running, or Not checked for
+  hosts routing. It updates while the window is open, and hovering it shows the full message.
 - In-game video plays, such as livestream screens in events. It used to stay black because Android's
   video decoder was missing; Nightcap now decodes H.264, HEVC, VP8 and VP9 video and AAC audio with
   FFmpeg, which is a new dependency. Videos with a sound track no longer fail to load. The log shows
@@ -37,6 +41,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- The Settings window no longer shows a second Nightcap icon or missing page icons on KDE with the
+  Breeze icon theme.
+- Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy
+  port, for example when Fleasion runs in hosts mode. Nightcap now warns and starts without Fleasion.
 - The security check after Sign In no longer shows a black window on X11 desktops such as Cinnamon. Roblox
   web pages now use software rendering there too, as on Wayland.
 - Roblox web pages such as a game's server list no longer close right after opening on some NVIDIA
