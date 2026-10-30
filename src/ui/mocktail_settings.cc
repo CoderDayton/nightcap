@@ -15,6 +15,7 @@
 #include "mocktail/platform/sdl_window_icon_data.h"
 #include "runtime/environment.h"
 #include "runtime/fleasion.h"
+#include "runtime/session_log.h"
 #include "runtime/roblox_cache.h"
 #include "runtime/running_instance.h"
 #include "runtime/runtime_paths.h"
@@ -1465,6 +1466,37 @@ GtkWidget* BuildNotice(SettingsWindow* window) {
   return revealer;
 }
 
+std::string BuildVersionText() {
+  return mocktail::runtime::FormatBuildVersion(
+      mocktail::runtime::CurrentSessionBuildInformation());
+}
+
+void OnCopyVersion(GtkButton* button, gpointer user_data) {
+  gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(button)),
+                         ("Nightcap " + BuildVersionText()).c_str());
+  AdwToast* toast = adw_toast_new("Copied the version");
+  adw_toast_set_timeout(toast, 2);
+  adw_toast_overlay_add_toast(
+      static_cast<SettingsWindow*>(user_data)->toasts, toast);
+}
+
+GtkWidget* BuildAboutGroup(SettingsWindow* window) {
+  GtkWidget* group = adw_preferences_group_new();
+  adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "About");
+  GtkWidget* row = adw_action_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Version");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(row), BuildVersionText().c_str());
+  adw_action_row_set_subtitle_selectable(ADW_ACTION_ROW(row), TRUE);
+  GtkWidget* copy = gtk_button_new_from_icon_name("edit-copy-symbolic");
+  gtk_widget_set_valign(copy, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text(copy, "Copy for a bug report");
+  gtk_widget_add_css_class(copy, "flat");
+  g_signal_connect(copy, "clicked", G_CALLBACK(OnCopyVersion), window);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(row), copy);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+  return group;
+}
+
 GtkWidget* BuildPages(SettingsWindow* window) {
   GtkWidget* stack = gtk_stack_new();
   window->stack = GTK_STACK(stack);
@@ -1523,6 +1555,9 @@ GtkWidget* BuildPages(SettingsWindow* window) {
         AddRow(window, container, group.settings[index]);
       }
       gtk_box_append(GTK_BOX(groups), group_widget);
+    }
+    if (page.name == "advanced") {
+      gtk_box_append(GTK_BOX(groups), BuildAboutGroup(window));
     }
     gtk_stack_add_named(GTK_STACK(stack), page_widget,
                         Text(page.name).c_str());

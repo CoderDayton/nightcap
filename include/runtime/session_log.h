@@ -14,6 +14,8 @@ namespace runtime {
 
 struct SessionBuildInformation {
   std::string version;
+  // Commits since the latest release tag, or "unknown".
+  std::string revision;
   std::string git_commit;
   std::string git_dirty;
   std::string build_type;
@@ -22,6 +24,10 @@ struct SessionBuildInformation {
 };
 
 SessionBuildInformation CurrentSessionBuildInformation();
+
+// "0.4.0 r54 (8bb1521)": version, revision and short commit. Leaves out what
+// the build could not learn, and marks an uncommitted tree as modified.
+std::string FormatBuildVersion(const SessionBuildInformation& build);
 
 class SessionLog final {
  public:

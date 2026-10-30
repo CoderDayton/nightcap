@@ -7,6 +7,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- `mocktail --version` prints the build, and Settings > Advanced > About shows it with a copy button,
+  as the version, the revision since the last release and the commit, like `0.4.0 r54 (8bb1521)`.
 - The Fleasion page in Settings shows a badge for its proxy: Running, Not running, or Not checked for
   hosts routing. It updates while the window is open, and hovering it shows the full message.
 - In-game video plays, such as livestream screens in events. It used to stay black because Android's

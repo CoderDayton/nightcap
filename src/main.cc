@@ -408,6 +408,13 @@ int main(int argc, char* argv[]) {
         command_line.options.program_name);
     return EXIT_SUCCESS;
   }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kVersion) {
+    std::cout << "Nightcap "
+              << mocktail::runtime::FormatBuildVersion(
+                     mocktail::runtime::CurrentSessionBuildInformation())
+              << '\n';
+    return EXIT_SUCCESS;
+  }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kSettings) {
     // The window reports a broken config itself, so it starts before the
     // config is loaded.

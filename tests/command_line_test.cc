@@ -302,6 +302,14 @@ TEST(CommandLineTest, HelpIsATypedAuxiliaryMode) {
   EXPECT_EQ(help_result.options.mode, CommandMode::kHelp);
 }
 
+TEST(CommandLineTest, VersionIsATypedAuxiliaryMode) {
+  const std::array<const char*, 2> version = {"mocktail", "--version"};
+  const CommandLineParseResult result =
+      ParseCommandLine(version.size(), version.data());
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.options.mode, CommandMode::kVersion);
+}
+
 TEST(CommandLineTest, SettingsIsATypedAuxiliaryMode) {
   const std::array<const char*, 2> settings = {"mocktail", "--settings"};
   const CommandLineParseResult result =
