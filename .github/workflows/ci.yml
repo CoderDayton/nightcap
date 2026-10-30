@@ -102,7 +102,7 @@ jobs:
             build-essential binutils cmake git ninja-build pkg-config lld \
             libsdl3-dev libsdl3-ttf-dev libcurl4-openssl-dev libssl-dev \
             nlohmann-json3-dev libyaml-dev libelf-dev libminizip-dev \
-            libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+            libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsecret-1-dev \
             libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
             libplacebo-dev libavcodec-dev libpng-dev zlib1g-dev \
             xvfb xauth libgl1-mesa-dri jq patchelf

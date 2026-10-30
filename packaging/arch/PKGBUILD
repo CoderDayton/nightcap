@@ -20,6 +20,7 @@ depends=(
   'libglvnd'
   'libplacebo'
   'libpng'
+  'libsecret'
   'libutf8proc'
   'libyaml'
   'minizip'

@@ -156,6 +156,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "device.model", "device.brand", "device.code", "device.sku",
            "device.soc_model", "device.touch", "device.mouse",
            "device.keyboard", "runtime.headless", "runtime.roblox_library",
+           "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
            "graphics.vsync", "graphics.texture_compression",
            "graphics.small_texture_upscale",

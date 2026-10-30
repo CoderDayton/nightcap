@@ -3,10 +3,13 @@
 #include <curl/curl.h>
 
 #include <cstdlib>
-#include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+
+#include "runtime/environment.h"
+#include "runtime/roblox_cookie_store.h"
+#include "runtime/runtime_paths.h"
 
 namespace mocktail {
 namespace runtime {
@@ -23,39 +26,46 @@ size_t WriteToString(char* data, size_t size, size_t nmemb, void* userdata) {
 
 }  // namespace
 
-// Reads mocktail's own persisted session cookie from
-// $XDG_DATA_HOME/mocktail/auth/roblox.cookie (default
-// ~/.local/share/mocktail/auth/roblox.cookie), matching the format
-// mocktail's own auth code already writes there: a single line of the
-// form ".ROBLOSECURITY=<value>". Strips the prefix so callers get just
-// the bare value. Returns an empty string if no session is stored yet.
-std::string ReadStoredRoblosecurityCookie() {
-  const char* home = std::getenv("HOME");
-  if (home == nullptr || home[0] == '\0') {
-    return std::string();
+std::string ReadStoredRoblosecurityCookie(
+    std::shared_ptr<RobloxSecretStore> secrets) {
+  const ProcessEnvironment environment;
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  if (secrets == nullptr) secrets = OpenRobloxSecretStore();
+  StoredCookie cookie;
+  if (environment.HasNonEmpty("MOCKTAIL_ROBLOX_COOKIES")) {
+    cookie.status = StoredCookieStatus::kFound;
+    cookie.value = environment.GetOr("MOCKTAIL_ROBLOX_COOKIES", "");
+  } else if (environment.HasNonEmpty("MOCKTAIL_COOKIE_FILE")) {
+    cookie = ReadRobloxCookieFile(environment.GetOr("MOCKTAIL_COOKIE_FILE", ""),
+                                  true);
+  } else {
+    cookie = LoadManagedRobloxCookie(paths.cookie_file(), *secrets);
   }
-  const char* xdg_data_home = std::getenv("XDG_DATA_HOME");
-  const std::string base =
-      (xdg_data_home != nullptr && xdg_data_home[0] != '\0')
-          ? std::string(xdg_data_home)
-          : std::string(home) + "/.local/share";
-  const std::string path = base + "/mocktail/auth/roblox.cookie";
-
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    return std::string();
+  if (cookie.status != StoredCookieStatus::kFound) return {};
+  std::string value;
+  std::string_view remaining(cookie.value);
+  while (!remaining.empty()) {
+    const auto end = remaining.find_first_of(";\r\n\t");
+    auto segment = remaining.substr(0, end);
+    while (!segment.empty() && segment.front() == ' ') segment.remove_prefix(1);
+    constexpr std::string_view prefix = ".ROBLOSECURITY=";
+    if (segment.substr(0, prefix.size()) == prefix) {
+      value = segment.substr(prefix.size());
+      break;
+    }
+    if (segment.substr(0, 2) == "_|") {
+      value = segment;
+      break;
+    }
+    if (end == remaining.npos) break;
+    remaining.remove_prefix(end + 1);
   }
-  std::string line;
-  std::getline(file, line);
-  while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
-    line.pop_back();
+  volatile char* bytes = cookie.value.empty() ? nullptr : cookie.value.data();
+  for (size_t i = 0; i < cookie.value.size(); ++i) bytes[i] = '\0';
+  for (unsigned char ch : value) {
+    if (ch <= 0x20 || ch >= 0x7f || ch == ';') return {};
   }
-  constexpr std::string_view kPrefix = ".ROBLOSECURITY=";
-  if (line.size() > kPrefix.size() &&
-      line.compare(0, kPrefix.size(), kPrefix) == 0) {
-    return line.substr(kPrefix.size());
-  }
-  return line;
+  return value;
 }
 
 Status ResolveFollowUserPlace(int64_t user_id, const std::string& auth_cookie,

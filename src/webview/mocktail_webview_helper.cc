@@ -239,19 +239,6 @@ bool EnsurePrivateDirectory(const char* path) {
   return g_chmod(path, 0700) == 0;
 }
 
-bool EnsurePrivateCookieDatabase(const char* path) {
-  const int descriptor =
-      open(path, O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_RDWR, 0600);
-  if (descriptor < 0) {
-    return false;
-  }
-  struct stat status = {};
-  const bool secured = fstat(descriptor, &status) == 0 &&
-                       S_ISREG(status.st_mode) && fchmod(descriptor, 0600) == 0;
-  close(descriptor);
-  return secured;
-}
-
 bool InitializeNetworkSession(AppState* state) {
   gchar* data_directory =
       g_build_filename(g_get_user_data_dir(), "mocktail", "webview", nullptr);
@@ -267,22 +254,11 @@ bool InitializeNetworkSession(AppState* state) {
     return false;
   }
 
-  gchar* cookie_database =
-      g_build_filename(data_directory, "cookies.sqlite", nullptr);
-  if (cookie_database == nullptr ||
-      !EnsurePrivateCookieDatabase(cookie_database)) {
-    std::cerr << "[webview] cannot secure persistent cookie database\n";
-    g_free(cookie_database);
-    g_free(data_directory);
-    g_free(cache_directory);
-    return false;
-  }
   state->network_session =
       webkit_network_session_new(data_directory, cache_directory);
   g_free(data_directory);
   g_free(cache_directory);
   if (state->network_session == nullptr) {
-    g_free(cookie_database);
     return false;
   }
 
@@ -302,7 +278,6 @@ bool InitializeNetworkSession(AppState* state) {
     if (settings == nullptr) {
       g_object_unref(state->network_session);
       state->network_session = nullptr;
-      g_free(cookie_database);
       return false;
     }
     webkit_network_session_set_proxy_settings(
@@ -316,21 +291,18 @@ bool InitializeNetworkSession(AppState* state) {
 
   WebKitCookieManager* cookies =
       webkit_network_session_get_cookie_manager(state->network_session);
-  webkit_cookie_manager_set_persistent_storage(
-      cookies, cookie_database, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
   webkit_cookie_manager_set_accept_policy(cookies,
                                           WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
   g_signal_connect(cookies, "changed", G_CALLBACK(OnCookiesChanged), state);
-  g_free(cookie_database);
 
   // Android WebView permits the third-party cookies used by Roblox login and
   // CAPTCHA providers. TLS failures remain fail-closed at the network layer.
   webkit_network_session_set_itp_enabled(state->network_session, FALSE);
   webkit_network_session_set_persistent_credential_storage_enabled(
-      state->network_session, TRUE);
+      state->network_session, FALSE);
   webkit_network_session_set_tls_errors_policy(state->network_session,
                                                WEBKIT_TLS_ERRORS_POLICY_FAIL);
-  std::cerr << "[webview] persistent XDG network session ready\n";
+  std::cerr << "[webview] network session ready; cookies stay in memory\n";
   return true;
 }
 
@@ -510,7 +482,7 @@ void ApplyPendingRobloxCookie(AppState* state) {
   if (state->pending_cookie_operation ==
       PendingRobloxCookieOperation::kRetainPersistent) {
     state->pending_cookie_operation = PendingRobloxCookieOperation::kNone;
-    std::cerr << "[webview] persistent Roblox cookies retained before guest "
+    std::cerr << "[webview] in-memory Roblox cookies retained before guest "
                  "navigation\n";
     StartInitialLoad(state);
     return;

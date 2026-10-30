@@ -1009,6 +1009,18 @@ const std::vector<SettingsPage>& SettingsPages() {
             "Custom device identity",
             "What the device reports about itself. Empty fields use the "
             "device preset's values."},
+           {"Sign-in",
+            {
+                {"auth.use_libsecret",
+                 "Keep the sign-in in the keyring",
+                 "Saves the Roblox sign-in with libsecret, such as GNOME "
+                 "Keyring or KWallet, instead of a private file. Applies the "
+                 "next time Nightcap starts. Turning it off signs you out.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+            }},
            {"Runtime",
             {
                 {"runtime.headless",

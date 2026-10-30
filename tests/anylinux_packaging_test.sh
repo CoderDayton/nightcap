@@ -94,15 +94,16 @@ if [[ "$1" == --make-appimage ]]; then
   fi
   exit 0
 fi
-[[ "$#" == 10 && "$1" == /usr/bin/mocktail &&
+[[ "$#" == 11 && "$1" == /usr/bin/mocktail &&
    "$2" == /usr/lib/mocktail/mocktail_webview_helper &&
    "$3" == /usr/lib/mocktail/mocktail_failure_dialog &&
    "$4" == /usr/lib/mocktail/mocktail_settings &&
    "$5" == /usr/lib/mocktail/mocktail_updater &&
    "$6" == /usr/lib/mocktail && "$7" == /usr/share/mocktail &&
    "$8" == /usr/bin/bash &&
-   "$9" == "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/libavcodec.so.62" &&
-   "${10}" == "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/libavutil.so.60" ]]
+   "$9" == /usr/lib/mocktail/mocktail_cookie_helper &&
+   "${10}" == "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/libavcodec.so.62" &&
+   "${11}" == "${MOCKTAIL_ANYLINUX_VIDEO_LIB_DIR}/libavutil.so.60" ]]
 [[ "${DESKTOP}" == /usr/share/applications/io.github.CoderDayton.nightcap.desktop ]]
 [[ "${MAIN_BIN}" == mocktail && "${STRACE_MODE}" == 1 ]]
 [[ "${STRACE_BINARY}" == mocktail && "${STRACE_FLAGS}" == --help ]]
@@ -122,13 +123,13 @@ cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/mocktail" "${APPDIR}/bin/mocktail"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libEGL.so"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libvulkan.so"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libmediandk.so"
-cp -- "$9" "${10}" "${APPDIR}/lib/"
+cp -- "${10}" "${11}" "${APPDIR}/lib/"
 for metadata in roblox_compatibility roblox_bootstrap_sources \
     roblox_host_abi_reference roblox_signing_certificates; do
   printf '{}\n' >"${APPDIR}/share/mocktail/metadata/${metadata}.json"
 done
 for name in mocktail_updater mocktail_failure_dialog mocktail_settings \
-    mocktail_webview_helper \
+    mocktail_webview_helper mocktail_cookie_helper \
     WebKitNetworkProcess WebKitWebProcess WebKitGPUProcess; do
   cp -- "$(type -P true)" "${APPDIR}/bin/${name}"
 done
@@ -229,6 +230,7 @@ output="$(
   [[ "${USE_HOST_XDG_CACHE_HOME}" == 1 &&
      "${XDG_CACHE_HOME}" == "${TEMP_DIR}/user-cache" ]]
   [[ "${MOCKTAIL_WEBVIEW_HELPER}" == "${app_dir}/bin/mocktail_webview_helper" ]]
+  [[ "${MOCKTAIL_COOKIE_HELPER}" == "${app_dir}/bin/mocktail_cookie_helper" ]]
   [[ "${MOCKTAIL_UPDATE_SIGNING_TRUST_PATH}" == \
      "${app_dir}/share/mocktail/metadata/roblox_signing_certificates.json" ]]
   [[ "${MOCKTAIL_COMPATIBILITY_MANIFEST}" == "${TEMP_DIR}/candidate-override.json" ]]
@@ -292,7 +294,7 @@ prefix="${DESTDIR}/usr"
 mkdir -p "${prefix}/bin" "${prefix}/lib/mocktail" "${prefix}/share/mocktail/metadata"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/mocktail" "${prefix}/bin/mocktail"
 for helper in mocktail_updater mocktail_failure_dialog mocktail_settings \
-    mocktail_webview_helper; do
+    mocktail_webview_helper mocktail_cookie_helper; do
   cp -- "$(type -P true)" "${prefix}/lib/mocktail/${helper}"
 done
 for adapter in libEGL.so libvulkan.so libmediandk.so; do

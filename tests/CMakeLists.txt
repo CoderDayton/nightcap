@@ -217,6 +217,21 @@ target_link_libraries(display_size_test PRIVATE
   GTest::gtest_main
 )
 
+add_library(vulkan_host_fixture SHARED fixtures/vulkan_host_fixture.cc)
+target_link_libraries(vulkan_host_fixture PRIVATE Vulkan::Headers)
+mocktail_apply_compile_options(vulkan_host_fixture)
+
+add_executable(vulkan_loader_adapter_test vulkan_loader_adapter_test.cc)
+target_link_libraries(vulkan_loader_adapter_test PRIVATE
+  Vulkan::Headers GTest::gtest_main ${CMAKE_DL_LIBS}
+)
+target_compile_definitions(vulkan_loader_adapter_test PRIVATE
+  MOCKTAIL_VULKAN_HOST_FIXTURE="$<TARGET_FILE:vulkan_host_fixture>"
+  MOCKTAIL_VULKAN_ADAPTER="$<TARGET_FILE:stub_vulkan>"
+)
+add_dependencies(vulkan_loader_adapter_test stub_vulkan vulkan_host_fixture)
+mocktail_apply_compile_options(vulkan_loader_adapter_test)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -967,6 +982,11 @@ target_link_libraries(auth_runtime_composition_test PRIVATE
   GTest::gtest_main
 )
 mocktail_apply_compile_options(auth_runtime_composition_test)
+add_dependencies(auth_runtime_composition_test mocktail_cookie_helper)
+if(LIBSECRET_FOUND)
+  target_compile_definitions(auth_runtime_composition_test PRIVATE
+    MOCKTAIL_TEST_LIBSECRET=1)
+endif()
 
 add_executable(client_settings_service_test client_settings_service_test.cc)
 target_link_libraries(client_settings_service_test PRIVATE
@@ -1266,6 +1286,7 @@ gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
 gtest_discover_tests(device_memory_profile_test)
 gtest_discover_tests(display_size_test)
+gtest_discover_tests(vulkan_loader_adapter_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
