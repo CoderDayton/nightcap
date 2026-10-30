@@ -39,6 +39,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- The Settings window no longer shows a second Nightcap icon or missing page icons on KDE with the
+  Breeze icon theme.
 - Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy
   port, for example when Fleasion runs in hosts mode. Nightcap now warns and starts without Fleasion.
 - The security check after Sign In no longer shows a black window on X11 desktops such as Cinnamon. Roblox

@@ -1,6 +1,7 @@
 #include <SDL3/SDL.h>
 #include <adwaita.h>
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
@@ -39,6 +40,8 @@ using mocktail::platform::kApplicationId;
 
 constexpr char kWindowStyle[] = R"(
 .navigation-sidebar > row { min-height: 44px; margin: 1px 6px; padding: 0 14px; }
+.sidebar-title { font-size: 1.15em; text-shadow: 0 1px 2px alpha(black, 0.35); }
+.sidebar-logo { -gtk-icon-shadow: 0 1px 2px alpha(black, 0.35); }
 .notice-bar {
   min-height: 54px; padding-right: 6px; background-color: @window_bg_color;
   box-shadow: inset 0 1px alpha(@window_fg_color, 0.1);
@@ -1319,6 +1322,40 @@ void OnPageActivated(GtkListBox*, GtkListBoxRow*, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->split, TRUE);
 }
 
+// Breeze lacks some of Adwaita's icon names, so fall back to ones it has.
+std::string SidebarIconName(const std::string& name) {
+  static const std::pair<const char*, std::array<const char*, 2>> kFallbacks[] = {
+      {"power-profile-performance-symbolic",
+       {"speedometer-symbolic", "utilities-system-monitor-symbolic"}},
+      {"application-x-addon-symbolic",
+       {"extension-symbolic", "applications-system-symbolic"}},
+  };
+  GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
+  if (gtk_icon_theme_has_icon(theme, name.c_str())) return name;
+  for (const auto& [primary, alternates] : kFallbacks) {
+    if (name != primary) continue;
+    for (const char* alternate : alternates) {
+      if (gtk_icon_theme_has_icon(theme, alternate)) return alternate;
+    }
+  }
+  return name;
+}
+
+// KDE's layout adds the window icon to each header bar, doubling the artwork.
+// Empty when the layout has no icon.
+std::string DecorationLayoutWithoutIcon() {
+  gchar* layout = nullptr;
+  g_object_get(gtk_settings_get_default(), "gtk-decoration-layout", &layout,
+               nullptr);
+  std::string text = layout != nullptr ? layout : "";
+  g_free(layout);
+  const size_t at = text.find("icon");
+  if (at == std::string::npos) return {};
+  text.erase(at, 4);
+  if (at < text.size() && text[at] == ',') text.erase(at, 1);
+  return text;
+}
+
 // The Nightcap artwork beside the name. The artwork is built in, so it shows
 // whether or not the icon theme has Nightcap's icon installed.
 GtkWidget* BuildSidebarTitle() {
@@ -1329,13 +1366,15 @@ GtkWidget* BuildSidebarTitle() {
       mocktail::platform::internal::kMocktailWindowIconPngSize);
   if (GdkTexture* texture = gdk_texture_new_from_bytes(bytes, nullptr)) {
     GtkWidget* image = gtk_image_new_from_paintable(GDK_PAINTABLE(texture));
-    gtk_image_set_pixel_size(GTK_IMAGE(image), 24);
+    gtk_image_set_pixel_size(GTK_IMAGE(image), 28);
+    gtk_widget_add_css_class(image, "sidebar-logo");
     gtk_box_append(GTK_BOX(box), image);
     g_object_unref(texture);
   }
   g_bytes_unref(bytes);
   GtkWidget* label = gtk_label_new("Nightcap");
   gtk_widget_add_css_class(label, "title");
+  gtk_widget_add_css_class(label, "sidebar-title");
   gtk_box_append(GTK_BOX(box), label);
   return box;
 }
@@ -1349,7 +1388,8 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
   for (const SettingsPage& page : mocktail::ui::SettingsPages()) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_box_append(GTK_BOX(box),
-                   gtk_image_new_from_icon_name(Text(page.icon_name).c_str()));
+                   gtk_image_new_from_icon_name(
+                       SidebarIconName(Text(page.icon_name)).c_str()));
     GtkWidget* label = gtk_label_new(Text(page.title).c_str());
     gtk_label_set_xalign(GTK_LABEL(label), 0);
     gtk_widget_set_hexpand(label, TRUE);
@@ -1368,6 +1408,10 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
   // The artwork and name sit at the left, in line with the rows below.
   GtkWidget* header = adw_header_bar_new();
   adw_header_bar_set_show_title(ADW_HEADER_BAR(header), FALSE);
+  const std::string layout = DecorationLayoutWithoutIcon();
+  if (!layout.empty()) {
+    adw_header_bar_set_decoration_layout(ADW_HEADER_BAR(header), layout.c_str());
+  }
   GtkWidget* title = BuildSidebarTitle();
   gtk_widget_set_margin_start(title, 4);
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), title);
