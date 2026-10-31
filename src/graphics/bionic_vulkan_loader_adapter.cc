@@ -743,6 +743,7 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkCreateImage)
   MOCKTAIL_VK_PROC(vkDestroyImage)
   MOCKTAIL_VK_PROC(vkCreateImageView)
+  MOCKTAIL_VK_PROC(vkCreateSampler)
   MOCKTAIL_VK_PROC(vkBindBufferMemory)
   MOCKTAIL_VK_PROC(vkBindBufferMemory2)
   MOCKTAIL_VK_PROC(vkMapMemory)
@@ -756,6 +757,24 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkCmdCopyImage2)
   MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage2)
   MOCKTAIL_VK_PROC(vkCmdExecuteCommands)
+  MOCKTAIL_VK_PROC(vkCmdPipelineBarrier)
+  MOCKTAIL_VK_PROC(vkCmdPipelineBarrier2)
+  MOCKTAIL_VK_PROC(vkCmdWaitEvents)
+  MOCKTAIL_VK_PROC(vkCmdWaitEvents2)
+  MOCKTAIL_VK_PROC(vkCmdSetEvent2)
+  MOCKTAIL_VK_PROC(vkCmdCopyImageToBuffer)
+  MOCKTAIL_VK_PROC(vkCmdCopyImageToBuffer2)
+  MOCKTAIL_VK_PROC(vkCmdBlitImage)
+  MOCKTAIL_VK_PROC(vkCmdBlitImage2)
+  MOCKTAIL_VK_PROC(vkDestroySampler)
+  MOCKTAIL_VK_PROC(vkCreateDescriptorSetLayout)
+  MOCKTAIL_VK_PROC(vkDestroyImageView)
+  MOCKTAIL_VK_PROC(vkUpdateDescriptorSets)
+  MOCKTAIL_VK_PROC(vkCmdPushDescriptorSetKHR)
+  MOCKTAIL_VK_PROC(vkCreateDescriptorUpdateTemplate)
+  MOCKTAIL_VK_PROC(vkDestroyDescriptorUpdateTemplate)
+  MOCKTAIL_VK_PROC(vkUpdateDescriptorSetWithTemplate)
+  MOCKTAIL_VK_PROC(vkCmdPushDescriptorSetWithTemplateKHR)
 #undef MOCKTAIL_VK_PROC
 #define MOCKTAIL_VK_ALIAS(alias, function)                 \
   if (std::strcmp(name, #alias) == 0) {                    \
@@ -772,6 +791,20 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_ALIAS(vkMapMemory2KHR, vkMapMemory2)
   MOCKTAIL_VK_ALIAS(vkUnmapMemory2KHR, vkUnmapMemory2)
   MOCKTAIL_VK_ALIAS(vkCmdCopyBufferToImage2KHR, vkCmdCopyBufferToImage2)
+  MOCKTAIL_VK_ALIAS(vkCmdPipelineBarrier2KHR, vkCmdPipelineBarrier2)
+  MOCKTAIL_VK_ALIAS(vkCmdWaitEvents2KHR, vkCmdWaitEvents2)
+  MOCKTAIL_VK_ALIAS(vkCmdSetEvent2KHR, vkCmdSetEvent2)
+  MOCKTAIL_VK_ALIAS(vkCmdCopyImageToBuffer2KHR, vkCmdCopyImageToBuffer2)
+  MOCKTAIL_VK_ALIAS(vkCmdBlitImage2KHR, vkCmdBlitImage2)
+  MOCKTAIL_VK_ALIAS(vkCmdPushDescriptorSet, vkCmdPushDescriptorSetKHR)
+  MOCKTAIL_VK_ALIAS(vkCreateDescriptorUpdateTemplateKHR,
+                    vkCreateDescriptorUpdateTemplate)
+  MOCKTAIL_VK_ALIAS(vkDestroyDescriptorUpdateTemplateKHR,
+                    vkDestroyDescriptorUpdateTemplate)
+  MOCKTAIL_VK_ALIAS(vkUpdateDescriptorSetWithTemplateKHR,
+                    vkUpdateDescriptorSetWithTemplate)
+  MOCKTAIL_VK_ALIAS(vkCmdPushDescriptorSetWithTemplate,
+                    vkCmdPushDescriptorSetWithTemplateKHR)
 #undef MOCKTAIL_VK_ALIAS
   return nullptr;
 }
@@ -788,7 +821,8 @@ bool NameInList(const char* name, const char* const* names,
 bool IsEtc2DeviceProc(const char* name) {
   static constexpr const char* kNames[] = {
       "vkCreateImage",          "vkDestroyImage",
-      "vkCreateImageView",      "vkBindBufferMemory",
+      "vkCreateImageView",      "vkCreateSampler",
+      "vkBindBufferMemory",
       "vkBindBufferMemory2",    "vkBindBufferMemory2KHR",
       "vkMapMemory",            "vkMapMemory2",
       "vkMapMemory2KHR",        "vkUnmapMemory",
@@ -798,6 +832,25 @@ bool IsEtc2DeviceProc(const char* name) {
       "vkCmdCopyImage",         "vkCmdCopyImage2",
       "vkCmdCopyImage2KHR",
       "vkCmdCopyBufferToImage2KHR", "vkCmdExecuteCommands",
+      "vkCmdPipelineBarrier",   "vkCmdPipelineBarrier2",
+      "vkCmdPipelineBarrier2KHR", "vkCmdWaitEvents",
+      "vkCmdWaitEvents2",       "vkCmdWaitEvents2KHR",
+      "vkCmdSetEvent2",         "vkCmdSetEvent2KHR",
+      "vkCmdCopyImageToBuffer", "vkCmdCopyImageToBuffer2",
+      "vkCmdCopyImageToBuffer2KHR", "vkCmdBlitImage",
+      "vkCmdBlitImage2",        "vkCmdBlitImage2KHR",
+      "vkDestroySampler",       "vkDestroyImageView",
+      "vkCreateDescriptorSetLayout",
+      "vkUpdateDescriptorSets", "vkCmdPushDescriptorSetKHR",
+      "vkCmdPushDescriptorSet",
+      "vkCreateDescriptorUpdateTemplate",
+      "vkCreateDescriptorUpdateTemplateKHR",
+      "vkDestroyDescriptorUpdateTemplate",
+      "vkDestroyDescriptorUpdateTemplateKHR",
+      "vkUpdateDescriptorSetWithTemplate",
+      "vkUpdateDescriptorSetWithTemplateKHR",
+      "vkCmdPushDescriptorSetWithTemplateKHR",
+      "vkCmdPushDescriptorSetWithTemplate",
   };
   return NameInList(name, kNames, sizeof(kNames) / sizeof(kNames[0]));
 }
@@ -2845,6 +2898,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(
   return State().etc2.CreateImageView(device, create_info, allocator, view);
 }
 
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(
+    VkDevice device, const VkSamplerCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkSampler* sampler) {
+  return State().etc2.CreateSampler(device, create_info, allocator, sampler);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device,
                                                   VkBuffer buffer,
                                                   VkDeviceMemory memory,
@@ -2936,12 +2995,163 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage2(VkCommandBuffer command_buffer,
       info);
 }
 
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImageToBuffer(
+    VkCommandBuffer command_buffer, VkImage source, VkImageLayout layout,
+    VkBuffer destination, std::uint32_t region_count,
+    const VkBufferImageCopy* regions) {
+  State().etc2.CmdCopyImageToBuffer(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, layout, destination, region_count, regions);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImageToBuffer2(
+    VkCommandBuffer command_buffer, const VkCopyImageToBufferInfo2* info) {
+  State().etc2.CmdCopyImageToBuffer2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdBlitImage(
+    VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t region_count,
+    const VkImageBlit* regions, VkFilter filter) {
+  State().etc2.CmdBlitImage(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, source_layout, destination, destination_layout, region_count,
+      regions, filter);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdBlitImage2(VkCommandBuffer command_buffer,
+                                           const VkBlitImageInfo2* info) {
+  State().etc2.CmdBlitImage2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(
+    VkDevice device, const VkDescriptorSetLayoutCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkDescriptorSetLayout* layout) {
+  return State().etc2.CreateDescriptorSetLayout(device, create_info, allocator,
+                                                layout);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroySampler(
+    VkDevice device, VkSampler sampler,
+    const VkAllocationCallbacks* allocator) {
+  State().etc2.DestroySampler(device, sampler, allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(
+    VkDevice device, VkImageView view,
+    const VkAllocationCallbacks* allocator) {
+  State().etc2.DestroyImageView(device, view, allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(
+    VkDevice device, std::uint32_t write_count,
+    const VkWriteDescriptorSet* writes, std::uint32_t copy_count,
+    const VkCopyDescriptorSet* copies) {
+  State().etc2.UpdateDescriptorSets(device, write_count, writes, copy_count,
+                                    copies);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdPushDescriptorSetKHR(
+    VkCommandBuffer command_buffer, VkPipelineBindPoint bind_point,
+    VkPipelineLayout layout, std::uint32_t set, std::uint32_t write_count,
+    const VkWriteDescriptorSet* writes) {
+  State().etc2.CmdPushDescriptorSet(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      bind_point, layout, set, write_count, writes);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorUpdateTemplate(
+    VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator,
+    VkDescriptorUpdateTemplate* update_template) {
+  return State().etc2.CreateDescriptorUpdateTemplate(device, create_info,
+                                                     allocator, update_template);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorUpdateTemplate(
+    VkDevice device, VkDescriptorUpdateTemplate update_template,
+    const VkAllocationCallbacks* allocator) {
+  State().etc2.DestroyDescriptorUpdateTemplate(device, update_template,
+                                               allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSetWithTemplate(
+    VkDevice device, VkDescriptorSet set,
+    VkDescriptorUpdateTemplate update_template, const void* data) {
+  State().etc2.UpdateDescriptorSetWithTemplate(device, set, update_template,
+                                               data);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdPushDescriptorSetWithTemplateKHR(
+    VkCommandBuffer command_buffer,
+    VkDescriptorUpdateTemplate update_template, VkPipelineLayout layout,
+    std::uint32_t set, const void* data) {
+  State().etc2.CmdPushDescriptorSetWithTemplate(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      update_template, layout, set, data);
+}
+
 VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(
     VkCommandBuffer command_buffer, std::uint32_t count,
     const VkCommandBuffer* secondaries) {
   State().etc2.CmdExecuteCommands(
       HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
       count, secondaries);
+}
+
+// Barriers pass through ETC2 emulation so those on upscaled images reach
+// their host levels.
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(
+    VkCommandBuffer command_buffer, VkPipelineStageFlags source_stage,
+    VkPipelineStageFlags destination_stage, VkDependencyFlags flags,
+    std::uint32_t memory_count, const VkMemoryBarrier* memory,
+    std::uint32_t buffer_count, const VkBufferMemoryBarrier* buffers,
+    std::uint32_t image_count, const VkImageMemoryBarrier* images) {
+  State().etc2.CmdPipelineBarrier(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source_stage, destination_stage, flags, memory_count, memory,
+      buffer_count, buffers, image_count, images);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2(
+    VkCommandBuffer command_buffer, const VkDependencyInfo* dependency) {
+  State().etc2.CmdPipelineBarrier2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      dependency);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdWaitEvents(
+    VkCommandBuffer command_buffer, std::uint32_t event_count,
+    const VkEvent* events, VkPipelineStageFlags source_stage,
+    VkPipelineStageFlags destination_stage, std::uint32_t memory_count,
+    const VkMemoryBarrier* memory, std::uint32_t buffer_count,
+    const VkBufferMemoryBarrier* buffers, std::uint32_t image_count,
+    const VkImageMemoryBarrier* images) {
+  State().etc2.CmdWaitEvents(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      event_count, events, source_stage, destination_stage, memory_count,
+      memory, buffer_count, buffers, image_count, images);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdWaitEvents2(
+    VkCommandBuffer command_buffer, std::uint32_t event_count,
+    const VkEvent* events, const VkDependencyInfo* dependencies) {
+  State().etc2.CmdWaitEvents2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      event_count, events, dependencies);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdSetEvent2(VkCommandBuffer command_buffer,
+                                          VkEvent event,
+                                          const VkDependencyInfo* dependency) {
+  State().etc2.CmdSetEvent2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      event, dependency);
 }
 
 }  // extern "C"

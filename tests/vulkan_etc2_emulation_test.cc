@@ -7,12 +7,16 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace mocktail::graphics {
@@ -73,25 +77,39 @@ TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
   EXPECT_EQ(SmallTextureUpscale("99"), 8u);
 }
 
+// Each halving of the factor is one level added above the texture's own.
+TEST(VulkanEtc2EmulationTest, RoundsTheUpscaleDownToAPowerOfTwo) {
+  EXPECT_EQ(SmallTextureUpscale("3"), 2u);
+  EXPECT_EQ(SmallTextureUpscale("4"), 4u);
+  EXPECT_EQ(SmallTextureUpscale("7"), 4u);
+  EXPECT_EQ(SmallTextureUpscale("8"), 8u);
+}
+
 TEST(VulkanEtc2EmulationTest, CountsHostBlocksOfAScaledChain) {
-  // 256, 128, 64, 32, 16, 8 and 4 texels square.
-  EXPECT_EQ(Etc2HostBlockCount({64, 64, 1}, 7, 1, 4), 5461u);
+  // 256 and 128 texels square above the texture's own 64 down to 1.
+  EXPECT_EQ(Etc2HostBlockCount({64, 64, 1}, 7, 1, 4), 4096u + 1024 + 343);
   // 64 down to 1 texel; the last three levels take a block each.
   EXPECT_EQ(Etc2HostBlockCount({64, 64, 1}, 7, 1, 1), 343u);
-  EXPECT_EQ(Etc2HostBlockCount({64, 32, 1}, 1, 3, 2), 3u * 32 * 16);
+  EXPECT_EQ(Etc2HostBlockCount({64, 32, 1}, 1, 3, 2),
+            3u * (32 * 16 + 16 * 8));
 }
 
 TEST(VulkanEtc2EmulationTest, PicksTheLargestUpscaleTheGpuEncodesInTime) {
-  // A 64x64 chain costs at most kAdaptiveUpscaleTextureNs: 5461 blocks at
-  // 4x, 1366 at 2x. Only the factors the setting offers are picked.
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(9.2), 4u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(91.0), 4u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(120.0), 2u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(300.0), 2u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(400.0), 1u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(726.0), 1u);
+  // A 64x64 chain costs at most kAdaptiveUpscaleTextureNs: its own 343
+  // blocks transcoded, plus top levels of 5120 blocks at 4x or 1024 at 2x
+  // upscaled. Only the factors the setting offers are picked.
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(9.2, 9.2), 4u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(91.0, 91.0), 4u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(120.0, 120.0), 2u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(300.0, 300.0), 2u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(400.0, 400.0), 1u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(726.0, 726.0), 1u);
+  // The own levels are charged at the transcode speed: 5120 * 95 + 343 * 10
+  // fits where 5463 * 95 would not, and so does 1024 * 450 + 343 * 10.
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(95.0, 10.0), 4u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(450.0, 10.0), 2u);
   // Without a measurement the card may be too slow for any upscale.
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(0.0), 1u);
+  EXPECT_EQ(AdaptiveSmallTextureUpscale(0.0, 0.0), 1u);
 }
 
 TEST(VulkanEtc2EmulationTest, EncodeBudgetRefillsWithWallTime) {
@@ -206,11 +224,12 @@ TEST(VulkanEtc2EmulationTest, CountsWholeImageBytesAcrossMipsAndLayers) {
 TEST(VulkanEtc2EmulationTest, CountsDecodedBytesAtTheUpscaledExtent) {
   VkDeviceSize compressed = 0;
   VkDeviceSize decoded = 0;
-  // The host image is 256x256 with the same 7 levels: 256 down to 4.
+  // The host image is 256x256: 256 and 128 above the 7 levels of 64 down
+  // to 1.
   ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, {64, 64, 1}, 7, 1, 4,
                                   &compressed, &decoded));
   EXPECT_EQ(compressed, 343U * 16U);
-  EXPECT_EQ(decoded, 87376U * 4U);
+  EXPECT_EQ(decoded, (65536U + 16384U + 5461U) * 4U);
 
   EXPECT_FALSE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgb8, {0, 4, 1}, 1, 1, 1,
                                    &compressed, &decoded));
@@ -255,8 +274,14 @@ VkImageBlit g_blit{};
 VkFilter g_blit_filter = VK_FILTER_NEAREST;
 std::uint32_t g_blit_calls = 0;
 std::uint32_t g_created_mip_levels = 0;
+// Appended by every call until a test clears them.
 std::vector<VkBufferImageCopy> g_uploaded_regions;
 std::vector<VkImageCopy> g_image_copies;
+std::vector<VkImageBlit> g_blits;
+VkImageSubresourceRange g_view_range{};
+std::vector<VkImageMemoryBarrier> g_image_barriers;
+std::vector<VkImageMemoryBarrier2> g_image_barriers2;
+const void* g_image_barrier_array = nullptr;
 
 VKAPI_ATTR VkResult VKAPI_CALL FakeCreateImage(VkDevice,
                                                const VkImageCreateInfo* info,
@@ -276,7 +301,7 @@ VKAPI_ATTR void VKAPI_CALL FakeCopyImage(VkCommandBuffer, VkImage,
                                          std::uint32_t count,
                                          const VkImageCopy* copies) {
   ++g_copy_image_calls;
-  g_image_copies.assign(copies, copies + count);
+  g_image_copies.insert(g_image_copies.end(), copies, copies + count);
 }
 
 VKAPI_ATTR void VKAPI_CALL FakeBlitImage(VkCommandBuffer, VkImage,
@@ -287,6 +312,34 @@ VKAPI_ATTR void VKAPI_CALL FakeBlitImage(VkCommandBuffer, VkImage,
   g_blit = count > 0 ? blits[0] : VkImageBlit{};
   g_blit_filter = filter;
   ++g_blit_calls;
+  g_blits.insert(g_blits.end(), blits, blits + count);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeBlitImage2(VkCommandBuffer,
+                                          const VkBlitImageInfo2* info) {
+  for (std::uint32_t index = 0; index < info->regionCount; ++index) {
+    VkImageBlit blit{};
+    blit.srcSubresource = info->pRegions[index].srcSubresource;
+    blit.dstSubresource = info->pRegions[index].dstSubresource;
+    g_blits.push_back(blit);
+  }
+}
+
+std::vector<std::uint32_t> g_readback_mips;
+
+VKAPI_ATTR void VKAPI_CALL FakeCopyImageToBuffer(
+    VkCommandBuffer, VkImage, VkImageLayout, VkBuffer, std::uint32_t count,
+    const VkBufferImageCopy* regions) {
+  for (std::uint32_t index = 0; index < count; ++index) {
+    g_readback_mips.push_back(regions[index].imageSubresource.mipLevel);
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeCopyImageToBuffer2(
+    VkCommandBuffer, const VkCopyImageToBufferInfo2* info) {
+  for (std::uint32_t index = 0; index < info->regionCount; ++index) {
+    g_readback_mips.push_back(info->pRegions[index].imageSubresource.mipLevel);
+  }
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL FakeCreateBuffer(VkDevice,
@@ -346,12 +399,19 @@ VkPipelineStageFlags g_barrier_dst_stage = 0;
 VkAccessFlags g_barrier_src_access = 0;
 VkAccessFlags g_barrier_dst_access = 0;
 std::uint32_t g_pending_barriers = 0;
+// Set by the barrier benchmark, whose threads must not touch the globals.
+std::atomic<bool> g_quiet_barriers{false};
 
 VKAPI_ATTR void VKAPI_CALL FakePipelineBarrier(
     VkCommandBuffer, VkPipelineStageFlags src_stage,
     VkPipelineStageFlags dst_stage, VkDependencyFlags, std::uint32_t count,
     const VkMemoryBarrier* barriers, std::uint32_t, const VkBufferMemoryBarrier*,
-    std::uint32_t, const VkImageMemoryBarrier*) {
+    std::uint32_t image_count, const VkImageMemoryBarrier* images) {
+  if (g_quiet_barriers.load(std::memory_order_relaxed)) {
+    return;
+  }
+  g_image_barrier_array = images;
+  g_image_barriers.insert(g_image_barriers.end(), images, images + image_count);
   g_barrier_src_stage = src_stage;
   g_barrier_dst_stage = dst_stage;
   if (count > 0) {
@@ -359,6 +419,129 @@ VKAPI_ATTR void VKAPI_CALL FakePipelineBarrier(
     g_barrier_dst_access = barriers[0].dstAccessMask;
   }
   ++g_pending_barriers;
+}
+
+void RecordDependency(const VkDependencyInfo* info) {
+  g_image_barrier_array = info->pImageMemoryBarriers;
+  g_image_barriers2.insert(
+      g_image_barriers2.end(), info->pImageMemoryBarriers,
+      info->pImageMemoryBarriers + info->imageMemoryBarrierCount);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakePipelineBarrier2(VkCommandBuffer,
+                                                const VkDependencyInfo* info) {
+  RecordDependency(info);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeWaitEvents(
+    VkCommandBuffer, std::uint32_t, const VkEvent*, VkPipelineStageFlags,
+    VkPipelineStageFlags, std::uint32_t, const VkMemoryBarrier*,
+    std::uint32_t, const VkBufferMemoryBarrier*, std::uint32_t image_count,
+    const VkImageMemoryBarrier* images) {
+  g_image_barrier_array = images;
+  g_image_barriers.insert(g_image_barriers.end(), images, images + image_count);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeSetEvent2(VkCommandBuffer, VkEvent,
+                                         const VkDependencyInfo* info) {
+  RecordDependency(info);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeWaitEvents2(VkCommandBuffer,
+                                           std::uint32_t count,
+                                           const VkEvent*,
+                                           const VkDependencyInfo* infos) {
+  for (std::uint32_t index = 0; index < count; ++index) {
+    RecordDependency(&infos[index]);
+  }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL FakeCreateImageView(
+    VkDevice, const VkImageViewCreateInfo* info, const VkAllocationCallbacks*,
+    VkImageView* view) {
+  static std::uintptr_t next = 0x800;
+  g_view_range = info->subresourceRange;
+  *view = FakeHandle<VkImageView>(next++);
+  return VK_SUCCESS;
+}
+
+std::uint32_t g_create_sampler_calls = 0;
+std::vector<std::pair<VkSampler, VkSamplerCreateInfo>> g_created_samplers;
+std::vector<VkSampler> g_destroyed_samplers;
+
+VKAPI_ATTR VkResult VKAPI_CALL FakeCreateSampler(
+    VkDevice, const VkSamplerCreateInfo* info, const VkAllocationCallbacks*,
+    VkSampler* sampler) {
+  *sampler = FakeHandle<VkSampler>(0x810 + g_create_sampler_calls);
+  ++g_create_sampler_calls;
+  g_created_samplers.emplace_back(*sampler, *info);
+  return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeDestroySampler(VkDevice, VkSampler sampler,
+                                              const VkAllocationCallbacks*) {
+  g_destroyed_samplers.push_back(sampler);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeDestroyImageView(VkDevice, VkImageView,
+                                                const VkAllocationCallbacks*) {}
+
+VKAPI_ATTR VkResult VKAPI_CALL FakeCreateDescriptorSetLayout(
+    VkDevice, const VkDescriptorSetLayoutCreateInfo*,
+    const VkAllocationCallbacks*, VkDescriptorSetLayout* layout) {
+  *layout = FakeHandle<VkDescriptorSetLayout>(0x840);
+  return VK_SUCCESS;
+}
+
+// Samplers of the image descriptors each descriptor command recorded.
+std::vector<VkSampler> g_written_samplers;
+
+void RecordWrites(std::uint32_t count, const VkWriteDescriptorSet* writes) {
+  if (g_quiet_barriers.load(std::memory_order_relaxed)) {
+    return;
+  }
+  for (std::uint32_t index = 0; index < count; ++index) {
+    for (std::uint32_t element = 0; element < writes[index].descriptorCount;
+         ++element) {
+      g_written_samplers.push_back(writes[index].pImageInfo[element].sampler);
+    }
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeUpdateDescriptorSets(
+    VkDevice, std::uint32_t count, const VkWriteDescriptorSet* writes,
+    std::uint32_t, const VkCopyDescriptorSet*) {
+  RecordWrites(count, writes);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakePushDescriptorSet(
+    VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, std::uint32_t,
+    std::uint32_t count, const VkWriteDescriptorSet* writes) {
+  RecordWrites(count, writes);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL FakeCreateDescriptorUpdateTemplate(
+    VkDevice, const VkDescriptorUpdateTemplateCreateInfo*,
+    const VkAllocationCallbacks*, VkDescriptorUpdateTemplate* update) {
+  *update = FakeHandle<VkDescriptorUpdateTemplate>(0x830);
+  return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL FakeDestroyDescriptorUpdateTemplate(
+    VkDevice, VkDescriptorUpdateTemplate, const VkAllocationCallbacks*) {}
+
+// The test's templates hold one image descriptor at offset 0.
+VKAPI_ATTR void VKAPI_CALL FakeUpdateDescriptorSetWithTemplate(
+    VkDevice, VkDescriptorSet, VkDescriptorUpdateTemplate, const void* data) {
+  g_written_samplers.push_back(
+      static_cast<const VkDescriptorImageInfo*>(data)->sampler);
+}
+
+VKAPI_ATTR void VKAPI_CALL FakePushDescriptorSetWithTemplate(
+    VkCommandBuffer, VkDescriptorUpdateTemplate, VkPipelineLayout,
+    std::uint32_t, const void* data) {
+  g_written_samplers.push_back(
+      static_cast<const VkDescriptorImageInfo*>(data)->sampler);
 }
 
 // Staging buffer and offset of each recorded copy's first region.
@@ -372,7 +555,8 @@ VKAPI_ATTR void VKAPI_CALL FakeCopyBufferToImage(
     VkCommandBuffer, VkBuffer buffer, VkImage, VkImageLayout,
     std::uint32_t count, const VkBufferImageCopy* regions) {
   g_copied_extent = count > 0 ? regions[0].imageExtent : VkExtent3D{};
-  g_uploaded_regions.assign(regions, regions + count);
+  g_uploaded_regions.insert(g_uploaded_regions.end(), regions,
+                            regions + count);
   g_barriers_before_copy = g_pending_barriers;
   if (count > 0) {
     g_staged_copies.push_back({buffer, regions[0].bufferOffset});
@@ -458,8 +642,48 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakeGetDeviceProcAddr(
     return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyBufferToImage);
   if (is("vkCmdPipelineBarrier"))
     return reinterpret_cast<PFN_vkVoidFunction>(FakePipelineBarrier);
+  if (is("vkCmdPipelineBarrier2"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakePipelineBarrier2);
+  if (is("vkCmdWaitEvents"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeWaitEvents);
+  if (is("vkCmdWaitEvents2"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeWaitEvents2);
+  if (is("vkCmdSetEvent2"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeSetEvent2);
+  if (is("vkCreateImageView"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateImageView);
+  if (is("vkCreateSampler"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateSampler);
+  if (is("vkDestroySampler"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeDestroySampler);
+  if (is("vkDestroyImageView"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeDestroyImageView);
+  if (is("vkCreateDescriptorSetLayout"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeCreateDescriptorSetLayout);
+  if (is("vkUpdateDescriptorSets"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeUpdateDescriptorSets);
+  if (is("vkCmdPushDescriptorSetKHR"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakePushDescriptorSet);
+  if (is("vkCreateDescriptorUpdateTemplate"))
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        FakeCreateDescriptorUpdateTemplate);
+  if (is("vkDestroyDescriptorUpdateTemplate"))
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        FakeDestroyDescriptorUpdateTemplate);
+  if (is("vkUpdateDescriptorSetWithTemplate"))
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        FakeUpdateDescriptorSetWithTemplate);
+  if (is("vkCmdPushDescriptorSetWithTemplateKHR"))
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        FakePushDescriptorSetWithTemplate);
   if (is("vkCmdCopyImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyImage);
   if (is("vkCmdBlitImage")) return reinterpret_cast<PFN_vkVoidFunction>(FakeBlitImage);
+  if (is("vkCmdBlitImage2"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeBlitImage2);
+  if (is("vkCmdCopyImageToBuffer"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyImageToBuffer);
+  if (is("vkCmdCopyImageToBuffer2"))
+    return reinterpret_cast<PFN_vkVoidFunction>(FakeCopyImageToBuffer2);
   return nullptr;
 }
 
@@ -602,380 +826,290 @@ TEST(VulkanEtc2EmulationTest, DecodesAgainOnEveryResubmit) {
   emulation.ReleaseCommandBuffer(command_buffer);
 }
 
-TEST(VulkanEtc2EmulationTest, UpscalesSmallTexturesAndTheirUploads) {
+VkPhysicalDeviceMemoryProperties CoherentMemory() {
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  return memory;
+}
+
+// The factor is read when the emulation is built; null builds the default.
+std::unique_ptr<VulkanEtc2Emulation> UpscalingEmulation(
+    const char* upscale, VkDevice device, VkPhysicalDevice physical_device) {
+  if (upscale != nullptr) {
+    EXPECT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", upscale, 1), 0);
+  } else {
+    EXPECT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  }
+  auto emulation = std::make_unique<VulkanEtc2Emulation>();
+  EXPECT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  emulation->RegisterDevice(device, physical_device, true, CoherentMemory(),
+                            FakeGetDeviceProcAddr);
+  return emulation;
+}
+
+VkImage CreateEtc2Image(VulkanEtc2Emulation& emulation, VkDevice device,
+                        std::uint32_t size, std::uint32_t mips) {
+  VkImageCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.extent = {size, size, 1};
+  info.mipLevels = mips;
+  info.arrayLayers = 1;
+  VkImage image = VK_NULL_HANDLE;
+  EXPECT_EQ(emulation.CreateImage(device, &info, nullptr, &image), VK_SUCCESS);
+  return image;
+}
+
+void MapSource(VulkanEtc2Emulation& emulation, VkDevice device,
+               VkBuffer source) {
+  const VkDeviceMemory memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
+  ASSERT_EQ(emulation.BindBufferMemory(device, source, memory, 0), VK_SUCCESS);
+  void* mapped = nullptr;
+  ASSERT_EQ(emulation.MapMemory(device, memory, 0, g_source.size(), 0, &mapped),
+            VK_SUCCESS);
+}
+
+// A differential block whose every texel decodes to one grey.
+std::array<std::uint8_t, 8> GreyBlock(std::uint8_t base) {
+  return {base, base, base, 0x02, 0, 0, 0, 0};
+}
+
+std::vector<std::uint8_t> DecodeSquare(const std::uint8_t* blocks,
+                                       std::size_t bytes, std::uint32_t size) {
+  std::vector<std::uint8_t> texels(std::size_t{size} * size * 4);
+  EXPECT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, blocks, bytes, size, size,
+                             texels.data(), texels.size()));
+  return texels;
+}
+
+std::vector<std::uint8_t> UpscaleSquare(const std::vector<std::uint8_t>& texels,
+                                        std::uint32_t size,
+                                        std::uint32_t target) {
+  std::vector<std::uint8_t> scaled(std::size_t{target} * target * 4);
+  UpscaleRgba(texels.data(), size, size, std::size_t{size} * 4, target, target,
+              scaled.data());
+  return scaled;
+}
+
+// The upload recorded into host level `mip`, or null.
+const VkBufferImageCopy* UploadedLevel(std::uint32_t mip) {
+  for (const VkBufferImageCopy& region : g_uploaded_regions) {
+    if (region.imageSubresource.mipLevel == mip) {
+      return &region;
+    }
+  }
+  return nullptr;
+}
+
+void ExpectStaged(const VkBufferImageCopy& region,
+                  const std::vector<std::uint8_t>& texels) {
+  ASSERT_LE(region.bufferOffset + texels.size(), g_staging.size());
+  EXPECT_TRUE(std::equal(texels.begin(), texels.end(),
+                         g_staging.begin() + region.bufferOffset));
+}
+
+// 2x adds one level above the texture: level 0 upscaled, then the texture's
+// own level 0 at its size.
+TEST(VulkanEtc2EmulationTest, UpscalesLevelZeroIntoTheTopLevel) {
   const VkDevice device = FakeHandle<VkDevice>(0x12);
   const VkBuffer source = FakeHandle<VkBuffer>(0x202);
-  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
   const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x702);
   g_source.fill(0);
   g_staging.fill(0xAA);
-  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2", 1), 0);
-
-  VkPhysicalDeviceMemoryProperties memory{};
-  memory.memoryTypeCount = 1;
-  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VulkanEtc2Emulation emulation;
-  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x22), true,
-                           memory, FakeGetDeviceProcAddr);
-
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
-  image_info.imageType = VK_IMAGE_TYPE_2D;
-  image_info.extent = {4, 4, 1};
-  image_info.mipLevels = 1;
-  image_info.arrayLayers = 1;
-  VkImage image = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
-            VK_SUCCESS);
+  g_uploaded_regions.clear();
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x22));
+  const VkImage image = CreateEtc2Image(*emulation, device, 4, 1);
   EXPECT_EQ(g_created_extent.width, 8u);
   EXPECT_EQ(g_created_extent.height, 8u);
-  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
-            VK_SUCCESS);
-  void* mapped = nullptr;
-  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
-                                &mapped),
-            VK_SUCCESS);
+  EXPECT_EQ(g_created_mip_levels, 2u);
+  MapSource(*emulation, device, source);
 
   VkBufferImageCopy region{};
-  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  region.imageSubresource.layerCount = 1;
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageExtent = {4, 4, 1};
-  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                 &region);
-  EXPECT_EQ(g_copied_extent.width, 8u);
-  EXPECT_EQ(g_copied_extent.height, 8u);
-
-  const std::array<std::uint8_t, 8> block = {0x81, 0x81, 0x81, 0x02,
-                                             0,    0,    0,    0};
+  emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &region);
+  const auto block = GreyBlock(0x81);
   std::memcpy(g_source.data(), block.data(), block.size());
-  emulation.PrepareSubmit(&command_buffer, 1);
-  // The host region is the 4x4 texels grown to 8x8 by the adaptive upscaler.
-  std::array<std::uint8_t, 4 * 4 * 4> decoded{};
-  ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, block.data(), block.size(),
-                             4, 4, decoded.data(), decoded.size()));
-  std::array<std::uint8_t, 8 * 8 * 4> expected{};
-  UpscaleRgba(decoded.data(), 4, 4, 16, 8, 8, expected.data());
-  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), g_staging.begin()));
-  EXPECT_EQ(g_staging[8 * 8 * 4], 0xAA);
-  emulation.ReleaseCommandBuffer(command_buffer);
+  emulation->PrepareSubmit(&command_buffer, 1);
+
+  const std::vector<std::uint8_t> level0 =
+      DecodeSquare(block.data(), block.size(), 4);
+  ASSERT_EQ(g_uploaded_regions.size(), 2u);
+  const VkBufferImageCopy* top = UploadedLevel(0);
+  const VkBufferImageCopy* own = UploadedLevel(1);
+  ASSERT_NE(top, nullptr);
+  ASSERT_NE(own, nullptr);
+  EXPECT_EQ(top->imageExtent.width, 8u);
+  EXPECT_EQ(top->imageExtent.height, 8u);
+  ExpectStaged(*top, UpscaleSquare(level0, 4, 8));
+  EXPECT_EQ(own->imageExtent.width, 4u);
+  EXPECT_EQ(own->imageExtent.height, 4u);
+  ExpectStaged(*own, level0);
+  emulation->ReleaseCommandBuffer(command_buffer);
 }
 
-// Block-rounded uploads (a 1x1 mip sent as 4x4) must not scale past the
-// host mip; the host region snaps to the host mip's edge instead.
-TEST(VulkanEtc2EmulationTest, ClampsScaledUploadsToTheHostMip) {
+// Block-rounded uploads (a 1x1 mip sent as 4x4) stop at the mip's edge.
+TEST(VulkanEtc2EmulationTest, ClampsBlockRoundedUploadsToTheMip) {
   const VkDevice device = FakeHandle<VkDevice>(0x14);
   const VkBuffer source = FakeHandle<VkBuffer>(0x204);
-  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
   const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x704);
   g_source.fill(0);
   g_staging.fill(0xAA);
-  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2", 1), 0);
+  g_uploaded_regions.clear();
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x24));
+  const VkImage image = CreateEtc2Image(*emulation, device, 4, 3);
+  MapSource(*emulation, device, source);
 
-  VkPhysicalDeviceMemoryProperties memory{};
-  memory.memoryTypeCount = 1;
-  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VulkanEtc2Emulation emulation;
-  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x24), true,
-                           memory, FakeGetDeviceProcAddr);
-
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
-  image_info.imageType = VK_IMAGE_TYPE_2D;
-  image_info.extent = {4, 4, 1};
-  image_info.mipLevels = 3;
-  image_info.arrayLayers = 1;
-  VkImage image = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
-            VK_SUCCESS);
-  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
-            VK_SUCCESS);
-  void* mapped = nullptr;
-  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
-                                &mapped),
-            VK_SUCCESS);
-
-  // Mip 2 is 1x1 for the application and 2x2 on the host.
+  // Mip 2 is 1x1, and lands in host level 3 below the one top level.
   VkBufferImageCopy region{};
-  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  region.imageSubresource.mipLevel = 2;
-  region.imageSubresource.layerCount = 1;
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 2, 0, 1};
   region.imageExtent = {4, 4, 1};
-  g_copied_extent = {};
-  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                 &region);
-  EXPECT_EQ(g_copied_extent.width, 2u);
-  EXPECT_EQ(g_copied_extent.height, 2u);
-
-  // Differential block: every texel decodes to 134.
-  const std::array<std::uint8_t, 8> block = {0x81, 0x81, 0x81, 0x02,
-                                             0,    0,    0,    0};
+  emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &region);
+  const auto block = GreyBlock(0x81);
   std::memcpy(g_source.data(), block.data(), block.size());
-  emulation.PrepareSubmit(&command_buffer, 1);
-  for (std::size_t index = 0; index < 2 * 2 * 4; ++index) {
-    ASSERT_EQ(g_staging[index], index % 4 == 3 ? 255 : 134) << index;
-  }
-  EXPECT_EQ(g_staging[2 * 2 * 4], 0xAA);
-  emulation.ReleaseCommandBuffer(command_buffer);
+  emulation->PrepareSubmit(&command_buffer, 1);
+
+  ASSERT_EQ(g_uploaded_regions.size(), 1u);
+  const VkBufferImageCopy& uploaded = g_uploaded_regions[0];
+  EXPECT_EQ(uploaded.imageSubresource.mipLevel, 3u);
+  EXPECT_EQ(uploaded.imageExtent.width, 1u);
+  EXPECT_EQ(uploaded.imageExtent.height, 1u);
+  ExpectStaged(uploaded, {134, 134, 134, 255});
+  EXPECT_EQ(g_staging[uploaded.bufferOffset + 4], 0xAA);
+  emulation->ReleaseCommandBuffer(command_buffer);
 }
 
-// Drawn at its own size, a scaled texture samples a smaller host mip, so
-// every host mip carries level-0 detail rather than the application's mip.
-TEST(VulkanEtc2EmulationTest, FillsScaledMipsFromLevelZero) {
+// Levels 0 and 1 hold different texels. Each keeps its own below the top
+// level, which is built from level 0 whichever order they are recorded in.
+void ExpectEachLevelKept(bool level_zero_last) {
   const VkDevice device = FakeHandle<VkDevice>(0x15);
   const VkBuffer source = FakeHandle<VkBuffer>(0x205);
-  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
   const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x705);
   g_source.fill(0);
   g_staging.fill(0xAA);
-  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2", 1), 0);
+  g_uploaded_regions.clear();
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x25));
+  const VkImage image = CreateEtc2Image(*emulation, device, 4, 3);
+  MapSource(*emulation, device, source);
 
-  VkPhysicalDeviceMemoryProperties memory{};
-  memory.memoryTypeCount = 1;
-  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VulkanEtc2Emulation emulation;
-  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x25), true,
-                           memory, FakeGetDeviceProcAddr);
-
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
-  image_info.imageType = VK_IMAGE_TYPE_2D;
-  image_info.extent = {4, 4, 1};
-  image_info.mipLevels = 3;
-  image_info.arrayLayers = 1;
-  VkImage image = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
-            VK_SUCCESS);
-  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
-            VK_SUCCESS);
-  void* mapped = nullptr;
-  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
-                                &mapped),
-            VK_SUCCESS);
-
-  // Level 0 decodes to 134 everywhere, level 1 (at byte 8) to 138.
-  const std::array<std::uint8_t, 8> level0 = {0x81, 0x81, 0x81, 0x02,
-                                              0,    0,    0,    0};
-  const std::array<std::uint8_t, 8> level1 = {0x88, 0x88, 0x88, 0x00,
-                                              0,    0,    0,    0};
+  const auto level0 = GreyBlock(0x81);
+  const auto level1 = GreyBlock(0x88);
   std::memcpy(g_source.data(), level0.data(), level0.size());
   std::memcpy(g_source.data() + 8, level1.data(), level1.size());
-
   std::array<VkBufferImageCopy, 2> regions{};
-  regions[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  regions[0].imageSubresource.layerCount = 1;
+  regions[0].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   regions[0].imageExtent = {4, 4, 1};
-  regions[1] = regions[0];
   regions[1].bufferOffset = 8;
-  regions[1].imageSubresource.mipLevel = 1;
+  regions[1].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1};
   regions[1].imageExtent = {2, 2, 1};
-  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2,
-                                 regions.data());
-  emulation.PrepareSubmit(&command_buffer, 1);
-
-  // Host level 0 is 8x8 (256 bytes); host level 1 is 4x4 and follows it,
-  // holding level 0 itself rather than the 138 texels of level 1.
-  RgbaImage level0_texels;
-  level0_texels.width = 4;
-  level0_texels.height = 4;
-  level0_texels.pixels.resize(4 * 4 * 4);
-  ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, level0.data(),
-                             level0.size(), 4, 4, level0_texels.pixels.data(),
-                             level0_texels.pixels.size()));
-  std::array<std::uint8_t, 4 * 4 * 4> expected{};
-  ResampleRgba(level0_texels, 4, 4, expected.data());
-  for (std::size_t index = 0; index < expected.size(); ++index) {
-    ASSERT_EQ(g_staging[256 + index], expected[index]) << index;
+  if (level_zero_last) {
+    std::swap(regions[0], regions[1]);
   }
-  emulation.ReleaseCommandBuffer(command_buffer);
+  emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2,
+                                  regions.data());
+  emulation->PrepareSubmit(&command_buffer, 1);
+
+  const std::vector<std::uint8_t> texels0 =
+      DecodeSquare(level0.data(), level0.size(), 4);
+  const std::vector<std::uint8_t> texels1 =
+      DecodeSquare(level1.data(), level1.size(), 2);
+  ASSERT_NE(texels0[0], texels1[0]);
+  ASSERT_EQ(g_uploaded_regions.size(), 3u);
+  for (std::uint32_t mip = 0; mip < 3; ++mip) {
+    ASSERT_NE(UploadedLevel(mip), nullptr) << mip;
+  }
+  ExpectStaged(*UploadedLevel(0), UpscaleSquare(texels0, 4, 8));
+  ExpectStaged(*UploadedLevel(1), texels0);
+  ExpectStaged(*UploadedLevel(2), texels1);
+  emulation->ReleaseCommandBuffer(command_buffer);
 }
 
-// Level 0 carries the texels every scaled mip is built from, so a mip
-// recorded ahead of it must still resolve against it.
-TEST(VulkanEtc2EmulationTest, FillsScaledMipsFromLevelZeroRecordedLast) {
-  const VkDevice device = FakeHandle<VkDevice>(0x16);
-  const VkBuffer source = FakeHandle<VkBuffer>(0x206);
-  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
-  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x706);
-  g_source.fill(0);
-  g_staging.fill(0xAA);
-  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2", 1), 0);
+TEST(VulkanEtc2EmulationTest, KeepsEachLevelsOwnTexels) {
+  ExpectEachLevelKept(false);
+}
 
-  VkPhysicalDeviceMemoryProperties memory{};
-  memory.memoryTypeCount = 1;
-  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VulkanEtc2Emulation emulation;
-  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x26), true,
-                           memory, FakeGetDeviceProcAddr);
-
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
-  image_info.imageType = VK_IMAGE_TYPE_2D;
-  image_info.extent = {4, 4, 1};
-  image_info.mipLevels = 3;
-  image_info.arrayLayers = 1;
-  VkImage image = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
-            VK_SUCCESS);
-  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
-            VK_SUCCESS);
-  void* mapped = nullptr;
-  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
-                                &mapped),
-            VK_SUCCESS);
-
-  const std::array<std::uint8_t, 8> level0 = {0x81, 0x81, 0x81, 0x02,
-                                              0,    0,    0,    0};
-  const std::array<std::uint8_t, 8> level1 = {0x88, 0x88, 0x88, 0x00,
-                                              0,    0,    0,    0};
-  std::memcpy(g_source.data(), level0.data(), level0.size());
-  std::memcpy(g_source.data() + 8, level1.data(), level1.size());
-
-  // Level 1 is recorded first, so its staging bytes lead the batch.
-  std::array<VkBufferImageCopy, 2> regions{};
-  regions[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  regions[0].imageSubresource.layerCount = 1;
-  regions[0].bufferOffset = 8;
-  regions[0].imageSubresource.mipLevel = 1;
-  regions[0].imageExtent = {2, 2, 1};
-  regions[1] = regions[0];
-  regions[1].bufferOffset = 0;
-  regions[1].imageSubresource.mipLevel = 0;
-  regions[1].imageExtent = {4, 4, 1};
-  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2,
-                                 regions.data());
-  emulation.PrepareSubmit(&command_buffer, 1);
-
-  RgbaImage level0_texels;
-  level0_texels.width = 4;
-  level0_texels.height = 4;
-  level0_texels.pixels.resize(4 * 4 * 4);
-  ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, level0.data(),
-                             level0.size(), 4, 4, level0_texels.pixels.data(),
-                             level0_texels.pixels.size()));
-  std::array<std::uint8_t, 4 * 4 * 4> expected{};
-  ResampleRgba(level0_texels, 4, 4, expected.data());
-  for (std::size_t index = 0; index < expected.size(); ++index) {
-    ASSERT_EQ(g_staging[index], expected[index]) << index;
-  }
-  emulation.ReleaseCommandBuffer(command_buffer);
+TEST(VulkanEtc2EmulationTest, KeepsEachLevelsOwnTexelsWithLevelZeroLast) {
+  ExpectEachLevelKept(true);
 }
 
 // Ported from upstream's DefaultPreservesStreamedMipChain. Roblox streams a
 // texture's levels, each with its own content, and moves the levels it has
 // into a larger image as a sharper one arrives. `upscale` is the
-// MOCKTAIL_SMALL_TEXTURE_UPSCALE value, or null for the default.
-void ExpectStreamedMipChainKept(const char* upscale) {
+// MOCKTAIL_SMALL_TEXTURE_UPSCALE value, or null for the default; `top` is
+// the levels it adds above the texture's own.
+void ExpectStreamedMipChainKept(const char* upscale, std::uint32_t top) {
   const VkDevice device = FakeHandle<VkDevice>(0x2a);
   const VkBuffer source = FakeHandle<VkBuffer>(0x22a);
-  const VkDeviceMemory source_memory = FakeHandle<VkDeviceMemory>(kSourceMemory);
   const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x72a);
   g_source.fill(0);
   g_staging.fill(0xAA);
-  if (upscale != nullptr) {
-    ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", upscale, 1), 0);
-  } else {
-    ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  }
-
-  VkPhysicalDeviceMemoryProperties memory{};
-  memory.memoryTypeCount = 1;
-  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VulkanEtc2Emulation emulation;
-  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x3a), true,
-                           memory, FakeGetDeviceProcAddr);
+  g_uploaded_regions.clear();
+  auto emulation =
+      UpscalingEmulation(upscale, device, FakeHandle<VkPhysicalDevice>(0x3a));
 
   // 8x8 with 4 levels, so every level fits the 64-byte source.
   constexpr std::uint32_t kMips = 4;
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
-  image_info.imageType = VK_IMAGE_TYPE_2D;
-  image_info.extent = {8, 8, 1};
-  image_info.mipLevels = kMips;
-  image_info.arrayLayers = 1;
-  VkImage image = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &image),
-            VK_SUCCESS);
-  EXPECT_EQ(g_created_extent.width, 8u);
-  EXPECT_EQ(g_created_extent.height, 8u);
-  EXPECT_EQ(g_created_mip_levels, kMips);
-  ASSERT_EQ(emulation.BindBufferMemory(device, source, source_memory, 0),
-            VK_SUCCESS);
-  void* mapped = nullptr;
-  ASSERT_EQ(emulation.MapMemory(device, source_memory, 0, g_source.size(), 0,
-                                &mapped),
-            VK_SUCCESS);
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, kMips);
+  EXPECT_EQ(g_created_extent.width, 8u << top);
+  EXPECT_EQ(g_created_extent.height, 8u << top);
+  EXPECT_EQ(g_created_mip_levels, kMips + top);
+  MapSource(*emulation, device, source);
 
-  // Each level gets its own colour: rebuilding a level from level 0 loses it.
+  // Each level gets its own grey: rebuilding a level from level 0 loses it.
   std::array<VkBufferImageCopy, kMips> regions{};
   std::vector<std::vector<std::uint8_t>> expected(kMips);
   VkDeviceSize offset = 0;
   for (std::uint32_t mip = 0; mip < kMips; ++mip) {
     const std::uint32_t size = 8u >> mip;
     const std::uint32_t blocks = ((size + 3) / 4) * ((size + 3) / 4);
-    const std::array<std::uint8_t, 8> block = {
-        static_cast<std::uint8_t>(0x80 + mip * 0x10),
-        static_cast<std::uint8_t>(0x80 + mip * 0x10),
-        static_cast<std::uint8_t>(0x80 + mip * 0x10),
-        0x02,
-        0,
-        0,
-        0,
-        0};
+    const auto block = GreyBlock(static_cast<std::uint8_t>(0x80 + mip * 0x10));
     for (std::uint32_t index = 0; index < blocks; ++index) {
       std::memcpy(g_source.data() + offset + index * 8, block.data(), 8);
     }
-    expected[mip].resize(size * size * 4);
-    ASSERT_TRUE(DecodeEtcImage(EtcFormat::kEtc2Rgb8, g_source.data() + offset,
-                               blocks * 8, size, size, expected[mip].data(),
-                               expected[mip].size()));
+    expected[mip] = DecodeSquare(g_source.data() + offset, blocks * 8, size);
     regions[mip].bufferOffset = offset;
     regions[mip].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
     regions[mip].imageExtent = {size, size, 1};
     offset += blocks * 8;
   }
   ASSERT_NE(expected[0], expected[1]);
-  emulation.CmdCopyBufferToImage(device, command_buffer, source, image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
-                                 regions.data());
-  emulation.PrepareSubmit(&command_buffer, 1);
-  ASSERT_EQ(g_uploaded_regions.size(), kMips);
+  emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
+                                  regions.data());
+  emulation->PrepareSubmit(&command_buffer, 1);
+  ASSERT_EQ(g_uploaded_regions.size(), kMips + top);
   for (std::uint32_t mip = 0; mip < kMips; ++mip) {
     SCOPED_TRACE(mip);
-    const VkBufferImageCopy& uploaded = g_uploaded_regions[mip];
-    EXPECT_EQ(uploaded.imageSubresource.mipLevel, mip);
-    EXPECT_EQ(uploaded.imageExtent.width, 8u >> mip);
-    EXPECT_EQ(uploaded.imageExtent.height, 8u >> mip);
-    EXPECT_TRUE(std::equal(expected[mip].begin(), expected[mip].end(),
-                           g_staging.begin() + uploaded.bufferOffset));
+    const VkBufferImageCopy* uploaded = UploadedLevel(mip + top);
+    ASSERT_NE(uploaded, nullptr);
+    EXPECT_EQ(uploaded->imageExtent.width, 8u >> mip);
+    EXPECT_EQ(uploaded->imageExtent.height, 8u >> mip);
+    ExpectStaged(*uploaded, expected[mip]);
   }
-  emulation.ReleaseCommandBuffer(command_buffer);
+  for (std::uint32_t level = 0; level < top; ++level) {
+    SCOPED_TRACE(level);
+    const std::uint32_t size = (8u << top) >> level;
+    const VkBufferImageCopy* uploaded = UploadedLevel(level);
+    ASSERT_NE(uploaded, nullptr);
+    EXPECT_EQ(uploaded->imageExtent.width, size);
+    ExpectStaged(*uploaded, UpscaleSquare(expected[0], 8, size));
+  }
+  emulation->ReleaseCommandBuffer(command_buffer);
 
   // A sharper level arrives: the existing levels move down one in a 16x16
   // image, copied as they are rather than scaled.
-  image_info.extent = {16, 16, 1};
-  image_info.mipLevels = kMips + 1;
-  VkImage larger = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &larger),
-            VK_SUCCESS);
+  const VkImage larger = CreateEtc2Image(*emulation, device, 16, kMips + 1);
   std::array<VkImageCopy, kMips> copies{};
   for (std::uint32_t mip = 0; mip < kMips; ++mip) {
     copies[mip].srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
@@ -984,38 +1118,688 @@ void ExpectStreamedMipChainKept(const char* upscale) {
   }
   g_blit_calls = 0;
   g_image_copies.clear();
-  emulation.CmdCopyImage(device, command_buffer, image,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, larger,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
-                         copies.data());
+  emulation->CmdCopyImage(device, command_buffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, larger,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kMips,
+                          copies.data());
   EXPECT_EQ(g_blit_calls, 0u);
   ASSERT_EQ(g_image_copies.size(), kMips);
   for (std::uint32_t mip = 0; mip < kMips; ++mip) {
     SCOPED_TRACE(mip);
-    EXPECT_EQ(g_image_copies[mip].srcSubresource.mipLevel, mip);
-    EXPECT_EQ(g_image_copies[mip].dstSubresource.mipLevel, mip + 1);
+    EXPECT_EQ(g_image_copies[mip].srcSubresource.mipLevel, mip + top);
+    EXPECT_EQ(g_image_copies[mip].dstSubresource.mipLevel, mip + 1 + top);
     EXPECT_EQ(g_image_copies[mip].extent.width, 8u >> mip);
     EXPECT_EQ(g_image_copies[mip].extent.height, 8u >> mip);
   }
-  emulation.DestroyImage(device, larger, nullptr);
-  emulation.DestroyImage(device, image, nullptr);
+  emulation->DestroyImage(device, larger, nullptr);
+  emulation->DestroyImage(device, image, nullptr);
 }
 
 // Adaptive cannot time this fake GPU, so it falls back to 1x.
 TEST(VulkanEtc2EmulationTest, UnmeasuredAdaptiveUpscaleKeepsTheStreamedMipChain) {
-  ExpectStreamedMipChainKept(nullptr);
+  ExpectStreamedMipChainKept(nullptr, 0);
 }
 
 TEST(VulkanEtc2EmulationTest, OneTimesUpscaleKeepsTheStreamedMipChain) {
-  ExpectStreamedMipChainKept("1");
+  ExpectStreamedMipChainKept("1", 0);
 }
 
-// Fails today, and Adaptive picks 4x on fast GPUs: every level is uploaded
-// scaled and filled from level 0, and moving levels into a larger image
-// blits instead of copying. Upstream went to 1x by default for this.
-TEST(VulkanEtc2EmulationTest,
-     DISABLED_FourTimesUpscaleKeepsTheStreamedMipChain) {
-  ExpectStreamedMipChainKept("4");
+TEST(VulkanEtc2EmulationTest, TwoTimesUpscaleKeepsTheStreamedMipChain) {
+  ExpectStreamedMipChainKept("2", 1);
+}
+
+TEST(VulkanEtc2EmulationTest, FourTimesUpscaleKeepsTheStreamedMipChain) {
+  ExpectStreamedMipChainKept("4", 2);
+}
+
+// A view starting at level 0 takes the top levels too; one starting lower
+// moves down past them.
+TEST(VulkanEtc2EmulationTest, ViewsOfAnUpscaledImageIncludeTheTopLevels) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2b);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3b));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  const VkImage large = CreateEtc2Image(*emulation, device, 128, 8);
+
+  const auto view_of = [&](VkImage target, std::uint32_t base,
+                           std::uint32_t count) {
+    VkImageViewCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.image = target;
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, base, count, 0, 1};
+    VkImageView view = VK_NULL_HANDLE;
+    EXPECT_EQ(emulation->CreateImageView(device, &info, nullptr, &view),
+              VK_SUCCESS);
+    return g_view_range;
+  };
+  VkImageSubresourceRange range = view_of(image, 0, 4);
+  EXPECT_EQ(range.baseMipLevel, 0u);
+  EXPECT_EQ(range.levelCount, 6u);
+  range = view_of(image, 1, 3);
+  EXPECT_EQ(range.baseMipLevel, 3u);
+  EXPECT_EQ(range.levelCount, 3u);
+  range = view_of(image, 0, VK_REMAINING_MIP_LEVELS);
+  EXPECT_EQ(range.baseMipLevel, 0u);
+  EXPECT_EQ(range.levelCount, VK_REMAINING_MIP_LEVELS);
+  range = view_of(large, 1, 2);
+  EXPECT_EQ(range.baseMipLevel, 1u);
+  EXPECT_EQ(range.levelCount, 2u);
+}
+
+TEST(VulkanEtc2EmulationTest, CreatesSamplersThroughTheHost) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2d);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3d));
+  VkSamplerCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.maxLod = VK_LOD_CLAMP_NONE;
+  VkSampler sampler = VK_NULL_HANDLE;
+  g_create_sampler_calls = 0;
+  EXPECT_EQ(emulation->CreateSampler(device, &info, nullptr, &sampler),
+            VK_SUCCESS);
+  EXPECT_EQ(sampler, FakeHandle<VkSampler>(0x810));
+  EXPECT_EQ(g_create_sampler_calls, 1u);
+}
+
+// Layout transitions must reach the top levels and the shifted ones, through
+// every command that carries image barriers.
+TEST(VulkanEtc2EmulationTest, BarriersOnAnUpscaledImageCoverTheTopLevels) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2c);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x72c);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3c));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  const VkImage large = CreateEtc2Image(*emulation, device, 128, 8);
+
+  std::array<VkImageMemoryBarrier, 3> barriers{};
+  for (VkImageMemoryBarrier& barrier : barriers) {
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.image = image;
+  }
+  barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 4, 0, 1};
+  barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 2, 1, 0, 1};
+  barriers[2].image = large;
+  barriers[2].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 2, 1, 0, 1};
+  const auto expect_remapped = [](std::uint32_t base0, std::uint32_t count0,
+                                  std::uint32_t base1, std::uint32_t base2) {
+    EXPECT_EQ(base0, 0u);
+    EXPECT_EQ(count0, 6u);
+    EXPECT_EQ(base1, 4u);
+    EXPECT_EQ(base2, 2u);
+  };
+
+  g_image_barriers.clear();
+  emulation->CmdPipelineBarrier(
+      device, command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 3,
+      barriers.data());
+  ASSERT_EQ(g_image_barriers.size(), 3u);
+  expect_remapped(g_image_barriers[0].subresourceRange.baseMipLevel,
+                  g_image_barriers[0].subresourceRange.levelCount,
+                  g_image_barriers[1].subresourceRange.baseMipLevel,
+                  g_image_barriers[2].subresourceRange.baseMipLevel);
+
+  g_image_barriers.clear();
+  const VkEvent event = FakeHandle<VkEvent>(0x90);
+  emulation->CmdWaitEvents(device, command_buffer, 1, &event,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, nullptr,
+                           0, nullptr, 3, barriers.data());
+  ASSERT_EQ(g_image_barriers.size(), 3u);
+  expect_remapped(g_image_barriers[0].subresourceRange.baseMipLevel,
+                  g_image_barriers[0].subresourceRange.levelCount,
+                  g_image_barriers[1].subresourceRange.baseMipLevel,
+                  g_image_barriers[2].subresourceRange.baseMipLevel);
+
+  std::array<VkImageMemoryBarrier2, 3> barriers2{};
+  for (std::size_t index = 0; index < barriers2.size(); ++index) {
+    barriers2[index].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barriers2[index].image = barriers[index].image;
+    barriers2[index].subresourceRange = barriers[index].subresourceRange;
+  }
+  VkDependencyInfo dependency{};
+  dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dependency.imageMemoryBarrierCount = 3;
+  dependency.pImageMemoryBarriers = barriers2.data();
+  g_image_barriers2.clear();
+  emulation->CmdPipelineBarrier2(device, command_buffer, &dependency);
+  ASSERT_EQ(g_image_barriers2.size(), 3u);
+  expect_remapped(g_image_barriers2[0].subresourceRange.baseMipLevel,
+                  g_image_barriers2[0].subresourceRange.levelCount,
+                  g_image_barriers2[1].subresourceRange.baseMipLevel,
+                  g_image_barriers2[2].subresourceRange.baseMipLevel);
+
+  g_image_barriers2.clear();
+  emulation->CmdWaitEvents2(device, command_buffer, 1, &event, &dependency);
+  ASSERT_EQ(g_image_barriers2.size(), 3u);
+  expect_remapped(g_image_barriers2[0].subresourceRange.baseMipLevel,
+                  g_image_barriers2[0].subresourceRange.levelCount,
+                  g_image_barriers2[1].subresourceRange.baseMipLevel,
+                  g_image_barriers2[2].subresourceRange.baseMipLevel);
+
+  // vkCmdWaitEvents2 must see the dependency vkCmdSetEvent2 was given.
+  g_image_barriers2.clear();
+  emulation->CmdSetEvent2(device, command_buffer, event, &dependency);
+  ASSERT_EQ(g_image_barriers2.size(), 3u);
+  expect_remapped(g_image_barriers2[0].subresourceRange.baseMipLevel,
+                  g_image_barriers2[0].subresourceRange.levelCount,
+                  g_image_barriers2[1].subresourceRange.baseMipLevel,
+                  g_image_barriers2[2].subresourceRange.baseMipLevel);
+
+  // Barriers on images without top levels reach the driver untouched.
+  emulation->CmdPipelineBarrier(
+      device, command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+      &barriers[2]);
+  EXPECT_EQ(g_image_barrier_array, &barriers[2]);
+  dependency.imageMemoryBarrierCount = 1;
+  dependency.pImageMemoryBarriers = &barriers2[2];
+  emulation->CmdPipelineBarrier2(device, command_buffer, &dependency);
+  EXPECT_EQ(g_image_barrier_array, &barriers2[2]);
+}
+
+// A sampler whose minLod skips the app's level 0 must skip the top levels
+// too, so it is swapped for one shifted by them wherever it meets a view that
+// includes them.
+// Reporters' logs show how a clamped sampler reaches the shader, once per
+// way, so a sampler the swap can't cover is visible.
+TEST(VulkanEtc2EmulationTest, LogsHowClampedSamplersAreBound) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2a);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3a));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  const auto view_of = [&](std::uint32_t base) {
+    VkImageViewCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.image = image;
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, base,
+                             VK_REMAINING_MIP_LEVELS, 0, 1};
+    VkImageView view = VK_NULL_HANDLE;
+    EXPECT_EQ(emulation->CreateImageView(device, &info, nullptr, &view),
+              VK_SUCCESS);
+    return view;
+  };
+  const VkImageView with_top = view_of(0);
+  const VkImageView own = view_of(1);
+  VkSamplerCreateInfo sampler_info{};
+  sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  sampler_info.minLod = 1;
+  sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+  VkSampler clamped = VK_NULL_HANDLE;
+  ASSERT_EQ(
+      emulation->CreateSampler(device, &sampler_info, nullptr, &clamped),
+      VK_SUCCESS);
+  const auto write = [&](VkDescriptorType type, VkImageView view) {
+    const VkDescriptorImageInfo info{clamped, view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.descriptorType = type;
+    write.descriptorCount = 1;
+    write.pImageInfo = &info;
+    emulation->UpdateDescriptorSets(device, 1, &write, 0, nullptr);
+  };
+  testing::internal::CaptureStderr();
+  write(VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE);
+  write(VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE);
+  write(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, own);
+  write(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, with_top);
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding = 3;
+  binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  binding.descriptorCount = 1;
+  binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  binding.pImmutableSamplers = &clamped;
+  VkDescriptorSetLayoutCreateInfo layout_info{};
+  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layout_info.bindingCount = 1;
+  layout_info.pBindings = &binding;
+  VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+  EXPECT_EQ(emulation->CreateDescriptorSetLayout(device, &layout_info,
+                                                 nullptr, &layout),
+            VK_SUCCESS);
+  const std::string log = testing::internal::GetCapturedStderr();
+  const auto count = [&log](const std::string& text) {
+    std::size_t found = 0;
+    for (std::size_t at = log.find(text); at != std::string::npos;
+         at = log.find(text, at + 1)) {
+      ++found;
+    }
+    return found;
+  };
+  EXPECT_EQ(count("sampler lod min=1 max=1000 bound as a separate sampler"),
+            1u)
+      << log;
+  EXPECT_EQ(count("sampler lod min=1 max=1000 bound with a view without top "
+                  "levels"),
+            1u)
+      << log;
+  EXPECT_EQ(count("sampler lod min=1 max=1000 bound with an upscaled view "
+                  "(top=2)"),
+            1u)
+      << log;
+  EXPECT_EQ(count("sampler lod min=1 max=1000 is immutable in a descriptor "
+                  "set layout (binding 3), so it keeps its clamps"),
+            1u)
+      << log;
+}
+
+TEST(VulkanEtc2EmulationTest, ShiftsClampedSamplersOnViewsWithTopLevels) {
+  const VkDevice device = FakeHandle<VkDevice>(0x28);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x728);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x38));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  const auto view_of = [&](std::uint32_t base) {
+    VkImageViewCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.image = image;
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, base,
+                             VK_REMAINING_MIP_LEVELS, 0, 1};
+    VkImageView view = VK_NULL_HANDLE;
+    EXPECT_EQ(emulation->CreateImageView(device, &info, nullptr, &view),
+              VK_SUCCESS);
+    return view;
+  };
+  const VkImageView with_top = view_of(0);
+  const VkImageView own = view_of(1);
+  const auto sampler_of = [&](float min_lod) {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.minLod = min_lod;
+    info.maxLod = min_lod > 0 ? 8 : VK_LOD_CLAMP_NONE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    EXPECT_EQ(emulation->CreateSampler(device, &info, nullptr, &sampler),
+              VK_SUCCESS);
+    return sampler;
+  };
+  g_create_sampler_calls = 0;
+  g_created_samplers.clear();
+  const VkSampler clamped = sampler_of(1);
+  const VkSampler plain = sampler_of(0);
+
+  std::array<VkDescriptorImageInfo, 4> images{{
+      {clamped, with_top, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {plain, with_top, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {clamped, own, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {clamped, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED},
+  }};
+  std::array<VkWriteDescriptorSet, 2> writes{};
+  for (VkWriteDescriptorSet& write : writes) {
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  }
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[0].descriptorCount = 3;
+  writes[0].pImageInfo = images.data();
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  writes[1].descriptorCount = 1;
+  writes[1].pImageInfo = &images[3];
+  g_written_samplers.clear();
+  emulation->UpdateDescriptorSets(device, 2, writes.data(), 0, nullptr);
+  ASSERT_EQ(g_written_samplers.size(), 4u);
+  const VkSampler shifted = g_written_samplers[0];
+  EXPECT_NE(shifted, clamped);
+  EXPECT_EQ(g_written_samplers[1], plain);
+  EXPECT_EQ(g_written_samplers[2], clamped);
+  EXPECT_EQ(g_written_samplers[3], clamped);
+  ASSERT_EQ(g_created_samplers.size(), 3u);
+  EXPECT_EQ(g_created_samplers[2].first, shifted);
+  EXPECT_EQ(g_created_samplers[2].second.minLod, 3.0f);
+  EXPECT_EQ(g_created_samplers[2].second.maxLod, 10.0f);
+  // The application's descriptors are left as they were.
+  EXPECT_EQ(images[0].sampler, clamped);
+
+  // The shifted sampler is made once, and every other path uses it.
+  g_written_samplers.clear();
+  emulation->UpdateDescriptorSets(device, 1, writes.data(), 0, nullptr);
+  emulation->CmdPushDescriptorSet(device, command_buffer,
+                                  VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  VK_NULL_HANDLE, 0, 1, writes.data());
+  VkDescriptorUpdateTemplateEntry entry{};
+  entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  entry.descriptorCount = 1;
+  entry.stride = sizeof(VkDescriptorImageInfo);
+  VkDescriptorUpdateTemplateCreateInfo template_info{};
+  template_info.sType =
+      VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO;
+  template_info.descriptorUpdateEntryCount = 1;
+  template_info.pDescriptorUpdateEntries = &entry;
+  VkDescriptorUpdateTemplate update = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation->CreateDescriptorUpdateTemplate(device, &template_info,
+                                                      nullptr, &update),
+            VK_SUCCESS);
+  emulation->UpdateDescriptorSetWithTemplate(device, VK_NULL_HANDLE, update,
+                                             images.data());
+  emulation->CmdPushDescriptorSetWithTemplate(
+      device, command_buffer, update, VK_NULL_HANDLE, 0, images.data());
+  EXPECT_EQ(g_written_samplers,
+            (std::vector<VkSampler>{shifted, plain, clamped, shifted, plain,
+                                    clamped, shifted, shifted}));
+  EXPECT_EQ(g_created_samplers.size(), 3u);
+  EXPECT_EQ(images[0].sampler, clamped);
+
+  // A destroyed view is forgotten, and a destroyed sampler takes its shifted
+  // copy with it.
+  emulation->DestroyImageView(device, with_top, nullptr);
+  g_written_samplers.clear();
+  emulation->UpdateDescriptorSets(device, 1, writes.data(), 0, nullptr);
+  EXPECT_EQ(g_written_samplers[0], clamped);
+  g_destroyed_samplers.clear();
+  emulation->DestroySampler(device, clamped, nullptr);
+  EXPECT_EQ(g_destroyed_samplers,
+            (std::vector<VkSampler>{shifted, clamped}));
+  emulation->DestroyDescriptorUpdateTemplate(device, update, nullptr);
+}
+
+// A finite maxLod counts the app's levels, so it is shifted past the top
+// levels too, while a minLod of 0 stays 0 to keep them reachable.
+TEST(VulkanEtc2EmulationTest, ShiftsTheMaxLodOfSamplersOnViewsWithTopLevels) {
+  const VkDevice device = FakeHandle<VkDevice>(0x26);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x36));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  VkImageViewCreateInfo view_info{};
+  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  view_info.image = image;
+  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 4, 0, 1};
+  VkImageView view = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation->CreateImageView(device, &view_info, nullptr, &view),
+            VK_SUCCESS);
+  const auto sampler_of = [&](float max_lod) {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.maxLod = max_lod;
+    VkSampler sampler = VK_NULL_HANDLE;
+    EXPECT_EQ(emulation->CreateSampler(device, &info, nullptr, &sampler),
+              VK_SUCCESS);
+    return sampler;
+  };
+  g_create_sampler_calls = 0;
+  g_created_samplers.clear();
+  const VkSampler finite = sampler_of(3);
+  const VkSampler unclamped = sampler_of(VK_LOD_CLAMP_NONE);
+  const std::array<VkDescriptorImageInfo, 2> images{{
+      {finite, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {unclamped, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+  }};
+  VkWriteDescriptorSet write{};
+  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  write.descriptorCount = 2;
+  write.pImageInfo = images.data();
+  g_written_samplers.clear();
+  emulation->UpdateDescriptorSets(device, 1, &write, 0, nullptr);
+  ASSERT_EQ(g_written_samplers.size(), 2u);
+  EXPECT_NE(g_written_samplers[0], finite);
+  EXPECT_EQ(g_written_samplers[1], unclamped);
+  ASSERT_EQ(g_created_samplers.size(), 3u);
+  EXPECT_EQ(g_created_samplers[2].second.minLod, 0.0f);
+  EXPECT_EQ(g_created_samplers[2].second.maxLod, 5.0f);
+}
+
+// Reading back or blitting from an upscaled image reaches its own levels, not
+// the top levels above them.
+TEST(VulkanEtc2EmulationTest, ReadsAndBlitsTheOwnLevelsOfAnUpscaledImage) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2a);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x72a);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3a));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  const VkImage other = FakeHandle<VkImage>(0x5a);
+  const VkBuffer buffer = FakeHandle<VkBuffer>(0x6a);
+
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1};
+  region.imageExtent = {4, 4, 1};
+  g_readback_mips.clear();
+  emulation->CmdCopyImageToBuffer(device, command_buffer, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer,
+                                  1, &region);
+  VkBufferImageCopy2 region2{};
+  region2.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
+  region2.imageSubresource = region.imageSubresource;
+  region2.imageExtent = region.imageExtent;
+  VkCopyImageToBufferInfo2 info{};
+  info.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2;
+  info.srcImage = image;
+  info.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  info.dstBuffer = buffer;
+  info.regionCount = 1;
+  info.pRegions = &region2;
+  emulation->CmdCopyImageToBuffer2(device, command_buffer, &info);
+  info.srcImage = other;
+  emulation->CmdCopyImageToBuffer2(device, command_buffer, &info);
+  EXPECT_EQ(g_readback_mips, (std::vector<std::uint32_t>{3, 3, 1}));
+
+  VkImageBlit blit{};
+  blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  g_blits.clear();
+  emulation->CmdBlitImage(device, command_buffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, other,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                          VK_FILTER_LINEAR);
+  VkImageBlit2 blit2{};
+  blit2.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2;
+  blit2.srcSubresource = blit.srcSubresource;
+  blit2.dstSubresource = blit.dstSubresource;
+  VkBlitImageInfo2 blit_info{};
+  blit_info.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2;
+  blit_info.srcImage = image;
+  blit_info.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  blit_info.dstImage = other;
+  blit_info.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  blit_info.regionCount = 1;
+  blit_info.pRegions = &blit2;
+  blit_info.filter = VK_FILTER_LINEAR;
+  emulation->CmdBlitImage2(device, command_buffer, &blit_info);
+  ASSERT_EQ(g_blits.size(), 2u);
+  for (const VkImageBlit& recorded : g_blits) {
+    EXPECT_EQ(recorded.srcSubresource.mipLevel, 2u);
+    EXPECT_EQ(recorded.dstSubresource.mipLevel, 0u);
+  }
+}
+
+// Barriers find their device again after it is destroyed and registered anew.
+TEST(VulkanEtc2EmulationTest, BarriersFollowADeviceRegisteredAgain) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2f);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x72f);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3f));
+  VkImageMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.image = FakeHandle<VkImage>(0x5f);
+  const auto record = [&] {
+    g_image_barriers.clear();
+    emulation->CmdPipelineBarrier(
+        device, command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+        &barrier);
+    return g_image_barriers.size();
+  };
+  EXPECT_EQ(record(), 1u);
+  emulation->DestroyDevice(device);
+  EXPECT_EQ(record(), 0u);
+  emulation->RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x3f), true,
+                            CoherentMemory(), FakeGetDeviceProcAddr);
+  EXPECT_EQ(record(), 1u);
+  // A second emulation with the same device handle has its own registration.
+  VulkanEtc2Emulation other;
+  g_image_barriers.clear();
+  other.CmdPipelineBarrier(device, command_buffer,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                           0, nullptr, 1, &barrier);
+  EXPECT_TRUE(g_image_barriers.empty());
+  EXPECT_EQ(record(), 1u);
+}
+
+// Run with --gtest_also_run_disabled_tests. CPU cost of level-0 uploads into
+// a 4x upscaled 8x8 image, which also fill its two top levels.
+TEST(VulkanEtc2EmulationTest, DISABLED_BenchmarkUpscaledUploads) {
+  const VkDevice device = FakeHandle<VkDevice>(0x29);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x229);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x729);
+  for (std::size_t index = 0; index < 32; ++index) {
+    g_source[index] = static_cast<std::uint8_t>(index * 37 + 11);
+  }
+  for (const char* upscale : {"1", "4"}) {
+    auto emulation =
+        UpscalingEmulation(upscale, device, FakeHandle<VkPhysicalDevice>(0x39));
+    const VkImage image = CreateEtc2Image(*emulation, device, 8, 1);
+    MapSource(*emulation, device, source);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {8, 8, 1};
+    constexpr int kUploads = 20'000;
+    const auto start = std::chrono::steady_clock::now();
+    for (int upload = 0; upload < kUploads; ++upload) {
+      g_uploaded_regions.clear();
+      emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                      &region);
+      emulation->PrepareSubmit(&command_buffer, 1);
+      emulation->ReleaseCommandBuffer(command_buffer);
+    }
+    const double us = std::chrono::duration<double, std::micro>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+    std::printf("8x8 upload at %sx: %.2f us each\n", upscale, us / kUploads);
+  }
+}
+
+// Run with --gtest_also_run_disabled_tests. Two threads write one combined
+// image sampler per call while a clamped sampler and a view with top levels
+// exist, so every write is looked up.
+TEST(VulkanEtc2EmulationTest, DISABLED_BenchmarkDescriptorWrites) {
+  const VkDevice device = FakeHandle<VkDevice>(0x27);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x37));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  VkImageViewCreateInfo view_info{};
+  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  view_info.image = image;
+  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+  view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 4, 0, 1};
+  VkImageView view = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation->CreateImageView(device, &view_info, nullptr, &view),
+            VK_SUCCESS);
+  VkSamplerCreateInfo sampler_info{};
+  sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+  VkSampler plain = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation->CreateSampler(device, &sampler_info, nullptr, &plain),
+            VK_SUCCESS);
+  sampler_info.minLod = 1;
+  VkSampler clamped = VK_NULL_HANDLE;
+  ASSERT_EQ(
+      emulation->CreateSampler(device, &sampler_info, nullptr, &clamped),
+      VK_SUCCESS);
+  constexpr int kCalls = 1'000'000;
+  for (const VkSampler sampler : {plain, clamped}) {
+    const VkDescriptorImageInfo info{sampler, view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &info;
+    g_quiet_barriers.store(true);
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < 2; ++thread) {
+      threads.emplace_back([&] {
+        for (int call = 0; call < kCalls; ++call) {
+          emulation->UpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
+      });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+    const double ns = std::chrono::duration<double, std::nano>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+    g_quiet_barriers.store(false);
+    std::printf("descriptor write, %s sampler: %.1f ns/call (2 threads)\n",
+                sampler == plain ? "plain" : "clamped", ns / kCalls);
+  }
+}
+
+// Run with --gtest_also_run_disabled_tests. Two threads record barriers on
+// one device while an upscaled image exists, as Roblox's render threads do.
+TEST(VulkanEtc2EmulationTest, DISABLED_BenchmarkBarriers) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2b);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3b));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  constexpr int kCalls = 2'000'000;
+  for (const bool with_top : {false, true}) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.image = with_top ? image : FakeHandle<VkImage>(0x5b);
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    g_quiet_barriers.store(true);
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < 2; ++thread) {
+      threads.emplace_back([&, thread] {
+        const VkCommandBuffer command_buffer =
+            FakeHandle<VkCommandBuffer>(0x900 + thread);
+        for (int call = 0; call < kCalls; ++call) {
+          emulation->CmdPipelineBarrier(
+              device, command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+              nullptr, 1, &barrier);
+        }
+      });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+    const double ns =
+        std::chrono::duration<double, std::nano>(
+            std::chrono::steady_clock::now() - start)
+            .count();
+    g_quiet_barriers.store(false);
+    std::printf("barrier on %s image: %.1f ns/call (2 threads)\n",
+                with_top ? "an upscaled" : "another", ns / kCalls);
+  }
+}
+
+// A destroyed device takes its images' top levels with it, so a later image
+// that reuses a handle is not remapped.
+TEST(VulkanEtc2EmulationTest, ForgetsTopLevelsWithTheirDevice) {
+  const VkDevice device = FakeHandle<VkDevice>(0x2e);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x72e);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x3e));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 4);
+  emulation->DestroyDevice(device);
+  emulation->RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x3e), true,
+                            CoherentMemory(), FakeGetDeviceProcAddr);
+
+  VkImageMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.image = image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 4, 0, 1};
+  g_image_barriers.clear();
+  emulation->CmdPipelineBarrier(
+      device, command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+      &barrier);
+  EXPECT_EQ(g_image_barrier_array, &barrier);
+  ASSERT_EQ(g_image_barriers.size(), 1u);
+  EXPECT_EQ(g_image_barriers[0].subresourceRange.levelCount, 4u);
 }
 
 TEST(VulkanEtc2EmulationTest, ReusesStagingBuffersAcrossCommandBuffers) {
@@ -1229,65 +2013,112 @@ TEST(VulkanEtc2EmulationTest, KeepsFourIdleStagingBlocksAndDestroysTheRest) {
 
 // Copies out of a scaled image cover its host bounds and shrink back onto
 // an unscaled destination, which a plain copy cannot do.
-TEST(VulkanEtc2EmulationTest, BlitsCopiesThatTouchScaledImages) {
+// The texture's own levels sit below the top ones at their own size, so a
+// copy between them needs no blit; it only stops at the mip's edge.
+TEST(VulkanEtc2EmulationTest, CopiesTheOwnLevelsOfAnUpscaledImageAsTheyAre) {
   const VkDevice device = FakeHandle<VkDevice>(0x16);
   const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x706);
-  ASSERT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "2", 1), 0);
-
-  VkPhysicalDeviceMemoryProperties memory{};
-  memory.memoryTypeCount = 1;
-  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VulkanEtc2Emulation emulation;
-  ASSERT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
-  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x26), true,
-                           memory, FakeGetDeviceProcAddr);
-
-  VkImageCreateInfo image_info{};
-  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
-  image_info.imageType = VK_IMAGE_TYPE_2D;
-  image_info.extent = {4, 4, 1};
-  image_info.mipLevels = 3;
-  image_info.arrayLayers = 1;
-  VkImage small = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &small),
-            VK_SUCCESS);
-  image_info.extent = {128, 128, 1};
-  image_info.mipLevels = 8;
-  VkImage large = VK_NULL_HANDLE;
-  ASSERT_EQ(emulation.CreateImage(device, &image_info, nullptr, &large),
-            VK_SUCCESS);
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x26));
+  const VkImage small = CreateEtc2Image(*emulation, device, 4, 3);
+  const VkImage large = CreateEtc2Image(*emulation, device, 128, 8);
 
   // Mip 1 of the small image (2x2, block-rounded to 4x4) lands in mip 6 of
-  // the large one, 2x2 at offset (1, 1).
+  // the large one.
   VkImageCopy region{};
-  region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  region.srcSubresource.mipLevel = 1;
-  region.srcSubresource.layerCount = 1;
-  region.dstSubresource = region.srcSubresource;
-  region.dstSubresource.mipLevel = 6;
-  region.dstOffset = {1, 1, 0};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 6, 0, 1};
   region.extent = {4, 4, 1};
   g_copy_image_calls = 0;
-  g_blit = {};
-  emulation.CmdCopyImage(device, command_buffer, small,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, large,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-  EXPECT_EQ(g_copy_image_calls, 0u);
-  EXPECT_EQ(g_blit.srcSubresource.mipLevel, 1u);
-  EXPECT_EQ(g_blit.srcOffsets[1].x, 4);
-  EXPECT_EQ(g_blit.srcOffsets[1].y, 4);
-  EXPECT_EQ(g_blit.dstSubresource.mipLevel, 6u);
-  EXPECT_EQ(g_blit.dstOffsets[0].x, 1);
-  EXPECT_EQ(g_blit.dstOffsets[1].x, 5);
-  EXPECT_EQ(g_blit_filter, VK_FILTER_LINEAR);
+  g_blit_calls = 0;
+  g_image_copies.clear();
+  emulation->CmdCopyImage(device, command_buffer, small,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, large,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  EXPECT_EQ(g_blit_calls, 0u);
+  ASSERT_EQ(g_image_copies.size(), 1u);
+  EXPECT_EQ(g_image_copies[0].srcSubresource.mipLevel, 2u);
+  EXPECT_EQ(g_image_copies[0].dstSubresource.mipLevel, 6u);
+  EXPECT_EQ(g_image_copies[0].extent.width, 2u);
+  EXPECT_EQ(g_image_copies[0].extent.height, 2u);
 
-  // Copies between unscaled images pass through untouched.
-  emulation.CmdCopyImage(device, command_buffer, large,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, large,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-  EXPECT_EQ(g_copy_image_calls, 1u);
+  g_image_copies.clear();
+  emulation->CmdCopyImage(device, command_buffer, large,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, large,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  ASSERT_EQ(g_image_copies.size(), 1u);
+  EXPECT_EQ(g_image_copies[0].extent.width, 4u);
+  EXPECT_EQ(g_copy_image_calls, 2u);
+}
+
+// Level 0 between images of one factor brings its top levels along.
+TEST(VulkanEtc2EmulationTest, CopiesTheTopLevelsWithLevelZero) {
+  const VkDevice device = FakeHandle<VkDevice>(0x17);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x707);
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x27));
+  const VkImage source = CreateEtc2Image(*emulation, device, 8, 1);
+  const VkImage destination = CreateEtc2Image(*emulation, device, 8, 1);
+
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.dstSubresource = region.srcSubresource;
+  region.extent = {8, 8, 1};
+  g_blit_calls = 0;
+  g_image_copies.clear();
+  emulation->CmdCopyImage(device, command_buffer, source,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  EXPECT_EQ(g_blit_calls, 0u);
+  ASSERT_EQ(g_image_copies.size(), 2u);
+  const auto level = [](std::uint32_t mip) -> const VkImageCopy* {
+    for (const VkImageCopy& copy : g_image_copies) {
+      if (copy.dstSubresource.mipLevel == mip) {
+        return &copy;
+      }
+    }
+    return nullptr;
+  };
+  ASSERT_NE(level(0), nullptr);
+  ASSERT_NE(level(1), nullptr);
+  EXPECT_EQ(level(0)->srcSubresource.mipLevel, 0u);
+  EXPECT_EQ(level(0)->extent.width, 16u);
+  EXPECT_EQ(level(0)->extent.height, 16u);
+  EXPECT_EQ(level(1)->srcSubresource.mipLevel, 1u);
+  EXPECT_EQ(level(1)->extent.width, 8u);
+}
+
+// Level 0 copied from an image without top levels has none to bring, so the
+// destination's are scaled up from the copied texels.
+TEST(VulkanEtc2EmulationTest, RebuildsTheTopLevelsOfACopiedLevelZero) {
+  const VkDevice device = FakeHandle<VkDevice>(0x19);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x709);
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x29));
+  const VkImage large = CreateEtc2Image(*emulation, device, 128, 8);
+  const VkImage small = CreateEtc2Image(*emulation, device, 8, 1);
+
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 4, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.extent = {8, 8, 1};
+  g_blits.clear();
+  g_image_copies.clear();
+  emulation->CmdCopyImage(device, command_buffer, large,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, small,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  ASSERT_EQ(g_image_copies.size(), 1u);
+  EXPECT_EQ(g_image_copies[0].srcSubresource.mipLevel, 4u);
+  EXPECT_EQ(g_image_copies[0].dstSubresource.mipLevel, 1u);
+  EXPECT_EQ(g_image_copies[0].extent.width, 8u);
+  ASSERT_EQ(g_blits.size(), 1u);
+  EXPECT_EQ(g_blits[0].srcSubresource.mipLevel, 4u);
+  EXPECT_EQ(g_blits[0].srcOffsets[1].x, 8);
+  EXPECT_EQ(g_blits[0].srcOffsets[1].y, 8);
+  EXPECT_EQ(g_blits[0].dstSubresource.mipLevel, 0u);
+  EXPECT_EQ(g_blits[0].dstOffsets[1].x, 16);
+  EXPECT_EQ(g_blits[0].dstOffsets[1].y, 16);
+  EXPECT_EQ(g_blit_filter, VK_FILTER_LINEAR);
 }
 
 // bufferRowLength counts texels of source pitch, not of the copied region, so
