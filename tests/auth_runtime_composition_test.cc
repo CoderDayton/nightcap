@@ -465,7 +465,7 @@ TEST(AuthRuntimeCompositionTest,
   FakeHttpClient initial_http;
   services::AuthService initial_auth_service(initial_http);
   AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, initial_auth_service);
+      ComposeTestAuthRuntime(environment, paths, initial_auth_service);
   ASSERT_TRUE(composition);
   EXPECT_TRUE(composition.saved_cookies.empty());
 
@@ -504,6 +504,8 @@ TEST(AuthRuntimeCompositionTest,
             "https://apis.roblox.com/account-switcher/v1/switch"));
   }
   composition.jni_vm->ClearRobloxDataModelNotificationCallbacks();
+  // The credential is written on a worker thread; this waits for it.
+  composition.jni_vm->ClearRobloxCredentialSink();
 
   const std::filesystem::path jar_file = RobloxCookieJarFile(paths);
   const std::string stored = ReadFile(jar_file);
@@ -523,7 +525,7 @@ TEST(AuthRuntimeCompositionTest,
       R"({"id":777,"name":"RestartUser","displayName":"Restart User"})",
       {}};
   services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted = ComposeAuthRuntime(
+  const AuthRuntimeComposition restarted = ComposeTestAuthRuntime(
       restart_environment, PathsFor(restart_environment, directory),
       restart_auth_service);
   ASSERT_TRUE(restarted) << restarted.error;
