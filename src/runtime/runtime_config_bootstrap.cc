@@ -51,6 +51,9 @@ runtime:
   # active verified payload.
   # roblox_library: /absolute/path/to/libroblox.so
 
+auth:
+  use_libsecret: false
+
 appearance:
   # String (default: roblox): use Roblox's saved account theme. Supported
   # overrides: dark, light, or system (follow the desktop color scheme).

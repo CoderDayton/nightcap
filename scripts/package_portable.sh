@@ -37,6 +37,7 @@ readonly -a PROJECT_ARTIFACTS=(
   mocktail_failure_dialog
   mocktail_settings
   mocktail_webview_helper
+  mocktail_cookie_helper
   libmocktail_audio_sdl.so
   libc.so
   libdl.so

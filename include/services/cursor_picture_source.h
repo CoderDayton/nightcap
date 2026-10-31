@@ -35,7 +35,9 @@ std::vector<std::filesystem::path> LocalCursorPictureCandidates(
 // redirects to.
 class CursorPictureSource {
  public:
-  CursorPictureSource(HttpClient* http, std::filesystem::path cookie_file,
+  // `read_cookie` returns the saved ".ROBLOSECURITY=..." sign-in, or empty.
+  CursorPictureSource(HttpClient* http,
+                      std::function<std::string()> read_cookie,
                       std::filesystem::path overlay_dir,
                       std::function<std::filesystem::path()> asset_root);
 
@@ -46,7 +48,7 @@ class CursorPictureSource {
   std::string Download(std::uint64_t asset_id);
 
   HttpClient* http_ = nullptr;
-  std::filesystem::path cookie_file_;
+  std::function<std::string()> read_cookie_;
   std::filesystem::path overlay_dir_;
   std::function<std::filesystem::path()> asset_root_;
 };

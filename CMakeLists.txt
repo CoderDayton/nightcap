@@ -218,6 +218,7 @@ pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
 pkg_check_modules(CAPSTONE REQUIRED IMPORTED_TARGET capstone)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
+pkg_check_modules(LIBSECRET QUIET IMPORTED_TARGET libsecret-1)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 pkg_check_modules(LIBADWAITA REQUIRED IMPORTED_TARGET "libadwaita-1>=1.6")
 pkg_check_modules(WEBKITGTK6 REQUIRED IMPORTED_TARGET webkitgtk-6.0)
@@ -309,6 +310,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_experience_launch_bridge.cc
   src/runtime/roblox_launch_uri.cc
   src/runtime/roblox_presence_resolver.cc
+  src/runtime/roblox_cookie_store.cc
   src/runtime/roblox_game_session_native_adapter.cc
   src/runtime/desktop_notification.cc
   src/runtime/roblox_store_purchase.cc
@@ -425,6 +427,15 @@ target_link_libraries(mocktail_settings PRIVATE
   SDL3::SDL3
 )
 mocktail_apply_compile_options(mocktail_settings)
+
+add_executable(mocktail_cookie_helper src/runtime/mocktail_cookie_helper.cc)
+if(LIBSECRET_FOUND)
+  target_link_libraries(mocktail_cookie_helper PRIVATE PkgConfig::LIBSECRET)
+  target_compile_definitions(mocktail_cookie_helper PRIVATE MOCKTAIL_HAVE_LIBSECRET=1)
+else()
+  message(WARNING "libsecret-1 headers missing: Roblox cookies will use private plaintext files")
+endif()
+mocktail_apply_compile_options(mocktail_cookie_helper)
 
 add_library(mocktail_services STATIC
   src/services/http_client.cc
@@ -730,6 +741,7 @@ install(TARGETS
     mocktail_failure_dialog
     mocktail_settings
     mocktail_webview_helper
+    mocktail_cookie_helper
     mocktail_audio_sdl
     mocktail_opensles
     stub_sys_m
@@ -885,7 +897,7 @@ include(CPack)
 
 add_dependencies(mocktail all_stubs)
 add_dependencies(mocktail mocktail_failure_dialog mocktail_settings)
-add_dependencies(mocktail mocktail_webview_helper)
+add_dependencies(mocktail mocktail_webview_helper mocktail_cookie_helper)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

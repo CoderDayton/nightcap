@@ -77,7 +77,8 @@ AnyLinuxVerifyInstalled() {
       /usr/lib/mocktail/mocktail_updater \
       /usr/lib/mocktail/mocktail_failure_dialog \
       /usr/lib/mocktail/mocktail_settings \
-      /usr/lib/mocktail/mocktail_webview_helper; do
+      /usr/lib/mocktail/mocktail_webview_helper \
+      /usr/lib/mocktail/mocktail_cookie_helper; do
     [[ -x "${entry}" ]] || AnyLinuxDie "missing installed executable: ${entry}"
   done
   for entry in libEGL.so libvulkan.so libmediandk.so; do
@@ -102,7 +103,7 @@ AnyLinuxVerifyAppDir() {
   [[ ! -e "${app_dir}/share/mocktail-bundle" ]] ||
     AnyLinuxDie "a portable bundle was embedded in AppDir"
   for entry in mocktail mocktail_updater mocktail_failure_dialog \
-      mocktail_settings mocktail_webview_helper; do
+      mocktail_settings mocktail_webview_helper mocktail_cookie_helper; do
     [[ -x "${app_dir}/bin/${entry}" ]] ||
       AnyLinuxDie "quick-sharun did not deploy ${entry}"
   done
@@ -219,6 +220,7 @@ EOF
     /usr/lib/mocktail/mocktail_settings \
     /usr/lib/mocktail/mocktail_updater \
     /usr/lib/mocktail /usr/share/mocktail /usr/bin/bash \
+    /usr/lib/mocktail/mocktail_cookie_helper \
     "${video_libraries[@]}"
   AnyLinuxVerifyAppDir "${app_dir}"
 

@@ -5,6 +5,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,14 @@ class TemporaryDirectory {
 void WriteFile(const std::filesystem::path& path, const std::string& bytes) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream(path, std::ios::binary) << bytes;
+}
+
+// Reads the saved sign-in the way the runtime's reader does: the whole file.
+std::function<std::string()> CookieReader(std::filesystem::path path) {
+  return [path = std::move(path)] {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
 }
 
 class FakeHttpClient final : public HttpClient {
@@ -106,7 +116,8 @@ TEST(CursorPictureSourceTest, ReadsALocalCursorWithoutTheNetwork) {
             "stock");
   WriteFile(overlay / "content/textures/IBeamCursor.png", "overlay");
   FakeHttpClient http;
-  CursorPictureSource source(&http, directory.path() / "cookie", overlay,
+  CursorPictureSource source(&http, CookieReader(directory.path() / "cookie"),
+                             overlay,
                              [&] { return assets; });
 
   EXPECT_EQ(source.Fetch(
@@ -125,7 +136,8 @@ TEST(CursorPictureSourceTest, SendsTheCookieOnlyToTheAssetService) {
       true, 302, "", "",
       {"HTTP/2 302", "location: https://c3.rbxcdn.com/abc"}));
   http.responses.push_back(HttpResponse(true, 200, "picture", ""));
-  CursorPictureSource source(&http, directory.path() / "cookie", {}, {});
+  CursorPictureSource source(&http, CookieReader(directory.path() / "cookie"),
+                             {}, {});
 
   EXPECT_EQ(source.Fetch("rbxassetid://99"), "picture");
   ASSERT_EQ(http.requests.size(), 2U);
@@ -143,7 +155,8 @@ TEST(CursorPictureSourceTest, RefusesARedirectAwayFromRoblox) {
   FakeHttpClient http;
   http.responses.push_back(HttpResponse(
       true, 302, "", "", {"Location: https://evil.example/rbxcdn.com"}));
-  CursorPictureSource source(&http, directory.path() / "cookie", {}, {});
+  CursorPictureSource source(&http, CookieReader(directory.path() / "cookie"),
+                             {}, {});
 
   EXPECT_EQ(source.Fetch("rbxassetid://99"), "");
   EXPECT_EQ(http.requests.size(), 1U);
@@ -154,7 +167,8 @@ TEST(CursorPictureSourceTest, DownloadsWithoutACookieWhenNoneIsSaved) {
   WriteFile(directory.path() / "cookie", "garbage\r\nInjected: 1");
   FakeHttpClient http;
   http.responses.push_back(HttpResponse(true, 200, "picture", ""));
-  CursorPictureSource source(&http, directory.path() / "cookie", {}, {});
+  CursorPictureSource source(&http, CookieReader(directory.path() / "cookie"),
+                             {}, {});
 
   EXPECT_EQ(source.Fetch("rbxassetid://5"), "picture");
   ASSERT_EQ(http.requests.size(), 1U);

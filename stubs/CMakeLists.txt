@@ -132,6 +132,9 @@ add_library(stub_vulkan SHARED
   ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 configure_stub(stub_vulkan "libvulkan.so")
+# Keep proc-address lookups bound to our wrappers even if the host Vulkan
+# loader was loaded first. Host calls use explicitly resolved function pointers.
+target_link_options(stub_vulkan PRIVATE "LINKER:-Bsymbolic-functions")
 target_include_directories(stub_vulkan PRIVATE ${CMAKE_SOURCE_DIR}/include)
 pkg_check_modules(LIBPLACEBO REQUIRED IMPORTED_TARGET libplacebo)
 pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)

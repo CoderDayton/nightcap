@@ -72,6 +72,7 @@
 #include "runtime/owned_pthread.h"
 #include "runtime/platform_cache_migration.h"
 #include "runtime/asset_overlay_names.h"
+#include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_cursor_hook.h"
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
@@ -2069,8 +2070,28 @@ void InstallCursorHooks(uintptr_t base) {
   if (options.hardware) {
     // Lives as long as the process: the picture worker never stops.
     static auto* http = new mocktail::services::CurlHttpClient;
+    // The sign-in is in its file, or in the keyring with auth.use_libsecret.
+    // Re-read at most once a minute, so a rotated cookie is picked up without
+    // starting the keyring helper for every download.
     static auto* pictures = new mocktail::services::CursorPictureSource(
-        http, CurrentRuntimePaths().cookie_file(),
+        http,
+        [path = CurrentRuntimePaths().cookie_file()] {
+          static std::mutex mutex;
+          static std::string saved;
+          static std::chrono::steady_clock::time_point read_at;
+          std::lock_guard<std::mutex> lock(mutex);
+          const auto now = std::chrono::steady_clock::now();
+          if (saved.empty() || now - read_at >= std::chrono::minutes(1)) {
+            read_at = now;
+            static const auto secrets =
+                mocktail::runtime::OpenRobloxSecretStore();
+            mocktail::runtime::StoredCookie cookie =
+                mocktail::runtime::LoadManagedRobloxCookie(path, *secrets);
+            if (cookie.status == mocktail::runtime::StoredCookieStatus::kFound)
+              saved = std::move(cookie.value);
+          }
+          return saved;
+        },
         CurrentRuntimePaths().asset_overlay_dir(), [] {
           // Roblox reports its asset folder once it starts.
           const char* root = std::getenv("MOCKTAIL_ASSET_ROOT");

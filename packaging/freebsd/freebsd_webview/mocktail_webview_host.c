@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <webkit/webkit.h>
 
@@ -328,10 +329,33 @@ static void on_eval(GObject *source, GAsyncResult *result, gpointer data) {
   g_clear_error(&error);
 }
 
+static void remove_legacy_cookie_database(void) {
+  gchar *path = g_build_filename(g_get_user_data_dir(), "mocktail", "webview", NULL);
+  int directory = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  g_free(path);
+  if (directory < 0) return;
+  const char *names[] = {"cookies.sqlite", "cookies.sqlite-wal",
+                        "cookies.sqlite-shm", "cookies.sqlite-journal"};
+  struct stat metadata;
+  int removed = fstat(directory, &metadata) == 0 && metadata.st_uid == geteuid();
+  for (size_t i = 0; removed && i < G_N_ELEMENTS(names); ++i) {
+    if (fstatat(directory, names[i], &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+      removed = errno == ENOENT;
+      continue;
+    }
+    removed = S_ISREG(metadata.st_mode) && metadata.st_uid == geteuid() &&
+              metadata.st_nlink == 1 && unlinkat(directory, names[i], 0) == 0;
+  }
+  if (!removed || fsync(directory) != 0)
+    fprintf(stderr, "[webview] old unencrypted cookie database could not be removed\n");
+  close(directory);
+}
+
 static void on_cookie_done(GObject *source, GAsyncResult *result, gpointer data) {
   (void)data;
   GError *error = NULL;
-  webkit_cookie_manager_add_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, &error);
+  if (webkit_cookie_manager_add_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, &error))
+    remove_legacy_cookie_database();
   g_clear_error(&error);
 }
 
@@ -348,17 +372,14 @@ static void ensure_session(void) {
   gchar *cache_dir = g_build_filename(g_get_user_cache_dir(), "mocktail", "webview", NULL);
   g_mkdir_with_parents(data_dir, 0700);
   g_mkdir_with_parents(cache_dir, 0700);
-  gchar *cookie_db = g_build_filename(data_dir, "cookies.sqlite", NULL);
   session = webkit_network_session_new(data_dir, cache_dir);
   g_free(data_dir);
   g_free(cache_dir);
   WebKitCookieManager *cookies = webkit_network_session_get_cookie_manager(session);
-  webkit_cookie_manager_set_persistent_storage(cookies, cookie_db, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
   webkit_cookie_manager_set_accept_policy(cookies, WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
   g_signal_connect(cookies, "changed", G_CALLBACK(on_cookie_changed), NULL);
-  g_free(cookie_db);
   webkit_network_session_set_itp_enabled(session, FALSE);
-  webkit_network_session_set_persistent_credential_storage_enabled(session, TRUE);
+  webkit_network_session_set_persistent_credential_storage_enabled(session, FALSE);
 }
 
 static void create_surface(void) {

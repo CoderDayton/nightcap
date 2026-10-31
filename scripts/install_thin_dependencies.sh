@@ -103,6 +103,7 @@ bubblewrap
 xdg-dbus-proxy
 vulkan-icd-loader
 libadwaita
+libsecret
 webkitgtk-6.0
 jq
 unzip
@@ -130,6 +131,7 @@ bubblewrap
 xdg-dbus-proxy
 vulkan-loader
 libadwaita
+libsecret
 libwebkitgtk60
 jq
 unzip
@@ -160,6 +162,7 @@ bubblewrap
 xdg-dbus-proxy
 vulkan-loader
 libadwaita
+libsecret
 webkit2gtk-6.0
 jq
 unzip

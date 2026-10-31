@@ -7,6 +7,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- From upstream: the Roblox sign-in can be kept in the desktop keyring through libsecret, such as
+  GNOME Keyring or KWallet, instead of a private file. Turn on "Keep the sign-in in the keyring" under
+  Settings > Advanced > Sign-in (`auth.use_libsecret`). It is off by default. Signing out from Roblox
+  also clears the keyring copy, and the hardware cursor reads its sign-in from the keyring too.
 - `mocktail --version` prints the build, and Settings > Advanced > About shows it with a copy button,
   as the version, the revision since the last release and the commit, like `0.4.0 r54 (8bb1521)`.
 - The Fleasion page in Settings shows a badge for its proxy: Running, Not running, or Not checked for
