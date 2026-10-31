@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -62,6 +63,44 @@ TEST(VulkanLoaderAdapterTest, KeepsOwnDispatchWhenHostLoadsFirst) {
 
 TEST(VulkanLoaderAdapterTest, KeepsOwnDispatchWhenAdapterLoadsFirst) {
   ExpectAdapterDispatch(false);
+}
+
+// Barriers on upscaled ETC2 images must reach the emulation to be remapped.
+TEST(VulkanLoaderAdapterTest, ExportsItsOwnBarrierCommands) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    void* adapter = dlopen(MOCKTAIL_VULKAN_ADAPTER, RTLD_NOW | RTLD_LOCAL);
+    if (adapter == nullptr) std::_Exit(11);
+    for (const char* name : {"vkCmdPipelineBarrier", "vkCmdPipelineBarrier2",
+                             "vkCmdWaitEvents", "vkCmdWaitEvents2",
+                             "vkCmdSetEvent2", "vkCmdCopyImageToBuffer",
+                             "vkCmdCopyImageToBuffer2", "vkCmdBlitImage",
+                             "vkCmdBlitImage2", "vkDestroySampler",
+                             "vkCreateDescriptorSetLayout",
+                             "vkDestroyImageView", "vkUpdateDescriptorSets",
+                             "vkCmdPushDescriptorSetKHR",
+                             "vkCreateDescriptorUpdateTemplate",
+                             "vkDestroyDescriptorUpdateTemplate",
+                             "vkUpdateDescriptorSetWithTemplate",
+                             "vkCmdPushDescriptorSetWithTemplateKHR"}) {
+      // dlsym also searches the adapter's dependencies, such as the system
+      // Vulkan loader, so check which library defines the symbol.
+      Dl_info info{};
+      void* symbol = dlsym(adapter, name);
+      if (symbol == nullptr || dladdr(symbol, &info) == 0 ||
+          info.dli_fname == nullptr ||
+          std::strcmp(info.dli_fname, MOCKTAIL_VULKAN_ADAPTER) != 0) {
+        std::fprintf(stderr, "Vulkan adapter lacks %s\n", name);
+        std::_Exit(14);
+      }
+    }
+    std::_Exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
 }
 
 }  // namespace

@@ -329,7 +329,9 @@ TEST_F(RunningInstanceTest, RestartStartsTheProgramWhereTheOldOneRan) {
 TEST_F(RunningInstanceTest, StartDetachedDoesNotPassOnIgnoredSignals) {
   const std::filesystem::path marker = directory_ / "marker";
   const std::filesystem::path program = directory_ / "program.sh";
-  std::ofstream(program) << "#!/bin/sh\ngrep SigIgn /proc/$$/status > '"
+  // grep reads its own status: bash as /bin/sh ignores SIGQUIT itself while
+  // running a script, but restores what it inherited for its children.
+  std::ofstream(program) << "#!/bin/sh\ngrep SigIgn /proc/self/status > '"
                          << marker.string() << ".tmp' && mv '"
                          << marker.string() << ".tmp' '" << marker.string()
                          << "'\n";

@@ -14,9 +14,11 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -96,6 +98,20 @@ bool Etc2UploadByteCounts(EtcFormat format, const VkExtent3D& extent,
   return true;
 }
 
+namespace {
+
+// Levels a power-of-two `scale` adds above an image's own. Host level
+// `top + k` then has the size of the image's level k.
+std::uint32_t TopLevelCount(std::uint32_t scale) {
+  std::uint32_t top = 0;
+  while ((2u << top) <= scale) {
+    ++top;
+  }
+  return top;
+}
+
+}  // namespace
+
 bool Etc2ImageByteCounts(EtcFormat format, const VkExtent3D& extent,
                          std::uint32_t mip_levels, std::uint32_t layers,
                          std::uint32_t scale, VkDeviceSize* compressed,
@@ -115,9 +131,12 @@ bool Etc2ImageByteCounts(EtcFormat format, const VkExtent3D& extent,
     compressed_total += ((level(extent.width, mip) + 3) / 4) *
                         ((level(extent.height, mip) + 3) / 4) * depth *
                         EtcBlockBytes(format);
+  }
+  const std::uint32_t host_levels = mip_levels + TopLevelCount(scale);
+  for (std::uint32_t mip = 0; mip < host_levels && mip < 32; ++mip) {
     decoded_total += level(extent.width * scale, mip) *
-                     level(extent.height * scale, mip) * depth *
-                     EtcDecodedTexelBytes(format);
+                     level(extent.height * scale, mip) *
+                     level(extent.depth, mip) * EtcDecodedTexelBytes(format);
   }
   *compressed = compressed_total * layers;
   *decoded = decoded_total * layers;
@@ -164,7 +183,8 @@ std::uint32_t SmallTextureUpscale(const char* value) {
   if (parsed < 1) {
     return 1;
   }
-  return parsed > 8 ? 8 : static_cast<std::uint32_t>(parsed);
+  return 1u << TopLevelCount(
+             parsed > 8 ? 8 : static_cast<std::uint32_t>(parsed));
 }
 
 VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
@@ -175,13 +195,15 @@ VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
            4;
   };
   VkDeviceSize total = 0;
-  for (std::uint32_t mip = 0; mip < mip_levels && mip < 32; ++mip) {
+  const std::uint32_t host_levels = mip_levels + TopLevelCount(scale);
+  for (std::uint32_t mip = 0; mip < host_levels && mip < 32; ++mip) {
     total += blocks(extent.width, mip) * blocks(extent.height, mip);
   }
   return total * layers;
 }
 
-std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns) {
+std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns,
+                                          double transcode_ns) {
   if (upscale_ns <= 0) {
     return 1;
   }
@@ -189,12 +211,15 @@ std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns) {
   constexpr VkExtent3D kLargestSmall{kSmallTextureMaxExtent,
                                      kSmallTextureMaxExtent, 1};
   constexpr std::uint32_t kLevels = 7;
+  const auto own =
+      static_cast<double>(Etc2HostBlockCount(kLargestSmall, kLevels, 1, 1));
   for (std::uint32_t scale = kDefaultSmallTextureUpscale; scale > 1;
        scale /= 2) {
-    if (static_cast<double>(
-            Etc2HostBlockCount(kLargestSmall, kLevels, 1, scale)) *
-            upscale_ns <=
-        kAdaptiveUpscaleTextureNs) {
+    const double top =
+        static_cast<double>(
+            Etc2HostBlockCount(kLargestSmall, kLevels, 1, scale)) -
+        own;
+    if (top * upscale_ns + own * transcode_ns <= kAdaptiveUpscaleTextureNs) {
       return scale;
     }
   }
@@ -292,6 +317,8 @@ struct HostDevice {
   PFN_vkCreateImage create_image = nullptr;
   PFN_vkDestroyImage destroy_image = nullptr;
   PFN_vkCreateImageView create_image_view = nullptr;
+  PFN_vkCreateSampler create_sampler = nullptr;
+  PFN_vkCreateDescriptorSetLayout create_descriptor_set_layout = nullptr;
   PFN_vkBindBufferMemory bind_buffer_memory = nullptr;
   PFN_vkBindBufferMemory2 bind_buffer_memory2 = nullptr;
   PFN_vkMapMemory map_memory = nullptr;
@@ -305,11 +332,26 @@ struct HostDevice {
   PFN_vkCmdCopyImage copy_image = nullptr;
   PFN_vkCmdCopyImage2 copy_image2 = nullptr;
   PFN_vkCmdBlitImage blit_image = nullptr;
+  PFN_vkCmdBlitImage2 blit_image2 = nullptr;
+  PFN_vkCmdCopyImageToBuffer copy_image_to_buffer = nullptr;
+  PFN_vkCmdCopyImageToBuffer2 copy_image_to_buffer2 = nullptr;
+  PFN_vkDestroySampler destroy_sampler = nullptr;
+  PFN_vkDestroyImageView destroy_image_view = nullptr;
+  PFN_vkUpdateDescriptorSets update_descriptor_sets = nullptr;
+  PFN_vkCmdPushDescriptorSetKHR push_descriptor_set = nullptr;
+  PFN_vkCreateDescriptorUpdateTemplate create_update_template = nullptr;
+  PFN_vkDestroyDescriptorUpdateTemplate destroy_update_template = nullptr;
+  PFN_vkUpdateDescriptorSetWithTemplate update_with_template = nullptr;
+  PFN_vkCmdPushDescriptorSetWithTemplateKHR push_with_template = nullptr;
   PFN_vkCmdExecuteCommands execute_commands = nullptr;
   PFN_vkCreateBuffer create_buffer = nullptr;
   PFN_vkAllocateMemory allocate_memory = nullptr;
   PFN_vkGetBufferMemoryRequirements get_buffer_memory_requirements = nullptr;
   PFN_vkCmdPipelineBarrier pipeline_barrier = nullptr;
+  PFN_vkCmdPipelineBarrier2 pipeline_barrier2 = nullptr;
+  PFN_vkCmdWaitEvents wait_events = nullptr;
+  PFN_vkCmdWaitEvents2 wait_events2 = nullptr;
+  PFN_vkCmdSetEvent2 set_event2 = nullptr;
   PFN_vkSignalSemaphore signal_semaphore = nullptr;
   PFN_vkDestroySemaphore destroy_semaphore = nullptr;
   PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
@@ -359,15 +401,17 @@ struct ImageRecord {
   Etc2EmulatedFormat format;
   // Host image dimensions are the application's times this factor.
   std::uint32_t scale = 1;
+  // Host levels above the application's, upscaled from its level 0. The
+  // application's level k is host level `top + k`, at its own size.
+  std::uint32_t top = 0;
+  // Recorded commands add this to the application's mip level.
+  std::uint32_t mip_offset = 0;
   // Application-side level-0 extent; mip extents derive from it.
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   // Replacement pixels chosen from the level-0 upload; smaller mip levels
   // are resampled from it.
   std::shared_ptr<const RgbaImage> override;
-  // Decoded level-0 texels of a scaled image; every host mip is resampled
-  // from them so the texture keeps its detail at every draw size.
-  std::shared_ptr<const RgbaImage> base;
   EmulatedTextureBytes bytes;
   // The host image is BC7/BC4/BC5 and uploads are transcoded on the GPU.
   bool transcoded = false;
@@ -380,6 +424,42 @@ struct ImageRecord {
   // by mip. Copies into a BC image are transcoded from them.
   std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> blocks;
 };
+
+// The application's levels of an image, planned unscaled and recorded
+// below its top levels.
+ImageRecord NativeRecord(const ImageRecord& record) {
+  ImageRecord native = record;
+  native.scale = 1;
+  native.top = 0;
+  native.mip_offset = record.top;
+  return native;
+}
+
+// Top host level `level`: level 0 planned at the factor that level has.
+// `top` stays, so its uploads are marked as top levels.
+ImageRecord TopRecord(const ImageRecord& record, std::uint32_t level) {
+  ImageRecord top = record;
+  top.scale = record.scale >> level;
+  top.mip_offset = level;
+  return top;
+}
+
+// Moves a range of the application's levels onto the host levels of an
+// image with `top` levels above them; a range from level 0 takes those too.
+void HostLevels(std::uint32_t top, std::uint32_t* base, std::uint32_t* count) {
+  if (*base != 0) {
+    *base += top;
+  } else if (*count != VK_REMAINING_MIP_LEVELS) {
+    *count += top;
+  }
+}
+
+template <typename Region>
+void ShiftUploadLevels(std::vector<Region>* regions, std::uint32_t offset) {
+  for (Region& region : *regions) {
+    region.imageSubresource.mipLevel += offset;
+  }
+}
 
 // The BC format an emulated ETC2/EAC format is kept in.
 bool BcHostFormat(VkFormat format, VkFormat* out) {
@@ -523,6 +603,9 @@ struct PendingUpload {
   // Only the blocks are kept, for later copies into an upscaled BC image;
   // the GPU writes the texels.
   bool keep_only = false;
+  // Level 0 resampled into a top level; its blocks are kept by the image's
+  // own level-0 upload.
+  bool top_level = false;
 };
 
 template <typename Region>
@@ -683,6 +766,7 @@ struct DecodeBatch {
 std::atomic<unsigned> g_image_logs{0};
 std::atomic<unsigned> g_transcoded_image_logs{0};
 std::atomic<unsigned> g_decode_logs{0};
+std::atomic<unsigned> g_sampler_logs{0};
 // Messages are literals, keyed by address.
 struct FailureCounts {
   std::mutex mutex;
@@ -1086,7 +1170,9 @@ bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
     copy.bufferOffset = *total;
     copy.bufferRowLength = 0;
     copy.bufferImageHeight = 0;
-    if (scale > 1) {
+    // An upscaled image's own levels are uncompressed on the host, so a
+    // block-rounded region stops at the mip's edge as a scaled one does.
+    if (scale > 1 || record.mip_offset != 0) {
       const std::uint32_t mip = region.imageSubresource.mipLevel;
       const auto axis = [&](std::uint32_t base, std::int32_t offset,
                             std::uint32_t extent, std::uint32_t* source,
@@ -1127,6 +1213,7 @@ bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
           upload.width == std::max<std::uint32_t>(1, record.width >> mip) &&
           upload.height == std::max<std::uint32_t>(1, record.height >> mip);
     }
+    upload.top_level = record.mip_offset < record.top;
     rewritten->push_back(copy);
     uploads->push_back(upload);
     *total += upload.target_bytes;
@@ -1136,9 +1223,19 @@ bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
 
 }  // namespace
 
+// Bumped whenever any emulation's device list changes, or a new emulation is
+// built at an address a destroyed one used, so per-thread lookups stay valid.
+std::atomic<std::uint64_t> g_devices_generation{1};
+// Bumped with every change to an emulation's clamped samplers or top views,
+// and by a new emulation, so per-thread sampler caches stay valid.
+std::atomic<std::uint64_t> g_lod_generation{1};
+
 struct VulkanEtc2Emulation::State {
   explicit State(VkDeviceSize block_bytes)
-      : staging_block_bytes(block_bytes) {}
+      : staging_block_bytes(block_bytes) {
+    g_devices_generation.fetch_add(1, std::memory_order_acq_rel);
+    g_lod_generation.fetch_add(1, std::memory_order_acq_rel);
+  }
 
   std::mutex mutex;
   std::mutex devices_mutex;
@@ -1147,6 +1244,355 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkImage, ImageRecord> images;
   // Sum over `images`; guarded by `mutex`.
   EmulatedTextureBytes texture_bytes;
+  // Top level counts of upscaled images, read by every barrier the
+  // application records, so it has a lock of its own. `top_images` lets a
+  // session without upscaled images skip the lock.
+  std::shared_mutex top_mutex;
+  std::unordered_map<VkImage, std::uint32_t> top_levels;
+  std::atomic<std::size_t> top_images{0};
+  // Counts of `top_levels` keys per hash slot, read without the lock: a
+  // barrier on an image whose slot is 0 has no top levels. 128 KiB; with 4k
+  // upscaled images about 6% of other images still take the lock.
+  static constexpr std::size_t kTopFilterSlots = std::size_t{1} << 16;
+  std::unique_ptr<std::atomic<std::uint16_t>[]> top_filter{
+      new std::atomic<std::uint16_t>[kTopFilterSlots]()};
+
+  static std::size_t TopSlot(VkImage image) {
+    std::uint64_t key = reinterpret_cast<std::uintptr_t>(image);
+    key ^= key >> 29;
+    return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ull) >> 48);
+  }
+
+  void AddTopLevels(VkImage image, std::uint32_t top) {
+    std::unique_lock<std::shared_mutex> lock(top_mutex);
+    if (top_levels.insert_or_assign(image, top).second) {
+      top_filter[TopSlot(image)].fetch_add(1, std::memory_order_release);
+    }
+    top_images.store(top_levels.size(), std::memory_order_release);
+  }
+
+  void LogRemappedBarriers() {
+    const std::uint64_t now = TraceClockNanos();
+    std::uint64_t since = barrier_log_ns.load(std::memory_order_relaxed);
+    if (since == 0) {
+      barrier_log_ns.compare_exchange_strong(since, now,
+                                             std::memory_order_relaxed);
+      return;
+    }
+    if (now - since < kEncodeLogIntervalNs ||
+        !barrier_log_ns.compare_exchange_strong(since, now,
+                                                std::memory_order_relaxed)) {
+      return;
+    }
+    std::fprintf(stderr,
+                 "  [vulkan] %llu barriers on upscaled images remapped over "
+                 "%.1f s\n",
+                 static_cast<unsigned long long>(remapped_barriers.exchange(
+                     0, std::memory_order_relaxed)),
+                 static_cast<double>(now - since) / 1e9);
+  }
+
+  // Callers hold `lod_mutex` exclusively.
+  void UpdatePairsPossible() {
+    g_lod_generation.fetch_add(1, std::memory_order_acq_rel);
+    clamped_count.store(clamped_samplers.size(), std::memory_order_release);
+    pairs_possible.store(!clamped_samplers.empty() && !top_views.empty(),
+                         std::memory_order_release);
+  }
+
+  // Under an exclusive `lod_mutex`, before UpdatePairsPossible.
+  void AddClampedSampler(VkSampler sampler) {
+    clamped_filter[ClampedSlot(sampler)].fetch_add(1,
+                                                   std::memory_order_release);
+  }
+  void RemoveClampedSampler(VkSampler sampler) {
+    clamped_filter[ClampedSlot(sampler)].fetch_sub(1,
+                                                   std::memory_order_release);
+  }
+
+  // `sampler`, or its copy shifted by the top levels `view` includes.
+  // Every combined image sampler write asks, so plain samplers stop at the
+  // filter and repeated pairs at a per-thread cache.
+  VkSampler ShiftedSampler(VkSampler sampler, VkImageView view) {
+    if (clamped_filter[ClampedSlot(sampler)].load(std::memory_order_acquire) ==
+        0) {
+      return sampler;
+    }
+    struct Pair {
+      const State* state = nullptr;
+      std::uint64_t generation = 0;
+      VkSampler sampler = VK_NULL_HANDLE;
+      VkImageView view = VK_NULL_HANDLE;
+      VkSampler result = VK_NULL_HANDLE;
+    };
+    thread_local Pair cache[16];
+    const std::uint64_t generation =
+        g_lod_generation.load(std::memory_order_acquire);
+    Pair& slot = cache[(reinterpret_cast<std::uintptr_t>(view) >> 4 ^
+                        reinterpret_cast<std::uintptr_t>(sampler) >> 4) &
+                       15];
+    if (slot.state == this && slot.generation == generation &&
+        slot.sampler == sampler && slot.view == view) {
+      return slot.result;
+    }
+    const VkSampler result = LookupShiftedSampler(sampler, view);
+    slot = {this, generation, sampler, view, result};
+    return result;
+  }
+
+  VkSampler LookupShiftedSampler(VkSampler sampler, VkImageView view) {
+    std::uint32_t top = 0;
+    {
+      std::shared_lock<std::shared_mutex> lock(lod_mutex);
+      const auto clamped = clamped_samplers.find(sampler);
+      if (clamped == clamped_samplers.end()) {
+        return sampler;
+      }
+      const auto top_view = top_views.find(view);
+      NoteBound(&clamped->second, view,
+                top_view == top_views.end() ? 0 : top_view->second.top);
+      if (top_view == top_views.end()) {
+        return sampler;
+      }
+      top = top_view->second.top;
+      const auto it = clamped->second.shifted.find(top);
+      if (it != clamped->second.shifted.end()) {
+        return it->second;
+      }
+    }
+    std::unique_lock<std::shared_mutex> lock(lod_mutex);
+    const auto clamped = clamped_samplers.find(sampler);
+    if (clamped == clamped_samplers.end()) {
+      return sampler;
+    }
+    const auto it = clamped->second.shifted.find(top);
+    if (it != clamped->second.shifted.end()) {
+      return it->second;
+    }
+    const HostDevice* dev = Find(clamped->second.device);
+    if (dev == nullptr || dev->create_sampler == nullptr) {
+      return sampler;
+    }
+    // A minLod of 0 stays 0 so magnified draws still reach the top levels.
+    VkSamplerCreateInfo info = clamped->second.info;
+    if (info.minLod > 0) {
+      info.minLod += static_cast<float>(top);
+    }
+    if (info.maxLod < VK_LOD_CLAMP_NONE) {
+      info.maxLod += static_cast<float>(top);
+    }
+    VkSampler shifted = VK_NULL_HANDLE;
+    if (dev->create_sampler(dev->device, &info, nullptr, &shifted) !=
+        VK_SUCCESS) {
+      LogFailure("could not create a sampler shifted past top levels");
+      return sampler;
+    }
+    clamped->second.shifted.emplace(top, shifted);
+    if (ShouldLog(&g_sampler_logs, 4)) {
+      std::fprintf(stderr,
+                   "  [vulkan] sampler lod min=%g max=%g shifted by %u for "
+                   "upscaled views\n",
+                   clamped->second.info.minLod, clamped->second.info.maxLod,
+                   top);
+    }
+    return shifted;
+  }
+
+  // Logs each way a clamped sampler is bound once; a view of 0 is a
+  // separate sampler descriptor. Under a shared `lod_mutex`.
+  // A template only because ClampedSampler is declared further down.
+  template <typename Clamped>
+  void NoteBound(Clamped* clamped, VkImageView view,
+                 std::uint32_t top) {
+    const std::uint8_t way = view == VK_NULL_HANDLE ? kBoundSeparate
+                             : top == 0             ? kBoundOwnView
+                                                    : kBoundTopView;
+    if ((clamped->bound_ways.fetch_or(way, std::memory_order_relaxed) &
+         way) != 0 ||
+        !ShouldLog(&bound_logs, kBoundLogs)) {
+      return;
+    }
+    char how[48] = "as a separate sampler";
+    if (way == kBoundOwnView) {
+      std::snprintf(how, sizeof(how), "with a view without top levels");
+    } else if (way == kBoundTopView) {
+      std::snprintf(how, sizeof(how), "with an upscaled view (top=%u)", top);
+    }
+    std::fprintf(stderr, "  [vulkan] sampler lod min=%g max=%g bound %s\n",
+                 clamped->info.minLod, clamped->info.maxLod, how);
+  }
+
+  // Descriptor updates also look up clamped samplers while bind logs are
+  // left, even before any view has top levels.
+  bool NotingBinds() const {
+    return clamped_count.load(std::memory_order_acquire) != 0 &&
+           bound_logs.load(std::memory_order_relaxed) < kBoundLogs;
+  }
+
+  // The application's writes, or a copy in `scratch` whose combined image
+  // samplers on views with top levels use shifted samplers.
+  const VkWriteDescriptorSet* ShiftWriteSamplers(
+      std::uint32_t count, const VkWriteDescriptorSet* writes,
+      std::vector<VkWriteDescriptorSet>* scratch,
+      std::vector<std::vector<VkDescriptorImageInfo>>* images) {
+    if (count == 0 || writes == nullptr ||
+        (!pairs_possible.load(std::memory_order_acquire) && !NotingBinds())) {
+      return writes;
+    }
+    for (std::uint32_t index = 0; index < count; ++index) {
+      const VkWriteDescriptorSet& write = writes[index];
+      const bool separate =
+          write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER;
+      if ((!separate && write.descriptorType !=
+                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) ||
+          write.pImageInfo == nullptr) {
+        continue;
+      }
+      std::vector<VkDescriptorImageInfo> patched;
+      for (std::uint32_t element = 0; element < write.descriptorCount;
+           ++element) {
+        const VkDescriptorImageInfo& info = write.pImageInfo[element];
+        // A separate sampler's imageView is ignored and may hold anything.
+        const VkSampler shifted = ShiftedSampler(
+            info.sampler, separate ? VK_NULL_HANDLE : info.imageView);
+        if (shifted == info.sampler) {
+          continue;
+        }
+        if (patched.empty()) {
+          patched.assign(write.pImageInfo,
+                         write.pImageInfo + write.descriptorCount);
+        }
+        patched[element].sampler = shifted;
+      }
+      if (patched.empty()) {
+        continue;
+      }
+      if (scratch->empty()) {
+        scratch->assign(writes, writes + count);
+        // Patched infos are pointed at, so they must not move.
+        images->reserve(count);
+      }
+      images->push_back(std::move(patched));
+      (*scratch)[index].pImageInfo = images->back().data();
+    }
+    return scratch->empty() ? writes : scratch->data();
+  }
+
+  // The application's template data, or a copy in `scratch` with shifted
+  // samplers. Entries sit at arbitrary offsets, so they are read by memcpy.
+  const void* ShiftTemplateSamplers(VkDescriptorUpdateTemplate update,
+                                    const void* data,
+                                    std::vector<std::uint8_t>* scratch) {
+    if (data == nullptr ||
+        (!pairs_possible.load(std::memory_order_acquire) && !NotingBinds())) {
+      return data;
+    }
+    std::shared_ptr<const TemplateImages> images;
+    {
+      std::shared_lock<std::shared_mutex> lock(lod_mutex);
+      const auto it = templates.find(update);
+      if (it == templates.end()) {
+        return data;
+      }
+      images = it->second;
+    }
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    for (const VkDescriptorUpdateTemplateEntry& entry : images->entries) {
+      for (std::uint32_t element = 0; element < entry.descriptorCount;
+           ++element) {
+        const std::size_t offset = entry.offset + element * entry.stride;
+        VkDescriptorImageInfo info;
+        std::memcpy(&info, bytes + offset, sizeof(info));
+        const VkSampler shifted = ShiftedSampler(
+            info.sampler,
+            entry.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER
+                ? VK_NULL_HANDLE
+                : info.imageView);
+        if (shifted == info.sampler) {
+          continue;
+        }
+        if (scratch->empty()) {
+          scratch->assign(bytes, bytes + images->data_size);
+        }
+        std::memcpy(scratch->data() + offset +
+                        offsetof(VkDescriptorImageInfo, sampler),
+                    &shifted, sizeof(shifted));
+      }
+    }
+    return scratch->empty() ? data : scratch->data();
+  }
+
+  // Top level count of `image`, 0 for an image without any.
+  std::uint32_t TopLevelsOf(VkImage image) {
+    if (top_filter[TopSlot(image)].load(std::memory_order_acquire) == 0) {
+      return 0;
+    }
+    std::shared_lock<std::shared_mutex> lock(top_mutex);
+    const auto it = top_levels.find(image);
+    return it == top_levels.end() ? 0 : it->second;
+  }
+
+  void EraseTopLevels(const VkImage* images, std::size_t count) {
+    if (count == 0 || top_images.load(std::memory_order_acquire) == 0) {
+      return;
+    }
+    std::unique_lock<std::shared_mutex> lock(top_mutex);
+    for (std::size_t index = 0; index < count; ++index) {
+      if (top_levels.erase(images[index]) != 0) {
+        top_filter[TopSlot(images[index])].fetch_sub(
+            1, std::memory_order_release);
+      }
+    }
+    top_images.store(top_levels.size(), std::memory_order_release);
+  }
+  // Samplers with minLod above 0, views that include top levels, and image
+  // descriptor entries of update templates, all under `lod_mutex`.
+  // `pairs_possible` lets descriptor updates skip the lock while either map
+  // is empty.
+  struct ClampedSampler {
+    VkDevice device = VK_NULL_HANDLE;
+    VkSamplerCreateInfo info{};
+    std::map<std::uint32_t, VkSampler> shifted;
+    // kBound* bits of the ways already logged.
+    std::atomic<std::uint8_t> bound_ways{0};
+  };
+  static constexpr std::uint8_t kBoundSeparate = 1;
+  static constexpr std::uint8_t kBoundOwnView = 2;
+  static constexpr std::uint8_t kBoundTopView = 4;
+  static constexpr std::uint8_t kBoundImmutable = 8;
+  static constexpr unsigned kBoundLogs = 8;
+  std::atomic<std::size_t> clamped_count{0};
+  std::atomic<unsigned> bound_logs{0};
+  struct TopView {
+    VkDevice device = VK_NULL_HANDLE;
+    std::uint32_t top = 0;
+  };
+  struct TemplateImages {
+    VkDevice device = VK_NULL_HANDLE;
+    std::size_t data_size = 0;
+    std::vector<VkDescriptorUpdateTemplateEntry> entries;
+  };
+  std::shared_mutex lod_mutex;
+  std::unordered_map<VkSampler, ClampedSampler> clamped_samplers;
+  std::unordered_map<VkImageView, TopView> top_views;
+  // Shared so a descriptor update reads entries without copying them.
+  std::unordered_map<VkDescriptorUpdateTemplate,
+                     std::shared_ptr<const TemplateImages>>
+      templates;
+  std::atomic<bool> pairs_possible{false};
+  // Clamped samplers per hash slot, read without the lock as `top_filter`.
+  static constexpr std::size_t kClampedFilterSlots = std::size_t{1} << 12;
+  std::unique_ptr<std::atomic<std::uint16_t>[]> clamped_filter{
+      new std::atomic<std::uint16_t>[kClampedFilterSlots]()};
+
+  static std::size_t ClampedSlot(VkSampler sampler) {
+    std::uint64_t key = reinterpret_cast<std::uintptr_t>(sampler);
+    key ^= key >> 29;
+    return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ull) >> 52);
+  }
+  // Logged every kEncodeLogIntervalNs so reporters' logs show the hook's load.
+  std::atomic<std::uint64_t> remapped_barriers{0};
+  std::atomic<std::uint64_t> barrier_log_ns{0};
   std::unordered_map<VkBuffer, BufferBinding> buffers;
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
   std::unordered_map<VkDeviceMemory, bool> host_readable;
@@ -1189,10 +1635,16 @@ struct VulkanEtc2Emulation::State {
       const std::uint64_t now = TraceClockNanos();
       for (std::uint32_t candidate = *scale;;
            candidate = std::max<std::uint32_t>(1, candidate / 2)) {
-        const double cost =
+        // The image's own levels are only transcoded; the top levels above
+        // them are upscaled.
+        const auto own = static_cast<double>(Etc2HostBlockCount(
+            info.extent, info.mipLevels, info.arrayLayers, 1));
+        const double top =
             static_cast<double>(Etc2HostBlockCount(
-                info.extent, info.mipLevels, info.arrayLayers, candidate)) *
-            (candidate > 1 ? dev.speed.upscale_ns : dev.speed.transcode_ns);
+                info.extent, info.mipLevels, info.arrayLayers, candidate)) -
+            own;
+        const double cost =
+            own * dev.speed.transcode_ns + top * dev.speed.upscale_ns;
         if (dev.budget.Take(cost, now)) {
           *scale = candidate;
           ++dev.stats.by_scale[std::min<std::uint32_t>(candidate, 8)];
@@ -1215,6 +1667,46 @@ struct VulkanEtc2Emulation::State {
       std::fputs(line.c_str(), stderr);
     }
     return prepaid;
+  }
+
+  // The application's barriers, or a copy in `scratch` whose barriers on
+  // upscaled images cover their host levels.
+  template <typename Barrier>
+  const Barrier* RemapBarriers(std::uint32_t count, const Barrier* barriers,
+                               std::vector<Barrier>* scratch) {
+    if (count == 0 || barriers == nullptr ||
+        top_images.load(std::memory_order_acquire) == 0) {
+      return barriers;
+    }
+    bool candidate = false;
+    for (std::uint32_t index = 0; index < count && !candidate; ++index) {
+      candidate = top_filter[TopSlot(barriers[index].image)].load(
+                      std::memory_order_acquire) != 0;
+    }
+    if (!candidate) {
+      return barriers;
+    }
+    std::uint64_t remapped = 0;
+    {
+      std::shared_lock<std::shared_mutex> lock(top_mutex);
+      for (std::uint32_t index = 0; index < count; ++index) {
+        const auto it = top_levels.find(barriers[index].image);
+        if (it == top_levels.end()) {
+          continue;
+        }
+        if (scratch->empty()) {
+          scratch->assign(barriers, barriers + count);
+        }
+        VkImageSubresourceRange& range = (*scratch)[index].subresourceRange;
+        HostLevels(it->second, &range.baseMipLevel, &range.levelCount);
+        ++remapped;
+      }
+    }
+    if (remapped != 0) {
+      remapped_barriers.fetch_add(remapped, std::memory_order_relaxed);
+      LogRemappedBarriers();
+    }
+    return scratch->empty() ? barriers : scratch->data();
   }
 
   void RefundEncode(const HostDevice& dev, double prepaid,
@@ -1259,7 +1751,7 @@ struct VulkanEtc2Emulation::State {
   void EmitUpload(const PendingUpload& upload, const std::uint8_t* compressed,
                   const std::uint8_t* decoded) {
     if (upload.keep_only) {
-      StoreScaledUpload(upload, compressed, nullptr);
+      StoreScaledUpload(upload, compressed);
       return;
     }
     if (upload.scale_row_blocks != 0) {
@@ -1272,94 +1764,61 @@ struct VulkanEtc2Emulation::State {
       ResampleRgba(*replacement, upload.target_width, upload.target_height,
                    upload.target);
     } else if (upload.scale > 1) {
-      const std::shared_ptr<const RgbaImage> base =
-          StoreScaledUpload(upload, compressed, decoded);
-      if (base != nullptr) {
-        ScaleRgba(base->pixels.data(), base->width, base->height,
-                  std::size_t{base->width} * 4, upload.target_width,
-                  upload.target_height, upload.target);
-        return;
-      }
+      StoreScaledUpload(upload, compressed);
       ScaleRgba(decoded, upload.source_width, upload.source_height,
                 std::size_t{upload.width} * 4, upload.target_width,
                 upload.target_height, upload.target);
     } else {
       // The blocks are kept so a later copy into a BC image can re-encode
       // them.
-      StoreScaledUpload(upload, compressed, nullptr);
-      std::memcpy(upload.target, decoded, upload.decoded);
+      StoreScaledUpload(upload, compressed);
+      if (upload.target_bytes == upload.decoded) {
+        std::memcpy(upload.target, decoded, upload.decoded);
+        return;
+      }
+      const std::size_t texel = EtcDecodedTexelBytes(upload.format);
+      const std::size_t row = std::size_t{upload.target_width} * texel;
+      for (std::uint32_t y = 0; y < upload.target_height; ++y) {
+        std::memcpy(upload.target + y * row,
+                    decoded + std::size_t{y} * upload.width * texel, row);
+      }
     }
   }
 
-  // A full mip is scaled from the level-0 blocks once they are known,
-  // anything else from its own blocks.
+  // The GPU decodes and scales the upload's own blocks.
   void EmitScaleSource(const PendingUpload& upload,
                        const std::uint8_t* compressed) {
-    StoreScaledUpload(upload, compressed, nullptr);
+    StoreScaledUpload(upload, compressed);
     const std::size_t block_bytes = EtcBlockBytes(upload.format);
     const std::size_t pitch = std::size_t{upload.scale_row_blocks} * block_bytes;
     std::uint8_t* blocks = upload.target + kEtc2ScaleHeaderBytes;
-    std::uint32_t header[4] = {upload.source_width, upload.source_height,
-                               upload.scale_row_blocks * 4, 0};
-    std::shared_ptr<const std::vector<std::uint8_t>> level0;
-    if (upload.full_mip) {
-      std::lock_guard<std::mutex> lock(mutex);
-      const auto record = images.find(upload.image);
-      if (record != images.end() && !record->second.blocks.empty() &&
-          record->second.blocks[0] != nullptr &&
-          record->second.blocks[0]->size() ==
-              pitch * ((record->second.height + 3) / 4)) {
-        level0 = record->second.blocks[0];
-        header[0] = record->second.width;
-        header[1] = record->second.height;
-      }
-    }
-    if (level0 != nullptr) {
-      std::memcpy(blocks, level0->data(), level0->size());
-    } else {
-      const std::size_t own = (std::size_t{upload.width} + 3) / 4 * block_bytes;
-      for (std::uint32_t row = 0; row < (upload.height + 3) / 4; ++row) {
-        std::memcpy(blocks + row * pitch, compressed + row * own, own);
-      }
+    const std::uint32_t header[4] = {upload.source_width, upload.source_height,
+                                     upload.scale_row_blocks * 4, 0};
+    const std::size_t own = (std::size_t{upload.width} + 3) / 4 * block_bytes;
+    for (std::uint32_t row = 0; row < (upload.height + 3) / 4; ++row) {
+      std::memcpy(blocks + row * pitch, compressed + row * own, own);
     }
     std::memcpy(upload.target, header, sizeof(header));
   }
 
-  std::shared_ptr<const RgbaImage> StoreScaledUpload(
-      const PendingUpload& upload, const std::uint8_t* compressed,
-      const std::uint8_t* decoded) {
-    std::shared_ptr<const RgbaImage> base;
+  void StoreScaledUpload(const PendingUpload& upload,
+                         const std::uint8_t* compressed) {
+    if (upload.top_level) {
+      return;
+    }
     if (upload.full_mip) {
-        auto blocks = std::make_shared<const std::vector<std::uint8_t>>(
-            compressed, compressed + upload.compressed);
-        std::lock_guard<std::mutex> lock(mutex);
-        const auto record = images.find(upload.image);
-        if (record != images.end()) {
-          std::vector<std::shared_ptr<const std::vector<std::uint8_t>>>& mips =
-              record->second.blocks;
-          if (mips.size() <= upload.mip_level) {
-            mips.resize(upload.mip_level + 1);
-          }
-          mips[upload.mip_level] = std::move(blocks);
-          if (upload.mip_level == 0 && decoded != nullptr) {
-            auto level0 = std::make_shared<RgbaImage>();
-            level0->width = upload.source_width;
-            level0->height = upload.source_height;
-            level0->pixels.assign(decoded, decoded + upload.decoded);
-            if (upload.source_width != upload.width ||
-                upload.source_height != upload.height) {
-              level0->pixels.clear();
-              for (std::uint32_t y = 0; y < upload.source_height; ++y) {
-                const std::uint8_t* row =
-                    decoded + static_cast<std::size_t>(y) * upload.width * 4;
-                level0->pixels.insert(level0->pixels.end(), row,
-                                      row + upload.source_width * 4);
-              }
-            }
-            record->second.base = level0;
-          }
-          base = record->second.base;
+      auto blocks = std::make_shared<const std::vector<std::uint8_t>>(
+          compressed, compressed + upload.compressed);
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto record = images.find(upload.image);
+      if (record != images.end()) {
+        std::vector<std::shared_ptr<const std::vector<std::uint8_t>>>& mips =
+            record->second.blocks;
+        if (mips.size() <= upload.mip_level) {
+          mips.resize(upload.mip_level + 1);
         }
+        mips[upload.mip_level] = std::move(blocks);
+      }
     } else {
       // Part of a mip changed, so its kept blocks are stale.
       std::lock_guard<std::mutex> lock(mutex);
@@ -1369,7 +1828,6 @@ struct VulkanEtc2Emulation::State {
         record->second.blocks[upload.mip_level] = nullptr;
       }
     }
-    return base;
   }
 
   struct EmitJob {
@@ -1398,7 +1856,7 @@ struct VulkanEtc2Emulation::State {
   // Resampling a batch costs sixteen times the decoded texels at the default
   // upscale, so uploads are emitted across the decode worker pool. They write
   // disjoint staging ranges, and level 0 is emitted before the rest because it
-  // publishes the texels the other mips resample from.
+  // picks the override the other mips are resampled from.
   void EmitBatch(std::vector<EmitJob> jobs, unsigned worker_count) {
     if (jobs.empty()) {
       return;
@@ -1510,7 +1968,26 @@ struct VulkanEtc2Emulation::State {
     }
   }
 
-  const HostDevice* Find(VkDevice device) { return FindMutable(device); }
+  // Every recorded barrier looks its device up, so the last hit is cached per
+  // thread instead of taking `devices_mutex`.
+  const HostDevice* Find(VkDevice device) {
+    struct Cache {
+      const State* state = nullptr;
+      std::uint64_t generation = 0;
+      VkDevice device = VK_NULL_HANDLE;
+      const HostDevice* found = nullptr;
+    };
+    thread_local Cache cache;
+    const std::uint64_t generation =
+        g_devices_generation.load(std::memory_order_acquire);
+    if (cache.state == this && cache.device == device &&
+        cache.generation == generation) {
+      return cache.found;
+    }
+    const HostDevice* found = FindMutable(device);
+    cache = {this, generation, device, found};
+    return found;
+  }
 
   HostDevice* FindMutable(VkDevice device) {
     std::lock_guard<std::mutex> lock(devices_mutex);
@@ -1663,6 +2140,84 @@ struct VulkanEtc2Emulation::State {
     }
     Record(command_buffer, std::move(uploads), texels);
     return true;
+  }
+
+  // Uploads into an upscaled image go to its own levels, then level 0 again
+  // to each top level. `emit` records a copy of host regions from staging.
+  template <typename Region, typename Emit>
+  void UploadImage(const HostDevice& dev, VkCommandBuffer command_buffer,
+                   const ImageRecord& record, VkBuffer source,
+                   VkImage destination, std::uint32_t count,
+                   const Region* regions, const Emit& emit) {
+    if (record.top == 0) {
+      UploadRecord(dev, command_buffer, record, source, destination, count,
+                   regions, emit);
+      return;
+    }
+    UploadRecord(dev, command_buffer, NativeRecord(record), source,
+                 destination, count, regions, emit);
+    std::vector<Region> level_zero;
+    for (std::uint32_t index = 0; regions != nullptr && index < count;
+         ++index) {
+      if (regions[index].imageSubresource.mipLevel == 0) {
+        level_zero.push_back(regions[index]);
+      }
+    }
+    for (std::uint32_t level = 0; !level_zero.empty() && level < record.top;
+         ++level) {
+      UploadRecord(dev, command_buffer, TopRecord(record, level), source,
+                   destination, static_cast<std::uint32_t>(level_zero.size()),
+                   level_zero.data(), emit);
+    }
+  }
+
+  template <typename Region, typename Emit>
+  void UploadRecord(const HostDevice& dev, VkCommandBuffer command_buffer,
+                    const ImageRecord& record, VkBuffer source,
+                    VkImage destination, std::uint32_t count,
+                    const Region* regions, const Emit& emit) {
+    const auto record_copy = [&](VkBuffer staging, std::vector<Region> host) {
+      ShiftUploadLevels(&host, record.mip_offset);
+      emit(staging, host);
+    };
+    std::vector<GpuCopy<Region>> copies;
+    if (PlanGpuUpload(dev, command_buffer, record, source, destination, count,
+                      regions, &copies) ||
+        (record.scale > 1 &&
+         PlanScaledGpuUpload(dev, command_buffer, record, source, destination,
+                             count, regions, &copies))) {
+      for (const GpuCopy<Region>& copy : copies) {
+        record_copy(copy.staging, copy.regions);
+      }
+      return;
+    }
+    if (record.transcoded) {
+      LogFailure("skipped an upload into a compressed image");
+      return;
+    }
+    std::vector<Region> rewritten;
+    std::vector<PendingUpload> uploads;
+    VkDeviceSize total = 0;
+    Staging staging;
+    if (!PlanRegions(record, dev.device, source, destination, count, regions,
+                     &rewritten, &uploads, &total)) {
+      LogFailure("skipped an upload with an unsupported region");
+      return;
+    }
+    if (!AcquireStaging(dev, total, &staging)) {
+      LogFailure("could not allocate a host-visible staging buffer");
+      return;
+    }
+    for (PendingUpload& upload : uploads) {
+      upload.target =
+          staging.block->mapped + staging.offset + upload.target_offset;
+    }
+    for (Region& region : rewritten) {
+      region.bufferOffset += staging.offset;
+    }
+    Record(command_buffer, std::move(uploads), staging);
+    RecordHostWriteBarrier(dev, command_buffer);
+    record_copy(staging.block->buffer, std::move(rewritten));
   }
 
   // Transcoded jobs are grouped into device-local ranges under the cap.
@@ -1957,6 +2512,26 @@ struct VulkanEtc2Emulation::State {
                          VkImage destination,
                          VkImageLayout destination_layout, std::uint32_t count,
                          const VkImageCopy* regions);
+
+  // RedirectImageCopy for records already looked up. Returns false when the
+  // copy can pass through with each side's mip_offset added.
+  bool RedirectRecords(const HostDevice& dev, VkCommandBuffer command_buffer,
+                       VkImage source, VkImageLayout source_layout,
+                       const ImageRecord& source_record, bool source_found,
+                       VkImage destination, VkImageLayout destination_layout,
+                       const ImageRecord& destination_record,
+                       bool destination_found, std::uint32_t count,
+                       const VkImageCopy* regions);
+
+  void CopyTopImageRegions(const HostDevice& dev,
+                           VkCommandBuffer command_buffer, VkImage source,
+                           VkImageLayout source_layout,
+                           const ImageRecord& source_record, bool source_found,
+                           VkImage destination,
+                           VkImageLayout destination_layout,
+                           const ImageRecord& destination_record,
+                           bool destination_found, std::uint32_t count,
+                           const VkImageCopy* regions);
 
   void TranscodeCopy(const HostDevice& dev, VkCommandBuffer command_buffer,
                      VkImage source_image, const ImageRecord& source,
@@ -2399,6 +2974,49 @@ void VulkanEtc2Emulation::RegisterDevice(
           get, device, "vkGetBufferMemoryRequirements");
   dev->pipeline_barrier =
       DeviceProc<PFN_vkCmdPipelineBarrier>(get, device, "vkCmdPipelineBarrier");
+  dev->create_sampler =
+      DeviceProc<PFN_vkCreateSampler>(get, device, "vkCreateSampler");
+  dev->create_descriptor_set_layout =
+      DeviceProc<PFN_vkCreateDescriptorSetLayout>(
+          get, device, "vkCreateDescriptorSetLayout");
+  dev->pipeline_barrier2 = DeviceProc<PFN_vkCmdPipelineBarrier2>(
+      get, device, "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR");
+  dev->wait_events =
+      DeviceProc<PFN_vkCmdWaitEvents>(get, device, "vkCmdWaitEvents");
+  dev->wait_events2 = DeviceProc<PFN_vkCmdWaitEvents2>(
+      get, device, "vkCmdWaitEvents2", "vkCmdWaitEvents2KHR");
+  dev->set_event2 = DeviceProc<PFN_vkCmdSetEvent2>(
+      get, device, "vkCmdSetEvent2", "vkCmdSetEvent2KHR");
+  dev->blit_image2 = DeviceProc<PFN_vkCmdBlitImage2>(
+      get, device, "vkCmdBlitImage2", "vkCmdBlitImage2KHR");
+  dev->copy_image_to_buffer = DeviceProc<PFN_vkCmdCopyImageToBuffer>(
+      get, device, "vkCmdCopyImageToBuffer");
+  dev->copy_image_to_buffer2 = DeviceProc<PFN_vkCmdCopyImageToBuffer2>(
+      get, device, "vkCmdCopyImageToBuffer2", "vkCmdCopyImageToBuffer2KHR");
+  dev->destroy_sampler =
+      DeviceProc<PFN_vkDestroySampler>(get, device, "vkDestroySampler");
+  dev->destroy_image_view =
+      DeviceProc<PFN_vkDestroyImageView>(get, device, "vkDestroyImageView");
+  dev->update_descriptor_sets = DeviceProc<PFN_vkUpdateDescriptorSets>(
+      get, device, "vkUpdateDescriptorSets");
+  dev->push_descriptor_set = DeviceProc<PFN_vkCmdPushDescriptorSetKHR>(
+      get, device, "vkCmdPushDescriptorSetKHR", "vkCmdPushDescriptorSet");
+  dev->create_update_template =
+      DeviceProc<PFN_vkCreateDescriptorUpdateTemplate>(
+          get, device, "vkCreateDescriptorUpdateTemplate",
+          "vkCreateDescriptorUpdateTemplateKHR");
+  dev->destroy_update_template =
+      DeviceProc<PFN_vkDestroyDescriptorUpdateTemplate>(
+          get, device, "vkDestroyDescriptorUpdateTemplate",
+          "vkDestroyDescriptorUpdateTemplateKHR");
+  dev->update_with_template =
+      DeviceProc<PFN_vkUpdateDescriptorSetWithTemplate>(
+          get, device, "vkUpdateDescriptorSetWithTemplate",
+          "vkUpdateDescriptorSetWithTemplateKHR");
+  dev->push_with_template =
+      DeviceProc<PFN_vkCmdPushDescriptorSetWithTemplateKHR>(
+          get, device, "vkCmdPushDescriptorSetWithTemplateKHR",
+          "vkCmdPushDescriptorSetWithTemplate");
   dev->signal_semaphore = DeviceProc<PFN_vkSignalSemaphore>(
       get, device, "vkSignalSemaphore", "vkSignalSemaphoreKHR");
   dev->destroy_semaphore =
@@ -2449,12 +3067,51 @@ void VulkanEtc2Emulation::RegisterDevice(
                      }),
       state_->devices.end());
   state_->devices.push_back(std::move(dev));
+  g_devices_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
+  std::vector<VkSampler> shifted;
+  {
+    std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+    const auto erase_device = [device](auto* map, auto&& on_erase) {
+      for (auto it = map->begin(); it != map->end();) {
+        if (it->second.device == device) {
+          on_erase(it->second);
+          it = map->erase(it);
+        } else {
+          ++it;
+        }
+      }
+    };
+    for (const auto& [sampler, clamped] : state_->clamped_samplers) {
+      if (clamped.device == device) {
+        state_->RemoveClampedSampler(sampler);
+      }
+    }
+    erase_device(&state_->clamped_samplers,
+                 [&shifted](const State::ClampedSampler& clamped) {
+                   for (const auto& [top, copy] : clamped.shifted) {
+                     shifted.push_back(copy);
+                   }
+                 });
+    erase_device(&state_->top_views, [](const State::TopView&) {});
+    for (auto it = state_->templates.begin(); it != state_->templates.end();) {
+      it = it->second->device == device ? state_->templates.erase(it)
+                                        : std::next(it);
+    }
+    state_->UpdatePairsPossible();
+  }
+  if (const HostDevice* dev = state_->Find(device);
+      dev != nullptr && dev->destroy_sampler != nullptr) {
+    for (VkSampler copy : shifted) {
+      dev->destroy_sampler(device, copy, nullptr);
+    }
+  }
   std::vector<std::unique_ptr<StagingBlock>> doomed;
+  std::vector<VkImage> destroyed;
   EmulatedTextureBytes totals;
   std::uint64_t now = 0;
   {
@@ -2480,6 +3137,9 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
       if (it->second.device == device) {
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        if (it->second.top != 0) {
+          destroyed.push_back(it->first);
+        }
         it = state_->images.erase(it);
       } else {
         ++it;
@@ -2496,6 +3156,7 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
                                std::memory_order_release);
   }
   TraceTextureBytes(totals, now);
+  state_->EraseTopLevels(destroyed.data(), destroyed.size());
   if (const HostDevice* dev = state_->Find(device); dev != nullptr) {
     {
       std::lock_guard<std::mutex> lock(state_->pool_mutex);
@@ -2525,6 +3186,7 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
                        return candidate->device == device;
                      }),
       state_->devices.end());
+  g_devices_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
 VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
@@ -2547,6 +3209,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   std::uint32_t scale = 1;
   if (IsColorFormat(format.etc_format) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
+      create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
       create_info->arrayLayers == 1 && create_info->extent.depth == 1 &&
       create_info->extent.width <= kSmallTextureMaxExtent &&
       create_info->extent.height <= kSmallTextureMaxExtent) {
@@ -2582,6 +3245,8 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   }
   host_info.extent.width *= scale;
   host_info.extent.height *= scale;
+  const std::uint32_t top = TopLevelCount(scale);
+  host_info.mipLevels += top;
   host_info.format = format.host_format;
   VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (transcoded && result != VK_SUCCESS) {
@@ -2614,6 +3279,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.device = device;
       record.format = format;
       record.scale = scale;
+      record.top = top;
       record.width = create_info->extent.width;
       record.height = create_info->extent.height;
       record.bytes = bytes;
@@ -2626,14 +3292,17 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       now = TraceClockNanos();
     }
     TraceTextureBytes(totals, now);
+    if (top > 0) {
+      state_->AddTopLevels(*image, top);
+    }
     if (ShouldLog(transcoded ? &g_transcoded_image_logs : &g_image_logs, 4)) {
       std::fprintf(stderr,
                    "  [vulkan] ETC2 image %ux%u mips=%u format=%d -> host "
-                   "format=%d\n",
+                   "format=%d top=%u\n",
                    create_info->extent.width, create_info->extent.height,
                    create_info->mipLevels,
                    static_cast<int>(create_info->format),
-                   static_cast<int>(format.host_format));
+                   static_cast<int>(format.host_format), top);
     }
   }
   return result;
@@ -2665,6 +3334,7 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
     if (changed) {
       TraceTextureBytes(totals, now);
     }
+    state_->EraseTopLevels(&image, 1);
   }
   dev->destroy_image(device, image, allocator);
 }
@@ -2694,11 +3364,287 @@ VkResult VulkanEtc2Emulation::CreateImageView(
   VkImageViewCreateInfo host_info = *create_info;
   host_info.format = format.host_format;
   ImageRecord record;
-  if (state_->LookupImage(*dev, create_info->image, &record) &&
-      record.transcoded) {
-    BcHostFormat(create_info->format, &host_info.format);
+  if (state_->LookupImage(*dev, create_info->image, &record)) {
+    if (record.transcoded) {
+      BcHostFormat(create_info->format, &host_info.format);
+    }
+    HostLevels(record.top, &host_info.subresourceRange.baseMipLevel,
+               &host_info.subresourceRange.levelCount);
   }
-  return dev->create_image_view(device, &host_info, allocator, view);
+  const VkResult result =
+      dev->create_image_view(device, &host_info, allocator, view);
+  if (result == VK_SUCCESS && record.top > 0 &&
+      create_info->subresourceRange.baseMipLevel == 0) {
+    std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+    state_->top_views[*view] = {device, record.top};
+    state_->UpdatePairsPossible();
+  }
+  return result;
+}
+
+void VulkanEtc2Emulation::DestroyImageView(
+    VkDevice device, VkImageView view, const VkAllocationCallbacks* allocator) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->destroy_image_view == nullptr) {
+    return;
+  }
+  if (view != VK_NULL_HANDLE) {
+    std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+    if (state_->top_views.erase(view) != 0) {
+      state_->UpdatePairsPossible();
+    }
+  }
+  dev->destroy_image_view(device, view, allocator);
+}
+
+VkResult VulkanEtc2Emulation::CreateSampler(
+    VkDevice device, const VkSamplerCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkSampler* sampler) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->create_sampler == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  const VkResult result =
+      dev->create_sampler(device, create_info, allocator, sampler);
+  // Both clamps count the application's levels; an unclamped maxLod and a
+  // minLod of 0 need no shift.
+  if (result != VK_SUCCESS || !dev->emulated || create_info == nullptr ||
+      state_->upscale == 1 ||
+      (create_info->minLod <= 0 && create_info->maxLod >= VK_LOD_CLAMP_NONE)) {
+    return result;
+  }
+  // Extension structs are owned by the caller, so a copy can't be made later.
+  if (create_info->pNext != nullptr) {
+    LogFailure("kept the LOD clamps of a sampler with extension structs");
+    return result;
+  }
+  std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+  State::ClampedSampler& clamped = state_->clamped_samplers[*sampler];
+  if (clamped.device == VK_NULL_HANDLE) {
+    state_->AddClampedSampler(*sampler);
+  }
+  clamped.device = device;
+  clamped.info = *create_info;
+  state_->UpdatePairsPossible();
+  return result;
+}
+
+VkResult VulkanEtc2Emulation::CreateDescriptorSetLayout(
+    VkDevice device, const VkDescriptorSetLayoutCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator, VkDescriptorSetLayout* layout) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->create_descriptor_set_layout == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  const VkResult result = dev->create_descriptor_set_layout(
+      device, create_info, allocator, layout);
+  if (result != VK_SUCCESS || create_info == nullptr ||
+      create_info->pBindings == nullptr ||
+      state_->clamped_count.load(std::memory_order_acquire) == 0) {
+    return result;
+  }
+  std::shared_lock<std::shared_mutex> lock(state_->lod_mutex);
+  for (std::uint32_t index = 0; index < create_info->bindingCount; ++index) {
+    const VkDescriptorSetLayoutBinding& binding = create_info->pBindings[index];
+    if ((binding.descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER &&
+         binding.descriptorType !=
+             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) ||
+        binding.pImmutableSamplers == nullptr) {
+      continue;
+    }
+    for (std::uint32_t element = 0; element < binding.descriptorCount;
+         ++element) {
+      const auto it =
+          state_->clamped_samplers.find(binding.pImmutableSamplers[element]);
+      if (it == state_->clamped_samplers.end() ||
+          (it->second.bound_ways.fetch_or(State::kBoundImmutable,
+                                          std::memory_order_relaxed) &
+           State::kBoundImmutable) != 0 ||
+          !ShouldLog(&state_->bound_logs, State::kBoundLogs)) {
+        continue;
+      }
+      std::fprintf(stderr,
+                   "  [vulkan] sampler lod min=%g max=%g is immutable in a "
+                   "descriptor set layout (binding %u), so it keeps its "
+                   "clamps\n",
+                   it->second.info.minLod, it->second.info.maxLod,
+                   binding.binding);
+    }
+  }
+  return result;
+}
+
+void VulkanEtc2Emulation::DestroySampler(
+    VkDevice device, VkSampler sampler, const VkAllocationCallbacks* allocator) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->destroy_sampler == nullptr) {
+    return;
+  }
+  std::vector<VkSampler> shifted;
+  if (sampler != VK_NULL_HANDLE) {
+    std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+    const auto it = state_->clamped_samplers.find(sampler);
+    if (it != state_->clamped_samplers.end()) {
+      for (const auto& [top, copy] : it->second.shifted) {
+        shifted.push_back(copy);
+      }
+      state_->clamped_samplers.erase(it);
+      state_->RemoveClampedSampler(sampler);
+      state_->UpdatePairsPossible();
+    }
+  }
+  for (VkSampler copy : shifted) {
+    dev->destroy_sampler(device, copy, nullptr);
+  }
+  dev->destroy_sampler(device, sampler, allocator);
+}
+
+void VulkanEtc2Emulation::UpdateDescriptorSets(
+    VkDevice device, std::uint32_t write_count,
+    const VkWriteDescriptorSet* writes, std::uint32_t copy_count,
+    const VkCopyDescriptorSet* copies) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->update_descriptor_sets == nullptr) {
+    return;
+  }
+  std::vector<VkWriteDescriptorSet> scratch;
+  std::vector<std::vector<VkDescriptorImageInfo>> images;
+  dev->update_descriptor_sets(
+      device, write_count,
+      state_->ShiftWriteSamplers(write_count, writes, &scratch, &images),
+      copy_count, copies);
+}
+
+void VulkanEtc2Emulation::CmdPushDescriptorSet(
+    VkDevice device, VkCommandBuffer command_buffer,
+    VkPipelineBindPoint bind_point, VkPipelineLayout layout,
+    std::uint32_t set, std::uint32_t write_count,
+    const VkWriteDescriptorSet* writes) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->push_descriptor_set == nullptr) {
+    return;
+  }
+  std::vector<VkWriteDescriptorSet> scratch;
+  std::vector<std::vector<VkDescriptorImageInfo>> images;
+  dev->push_descriptor_set(
+      command_buffer, bind_point, layout, set, write_count,
+      state_->ShiftWriteSamplers(write_count, writes, &scratch, &images));
+}
+
+namespace {
+
+// Bytes one template entry reads from the update data, 0 when unknown.
+std::size_t TemplateEntryEnd(const VkDescriptorUpdateTemplateEntry& entry) {
+  if (entry.descriptorCount == 0) {
+    return entry.offset;
+  }
+  std::size_t element = 0;
+  switch (entry.descriptorType) {
+    case VK_DESCRIPTOR_TYPE_SAMPLER:
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+      element = sizeof(VkDescriptorImageInfo);
+      break;
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      element = sizeof(VkDescriptorBufferInfo);
+      break;
+    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      element = sizeof(VkBufferView);
+      break;
+    case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+      return entry.offset + entry.descriptorCount;
+    default:
+      return 0;
+  }
+  return entry.offset + (entry.descriptorCount - 1) * entry.stride + element;
+}
+
+}  // namespace
+
+VkResult VulkanEtc2Emulation::CreateDescriptorUpdateTemplate(
+    VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* create_info,
+    const VkAllocationCallbacks* allocator,
+    VkDescriptorUpdateTemplate* update_template) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->create_update_template == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  const VkResult result = dev->create_update_template(device, create_info,
+                                                      allocator, update_template);
+  if (result != VK_SUCCESS || !dev->emulated || create_info == nullptr ||
+      state_->upscale == 1) {
+    return result;
+  }
+  State::TemplateImages images;
+  images.device = device;
+  for (std::uint32_t index = 0; index < create_info->descriptorUpdateEntryCount;
+       ++index) {
+    const VkDescriptorUpdateTemplateEntry& entry =
+        create_info->pDescriptorUpdateEntries[index];
+    const std::size_t end = TemplateEntryEnd(entry);
+    if (end == 0 && entry.descriptorCount != 0) {
+      LogFailure("kept the samplers of a template with unknown descriptors");
+      return result;
+    }
+    images.data_size = std::max(images.data_size, end);
+    if (entry.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+        entry.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
+      images.entries.push_back(entry);
+    }
+  }
+  if (!images.entries.empty()) {
+    std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+    state_->templates[*update_template] =
+        std::make_shared<const State::TemplateImages>(std::move(images));
+  }
+  return result;
+}
+
+void VulkanEtc2Emulation::DestroyDescriptorUpdateTemplate(
+    VkDevice device, VkDescriptorUpdateTemplate update_template,
+    const VkAllocationCallbacks* allocator) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->destroy_update_template == nullptr) {
+    return;
+  }
+  if (update_template != VK_NULL_HANDLE) {
+    std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
+    state_->templates.erase(update_template);
+  }
+  dev->destroy_update_template(device, update_template, allocator);
+}
+
+void VulkanEtc2Emulation::UpdateDescriptorSetWithTemplate(
+    VkDevice device, VkDescriptorSet set,
+    VkDescriptorUpdateTemplate update_template, const void* data) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->update_with_template == nullptr) {
+    return;
+  }
+  std::vector<std::uint8_t> scratch;
+  dev->update_with_template(
+      device, set, update_template,
+      state_->ShiftTemplateSamplers(update_template, data, &scratch));
+}
+
+void VulkanEtc2Emulation::CmdPushDescriptorSetWithTemplate(
+    VkDevice device, VkCommandBuffer command_buffer,
+    VkDescriptorUpdateTemplate update_template, VkPipelineLayout layout,
+    std::uint32_t set, const void* data) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->push_with_template == nullptr) {
+    return;
+  }
+  std::vector<std::uint8_t> scratch;
+  dev->push_with_template(
+      command_buffer, update_template, layout, set,
+      state_->ShiftTemplateSamplers(update_template, data, &scratch));
 }
 
 std::uint64_t Etc2FailureCount(const char* message) {
@@ -2865,54 +3811,13 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
                               region_count, regions);
     return;
   }
-  std::vector<GpuCopy<VkBufferImageCopy>> copies;
-  if (state_->PlanGpuUpload(*dev, command_buffer, record, source, destination,
-                            region_count, regions, &copies)) {
-    for (const GpuCopy<VkBufferImageCopy>& copy : copies) {
-      dev->copy_buffer_to_image(
-          command_buffer, copy.staging, destination, layout,
-          static_cast<std::uint32_t>(copy.regions.size()), copy.regions.data());
-    }
-    return;
-  }
-  if (record.scale > 1 &&
-      state_->PlanScaledGpuUpload(*dev, command_buffer, record, source,
-                                  destination, region_count, regions,
-                                  &copies)) {
-    for (const GpuCopy<VkBufferImageCopy>& copy : copies) {
-      dev->copy_buffer_to_image(
-          command_buffer, copy.staging, destination, layout,
-          static_cast<std::uint32_t>(copy.regions.size()), copy.regions.data());
-    }
-    return;
-  }
-  if (record.transcoded) {
-    LogFailure("skipped an upload into a compressed image");
-    return;
-  }
-  std::vector<VkBufferImageCopy> rewritten;
-  std::vector<PendingUpload> uploads;
-  VkDeviceSize total = 0;
-  Staging staging;
-  if (!PlanRegions(record, device, source, destination, region_count, regions,
-                   &rewritten, &uploads, &total)) {
-    LogFailure("skipped an upload with an unsupported region");
-    return;
-  }
-  if (!state_->AcquireStaging(*dev, total, &staging)) {
-    LogFailure("could not allocate a host-visible staging buffer");
-    return;
-  }
-  for (PendingUpload& upload : uploads) {
-    upload.target = staging.block->mapped + staging.offset + upload.target_offset;
-  }
-  for (VkBufferImageCopy& region : rewritten) {
-    region.bufferOffset += staging.offset;
-  }
-  state_->Record(command_buffer, std::move(uploads), staging);
-  RecordHostWriteBarrier(*dev, command_buffer);
-  dev->copy_buffer_to_image(command_buffer, staging.block->buffer, destination,
-                            layout, region_count, rewritten.data());
+  state_->UploadImage(
+      *dev, command_buffer, record, source, destination, region_count, regions,
+      [&](VkBuffer staging, const std::vector<VkBufferImageCopy>& host) {
+        dev->copy_buffer_to_image(command_buffer, staging, destination, layout,
+                                  static_cast<std::uint32_t>(host.size()),
+                                  host.data());
+      });
 }
 
 void VulkanEtc2Emulation::CmdCopyBufferToImage2(
@@ -2928,63 +3833,16 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
     dev->copy_buffer_to_image2(command_buffer, info);
     return;
   }
-  std::vector<GpuCopy<VkBufferImageCopy2>> copies;
-  if (state_->PlanGpuUpload(*dev, command_buffer, record, info->srcBuffer,
-                            info->dstImage, info->regionCount, info->pRegions,
-                            &copies)) {
-    for (const GpuCopy<VkBufferImageCopy2>& copy : copies) {
-      VkCopyBufferToImageInfo2 host_info = *info;
-      host_info.srcBuffer = copy.staging;
-      host_info.regionCount = static_cast<std::uint32_t>(copy.regions.size());
-      host_info.pRegions = copy.regions.data();
-      dev->copy_buffer_to_image2(command_buffer, &host_info);
-    }
-    return;
-  }
-  if (record.scale > 1 &&
-      state_->PlanScaledGpuUpload(*dev, command_buffer, record,
-                                  info->srcBuffer, info->dstImage,
-                                  info->regionCount, info->pRegions,
-                                  &copies)) {
-    for (const GpuCopy<VkBufferImageCopy2>& copy : copies) {
-      VkCopyBufferToImageInfo2 host_info = *info;
-      host_info.srcBuffer = copy.staging;
-      host_info.regionCount = static_cast<std::uint32_t>(copy.regions.size());
-      host_info.pRegions = copy.regions.data();
-      dev->copy_buffer_to_image2(command_buffer, &host_info);
-    }
-    return;
-  }
-  if (record.transcoded) {
-    LogFailure("skipped an upload into a compressed image");
-    return;
-  }
-  std::vector<VkBufferImageCopy2> rewritten;
-  std::vector<PendingUpload> uploads;
-  VkDeviceSize total = 0;
-  Staging staging;
-  if (!PlanRegions(record, device, info->srcBuffer, info->dstImage,
-                   info->regionCount, info->pRegions, &rewritten, &uploads,
-                   &total)) {
-    LogFailure("skipped an upload with an unsupported region");
-    return;
-  }
-  if (!state_->AcquireStaging(*dev, total, &staging)) {
-    LogFailure("could not allocate a host-visible staging buffer");
-    return;
-  }
-  for (PendingUpload& upload : uploads) {
-    upload.target = staging.block->mapped + staging.offset + upload.target_offset;
-  }
-  for (VkBufferImageCopy2& region : rewritten) {
-    region.bufferOffset += staging.offset;
-  }
-  state_->Record(command_buffer, std::move(uploads), staging);
-  RecordHostWriteBarrier(*dev, command_buffer);
-  VkCopyBufferToImageInfo2 host_info = *info;
-  host_info.srcBuffer = staging.block->buffer;
-  host_info.pRegions = rewritten.data();
-  dev->copy_buffer_to_image2(command_buffer, &host_info);
+  state_->UploadImage(
+      *dev, command_buffer, record, info->srcBuffer, info->dstImage,
+      info->regionCount, info->pRegions,
+      [&](VkBuffer staging, const std::vector<VkBufferImageCopy2>& host) {
+        VkCopyBufferToImageInfo2 host_info = *info;
+        host_info.srcBuffer = staging;
+        host_info.regionCount = static_cast<std::uint32_t>(host.size());
+        host_info.pRegions = host.data();
+        dev->copy_buffer_to_image2(command_buffer, &host_info);
+      });
 }
 
 // Re-encodes the compressed blocks kept for a scaled source into a BC
@@ -3072,7 +3930,8 @@ void VulkanEtc2Emulation::State::TranscodeCopy(
                                 pieces.end());
     has_commands.store(true, std::memory_order_release);
   }
-  for (const GpuCopy<VkBufferImageCopy>& copy : copies) {
+  for (GpuCopy<VkBufferImageCopy>& copy : copies) {
+    ShiftUploadLevels(&copy.regions, destination_record.mip_offset);
     dev.copy_buffer_to_image(command_buffer, copy.staging, destination,
                              destination_layout,
                              static_cast<std::uint32_t>(copy.regions.size()),
@@ -3201,7 +4060,8 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
                                 pieces.end());
     has_commands.store(true, std::memory_order_release);
   }
-  for (const GpuCopy<VkBufferImageCopy>& copy : copies) {
+  for (GpuCopy<VkBufferImageCopy>& copy : copies) {
+    ShiftUploadLevels(&copy.regions, destination_record.mip_offset);
     dev.copy_buffer_to_image(command_buffer, copy.staging, destination,
                              destination_layout,
                              static_cast<std::uint32_t>(copy.regions.size()),
@@ -3272,6 +4132,8 @@ bool VulkanEtc2Emulation::State::CopyScaledBlocks(
                                             destination_end.y -
                                                 copy.dstOffset.y)),
         1};
+    copy.srcSubresource.mipLevel += source_record.mip_offset;
+    copy.dstSubresource.mipLevel += destination_record.mip_offset;
     copies.push_back(copy);
   }
   if (!kept.empty()) {
@@ -3301,17 +4163,157 @@ bool VulkanEtc2Emulation::State::RedirectImageCopy(
   const bool source_found = LookupImage(dev, source, &source_record);
   const bool destination_found =
       LookupImage(dev, destination, &destination_record);
+  if (regions == nullptr || (!source_found && !destination_found)) {
+    return false;
+  }
+  if (source_record.top != 0 || destination_record.top != 0) {
+    CopyTopImageRegions(dev, command_buffer, source, source_layout,
+                        source_record, source_found, destination,
+                        destination_layout, destination_record,
+                        destination_found, count, regions);
+    return true;
+  }
+  return RedirectRecords(dev, command_buffer, source, source_layout,
+                         source_record, source_found, destination,
+                         destination_layout, destination_record,
+                         destination_found, count, regions);
+}
+
+namespace {
+
+// Clamps a copy to the edges of both mips. A side without a record is left
+// as given.
+bool ClampToMips(const ImageRecord* source, const ImageRecord* destination,
+                 VkImageCopy* copy) {
+  const auto clamp = [](const ImageRecord* record,
+                        const VkImageSubresourceLayers& layers,
+                        const VkOffset3D& offset, VkExtent3D* extent) {
+    std::uint32_t texels = 0;
+    std::uint32_t start = 0;
+    std::uint32_t end = 0;
+    if (record == nullptr) {
+      return true;
+    }
+    if (!ScaledAxis(record->width, 1, layers.mipLevel, offset.x,
+                    extent->width, &texels, &start, &end)) {
+      return false;
+    }
+    extent->width = end - start;
+    if (!ScaledAxis(record->height, 1, layers.mipLevel, offset.y,
+                    extent->height, &texels, &start, &end)) {
+      return false;
+    }
+    extent->height = end - start;
+    return true;
+  };
+  VkExtent3D source_extent = copy->extent;
+  VkExtent3D destination_extent = copy->extent;
+  if (!clamp(source, copy->srcSubresource, copy->srcOffset, &source_extent) ||
+      !clamp(destination, copy->dstSubresource, copy->dstOffset,
+             &destination_extent)) {
+    return false;
+  }
+  copy->extent.width = std::min(source_extent.width, destination_extent.width);
+  copy->extent.height =
+      std::min(source_extent.height, destination_extent.height);
+  return true;
+}
+
+}  // namespace
+
+// An upscaled image's own levels copy as unscaled ones below its top levels.
+// A copy into level 0 also refills the destination's top levels: copied from
+// the source's when it has the same ones, scaled from the copy otherwise.
+void VulkanEtc2Emulation::State::CopyTopImageRegions(
+    const HostDevice& dev, VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, const ImageRecord& source_record,
+    bool source_found, VkImage destination, VkImageLayout destination_layout,
+    const ImageRecord& destination_record, bool destination_found,
+    std::uint32_t count, const VkImageCopy* regions) {
+  const ImageRecord source_native = NativeRecord(source_record);
+  const ImageRecord destination_native = NativeRecord(destination_record);
+  std::vector<VkImageCopy> native;
+  native.reserve(count);
+  for (std::uint32_t index = 0; index < count; ++index) {
+    VkImageCopy copy = regions[index];
+    if (!ClampToMips(source_found ? &source_record : nullptr,
+                     destination_found ? &destination_record : nullptr,
+                     &copy)) {
+      LogFailure("skipped an image copy with an unsupported region");
+      continue;
+    }
+    native.push_back(copy);
+  }
+  if (native.empty()) {
+    return;
+  }
+  const auto native_count = static_cast<std::uint32_t>(native.size());
+  if (!RedirectRecords(dev, command_buffer, source, source_layout,
+                       source_native, source_found, destination,
+                       destination_layout, destination_native,
+                       destination_found, native_count, native.data())) {
+    std::vector<VkImageCopy> host = native;
+    for (VkImageCopy& copy : host) {
+      copy.srcSubresource.mipLevel += source_native.mip_offset;
+      copy.dstSubresource.mipLevel += destination_native.mip_offset;
+    }
+    if (dev.copy_image != nullptr) {
+      dev.copy_image(command_buffer, source, source_layout, destination,
+                     destination_layout, native_count, host.data());
+    }
+  }
+  for (const VkImageCopy& region : native) {
+    if (region.dstSubresource.mipLevel != 0 || destination_record.top == 0) {
+      continue;
+    }
+    const bool same_top =
+        source_record.top == destination_record.top &&
+        region.srcSubresource.mipLevel == 0 &&
+        source_record.transcoded == destination_record.transcoded;
+    // Rebuilding BC top levels re-encodes the source's kept blocks; without
+    // them the top levels keep their old content. Logged once, not per level.
+    if (!same_top && destination_record.transcoded && source_found &&
+        !KeepsMipBlocks(source_record, region.srcSubresource.mipLevel)) {
+      LogFailure("skipped a copy from a mip too large to keep");
+      continue;
+    }
+    // The native pass already logged an unknown source.
+    if (!same_top && destination_record.transcoded && !source_found) {
+      continue;
+    }
+    for (std::uint32_t level = 0; level < destination_record.top; ++level) {
+      const ImageRecord destination_top = TopRecord(destination_record, level);
+      if (same_top) {
+        CopyScaledBlocks(dev, command_buffer, source, source_layout,
+                         TopRecord(source_record, level), destination,
+                         destination_layout, destination_top, 1, &region);
+      } else {
+        RedirectRecords(dev, command_buffer, source, source_layout,
+                        source_native, source_found, destination,
+                        destination_layout, destination_top,
+                        destination_found, 1, &region);
+      }
+    }
+  }
+}
+
+bool VulkanEtc2Emulation::State::RedirectRecords(
+    const HostDevice& dev, VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, const ImageRecord& source_record,
+    bool source_found, VkImage destination, VkImageLayout destination_layout,
+    const ImageRecord& destination_record, bool destination_found,
+    std::uint32_t count, const VkImageCopy* regions) {
   const bool source_scaled = source_record.scale > 1;
   const bool destination_scaled = destination_record.scale > 1;
   const bool decompress = source_record.transcoded && destination_found &&
                           !destination_record.transcoded;
-  if (regions == nullptr || (!source_found && !destination_found)) {
-    return false;
-  }
+  // Kept blocks follow copies between BC images below top levels too.
+  const bool shifted =
+      source_record.mip_offset != 0 || destination_record.mip_offset != 0;
   if (destination_record.transcoded) {
     if (source_record.transcoded &&
         source_record.scale == destination_record.scale) {
-      return source_scaled &&
+      return (source_scaled || shifted) &&
              CopyScaledBlocks(dev, command_buffer, source, source_layout,
                               source_record, destination, destination_layout,
                               destination_record, count, regions);
@@ -3366,6 +4368,8 @@ bool VulkanEtc2Emulation::State::RedirectImageCopy(
     clamp(source_record, region.srcSubresource.mipLevel, &blit.srcOffsets[1]);
     clamp(destination_record, region.dstSubresource.mipLevel,
           &blit.dstOffsets[1]);
+    blit.srcSubresource.mipLevel += source_record.mip_offset;
+    blit.dstSubresource.mipLevel += destination_record.mip_offset;
     blits.push_back(blit);
   }
   const bool same_scale = source_record.scale == destination_record.scale;
@@ -3419,6 +4423,244 @@ void VulkanEtc2Emulation::CmdCopyImage2(VkDevice device,
   }
   dev->copy_image2(command_buffer, info);
 }
+
+namespace {
+
+// The app's regions, or a copy in `scratch` with `shift` applied to each.
+template <typename Region, typename Shift>
+const Region* ShiftRegions(std::uint32_t count, const Region* regions,
+                           bool any, std::vector<Region>* scratch,
+                           Shift shift) {
+  if (!any || count == 0 || regions == nullptr) {
+    return regions;
+  }
+  scratch->assign(regions, regions + count);
+  for (Region& region : *scratch) {
+    shift(&region);
+  }
+  return scratch->data();
+}
+
+}  // namespace
+
+void VulkanEtc2Emulation::CmdCopyImageToBuffer(
+    VkDevice device, VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout layout, VkBuffer destination, std::uint32_t region_count,
+    const VkBufferImageCopy* regions) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->copy_image_to_buffer == nullptr) {
+    return;
+  }
+  const std::uint32_t top = state_->TopLevelsOf(source);
+  std::vector<VkBufferImageCopy> shifted;
+  dev->copy_image_to_buffer(
+      command_buffer, source, layout, destination, region_count,
+      ShiftRegions(region_count, regions, top != 0, &shifted,
+                   [top](VkBufferImageCopy* region) {
+                     region->imageSubresource.mipLevel += top;
+                   }));
+}
+
+void VulkanEtc2Emulation::CmdCopyImageToBuffer2(
+    VkDevice device, VkCommandBuffer command_buffer,
+    const VkCopyImageToBufferInfo2* info) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->copy_image_to_buffer2 == nullptr) {
+    return;
+  }
+  const std::uint32_t top =
+      info == nullptr ? 0 : state_->TopLevelsOf(info->srcImage);
+  if (top == 0) {
+    dev->copy_image_to_buffer2(command_buffer, info);
+    return;
+  }
+  std::vector<VkBufferImageCopy2> shifted;
+  VkCopyImageToBufferInfo2 copy = *info;
+  copy.pRegions = ShiftRegions(info->regionCount, info->pRegions, true,
+                               &shifted, [top](VkBufferImageCopy2* region) {
+                                 region->imageSubresource.mipLevel += top;
+                               });
+  dev->copy_image_to_buffer2(command_buffer, &copy);
+}
+
+void VulkanEtc2Emulation::CmdBlitImage(
+    VkDevice device, VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t region_count,
+    const VkImageBlit* regions, VkFilter filter) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->blit_image == nullptr) {
+    return;
+  }
+  const std::uint32_t source_top = state_->TopLevelsOf(source);
+  const std::uint32_t destination_top = state_->TopLevelsOf(destination);
+  std::vector<VkImageBlit> shifted;
+  dev->blit_image(
+      command_buffer, source, source_layout, destination, destination_layout,
+      region_count,
+      ShiftRegions(region_count, regions,
+                   source_top != 0 || destination_top != 0, &shifted,
+                   [&](VkImageBlit* region) {
+                     region->srcSubresource.mipLevel += source_top;
+                     region->dstSubresource.mipLevel += destination_top;
+                   }),
+      filter);
+}
+
+void VulkanEtc2Emulation::CmdBlitImage2(VkDevice device,
+                                        VkCommandBuffer command_buffer,
+                                        const VkBlitImageInfo2* info) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->blit_image2 == nullptr) {
+    return;
+  }
+  const std::uint32_t source_top =
+      info == nullptr ? 0 : state_->TopLevelsOf(info->srcImage);
+  const std::uint32_t destination_top =
+      info == nullptr ? 0 : state_->TopLevelsOf(info->dstImage);
+  if (source_top == 0 && destination_top == 0) {
+    dev->blit_image2(command_buffer, info);
+    return;
+  }
+  std::vector<VkImageBlit2> shifted;
+  VkBlitImageInfo2 blit = *info;
+  blit.pRegions = ShiftRegions(info->regionCount, info->pRegions, true,
+                               &shifted, [&](VkImageBlit2* region) {
+                                 region->srcSubresource.mipLevel += source_top;
+                                 region->dstSubresource.mipLevel +=
+                                     destination_top;
+                               });
+  dev->blit_image2(command_buffer, &blit);
+}
+
+void VulkanEtc2Emulation::CmdPipelineBarrier(
+    VkDevice device, VkCommandBuffer command_buffer,
+    VkPipelineStageFlags source_stage, VkPipelineStageFlags destination_stage,
+    VkDependencyFlags flags, std::uint32_t memory_count,
+    const VkMemoryBarrier* memory, std::uint32_t buffer_count,
+    const VkBufferMemoryBarrier* buffers, std::uint32_t image_count,
+    const VkImageMemoryBarrier* images) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->pipeline_barrier == nullptr) {
+    return;
+  }
+  std::vector<VkImageMemoryBarrier> remapped;
+  dev->pipeline_barrier(command_buffer, source_stage, destination_stage, flags,
+                        memory_count, memory, buffer_count, buffers,
+                        image_count,
+                        state_->RemapBarriers(image_count, images, &remapped));
+}
+
+namespace {
+
+const VkDependencyInfo* RemapDependency(VulkanEtc2Emulation::State* state,
+                                        const VkDependencyInfo* dependency,
+                                        VkDependencyInfo* scratch,
+                                        std::vector<VkImageMemoryBarrier2>* barriers);
+
+}  // namespace
+
+void VulkanEtc2Emulation::CmdPipelineBarrier2(
+    VkDevice device, VkCommandBuffer command_buffer,
+    const VkDependencyInfo* dependency) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->pipeline_barrier2 == nullptr) {
+    return;
+  }
+  VkDependencyInfo remapped{};
+  std::vector<VkImageMemoryBarrier2> barriers;
+  dev->pipeline_barrier2(
+      command_buffer,
+      RemapDependency(state_, dependency, &remapped, &barriers));
+}
+
+void VulkanEtc2Emulation::CmdWaitEvents(
+    VkDevice device, VkCommandBuffer command_buffer, std::uint32_t event_count,
+    const VkEvent* events, VkPipelineStageFlags source_stage,
+    VkPipelineStageFlags destination_stage, std::uint32_t memory_count,
+    const VkMemoryBarrier* memory, std::uint32_t buffer_count,
+    const VkBufferMemoryBarrier* buffers, std::uint32_t image_count,
+    const VkImageMemoryBarrier* images) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->wait_events == nullptr) {
+    return;
+  }
+  std::vector<VkImageMemoryBarrier> remapped;
+  dev->wait_events(command_buffer, event_count, events, source_stage,
+                   destination_stage, memory_count, memory, buffer_count,
+                   buffers, image_count,
+                   state_->RemapBarriers(image_count, images, &remapped));
+}
+
+void VulkanEtc2Emulation::CmdWaitEvents2(
+    VkDevice device, VkCommandBuffer command_buffer, std::uint32_t event_count,
+    const VkEvent* events, const VkDependencyInfo* dependencies) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->wait_events2 == nullptr) {
+    return;
+  }
+  if (dependencies == nullptr ||
+      state_->top_images.load(std::memory_order_acquire) == 0) {
+    dev->wait_events2(command_buffer, event_count, events, dependencies);
+    return;
+  }
+  // Copied only once a dependency names an upscaled image.
+  std::vector<VkDependencyInfo> infos;
+  std::vector<std::vector<VkImageMemoryBarrier2>> barriers;
+  for (std::uint32_t index = 0; index < event_count; ++index) {
+    VkDependencyInfo remapped{};
+    std::vector<VkImageMemoryBarrier2> local;
+    if (RemapDependency(state_, &dependencies[index], &remapped, &local) ==
+        &dependencies[index]) {
+      continue;
+    }
+    if (infos.empty()) {
+      infos.assign(dependencies, dependencies + event_count);
+      barriers.resize(event_count);
+    }
+    // Moving keeps the buffer `remapped` points at.
+    barriers[index] = std::move(local);
+    infos[index] = remapped;
+  }
+  dev->wait_events2(command_buffer, event_count, events,
+                    infos.empty() ? dependencies : infos.data());
+}
+
+void VulkanEtc2Emulation::CmdSetEvent2(VkDevice device,
+                                       VkCommandBuffer command_buffer,
+                                       VkEvent event,
+                                       const VkDependencyInfo* dependency) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->set_event2 == nullptr) {
+    return;
+  }
+  VkDependencyInfo remapped{};
+  std::vector<VkImageMemoryBarrier2> barriers;
+  dev->set_event2(command_buffer, event,
+                  RemapDependency(state_, dependency, &remapped, &barriers));
+}
+
+namespace {
+
+const VkDependencyInfo* RemapDependency(VulkanEtc2Emulation::State* state,
+                                        const VkDependencyInfo* dependency,
+                                        VkDependencyInfo* scratch,
+                                        std::vector<VkImageMemoryBarrier2>* barriers) {
+  if (dependency == nullptr) {
+    return dependency;
+  }
+  const VkImageMemoryBarrier2* remapped = state->RemapBarriers(
+      dependency->imageMemoryBarrierCount, dependency->pImageMemoryBarriers,
+      barriers);
+  if (remapped == dependency->pImageMemoryBarriers) {
+    return dependency;
+  }
+  *scratch = *dependency;
+  scratch->pImageMemoryBarriers = remapped;
+  return scratch;
+}
+
+}  // namespace
 
 void VulkanEtc2Emulation::CmdExecuteCommands(
     VkDevice device, VkCommandBuffer command_buffer, std::uint32_t count,
@@ -3500,7 +4742,8 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
     if (decoder->MeasureSpeed(queue, queue_family, dev->memory, encode,
                               &speed, &error)) {
       dev->speed = speed;
-      dev->adaptive_upscale = AdaptiveSmallTextureUpscale(speed.upscale_ns);
+      dev->adaptive_upscale =
+          AdaptiveSmallTextureUpscale(speed.upscale_ns, speed.transcode_ns);
       std::fprintf(stderr,
                    "  [vulkan] BC encode speed: transcode %.1f ns/block, "
                    "upscale %.1f ns/block%s; small texture upscale %s%ux; "

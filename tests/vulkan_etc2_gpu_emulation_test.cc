@@ -139,9 +139,15 @@ double Psnr(const UploadCase& c, const std::vector<std::uint8_t>& a,
                   : 10 * std::log10(peak * peak / (sum / count));
 }
 
-void ImageBarrier(const VulkanTestDevice& vk, VkCommandBuffer command_buffer,
-                  VkImage image, std::uint32_t layers, VkImageLayout from,
-                  VkImageLayout to, VkAccessFlags source_access,
+VulkanEtc2Emulation* Emu(VulkanEtc2Emulation& emulation) { return &emulation; }
+VulkanEtc2Emulation* Emu(VulkanEtc2Emulation* emulation) { return emulation; }
+
+// Goes through the emulation, as the app's barriers do, so a barrier on an
+// upscaled image reaches its host levels.
+void ImageBarrier(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
+                  VkCommandBuffer command_buffer, VkImage image,
+                  std::uint32_t layers, VkImageLayout from, VkImageLayout to,
+                  VkAccessFlags source_access,
                   VkAccessFlags destination_access, std::uint32_t mip = 0) {
   VkImageMemoryBarrier barrier{};
   barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -153,9 +159,10 @@ void ImageBarrier(const VulkanTestDevice& vk, VkCommandBuffer command_buffer,
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = image;
   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, layers};
-  vk.Device<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(
-      command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  emulation->CmdPipelineBarrier(vk.device, command_buffer,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                                0, nullptr, 1, &barrier);
 }
 
 std::vector<std::uint8_t> DecodeOnCpu(const UploadCase& c,
@@ -265,7 +272,7 @@ void ExpectGpuUploadMatchesCpu(const UploadCase& c) {
     BindAndMap(vk, &readback);
 
     TestCommands commands = BeginTestCommands(vk);
-    ImageBarrier(vk, commands.buffer, image, c.layers,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image, c.layers,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -285,7 +292,7 @@ void ExpectGpuUploadMatchesCpu(const UploadCase& c) {
         vk.device, commands.buffer, source.buffer, image,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         static_cast<std::uint32_t>(regions.size()), regions.data());
-    ImageBarrier(vk, commands.buffer, image, c.layers,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image, c.layers,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -514,7 +521,7 @@ void DestroyEtcSource(VulkanEtc2Emulation* emulation,
 void UploadLevel(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
                  VkCommandBuffer command_buffer, VkBuffer source,
                  VkImage image, std::uint32_t size) {
-  ImageBarrier(vk, command_buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+  ImageBarrier(Emu(emulation), vk, command_buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                VK_ACCESS_TRANSFER_WRITE_BIT);
   VkBufferImageCopy region{};
@@ -523,7 +530,7 @@ void UploadLevel(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
   emulation->CmdCopyBufferToImage(vk.device, command_buffer, source, image,
                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                   &region);
-  ImageBarrier(vk, command_buffer, image, 1,
+  ImageBarrier(Emu(emulation), vk, command_buffer, image, 1,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -573,7 +580,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAnUpscaledImageIntoACompressedOne) {
     ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, upload.buffer));
 
     TestCommands copy = BeginTestCommands(vk);
-    ImageBarrier(vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 2);
     VkImageCopy region{};
@@ -583,7 +590,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAnUpscaledImageIntoACompressedOne) {
     emulation.CmdCopyImage(vk.device, copy.buffer, placeholder.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, full.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, copy.buffer, full.image, 1,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
@@ -661,7 +668,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAnUpscaledImageUploadedInTheSameCommands)
     TestCommands copy = BeginTestCommands(vk);
     UploadLevel(&emulation, vk, copy.buffer, second.buffer, placeholder.image,
                 32);
-    ImageBarrier(vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 2);
     VkImageCopy region{};
@@ -671,7 +678,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAnUpscaledImageUploadedInTheSameCommands)
     emulation.CmdCopyImage(vk.device, copy.buffer, placeholder.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, full.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, copy.buffer, full.image, 1,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
@@ -743,7 +750,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesACompressedImageIntoADecodedOne) {
     TestCommands commands = BeginTestCommands(vk);
     UploadLevel(&emulation, vk, commands.buffer, source.buffer,
                 compressed.image, 128);
-    ImageBarrier(vk, commands.buffer, decoded.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, decoded.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -754,7 +761,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesACompressedImageIntoADecodedOne) {
     emulation.CmdCopyImage(vk.device, commands.buffer, compressed.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, decoded.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, commands.buffer, decoded.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, decoded.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -868,8 +875,10 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesASmallUploadIntoBc7) {
     const std::uint32_t host = 32 * kDefaultSmallTextureUpscale;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 2);
+    // Two top levels, 128 and 64, above the image's own 32 and 16.
     const VkDeviceSize level0 = VkDeviceSize{host / 4} * (host / 4) * 16;
-    EXPECT_EQ(emulation.TextureBytes().decoded, level0 + level0 / 4);
+    EXPECT_EQ(emulation.TextureBytes().decoded,
+              level0 + level0 / 4 + level0 / 16 + level0 / 64);
     const HostBuffer source = CreateRandomEtcSource(&emulation, vk, 32);
     HostBuffer readback =
         CreateHostBuffer(vk, level0, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -923,7 +932,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesASmallUploadIntoBc7) {
 void UploadMip(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
                VkCommandBuffer command_buffer, VkBuffer source, VkImage image,
                std::uint32_t mip, std::uint32_t size) {
-  ImageBarrier(vk, command_buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+  ImageBarrier(Emu(emulation), vk, command_buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                VK_ACCESS_TRANSFER_WRITE_BIT, mip);
   VkBufferImageCopy region{};
@@ -932,7 +941,7 @@ void UploadMip(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
   emulation->CmdCopyBufferToImage(vk.device, command_buffer, source, image,
                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                   &region);
-  ImageBarrier(vk, command_buffer, image, 1,
+  ImageBarrier(Emu(emulation), vk, command_buffer, image, 1,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, mip);
@@ -1144,7 +1153,7 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsEveryMipOfEachFormatAndShapeInBc) {
 
         TestCommands commands = BeginTestCommands(vk);
         for (std::uint32_t mip = 0; mip < mips; ++mip) {
-          ImageBarrier(vk, commands.buffer, image, shape.layers,
+          ImageBarrier(Emu(emulation), vk, commands.buffer, image, shape.layers,
                        VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                        VK_ACCESS_TRANSFER_WRITE_BIT, mip);
@@ -1157,7 +1166,7 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsEveryMipOfEachFormatAndShapeInBc) {
                                          source.buffer, image,
                                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                          1, &region);
-          ImageBarrier(vk, commands.buffer, image, shape.layers,
+          ImageBarrier(Emu(emulation), vk, commands.buffer, image, shape.layers,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1205,8 +1214,9 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsEveryMipOfEachFormatAndShapeInBc) {
   CloseTestDevices(&devices);
 }
 
-// A mip uploaded before level 0 is encoded from its own blocks.
-TEST(VulkanEtc2GpuEmulationTest, UpscalesAMipUploadedBeforeLevelZeroIntoBc7) {
+// A mip uploaded before level 0 keeps its own blocks, at its own size below
+// the two top levels.
+TEST(VulkanEtc2GpuEmulationTest, EncodesAMipUploadedBeforeLevelZeroIntoBc7) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
     GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
@@ -1221,18 +1231,17 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAMipUploadedBeforeLevelZeroIntoBc7) {
                              vk.get_device_proc_addr, false, true);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const std::uint32_t host = 16 * kDefaultSmallTextureUpscale;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 2);
     const HostBuffer level1 = CreateRandomEtcSource(&emulation, vk, 16);
-    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(host),
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(16),
                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     BindAndMap(vk, &readback);
 
     TestCommands commands = BeginTestCommands(vk);
     UploadMip(&emulation, vk, commands.buffer, level1.buffer, image.image, 1,
               16);
-    ReadMipBc7(vk, commands.buffer, image.image, 1, host, readback.buffer, 0);
+    ReadMipBc7(vk, commands.buffer, image.image, 3, 16, readback.buffer, 0);
     HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT);
     vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
@@ -1244,16 +1253,12 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAMipUploadedBeforeLevelZeroIntoBc7) {
     small.height = 16;
     const std::vector<std::uint8_t> decoded =
         DecodeOnCpu(small, static_cast<std::uint8_t*>(level1.mapped));
-    std::vector<std::uint8_t> expected(std::size_t{host} * host * 4);
-    UpscaleRgba(decoded.data(), 16, 16, 16 * 4, host, host, expected.data());
-    UploadCase scaled = small;
-    scaled.width = host;
-    scaled.height = host;
-    EXPECT_GE(Psnr(scaled,
+    // As KeepsAChainUploadedInOneCopyInBc7: random blocks in BC7.
+    EXPECT_GE(Psnr(small,
                    DecodeBcReadback(
-                       scaled, static_cast<std::uint8_t*>(readback.mapped)),
-                   expected),
-              30.0);
+                       small, static_cast<std::uint8_t*>(readback.mapped)),
+                   decoded),
+              21.0);
 
     emulation.ReleaseCommandBuffer(commands.buffer);
     DestroyTestCommands(vk, commands);
@@ -1317,7 +1322,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPlaceholderChainIntoTheTailMips) {
     TestCommands copy = BeginTestCommands(vk);
     for (std::uint32_t mip = 0; mip < kPlaceholderMips; ++mip) {
       const std::uint32_t size = kPlaceholder >> mip;
-      ImageBarrier(vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+      ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                    VK_ACCESS_TRANSFER_WRITE_BIT, mip + kTail);
       VkImageCopy region{};
@@ -1327,7 +1332,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPlaceholderChainIntoTheTailMips) {
       emulation.CmdCopyImage(vk.device, copy.buffer, placeholder.image,
                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, full.image,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-      ImageBarrier(vk, copy.buffer, full.image, 1,
+      ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
@@ -1405,17 +1410,19 @@ HostBuffer CreateRandomEtcChain(VulkanEtc2Emulation* emulation,
   return source;
 }
 
-// Uploads a whole chain in one copy and reads every mip back as BC7. The host
-// size of a mip is `host_size >> mip`.
+// Uploads a whole chain in one copy and reads every host level back as BC7:
+// the `top` levels above the chain, then the chain. The host size of a level
+// is `host_size >> level`.
 void UploadChainInOneCopy(VulkanEtc2Emulation* emulation,
                           const VulkanTestDevice& vk, VkImage image,
                           const HostBuffer& source,
                           const std::vector<VkBufferImageCopy>& regions,
                           std::uint32_t host_size, HostBuffer* readback,
-                          std::vector<VkDeviceSize>* readback_offsets) {
+                          std::vector<VkDeviceSize>* readback_offsets,
+                          std::uint32_t top = 0) {
   TestCommands commands = BeginTestCommands(vk);
   for (const VkBufferImageCopy& region : regions) {
-    ImageBarrier(vk, commands.buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, region.imageSubresource.mipLevel);
   }
@@ -1423,19 +1430,21 @@ void UploadChainInOneCopy(VulkanEtc2Emulation* emulation,
       vk.device, commands.buffer, source.buffer, image,
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
       static_cast<std::uint32_t>(regions.size()), regions.data());
-  VkDeviceSize offset = 0;
   for (const VkBufferImageCopy& region : regions) {
-    const std::uint32_t mip = region.imageSubresource.mipLevel;
-    ImageBarrier(vk, commands.buffer, image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                 mip);
-    ReadMipBc7(vk, commands.buffer, image, mip,
-               std::max<std::uint32_t>(1, host_size >> mip), readback->buffer,
-               offset);
+                 region.imageSubresource.mipLevel);
+  }
+  VkDeviceSize offset = 0;
+  const auto levels = static_cast<std::uint32_t>(regions.size()) + top;
+  for (std::uint32_t level = 0; level < levels; ++level) {
+    ReadMipBc7(vk, commands.buffer, image, level,
+               std::max<std::uint32_t>(1, host_size >> level),
+               readback->buffer, offset);
     readback_offsets->push_back(offset);
-    offset += Bc7MipBytes(host_size >> mip);
+    offset += Bc7MipBytes(host_size >> level);
   }
   HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -1507,7 +1516,8 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsAChainUploadedInOneCopyInBc7) {
   CloseTestDevices(&devices);
 }
 
-// Every mip of an upscaled chain uploaded in one copy is scaled from level 0.
+// A chain uploaded in one copy keeps every level's own texels, below two
+// top levels scaled from level 0.
 TEST(VulkanEtc2GpuEmulationTest, UpscalesAChainUploadedInOneCopyIntoBc7) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
@@ -1532,12 +1542,14 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAChainUploadedInOneCopyIntoBc7) {
     std::vector<VkDeviceSize> source_offsets;
     const HostBuffer source = CreateRandomEtcChain(
         &emulation, vk, kSize, kMips, &regions, &source_offsets);
-    HostBuffer readback = CreateHostBuffer(vk, ChainReadbackBytes(host, kMips),
-                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    constexpr std::uint32_t kTop = 2;
+    HostBuffer readback =
+        CreateHostBuffer(vk, ChainReadbackBytes(host, kMips + kTop),
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     BindAndMap(vk, &readback);
     std::vector<VkDeviceSize> offsets;
     UploadChainInOneCopy(&emulation, vk, image.image, source, regions, host,
-                         &readback, &offsets);
+                         &readback, &offsets, kTop);
 
     UploadCase level0;
     level0.etc = EtcFormat::kEtc2Rgb8;
@@ -1545,31 +1557,37 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAChainUploadedInOneCopyIntoBc7) {
     level0.height = kSize;
     const std::vector<std::uint8_t> decoded =
         DecodeOnCpu(level0, static_cast<std::uint8_t*>(source.mapped));
-    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
-      SCOPED_TRACE(mip);
-      const std::uint32_t size = host >> mip;
+    for (std::uint32_t level = 0; level < kTop; ++level) {
+      SCOPED_TRACE(level);
+      const std::uint32_t size = host >> level;
       std::vector<std::uint8_t> expected(std::size_t{size} * size * 4);
       UpscaleRgba(decoded.data(), kSize, kSize, kSize * 4, size, size,
                   expected.data());
       UploadCase scaled = level0;
       scaled.width = size;
       scaled.height = size;
-      const std::vector<std::uint8_t> got = DecodeBcReadback(
-          scaled, static_cast<std::uint8_t*>(readback.mapped) + offsets[mip]);
-      // A mip that never arrived reads black. Random blocks average about
-      // 162, and a downscaled mip keeps that mean.
-      double got_sum = 0;
-      double want_sum = 0;
-      for (std::size_t i = 0; i < got.size(); ++i) {
-        got_sum += got[i];
-        want_sum += expected[i];
-      }
-      EXPECT_NEAR(got_sum / got.size(), want_sum / got.size(), 8.0);
-      // Mips at or above the source size resample it exactly; smaller ones
-      // differ from the reference in how they filter noise.
-      if (size >= kSize * 2) {
-        EXPECT_GE(Psnr(scaled, got, expected), 30.0);
-      }
+      EXPECT_GE(Psnr(scaled,
+                     DecodeBcReadback(scaled,
+                                      static_cast<std::uint8_t*>(
+                                          readback.mapped) +
+                                          offsets[level]),
+                     expected),
+                30.0);
+    }
+    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+      SCOPED_TRACE(mip);
+      UploadCase own = level0;
+      own.width = std::max<std::uint32_t>(1, kSize >> mip);
+      own.height = own.width;
+      own.offset = source_offsets[mip];
+      // Random blocks in BC7; a 4x4 or smaller level is one block, and
+      // measures 20.3 dB on this seed. A level that never arrived is ~3 dB.
+      EXPECT_GE(Psnr(own,
+                     DecodeBcReadback(own, static_cast<std::uint8_t*>(
+                                               readback.mapped) +
+                                               offsets[mip + kTop]),
+                     DecodeOnCpu(own, static_cast<std::uint8_t*>(source.mapped))),
+                own.width > 4 ? 21.0 : 18.0);
     }
 
     DestroyHostBuffer(vk, readback);
@@ -1626,7 +1644,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAnOverrideSizedPlaceholderIntoATailMip) {
     ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, upload.buffer));
 
     TestCommands copy = BeginTestCommands(vk);
-    ImageBarrier(vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 2);
     VkImageCopy region{};
@@ -1636,7 +1654,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAnOverrideSizedPlaceholderIntoATailMip) {
     emulation.CmdCopyImage(vk.device, copy.buffer, placeholder.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, full.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, copy.buffer, full.image, 1,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
@@ -1703,7 +1721,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesADecodedImageIntoACompressedTailMip) {
     ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, upload.buffer));
 
     TestCommands copy = BeginTestCommands(vk);
-    ImageBarrier(vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 1);
     VkImageCopy region{};
@@ -1713,7 +1731,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesADecodedImageIntoACompressedTailMip) {
     emulation.CmdCopyImage(vk.device, copy.buffer, placeholder.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, full.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, copy.buffer, full.image, 1,
+    ImageBarrier(Emu(emulation), vk, copy.buffer, full.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 1);
@@ -1785,7 +1803,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesALaterMipIntoBc7) {
     ASSERT_TRUE(SubmitAndWait(vk, submitted));
 
     TestCommands second = BeginTestCommands(vk);
-    ImageBarrier(vk, second.buffer, image.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, second.buffer, image.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 1);
     VkBufferImageCopy region{};
@@ -1795,7 +1813,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesALaterMipIntoBc7) {
                                    image.image,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                    &region);
-    ImageBarrier(vk, second.buffer, image.image, 1,
+    ImageBarrier(Emu(emulation), vk, second.buffer, image.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 1);
@@ -1890,7 +1908,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesSmallUploadsOnTheGpu) {
     ASSERT_TRUE(SubmitAndWait(vk, submitted));
 
     TestCommands second = BeginTestCommands(vk);
-    ImageBarrier(vk, second.buffer, image.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, second.buffer, image.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 1);
     VkBufferImageCopy region{};
@@ -1900,7 +1918,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesSmallUploadsOnTheGpu) {
                                    image.image,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                    &region);
-    ImageBarrier(vk, second.buffer, image.image, 1,
+    ImageBarrier(Emu(emulation), vk, second.buffer, image.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 1);
@@ -1959,8 +1977,8 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesSmallUploadsOnTheGpu) {
 }
 
 // A mip whose size is not a whole number of blocks, uploaded before level 0,
-// is scaled from all of its own blocks, edge blocks included.
-TEST(VulkanEtc2GpuEmulationTest, UpscalesAPartialBlockMipFromItsOwnBlocks) {
+// keeps all of its own texels, edge blocks included, below the top levels.
+TEST(VulkanEtc2GpuEmulationTest, KeepsAPartialBlockMipFromItsOwnBlocks) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
     GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
@@ -1972,7 +1990,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAPartialBlockMipFromItsOwnBlocks) {
                              vk.get_device_proc_addr, false, false);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const std::uint32_t host = 6 * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = 6;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 12, 2);
     // 2x2 blocks: the 6x6 mip.
@@ -1983,7 +2001,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAPartialBlockMipFromItsOwnBlocks) {
     BindAndMap(vk, &readback);
 
     TestCommands commands = BeginTestCommands(vk);
-    ImageBarrier(vk, commands.buffer, image.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 1);
     VkBufferImageCopy region{};
@@ -1993,12 +2011,12 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAPartialBlockMipFromItsOwnBlocks) {
                                    image.image,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                    &region);
-    ImageBarrier(vk, commands.buffer, image.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 1);
     VkBufferImageCopy back{};
-    back.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1};
+    back.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 3, 0, 1};
     back.imageExtent = {host, host, 1};
     vk.Device<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(
         commands.buffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -2019,14 +2037,9 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAPartialBlockMipFromItsOwnBlocks) {
     mip.height = 6;
     const std::vector<std::uint8_t> decoded =
         DecodeOnCpu(mip, static_cast<std::uint8_t*>(level1.mapped));
-    std::vector<std::uint8_t> expected(bytes);
-    UpscaleRgba(decoded.data(), 6, 6, 6 * 4, host, host, expected.data());
     const auto* got = static_cast<const std::uint8_t*>(readback.mapped);
     const std::vector<std::uint8_t> actual(got, got + bytes);
-    UploadCase scaled = mip;
-    scaled.width = host;
-    scaled.height = host;
-    EXPECT_GE(Psnr(scaled, actual, expected), 50.0);
+    EXPECT_GE(Psnr(mip, actual, decoded), 50.0);
 
     emulation.ReleaseCommandBuffer(commands.buffer);
     DestroyTestCommands(vk, commands);
@@ -2179,7 +2192,8 @@ TEST(VulkanEtc2GpuEmulationTest, AdaptiveUpscaleSizesDecodedSmallTextures) {
     VkDeviceSize decoded = 0;
     ASSERT_TRUE(Etc2ImageByteCounts(
         EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
-        AdaptiveSmallTextureUpscale(speed.upscale_ns), &compressed, &decoded));
+        AdaptiveSmallTextureUpscale(speed.upscale_ns, speed.transcode_ns),
+        &compressed, &decoded));
     std::vector<VkImage> images;
     EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
     for (VkImage image : images) {
@@ -2283,7 +2297,7 @@ TEST(VulkanEtc2GpuEmulationTest, ChargesRepeatedUploadsToTheEncodeBudget) {
     const int uploads = 1 + static_cast<int>(2 * kEncodeBudgetBurstNs / upload_ns);
     ASSERT_LE(uploads, 1000) << "probe measured " << upload_ns << " ns";
     TestCommands commands = BeginTestCommands(vk);
-    ImageBarrier(vk, commands.buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
     VkBufferImageCopy region{};
@@ -2354,7 +2368,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAFullSizeMipIntoAnUpscaledImage) {
       UploadMip(&emulation, vk, commands.buffer, sources[mip].buffer,
                 big.image, mip, kBig >> mip);
     }
-    ImageBarrier(vk, commands.buffer, small.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, small.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -2365,14 +2379,14 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAFullSizeMipIntoAnUpscaledImage) {
     emulation.CmdCopyImage(vk.device, commands.buffer, big.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, small.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, commands.buffer, small.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, small.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     ReadMipBc7(vk, commands.buffer, small.image, 0, host, readback.buffer, 0);
     // Back into the tail of a full-size image, as when the texture is
     // raised again.
-    ImageBarrier(vk, commands.buffer, again.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, again.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 2);
@@ -2382,7 +2396,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAFullSizeMipIntoAnUpscaledImage) {
     emulation.CmdCopyImage(vk.device, commands.buffer, small.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, again.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &back);
-    ImageBarrier(vk, commands.buffer, again.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, again.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
@@ -2476,7 +2490,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPartOfAMipIntoAnUpscaledImage) {
       UploadMip(&emulation, vk, commands.buffer, sources[mip].buffer,
                 big.image, mip, kBig >> mip);
     }
-    ImageBarrier(vk, commands.buffer, small.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, small.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -2488,12 +2502,12 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPartOfAMipIntoAnUpscaledImage) {
     emulation.CmdCopyImage(vk.device, commands.buffer, big.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, small.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, commands.buffer, small.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, small.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     ReadMipBc7(vk, commands.buffer, small.image, 0, host, readback.buffer, 0);
-    ImageBarrier(vk, commands.buffer, again.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, again.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 2);
@@ -2504,7 +2518,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPartOfAMipIntoAnUpscaledImage) {
     emulation.CmdCopyImage(vk.device, commands.buffer, small.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, again.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &back);
-    ImageBarrier(vk, commands.buffer, again.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, again.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
@@ -2585,12 +2599,12 @@ void CopyImage(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
                VkOffset3D destination_offset, std::uint32_t size,
                bool fresh_destination = true) {
   if (fresh_destination) {
-    ImageBarrier(vk, command_buffer, destination, 1,
+    ImageBarrier(Emu(emulation), vk, command_buffer, destination, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, destination_mip);
   } else {
-    ImageBarrier(vk, command_buffer, destination, 1,
+    ImageBarrier(Emu(emulation), vk, command_buffer, destination, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -2605,7 +2619,7 @@ void CopyImage(VulkanEtc2Emulation* emulation, const VulkanTestDevice& vk,
   emulation->CmdCopyImage(vk.device, command_buffer, source,
                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-  ImageBarrier(vk, command_buffer, destination, 1,
+  ImageBarrier(Emu(emulation), vk, command_buffer, destination, 1,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
@@ -2874,6 +2888,47 @@ TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAMipTooLargeToKeep) {
   CloseTestDevices(&devices);
 }
 
+// A copy from an image the emulation never saw is skipped once, not again for
+// each top level of the destination.
+TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAnUnknownImageOnce) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    StartBcEmulation(&emulation, vk);
+    const TestImage small = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 1);
+    const std::uint64_t skipped =
+        Etc2FailureCount("skipped a copy into a compressed image");
+
+    // Both paths log and return before the driver sees the unknown handle.
+    TestCommands commands = BeginTestCommands(vk);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {32, 32, 1};
+    emulation.CmdCopyImage(vk.device, commands.buffer,
+                           reinterpret_cast<VkImage>(std::uintptr_t{0xdead0}),
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, small.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    EXPECT_EQ(Etc2FailureCount("skipped a copy into a compressed image"),
+              skipped + 1);
+
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyTestImage(&emulation, vk, small);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
 // A partial copy between upscaled images patches the destination's kept
 // blocks, so a later copy out of it carries both parts.
 TEST(VulkanEtc2GpuEmulationTest, PatchesKeptBlocksOnAPartialCopy) {
@@ -3110,7 +3165,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesACopiedPlaceholderIntoATailMip) {
     TestCommands commands = BeginTestCommands(vk);
     UploadLevel(&emulation, vk, commands.buffer, source.buffer, first.image,
                 kSmall);
-    ImageBarrier(vk, commands.buffer, second.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, second.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -3121,18 +3176,18 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesACopiedPlaceholderIntoATailMip) {
     emulation.CmdCopyImage(vk.device, commands.buffer, first.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, second.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, commands.buffer, second.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, second.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    ImageBarrier(vk, commands.buffer, big.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, big.image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 2);
     region.dstSubresource.mipLevel = 2;
     emulation.CmdCopyImage(vk.device, commands.buffer, second.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, big.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, commands.buffer, big.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, big.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, 2);
@@ -3194,7 +3249,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenUpscaledCompressedImages) {
     TestCommands commands = BeginTestCommands(vk);
     UploadLevel(&emulation, vk, commands.buffer, source.buffer, first.image,
                 32);
-    ImageBarrier(vk, commands.buffer, second.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, second.image, 1,
                  VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                  VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -3205,7 +3260,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenUpscaledCompressedImages) {
     emulation.CmdCopyImage(vk.device, commands.buffer, first.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, second.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(vk, commands.buffer, second.image, 1,
+    ImageBarrier(Emu(emulation), vk, commands.buffer, second.image, 1,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -3287,10 +3342,11 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsOnlyOverrideSizedImagesDecoded) {
     VkImage other = VK_NULL_HANDLE;
     ASSERT_EQ(emulation.CreateImage(vk.device, &image_info, nullptr, &other),
               VK_SUCCESS);
+    // Each image: two top levels and its own level, so 21/16 of the top.
     const VkDeviceSize upscaled = 32 * kDefaultSmallTextureUpscale;
     const VkDeviceSize other_bc7 = 16 * kDefaultSmallTextureUpscale;
     EXPECT_EQ(emulation.TextureBytes().decoded,
-              upscaled * upscaled * 4 + other_bc7 * other_bc7);
+              (upscaled * upscaled * 4 + other_bc7 * other_bc7) * 21 / 16);
     emulation.DestroyImage(vk.device, other, nullptr);
     emulation.DestroyImage(vk.device, image, nullptr);
     emulation.DestroyDevice(vk.device);

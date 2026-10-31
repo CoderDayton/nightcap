@@ -102,7 +102,8 @@ Release notes on GitHub are taken from the matching section here.
   or 1× when it can't measure. While textures load, it steps new ones down, or
   keeps them uncompressed, once encoding would take more than a tenth of the GPU's time, so slower
   cards no longer stutter with Compress textures on. The log shows the measured speed and what was
-  held back.
+  held back. Upscaling adds sharper levels above a texture's own and leaves Roblox's smaller levels
+  as they are, so textures Roblox streams in no longer turn blurry or lose detail at a distance.
 
 ## [0.4.0] - 2026-10-18
 
