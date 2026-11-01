@@ -135,38 +135,35 @@ window, `MOCKTAIL_SMALL_TEXTURE_UPSCALE` for one run) gives ETC2 textures of
 from the texture's largest level. The texture's own levels keep their size
 and the texels Roblox sent, so the card picks them at normal draw size and
 the sharper ones only when the texture is drawn larger. 4 is 16 times the
-pixels per affected texture. The default is 1 (off).
+pixels per affected texture. The default is 1 (off). In the config file,
+any value other than 1, 2 or 4, such as the retired `auto` or `adaptive`,
+reads as 1. The variable also takes 8, and rounds other numbers down to a
+power of two.
 
-`auto` (Adaptive in the settings window) sizes this to the graphics card. A
-saved `adaptive`, the old default, reads as 1. At startup Nightcap
-times the card's BC7 encoder on a few textures, minus the round trip of an
-empty submit, and picks 4, 2 or 1: the largest at which a 64px texture
-encodes in 0.5 ms. An RTX 4090 measures about 9 ns per block and gets 4;
-llvmpipe measures about 700 ns and gets 1. With texture compression off it
-times only the decode and scale, which is all those textures cost. Without a
-measurement (GPU decode off, or the probe fails) it uses 1.
+At startup Nightcap times the card's BC7 encoder on a few textures, minus the
+round trip of an empty submit. An RTX 4090 measures about 9 ns per block;
+llvmpipe measures about 700 ns. With texture compression off there is no
+encode to time, so it is skipped.
 
 Every BC encode draws from a budget of a tenth of wall time, with a 16 ms
 burst. Creating a texture prepays its first upload; later uploads, re-uploads
 included, are charged as they are recorded, and a texture destroyed before
 its upload gives its prepayment back. When the budget runs dry, new textures
-step down to a smaller factor, then stay decoded at their own size, as with
-texture compression off, until it refills. A fixed `1`, `2` or `4` keeps
-that factor and, when held back, stays decoded at it.
-`MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off; with a fixed factor
-too, the startup measurement is skipped.
+stay decoded at the set factor, as with texture compression off, until it
+refills. `MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off and skips the
+startup measurement.
 
 The session log shows the measured speed once:
 
 ```text
-[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale adaptive up to 4x; encode budget on
+[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale 1x; encode budget on
 ```
 
 It also shows, every 5 seconds while textures are created, how many landed at
 each factor, how many stayed decoded, and the estimated GPU time:
 
 ```text
-[vulkan] BC encodes over 5.0 s: 4x 300, 2x 50, 1x 40, kept decoded 22; est 38.1 ms GPU
+[vulkan] BC encodes over 5.0 s: 1x 390, kept decoded 22; est 38.1 ms GPU
 ```
 
 Upscaling adds no new detail. Textures grow with a sharpened bicubic filter,
@@ -194,10 +191,10 @@ the render thread. In the trace this is the `etc2 decode` slice on its own
 thread, with only a negligible `etc2 gather` left on the submitting one. A
 device without that feature decodes inline as before.
 
-Set it to `auto` to turn adaptive upscaling on for one run:
+Set it for one run:
 
 ```bash
-MOCKTAIL_SMALL_TEXTURE_UPSCALE=auto mocktail
+MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 mocktail
 ```
 
 ## Native code in the menus

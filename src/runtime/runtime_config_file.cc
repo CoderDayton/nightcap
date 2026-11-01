@@ -406,17 +406,10 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
   }
+  // Anything else, such as the retired `auto` and `adaptive`, is the default.
   if (const auto upscale = value("graphics.small_texture_upscale");
-      upscale.has_value()) {
-    if (*upscale != "auto" && *upscale != "adaptive" && *upscale != "1" &&
-        *upscale != "2" && *upscale != "4") {
-      *error = "graphics.small_texture_upscale must be auto, 1, 2, or 4";
-      return false;
-    }
-    // `adaptive` was briefly the default, so a saved one was likely never
-    // chosen. It reads as the current default; adaptive is now `auto`.
-    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] =
-        *upscale == "adaptive" ? "1" : *upscale;
+      upscale == "1" || upscale == "2" || upscale == "4") {
+    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] = *upscale;
   }
   if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
     if (!RuntimeConfig::IsValidPresentMode(*mode)) {

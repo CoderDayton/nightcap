@@ -100,13 +100,12 @@ Release notes on GitHub are taken from the matching section here.
   and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
   `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
 - Small textures are no longer upscaled by default; they show at the size Roblox sends. The Small
-  texture upscale setting (`graphics.small_texture_upscale`) offers 1× (the default), 2×, 4× or Adaptive
-  (`auto`); a saved `adaptive` reads as 1×.
+  texture upscale setting (`graphics.small_texture_upscale`) offers 1× (the default), 2× or 4×; any
+  other saved value, such as `adaptive` or `auto`, reads as 1×.
   Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
-  instead of nearest-neighbour on the CPU. Adaptive times the card's BC7 encoder at startup (decode and
-  scale with Compress textures off) and picks up to 4×, or 1× when it can't measure. While textures
-  load, it steps new ones down, or keeps them uncompressed, once encoding would take more than a tenth
-  of the GPU's time, so slower cards no longer stutter with Compress textures on. The log shows the
+  instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while
+  textures load it keeps new ones uncompressed once encoding would take more than a tenth of the GPU's
+  time, so slower cards no longer stutter with Compress textures on. The log shows the
   measured speed and what was held back. Upscaling adds sharper levels above a texture's own and leaves
   Roblox's smaller levels as they are, so streamed textures keep their detail at a distance.
 

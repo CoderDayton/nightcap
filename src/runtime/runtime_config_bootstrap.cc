@@ -78,8 +78,7 @@ graphics:
   # on the GPU to use less video memory. Set false if textures look wrong.
   # texture_compression: true
   # String (default: 1): upscale for textures of 64px or less, as
-  # auto, 1, 2, or 4. auto picks up to 4 from the GPU's encode speed
-  # and steps down while the GPU is busy encoding.
+  # 1, 2, or 4. Any other value reads as 1.
   # small_texture_upscale: 1
 
 performance:

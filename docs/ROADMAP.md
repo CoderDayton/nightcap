@@ -7,10 +7,9 @@ change to this list.
 - Remove small texture upscaling if texture reports stop with it off by
 default. It began so override PNGs could carry more detail, and no visual
 gain has been shown without overrides. Removing it takes out the upscale
-setting, adaptive upscale and its encode-speed probe, the GPU upscale
-filter, and the extra mip levels above a texture's own with their view,
-barrier, blit and sampler LOD remapping. Overrides would then draw at the
-original texture's size.
+setting, the GPU upscale filter, and the extra mip levels above a
+texture's own with their view, barrier, blit and sampler LOD remapping.
+Overrides would then draw at the original texture's size.
 
 ## Shipped
 
