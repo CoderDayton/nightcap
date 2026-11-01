@@ -963,6 +963,15 @@ target_link_libraries(window_pointer_capture_owner_test PRIVATE
 )
 mocktail_apply_compile_options(window_pointer_capture_owner_test)
 
+add_executable(right_drag_motion_trace_test
+  right_drag_motion_trace_test.cc
+)
+target_link_libraries(right_drag_motion_trace_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(right_drag_motion_trace_test)
+
 add_executable(roblox_text_input_jni_bridge_test
   roblox_text_input_jni_bridge_test.cc
 )
@@ -1392,6 +1401,7 @@ gtest_discover_tests(android_log_observer_test)
 gtest_discover_tests(roblox_output_device_bridge_test)
 gtest_discover_tests(window_text_input_owner_test)
 gtest_discover_tests(window_pointer_capture_owner_test)
+gtest_discover_tests(right_drag_motion_trace_test)
 gtest_discover_tests(roblox_text_input_jni_bridge_test)
 gtest_discover_tests(auth_service_test)
 gtest_discover_tests(auth_runtime_composition_test)
