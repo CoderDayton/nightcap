@@ -84,6 +84,8 @@ Release notes on GitHub are taken from the matching section here.
 - When the Roblox updater crashes or quits without saying why, the session log and error dialog now
   give its exit status or signal instead of only "Roblox update preflight failed". When DNS cannot find
   a download server, the error points to a new FAQ entry with the commands to switch DNS servers.
+- A Roblox update is no longer rejected when the NVIDIA driver crashes as the test launch shuts down,
+  after the update has already drawn frames.
 - PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.
   The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
 - Large `fflags.json` files load, and the settings window opens them. Both used to refuse a file over
@@ -91,6 +93,9 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Changed
 
+- Roblox updates now download in the background while Nightcap runs and install on the next launch.
+  An interrupted download resumes where it stopped. It runs at low CPU and disk priority, and stops
+  if Nightcap closes or crashes.
 - ETC2 textures now decode on the graphics card instead of the CPU, so loading them no longer takes CPU
   time from the game. Only textures the size of an override still decode on the CPU. Override files
   must now be named `<hash>_<width>x<height>.png` with the original size, as the dump names them;
