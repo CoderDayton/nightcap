@@ -50,6 +50,7 @@ using mocktail::webview::ClassifyStorePurchaseNavigation;
 using mocktail::webview::StorePurchaseNavigation;
 using mocktail::webview::IsBrowserLoginUrl;
 using mocktail::webview::IsEssentialWebResource;
+using mocktail::webview::UriPathForLog;
 using mocktail::webview::ParseCaptchaEvent;
 using mocktail::webview::UriPolicyResult;
 
@@ -874,10 +875,11 @@ void OnResourceStarted(WebKitWebView* web_view, WebKitWebResource* resource,
 
 void OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent event,
                    gpointer user_data) {
-  const UriPolicyResult policy =
-      EvaluateNavigationUri(webkit_web_view_get_uri(web_view));
+  const char* uri = webkit_web_view_get_uri(web_view);
+  const UriPolicyResult policy = EvaluateNavigationUri(uri);
   std::cerr << "[webview] load stage=" << LoadEventName(event)
-            << " scheme=" << policy.scheme << " host=" << policy.host << '\n';
+            << " scheme=" << policy.scheme << " host=" << policy.host
+            << " path=" << UriPathForLog(uri) << '\n';
   if (event == WEBKIT_LOAD_STARTED) {
     auto* surface = static_cast<SurfaceState*>(user_data);
     if (surface->retry_source != 0) {

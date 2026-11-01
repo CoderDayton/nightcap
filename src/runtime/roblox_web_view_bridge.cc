@@ -1225,6 +1225,10 @@ Status RobloxWebViewBridge::HandleOwnedMutation(std::string message) {
   if (!status.ok()) {
     return status;
   }
+  // Roblox's Android client applies only visibility and display flags from
+  // mutateWindow, never its URL. Loading it restarted challenge pages while
+  // HUMAN's captcha script was still loading, leaving a blank check.
+  request.url.reset();
   status = BeginDispatch();
   if (!status.ok()) {
     return status;
