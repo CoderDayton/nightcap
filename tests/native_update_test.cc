@@ -1,11 +1,15 @@
 #include <curl/curl.h>
 #include <gtest/gtest.h>
 #include <minizip/zip.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
+#include <thread>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -19,9 +23,11 @@
 
 #include "compat/build_profile.h"
 #include "compat/elf_build_id.h"
+#include "compat/file_digest_record.h"
 #include "compat/guest_abi.h"
 #include "compat/host_abi_profile.h"
 #include "update/apkpure_provider.h"
+#include "update/background_update_process.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
 #include "update/http_download.h"
@@ -454,8 +460,11 @@ TEST(ReadinessCanaryTest, RejectsCrashBeforeReadinessCompletes) {
   EXPECT_FALSE(result);
   EXPECT_FALSE(result.teardown_crash);
   EXPECT_EQ(result.exit_code, 128 + SIGSEGV);
+  // The reason the crash was not accepted as a teardown crash is kept.
   EXPECT_EQ(result.error, "graphics canary exited with status " +
-                             std::to_string(128 + SIGSEGV));
+                             std::to_string(128 + SIGSEGV) +
+                             "; graphics readiness marker is missing: "
+                             "[window] automatic exit requested");
 }
 
 TEST(ReadinessCanaryTest, TeardownCrashLogStillRequiresRealEvidence) {
@@ -764,6 +773,24 @@ TEST_F(UpdateCoordinatorDownloadTest, RedownloadsACorruptedStagedCandidate) {
   EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"], "blocked");
 }
 
+// An interrupted download is kept so it can resume, but only for the release
+// being downloaded now.
+TEST_F(UpdateCoordinatorDownloadTest, DropsArchivesOfOtherReleases) {
+  const auto archives = paths.cache_root / "downloads/native-updater/archives";
+  const auto older = archives / (std::string(compat::kGuestAbi) + "-150");
+  Write(older / "archive-0.apk", "partial");
+  const auto library = paths.data_root / "payloads" /
+                       ("200-" + std::string(40, 'b')) / "libroblox.so";
+  std::filesystem::permissions(library, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add);
+  Write(library, "corrupt");
+  UpdateRequest request;
+  request.download_only = true;
+  RunUpdate(paths, request, &provider);
+  ASSERT_EQ(provider.downloads, 1);
+  EXPECT_FALSE(std::filesystem::exists(older));
+}
+
 TEST_F(UpdateCoordinatorDownloadTest,
        PreservesObservedVersionWhenProviderRegresses) {
   UpdateRequest request;
@@ -776,6 +803,93 @@ TEST_F(UpdateCoordinatorDownloadTest,
   EXPECT_EQ(state["latest_downloaded"]["version_code"], 200);
   EXPECT_EQ(state["active"]["version_code"], 100);
   EXPECT_EQ(state["phase"], "ready");
+}
+
+// The background check runs every 30 minutes. A staged candidate whose files
+// have not changed is not hashed again.
+TEST_F(UpdateCoordinatorDownloadTest, RemembersTheDigestsOfAStagedCandidate) {
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  const auto library = paths.data_root / "payloads" /
+                       ("200-" + std::string(40, 'b')) / "libroblox.so";
+  struct stat status {};
+  ASSERT_EQ(stat(library.c_str(), &status), 0);
+  const auto record = paths.cache_root / compat::kFileDigestRecordDirectory /
+                      (std::to_string(status.st_dev) + "-" +
+                       std::to_string(status.st_ino));
+  ASSERT_TRUE(std::filesystem::exists(record));
+  // With a wrong remembered digest the candidate fails verification and is
+  // downloaded again.
+  std::string identity;
+  {
+    std::ifstream input(record);
+    std::getline(input, identity);
+  }
+  Write(record, identity + "\n" + std::string(64, '0') + "\n");
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  EXPECT_EQ(provider.downloads, 1);
+}
+
+TEST(BackgroundUpdateProcessTest, RunsAtLowPriorityAndEndsWithItsParent) {
+  ASSERT_EQ(prctl(PR_SET_CHILD_SUBREAPER, 1), 0);
+  int report[2] = {-1, -1};
+  ASSERT_EQ(pipe(report), 0);
+  const pid_t parent = fork();
+  ASSERT_GE(parent, 0);
+  if (parent == 0) {
+    int ready[2] = {-1, -1};
+    if (pipe(ready) != 0) _exit(1);
+    const pid_t self = getpid();
+    if (fork() == 0) {
+      const int entered = EnterBackgroundUpdateMode(self) ? 1 : 0;
+      const int observed[3] = {entered, getpriority(PRIO_PROCESS, 0),
+                               static_cast<int>(getpid())};
+      (void)!write(report[1], observed, sizeof(observed));
+      (void)!write(ready[1], "r", 1);
+      pause();
+      _exit(0);
+    }
+    char byte = 0;
+    (void)!read(ready[0], &byte, 1);
+    _exit(0);
+  }
+  close(report[1]);
+  int observed[3] = {};
+  ASSERT_EQ(read(report[0], observed, sizeof(observed)),
+            static_cast<ssize_t>(sizeof(observed)));
+  close(report[0]);
+  int status = 0;
+  ASSERT_EQ(waitpid(parent, &status, 0), parent);
+  // The orphaned updater is reparented to this process, the subreaper.
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  pid_t reaped = 0;
+  while ((reaped = waitpid(observed[2], &status, WNOHANG)) == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (reaped == 0) {
+    kill(observed[2], SIGKILL);
+    waitpid(observed[2], nullptr, 0);
+  }
+  ASSERT_EQ(prctl(PR_SET_CHILD_SUBREAPER, 0), 0);
+  EXPECT_EQ(observed[0], 1);
+  EXPECT_EQ(observed[1], 19);
+  ASSERT_EQ(reaped, observed[2]) << "the updater outlived its parent";
+  ASSERT_TRUE(WIFSIGNALED(status));
+  EXPECT_EQ(WTERMSIG(status), SIGTERM);
+}
+
+TEST(BackgroundUpdateProcessTest, RefusesToRunWhenItsParentIsAlreadyGone) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  // getpid() is never the caller's parent, as after a reparent.
+  if (child == 0) _exit(EnterBackgroundUpdateMode(getpid()) ? 0 : 1);
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 1);
 }
 
 // A rejected candidate used to end the update, leaving the user on whatever
@@ -1914,6 +2028,17 @@ class UpdateCoordinatorTest : public PayloadStorePromotionTest {
   std::string active_id, newer_id;
   int spawns = 0;
 };
+
+TEST_P(UpdateCoordinatorTest, BackgroundDownloadReportsARejectedCandidate) {
+  RejectOnce();
+  request.startup_preflight = false;
+  request.download_only = true;
+  const auto result = RunUpdate(paths, request);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_NE(result.message.find("already failed probation"), std::string::npos)
+      << result.message;
+  EXPECT_EQ(ReadStateFile(root / "update.json")["phase"], "blocked");
+}
 
 TEST_P(UpdateCoordinatorTest, RetriesTheSameCandidateOnNextStartupAfterEagain) {
   request.canary_spawn = Spawn(EAGAIN);

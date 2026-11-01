@@ -14,6 +14,7 @@
 #include "update/apk_bundle.h"
 #include "update/apk_signature.h"
 #include "update/apkpure_provider.h"
+#include "update/background_update_process.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
 #include "update/payload_store.h"
@@ -354,6 +355,13 @@ int main(int argc, char** argv) {
                  "--startup-preflight, --download-only, --no-latest-check, or "
                  "--skip-canary\n";
     return 2;
+  }
+  if (request.download_only) {
+    int parent = 0;
+    if (const auto value = Environment("MOCKTAIL_UPDATE_PARENT_PID")) {
+      std::from_chars(value->data(), value->data() + value->size(), parent);
+    }
+    if (!mocktail::update::EnterBackgroundUpdateMode(parent)) return 0;
   }
   if (request.force_run_latest) {
     std::cerr << "[native-updater] WARNING: latest Roblox will run once without "

@@ -79,9 +79,10 @@ bool Write(void* opaque_context, const void* identity,
   }
   if (!context->logged_first_consumption.load(
           std::memory_order_relaxed) &&
-      context->runtime.GetStats().consumed_buffers != 0) {
+      context->runtime.GetStats().consumed_buffers != 0 &&
+      !context->logged_first_consumption.exchange(true,
+                                                  std::memory_order_relaxed)) {
     LogRuntimeStats("first_consumption", context);
-    context->logged_first_consumption.store(true, std::memory_order_relaxed);
   }
   return true;
 }

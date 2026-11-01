@@ -173,9 +173,12 @@ struct Candidate {
   explicit operator bool() const { return error.empty() && staged; }
 };
 
+// Without `verify` only the layout and metadata are read. Verification
+// remembers each archive's digest under the cache root, so a candidate the
+// background check already hashed is not hashed again until it changes.
 Candidate FindStagedCandidate(const UpdatePaths& paths,
                               const ExpectedPayloadIdentity& identity,
-                              bool exact_supported) {
+                              bool exact_supported, bool verify = true) {
   Candidate result;
   const std::filesystem::path payloads = paths.data_root / "payloads";
   std::error_code filesystem_error;
@@ -211,7 +214,12 @@ Candidate FindStagedCandidate(const UpdatePaths& paths,
     iterator.increment(filesystem_error);
   }
   if (filesystem_error) return {};
-  if (result.staged && !VerifyPreparedPayload(result.staged.payload_directory)) {
+  if (verify && result.staged &&
+      !VerifyPreparedPayload(result.staged.payload_directory,
+                             paths.cache_root.empty()
+                                 ? std::filesystem::path()
+                                 : paths.cache_root /
+                                       compat::kFileDigestRecordDirectory)) {
     return {};
   }
   return result;
@@ -308,10 +316,21 @@ Candidate DownloadCandidate(const ApkProvider* provider, PayloadStore* store,
   result.exact_supported = exact_supported;
   Progress(progress_fd, "Downloading Roblox...");
   StageTimer download_timer("download");
+  const std::filesystem::path archives =
+      paths.cache_root / "downloads/native-updater/archives";
   const std::filesystem::path download_directory =
-      paths.cache_root / "downloads/native-updater/archives" /
-      (std::string(compat::kGuestAbi) + "-" +
-       std::to_string(identity.version_code));
+      archives / (std::string(compat::kGuestAbi) + "-" +
+                  std::to_string(identity.version_code));
+  {
+    std::error_code ignored;
+    std::vector<std::filesystem::path> stale;
+    for (std::filesystem::directory_iterator iterator(archives, ignored), end;
+         !ignored && iterator != end; iterator.increment(ignored)) {
+      if (iterator->path() != download_directory)
+        stale.push_back(iterator->path());
+    }
+    for (const auto& entry : stale) std::filesystem::remove_all(entry, ignored);
+  }
   const ProviderDownloadResult downloaded = provider->DownloadExact(
       ProviderVersion{identity.version_name, identity.version_code, {}},
       download_directory, progress_fd);
@@ -887,7 +906,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
                      downloaded.version_code > latest_version->version_code)) {
     const ExpectedPayloadIdentity identity{
         downloaded.version_name, downloaded.version_code, {}};
-    if (FindStagedCandidate(paths, identity, false))
+    if (FindStagedCandidate(paths, identity, false, false))
       latest_version = downloaded;
   }
   if (request.download_only && !latest_version) {
@@ -975,7 +994,10 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
           {"version_name", candidate.staged.version_name},
           {"version_code", candidate.staged.version_code}};
     }
-    if (request.download_only) {
+    const bool rejected =
+        (request.startup_preflight || request.download_only) && current &&
+        RejectedForRuntime(paths, candidate, request.canary_graphics_backend);
+    if (request.download_only && !rejected) {
       result.payload_id = current.payload_id;
       result.message = "Roblox " + candidate.staged.version_name +
                        " is downloaded for the next launch";
@@ -983,8 +1005,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
       cleanup();
       return finish();
     }
-    if (request.startup_preflight && current &&
-        RejectedForRuntime(paths, candidate, request.canary_graphics_backend)) {
+    if (rejected) {
       blocked = description + " already failed probation with this runtime";
       continue;
     }

@@ -538,6 +538,8 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
                    result.exit_code);
       result.error.clear();
       result.teardown_crash = true;
+    } else if (driver_teardown_crash && !log_error.empty()) {
+      result.error += "; " + log_error;
     }
     return result;
   }

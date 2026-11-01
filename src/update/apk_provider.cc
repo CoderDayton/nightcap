@@ -52,9 +52,8 @@ ProviderDownloadResult ProviderChain::DownloadExact(
   }
   std::string failures;
   for (const std::unique_ptr<ApkProvider>& provider : providers_) {
-    // Each provider gets its own directory: providers refuse to write into a
-    // directory another one already populated, and a failed attempt must not
-    // poison the next.
+    // Each provider gets its own directory: a provider reuses the archives it
+    // finds there, so another provider's files must not be mistaken for them.
     ProviderDownloadResult downloaded = provider->DownloadExact(
         version, output_directory / provider->name(), progress_fd);
     if (downloaded) return downloaded;

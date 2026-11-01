@@ -51,6 +51,12 @@ int main(int argc, char** argv) {
     output << argv[2] << '\n';
     if (!output) return 67;
   }
+  const char* parent_capture = Environment("MOCKTAIL_TEST_UPDATE_PARENT_CAPTURE");
+  if (parent_capture[0] != '\0') {
+    std::ofstream output(parent_capture);
+    output << Environment("MOCKTAIL_UPDATE_PARENT_PID") << '\n';
+    if (!output) return 68;
+  }
   const char* diagnostics = Environment("MOCKTAIL_TEST_UPDATE_STDERR");
   if (diagnostics[0] != '\0') {
     std::fputs(diagnostics, stderr);

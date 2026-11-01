@@ -94,7 +94,8 @@ Release notes on GitHub are taken from the matching section here.
 ### Changed
 
 - Roblox updates now download in the background while Nightcap runs and install on the next launch.
-  An interrupted download resumes where it stopped.
+  An interrupted download resumes where it stopped. It runs at low CPU and disk priority, and stops
+  if Nightcap closes or crashes.
 - ETC2 textures now decode on the graphics card instead of the CPU, so loading them no longer takes CPU
   time from the game. Only textures the size of an override still decode on the CPU. Override files
   must now be named `<hash>_<width>x<height>.png` with the original size, as the dump names them;

@@ -58,8 +58,12 @@ std::string HashAssetTree(const std::filesystem::path& root,
                           std::size_t* file_count,
                           std::string* error = nullptr);
 
+// With `digest_record_directory`, archive digests are remembered there by
+// file identity and reused until an archive changes. The asset tree is
+// always hashed.
 PayloadIntegrityResult VerifyPreparedPayload(
-    const std::filesystem::path& directory);
+    const std::filesystem::path& directory,
+    const std::filesystem::path& digest_record_directory = {});
 
 // Reads and validates the immutable payload layout and metadata without
 // rehashing the archived APKs and complete asset tree. Callers that stage or

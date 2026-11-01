@@ -492,6 +492,8 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
   const auto helper = UpdateHelper(environment);
   if (helper.empty()) return;
   auto child_environment = ChildEnvironment(paths, false);
+  child_environment.emplace_back("MOCKTAIL_UPDATE_PARENT_PID=" +
+                                 std::to_string(getpid()));
   stopped_ = false;
   worker_ =
       std::thread([this, helper, interval,
@@ -504,12 +506,26 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
         char update[] = "update";
         char download_only[] = "--download-only";
         char* arguments[] = {executable.data(), update, download_only, nullptr};
+        // Ignored signals and the mask survive exec; Stop() relies on SIGTERM.
+        posix_spawnattr_t attributes;
+        const bool attributes_ready = posix_spawnattr_init(&attributes) == 0;
+        if (attributes_ready) {
+          sigset_t all;
+          sigset_t none;
+          sigfillset(&all);
+          sigemptyset(&none);
+          posix_spawnattr_setsigdefault(&attributes, &all);
+          posix_spawnattr_setsigmask(&attributes, &none);
+          posix_spawnattr_setflags(&attributes,
+                                   POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+        }
         std::unique_lock<std::mutex> lock(mutex_);
         while (!wake_.wait_for(lock, interval, [this] { return stopped_; })) {
           pid_t process = -1;
-          const int status =
-              posix_spawn(&process, executable.c_str(), nullptr, nullptr,
-                          arguments, environment_pointers.data());
+          const int status = posix_spawn(
+              &process, executable.c_str(), nullptr,
+              attributes_ready ? &attributes : nullptr, arguments,
+              environment_pointers.data());
           if (status != 0) continue;
           child_ = process;
           while (child_ > 0) {
@@ -521,6 +537,7 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
             }
           }
         }
+        if (attributes_ready) posix_spawnattr_destroy(&attributes);
       });
 }
 
