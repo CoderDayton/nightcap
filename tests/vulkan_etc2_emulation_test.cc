@@ -67,10 +67,12 @@ TEST(VulkanEtc2EmulationTest, TranscodesToBcUnlessSwitchedOff) {
 }
 
 TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
-  EXPECT_EQ(SmallTextureUpscale(nullptr), kAdaptiveSmallTextureUpscale);
-  EXPECT_EQ(SmallTextureUpscale(""), kAdaptiveSmallTextureUpscale);
-  EXPECT_EQ(SmallTextureUpscale("abc"), kAdaptiveSmallTextureUpscale);
-  EXPECT_EQ(SmallTextureUpscale("adaptive"), kAdaptiveSmallTextureUpscale);
+  EXPECT_EQ(SmallTextureUpscale("auto"), kAdaptiveSmallTextureUpscale);
+  EXPECT_EQ(SmallTextureUpscale(nullptr), 1u);
+  EXPECT_EQ(SmallTextureUpscale(""), 1u);
+  EXPECT_EQ(SmallTextureUpscale("abc"), 1u);
+  // The retired default.
+  EXPECT_EQ(SmallTextureUpscale("adaptive"), 1u);
   EXPECT_EQ(SmallTextureUpscale("0"), 1u);
   EXPECT_EQ(SmallTextureUpscale("1"), 1u);
   EXPECT_EQ(SmallTextureUpscale("2"), 2u);
@@ -1137,7 +1139,7 @@ void ExpectStreamedMipChainKept(const char* upscale, std::uint32_t top) {
 
 // Adaptive cannot time this fake GPU, so it falls back to 1x.
 TEST(VulkanEtc2EmulationTest, UnmeasuredAdaptiveUpscaleKeepsTheStreamedMipChain) {
-  ExpectStreamedMipChainKept(nullptr, 0);
+  ExpectStreamedMipChainKept("auto", 0);
 }
 
 TEST(VulkanEtc2EmulationTest, OneTimesUpscaleKeepsTheStreamedMipChain) {

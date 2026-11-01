@@ -135,9 +135,10 @@ window, `MOCKTAIL_SMALL_TEXTURE_UPSCALE` for one run) gives ETC2 textures of
 from the texture's largest level. The texture's own levels keep their size
 and the texels Roblox sent, so the card picks them at normal draw size and
 the sharper ones only when the texture is drawn larger. 4 is 16 times the
-pixels per affected texture.
+pixels per affected texture. The default is 1 (off).
 
-The default, `adaptive`, sizes this to the graphics card. At startup Nightcap
+`auto` (Adaptive in the settings window) sizes this to the graphics card. A
+saved `adaptive`, the old default, reads as 1. At startup Nightcap
 times the card's BC7 encoder on a few textures, minus the round trip of an
 empty submit, and picks 4, 2 or 1: the largest at which a 64px texture
 encodes in 0.5 ms. An RTX 4090 measures about 9 ns per block and gets 4;
@@ -182,7 +183,7 @@ than a steady load. The enlarged textures then stay in GPU memory for the
 session and cost
 extra sampling bandwidth on every frame that uses them. In Blade Ball the
 memory share is small: decoded textures came to 5.1 times their ETC2 size both
-with the default and with upscaling off. The `emulated texture (MB)` and
+with upscaling at 4 and with it off. The `emulated texture (MB)` and
 `compressed texture (MB)` counters in a `--profile` trace give the figures for
 any game.
 
@@ -193,10 +194,10 @@ the render thread. In the trace this is the `etc2 decode` slice on its own
 thread, with only a negligible `etc2 gather` left on the submitting one. A
 device without that feature decodes inline as before.
 
-Set it to `1` to turn upscaling off for one run:
+Set it to `auto` to turn adaptive upscaling on for one run:
 
 ```bash
-MOCKTAIL_SMALL_TEXTURE_UPSCALE=1 mocktail
+MOCKTAIL_SMALL_TEXTURE_UPSCALE=auto mocktail
 ```
 
 ## Native code in the menus

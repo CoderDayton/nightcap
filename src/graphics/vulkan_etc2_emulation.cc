@@ -176,8 +176,11 @@ bool Etc2SupportAdvertised() {
 }
 
 std::uint32_t SmallTextureUpscale(const char* value) {
-  if (value == nullptr || value[0] < '0' || value[0] > '9') {
+  if (value != nullptr && std::strcmp(value, "auto") == 0) {
     return kAdaptiveSmallTextureUpscale;
+  }
+  if (value == nullptr || value[0] < '0' || value[0] > '9') {
+    return 1;
   }
   const long parsed = std::strtol(value, nullptr, 10);
   if (parsed < 1) {
@@ -213,7 +216,7 @@ std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns,
   constexpr std::uint32_t kLevels = 7;
   const auto own =
       static_cast<double>(Etc2HostBlockCount(kLargestSmall, kLevels, 1, 1));
-  for (std::uint32_t scale = kDefaultSmallTextureUpscale; scale > 1;
+  for (std::uint32_t scale = kMaxAdaptiveSmallTextureUpscale; scale > 1;
        scale /= 2) {
     const double top =
         static_cast<double>(

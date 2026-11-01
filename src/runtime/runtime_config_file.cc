@@ -408,12 +408,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   }
   if (const auto upscale = value("graphics.small_texture_upscale");
       upscale.has_value()) {
-    if (*upscale != "adaptive" && *upscale != "1" && *upscale != "2" &&
-        *upscale != "4") {
-      *error = "graphics.small_texture_upscale must be adaptive, 1, 2, or 4";
+    if (*upscale != "auto" && *upscale != "adaptive" && *upscale != "1" &&
+        *upscale != "2" && *upscale != "4") {
+      *error = "graphics.small_texture_upscale must be auto, 1, 2, or 4";
       return false;
     }
-    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] = *upscale;
+    // `adaptive` was briefly the default, so a saved one was likely never
+    // chosen. It reads as the current default; adaptive is now `auto`.
+    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] =
+        *upscale == "adaptive" ? "1" : *upscale;
   }
   if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
     if (!RuntimeConfig::IsValidPresentMode(*mode)) {

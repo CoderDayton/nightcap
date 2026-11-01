@@ -4,7 +4,13 @@ What Nightcap is working toward, in priority order. Items move to
 [Shipped](#shipped) when they land on `main`. Open an issue to propose a
 change to this list.
 
-Nothing is queued right now.
+- Remove small texture upscaling if texture reports stop with it off by
+default. It began so override PNGs could carry more detail, and no visual
+gain has been shown without overrides. Removing it takes out the upscale
+setting, adaptive upscale and its encode-speed probe, the GPU upscale
+filter, and the extra mip levels above a texture's own with their view,
+barrier, blit and sampler LOD remapping. Overrides would then draw at the
+original texture's size.
 
 ## Shipped
 
@@ -21,8 +27,7 @@ the pointer travels back from past the screen edge.
 - Optional raw mouse input: `input.raw_mouse` in `config.yaml` sends look
 deltas in host units, so fractional display scaling no longer changes
 first-person sensitivity.
-- Small textures upscaled 4x by default, with PNG overrides in
-`~/.config/mocktail/textures`.
+- PNG texture overrides in `~/.config/mocktail/textures`.
 - ETC2 textures decoded on desktop GPUs without stutter.
 - No more error 319 kicks after joining a server.
 - Roblox sees the real host RAM and screen size.

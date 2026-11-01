@@ -60,11 +60,11 @@ bool Etc2BcTranscodeEnabled(const char* value);
 // kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
 // 1 leaves them alone; 2, 4 or 8 add log2(factor) levels above the image's
 // own, upscaled from level 0, so a texture override can carry more detail
-// than the original. Unset or non-numeric values ("adaptive") return
-// kAdaptiveSmallTextureUpscale; numeric values are clamped to 1..8 and
-// rounded down to a power of two.
+// than the original. "auto" returns kAdaptiveSmallTextureUpscale; numeric
+// values are clamped to 1..8 and rounded down to a power of two; anything
+// else, unset included, is 1.
 inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
-inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
+inline constexpr std::uint32_t kMaxAdaptiveSmallTextureUpscale = 4;
 inline constexpr std::uint32_t kAdaptiveSmallTextureUpscale = 0;
 std::uint32_t SmallTextureUpscale(const char* value);
 

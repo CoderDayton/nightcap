@@ -1409,6 +1409,23 @@ graphics:
   EXPECT_EQ(loaded.config.small_texture_upscale(), "2");
 }
 
+// `adaptive` was the default for a few days; a saved one may never have been
+// chosen, so it reads as the new default. Adaptive is now `auto`.
+TEST(RuntimeConfigFileTest, ReadsRetiredAdaptiveUpscaleAsOne) {
+  for (const auto& [saved, loaded_value] :
+       {std::pair{"adaptive", "1"}, std::pair{"auto", "auto"}}) {
+    SCOPED_TRACE(saved);
+    TemporaryDirectory temporary;
+    const std::filesystem::path file = temporary.Write(
+        std::string("version: 1\ngraphics:\n  small_texture_upscale: ") +
+        saved + "\n");
+    const RuntimeConfigLoadResult loaded =
+        LoadRuntimeConfig(MapEnvironment(), file);
+    ASSERT_TRUE(loaded) << loaded.error;
+    EXPECT_EQ(loaded.config.small_texture_upscale(), loaded_value);
+  }
+}
+
 TEST(RuntimeConfigFileTest, ExportsSmallTextureUpscale) {
   unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
   std::string error;
@@ -1416,7 +1433,7 @@ TEST(RuntimeConfigFileTest, ExportsSmallTextureUpscale) {
       RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
       << error;
   ASSERT_NE(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), nullptr);
-  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "adaptive");
+  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "1");
 
   ASSERT_TRUE(ExportRuntimeConfigEnvironment(
       RuntimeConfig::FromEnvironment(
