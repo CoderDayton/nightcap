@@ -58,7 +58,7 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_EQ(*config.roblox_http_user_agent(), kRobloxDesktopHttpUserAgent);
   EXPECT_EQ(config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
   EXPECT_TRUE(config.texture_compression());
-  EXPECT_EQ(config.small_texture_upscale(), "adaptive");
+  EXPECT_EQ(config.small_texture_upscale(), "1");
   EXPECT_FALSE(config.performance().multithreaded_rendering);
   EXPECT_GT(config.performance().physical_core_count, 0);
   EXPECT_EQ(config.performance().memory_limit_mb, 0U);

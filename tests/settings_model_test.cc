@@ -258,6 +258,12 @@ TEST_F(SettingsModelTest, AutomaticUpdatesIsASwitchThatIsOnUntilTurnedOff) {
   }
 }
 
+TEST_F(SettingsModelTest, ShowsRetiredAdaptiveUpscaleAsOne) {
+  const Setting& upscale = Find("graphics.small_texture_upscale");
+  EXPECT_EQ(ChoiceIndex(upscale, "adaptive"), ChoiceIndex(upscale, "1"));
+  EXPECT_NE(ChoiceIndex(upscale, "auto"), kNoChoice);
+}
+
 bool NeedsFixedProxy(std::string_view key) {
   return key == "network.proxy_scheme" || key == "network.proxy_username" ||
          key == "network.proxy_password";
