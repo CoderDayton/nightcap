@@ -31,7 +31,8 @@ int IntegerEnvironment(const char* name, int fallback) {
 int main(int argc, char** argv) {
   if (argc != 3 || std::string_view(argv[1]) != "update" ||
       (std::string_view(argv[2]) != "--startup-preflight" &&
-       std::string_view(argv[2]) != "--force-run-latest")) {
+       std::string_view(argv[2]) != "--force-run-latest" &&
+       std::string_view(argv[2]) != "--download-only")) {
     return 64;
   }
   const char* capture = Environment("MOCKTAIL_TEST_UPDATE_CAPTURE");
@@ -65,5 +66,7 @@ int main(int argc, char** argv) {
   }
   const int signal_number = IntegerEnvironment("MOCKTAIL_TEST_UPDATE_SIGNAL", 0);
   if (signal_number > 0) std::raise(signal_number);
+  const int delay = IntegerEnvironment("MOCKTAIL_TEST_UPDATE_SLEEP_MS", 0);
+  if (delay > 0) usleep(static_cast<useconds_t>(delay) * 1000);
   return IntegerEnvironment("MOCKTAIL_TEST_UPDATE_EXIT", 0);
 }
