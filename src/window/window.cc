@@ -2508,6 +2508,7 @@ bool PumpEvents() {
     }
   }
   NotifyPointerRecenter();
+  platform::PlatformEvent pending_motion{};
   bool has_pending_motion = false;
 
   auto flush_motion = [&]() {
