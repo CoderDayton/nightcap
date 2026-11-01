@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(__x86_64__)
@@ -174,6 +175,13 @@ RobloxCredentialView TestCredentialProvider(const void *context) {
 jstring QuickLoginCookieGetter(JNIEnv* env, jclass, jstring) {
   return env->NewStringUTF(
       ".ROBLOSECURITY=_|quick-login-cookie; RBXEventTracker=ignored");
+}
+
+jstring EngineJarCookieGetter(JNIEnv* env, jclass, jstring) {
+  return env->NewStringUTF(
+      ".roblox.com\tTRUE\t/\tFALSE\t1827484320\tGuestData\tUserID=-1; "
+      "#HttpOnly_.roblox.com\tTRUE\t/\tTRUE\t0\t.ROBLOSECURITY\t"
+      "_|WARNING:-DO-NOT-SHARE-THIS.|_switched-account");
 }
 
 struct FmodAudioDeviceProbe {
@@ -2294,6 +2302,306 @@ TEST_F(JniVmTest, DidLoginRefreshesCredentialFromNativeCookieJar) {
   EXPECT_EQ(credential, ".ROBLOSECURITY=_|quick-login-cookie");
 }
 
+struct AccountSwitchProbe {
+  CredentialSinkProbe* credential = nullptr;
+  int calls = 0;
+  bool signed_in = false;
+  std::string credential_at_switch;
+};
+
+void ProbeAccountSwitch(void* context, bool signed_in) {
+  auto* probe = static_cast<AccountSwitchProbe*>(context);
+  ++probe->calls;
+  probe->signed_in = signed_in;
+  probe->credential_at_switch = probe->credential->credential;
+}
+
+TEST_F(JniVmTest, DidSwitchAccountSavesNewCookieThenNotifiesHost) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  vm_->SetRobloxCookieGetter(&QuickLoginCookieGetter);
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_switch = env->GetMethodID(
+      helper_class, "gameActivity_onDidSwitchAccountReceived", "()V");
+  ASSERT_NE(did_switch, nullptr);
+
+  env->CallVoidMethod(helper, did_switch);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_TRUE(switch_probe.signed_in);
+  EXPECT_EQ(switch_probe.credential_at_switch,
+            ".ROBLOSECURITY=_|quick-login-cookie");
+
+  env->CallVoidMethodA(helper, did_switch, nullptr);
+  EXPECT_EQ(switch_probe.calls, 2);
+
+  vm_->SetRobloxAccountSwitchHandler(nullptr, nullptr);
+  env->CallVoidMethod(helper, did_switch);
+  EXPECT_EQ(switch_probe.calls, 2);
+}
+
+TEST_F(JniVmTest, DidSwitchAccountReadsCookieFromEngineNetscapeJar) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  vm_->SetRobloxCookieGetter(&EngineJarCookieGetter);
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_switch = env->GetMethodID(
+      helper_class, "gameActivity_onDidSwitchAccountReceived", "()V");
+  ASSERT_NE(did_switch, nullptr);
+
+  env->CallVoidMethod(helper, did_switch);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_TRUE(switch_probe.signed_in);
+  EXPECT_EQ(switch_probe.credential_at_switch,
+            ".ROBLOSECURITY=_|WARNING:-DO-NOT-SHARE-THIS.|_switched-account");
+}
+
+TEST_F(JniVmTest, DidSwitchAccountWithoutEngineCookieNotifiesHostSignedOut) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_switch = env->GetMethodID(
+      helper_class, "gameActivity_onDidSwitchAccountReceived", "()V");
+  ASSERT_NE(did_switch, nullptr);
+
+  env->CallVoidMethod(helper, did_switch);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_FALSE(switch_probe.signed_in);
+}
+
+TEST_F(JniVmTest, DidLogOutWhileSignedInNotifiesHostSignedOut) {
+  RobloxAuthIdentity identity;
+  identity.user_id = 123456789;
+  vm_->SetRobloxAuthIdentity(identity);
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_log_out = env->GetMethodID(
+      helper_class, "gameActivity_onDidLogOutReceived", "()V");
+  ASSERT_NE(did_log_out, nullptr);
+
+  env->CallVoidMethod(helper, did_log_out);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_FALSE(switch_probe.signed_in);
+
+  env->CallVoidMethodA(helper, did_log_out, nullptr);
+  EXPECT_EQ(switch_probe.calls, 2);
+}
+
+TEST_F(JniVmTest, DidLogOutWithEngineCookieNotifiesHostSignedIn) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  vm_->SetRobloxCookieGetter(&QuickLoginCookieGetter);
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_log_out = env->GetMethodID(
+      helper_class, "gameActivity_onDidLogOutReceived", "()V");
+  ASSERT_NE(did_log_out, nullptr);
+
+  env->CallVoidMethod(helper, did_log_out);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_TRUE(switch_probe.signed_in);
+  EXPECT_EQ(switch_probe.credential_at_switch,
+            ".ROBLOSECURITY=_|quick-login-cookie");
+}
+
+TEST_F(JniVmTest, DidLogOutWithTheSignedOutCookieNotifiesHostSignedOut) {
+  RobloxAuthIdentity identity;
+  identity.user_id = 123456789;
+  vm_->SetRobloxAuthIdentity(identity);
+  const std::string signed_out = ".ROBLOSECURITY=_|quick-login-cookie";
+  vm_->SetRobloxCredentialProvider(&signed_out, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  vm_->SetRobloxCookieGetter(&QuickLoginCookieGetter);
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_log_out = env->GetMethodID(
+      helper_class, "gameActivity_onDidLogOutReceived", "()V");
+  ASSERT_NE(did_log_out, nullptr);
+
+  env->CallVoidMethod(helper, did_log_out);
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_FALSE(switch_probe.signed_in);
+}
+
+TEST_F(JniVmTest, DidLogOutAsGuestDoesNotNotifyHost) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jobject helper = env->AllocObject(helper_class);
+  jmethodID did_log_out = env->GetMethodID(
+      helper_class, "gameActivity_onDidLogOutReceived", "()V");
+  ASSERT_NE(did_log_out, nullptr);
+
+  env->CallVoidMethod(helper, did_log_out);
+  EXPECT_EQ(switch_probe.calls, 0);
+}
+
+TEST_F(JniVmTest, LuaDidLogOutBroadcastNotifiesHostSignedOut) {
+  RobloxAuthIdentity identity;
+  identity.user_id = 123456789;
+  vm_->SetRobloxAuthIdentity(identity);
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass callback_class =
+      env->FindClass("com/roblox/engine/jni/EngineJavaCallback2");
+  jobject callback = env->AllocObject(callback_class);
+  jmethodID notify = env->GetMethodID(
+      callback_class, "f", "(Ljava/lang/String;Ljava/lang/String;)V");
+  ASSERT_NE(notify, nullptr);
+
+  env->CallVoidMethod(callback, notify, env->NewStringUTF("DID_LOG_OUT"),
+                      env->NewStringUTF(""));
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_FALSE(switch_probe.signed_in);
+
+  jvalue args[2] = {};
+  args[0].l = env->NewStringUTF("DID_LOG_OUT");
+  args[1].l = env->NewStringUTF("");
+  env->CallVoidMethodA(callback, notify, args);
+  EXPECT_EQ(switch_probe.calls, 2);
+
+  env->CallVoidMethod(callback, notify, env->NewStringUTF("APP_READY"),
+                      env->NewStringUTF("Landing"));
+  EXPECT_EQ(switch_probe.calls, 2);
+}
+
+TEST_F(JniVmTest, LuaDidSwitchAccountBroadcastNotifiesHostSignedIn) {
+  const std::string guest;
+  vm_->SetRobloxCredentialProvider(&guest, &TestCredentialProvider);
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  vm_->SetRobloxCookieGetter(&QuickLoginCookieGetter);
+  AccountSwitchProbe switch_probe;
+  switch_probe.credential = credential_probe.get();
+  vm_->SetRobloxAccountSwitchHandler(&switch_probe, &ProbeAccountSwitch);
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass callback_class =
+      env->FindClass("com/roblox/engine/jni/EngineJavaCallback2");
+  jobject callback = env->AllocObject(callback_class);
+  jmethodID notify = env->GetMethodID(
+      callback_class, "f", "(Ljava/lang/String;Ljava/lang/String;)V");
+  ASSERT_NE(notify, nullptr);
+
+  env->CallVoidMethod(callback, notify,
+                      env->NewStringUTF("DID_SWITCH_ACCOUNT"),
+                      env->NewStringUTF(""));
+  EXPECT_EQ(switch_probe.calls, 1);
+  EXPECT_TRUE(switch_probe.signed_in);
+  EXPECT_EQ(switch_probe.credential_at_switch,
+            ".ROBLOSECURITY=_|quick-login-cookie");
+}
+
+TEST_F(JniVmTest, LuaAccountBroadcastKeepsNativeHelperState) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  jclass activity_class =
+      env->FindClass("com/roblox/client/startup/MainGameActivity");
+  jobject activity = env->AllocObject(activity_class);
+  jmethodID get_native_helper =
+      env->GetMethodID(activity_class, "getNativeHelper",
+                       "()Lcom/roblox/client/startup/NativeHelper;");
+  jobject helper = env->CallObjectMethod(activity, get_native_helper);
+  ASSERT_NE(helper, nullptr);
+  jclass helper_class =
+      env->FindClass("com/roblox/client/startup/NativeHelper");
+  jmethodID on_engine_initialized =
+      env->GetMethodID(helper_class, "gameActivity_onEngineInitialized", "()V");
+  env->CallVoidMethod(helper, on_engine_initialized);
+
+  jclass callback_class =
+      env->FindClass("com/roblox/engine/jni/EngineJavaCallback2");
+  jobject callback = env->AllocObject(callback_class);
+  jmethodID notify = env->GetMethodID(
+      callback_class, "f", "(Ljava/lang/String;Ljava/lang/String;)V");
+  env->CallVoidMethod(callback, notify,
+                      env->NewStringUTF("DID_SWITCH_ACCOUNT"),
+                      env->NewStringUTF(""));
+  env->CallVoidMethod(callback, notify, env->NewStringUTF("DID_LOG_OUT"),
+                      env->NewStringUTF(""));
+
+  jfieldID is_engine_initialized =
+      env->GetFieldID(helper_class, "isEngineInitialized", "Z");
+  EXPECT_EQ(env->GetBooleanField(helper, is_engine_initialized), JNI_TRUE);
+  jfieldID activity_field = env->GetFieldID(
+      helper_class, "activity", "Lcom/roblox/client/startup/MainGameActivity;");
+  EXPECT_EQ(env->GetObjectField(helper, activity_field), activity);
+}
+
 TEST_F(JniVmTest, CookieProtocolPersistsAndDispatchesExactSetHandler) {
   JNIEnv* env = vm_->GetJNIEnv();
   auto platform_probe = std::make_shared<DataModelNotificationProbe>();
@@ -2351,6 +2659,60 @@ TEST_F(JniVmTest, CookieProtocolPersistsAndDispatchesExactSetHandler) {
   env->CallVoidMethod(handler, on_set_cookie, cookies, url);
   EXPECT_EQ(platform_probe->cookie_set_calls, 3);
   EXPECT_EQ(credential_probe->calls, 3);
+  EXPECT_FALSE(vm_->DispatchRobloxCookieSet(env, cookies, url));
+}
+
+struct SetCookieObserverProbe {
+  int calls = 0;
+  std::string url;
+  std::vector<std::string> cookies;
+};
+
+void ProbeSetCookieObserver(void* context, const std::string& url,
+                            const std::vector<std::string>& cookies) {
+  auto* probe = static_cast<SetCookieObserverProbe*>(context);
+  ++probe->calls;
+  probe->url = url;
+  probe->cookies = cookies;
+}
+
+TEST_F(JniVmTest, SetCookieObserverGetsRawCookiesWithoutPlatformBinding) {
+  JNIEnv* env = vm_->GetJNIEnv();
+  auto credential_probe = std::make_shared<CredentialSinkProbe>();
+  vm_->SetRobloxCredentialSink(
+      credential_probe, RobloxCredentialSinkCallbacks{&ProbeCredentialStore});
+  auto observer = std::make_shared<SetCookieObserverProbe>();
+  vm_->SetRobloxSetCookieObserver(
+      observer, RobloxSetCookieObserverCallbacks{&ProbeSetCookieObserver});
+
+  jclass handler_class = env->FindClass(
+      "com/roblox/universalapp/cookie/"
+      "JNICookieProtocol$OnSetCookieHandler");
+  jobject handler = env->AllocObject(handler_class);
+  jmethodID on_set_cookie = env->GetMethodID(
+      handler_class, "onSetCookie",
+      "([Ljava/lang/String;Ljava/lang/String;)V");
+  jclass string_class = env->FindClass("java/lang/String");
+  jobjectArray cookies = env->NewObjectArray(3, string_class, nullptr);
+  env->SetObjectArrayElement(
+      cookies, 0, env->NewStringUTF("RBXSessionTracker=sessionid=1; Path=/"));
+  env->SetObjectArrayElement(
+      cookies, 2, env->NewStringUTF(".ROBLOSECURITY=_|x; Domain=.roblox.com"));
+  jstring url = env->NewStringUTF(
+      "https://apis.roblox.com/account-switcher/v1/switch");
+
+  env->CallVoidMethod(handler, on_set_cookie, cookies, url);
+  EXPECT_EQ(observer->calls, 1);
+  EXPECT_EQ(observer->url,
+            "https://apis.roblox.com/account-switcher/v1/switch");
+  EXPECT_EQ(observer->cookies,
+            (std::vector<std::string>{"RBXSessionTracker=sessionid=1; Path=/",
+                                      ".ROBLOSECURITY=_|x; Domain=.roblox.com"}));
+  EXPECT_EQ(credential_probe->calls, 0);
+
+  vm_->ClearRobloxSetCookieObserver();
+  env->CallVoidMethod(handler, on_set_cookie, cookies, url);
+  EXPECT_EQ(observer->calls, 1);
   EXPECT_FALSE(vm_->DispatchRobloxCookieSet(env, cookies, url));
 }
 
@@ -3368,6 +3730,83 @@ TEST_F(JniVmTest, UnknownGameActivityCallbackIsRecordedOnEveryVoidPath) {
               JNI_TRUE)
         << name;
   }
+}
+
+struct StorePurchaseProbe {
+  std::vector<std::pair<jlong, std::string>> requests;
+};
+
+void RecordStorePurchase(void* context, jlong player_id,
+                         const std::string& product_id) {
+  static_cast<StorePurchaseProbe*>(context)->requests.emplace_back(
+      player_id, product_id);
+}
+
+void CallStaticVoidMethodVForStoreTest(JNIEnv* env, jclass clazz,
+                                       jmethodID method_id, ...) {
+  va_list args;
+  va_start(args, method_id);
+  env->functions->CallStaticVoidMethodV(env, clazz, method_id, args);
+  va_end(args);
+}
+
+TEST(JniVmStorePurchaseTest, PromptNativePurchaseReachesTheHostOnEveryPath) {
+  VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass native_gl =
+      env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+  ASSERT_NE(native_gl, nullptr);
+  StorePurchaseProbe probe;
+  vm.SetRobloxStorePurchaseHandler(&probe, &RecordStorePurchase);
+
+  jstring product = env->NewStringUTF("com.roblox.robux80");
+  jstring extra = env->NewStringUTF("extra");
+  struct Entry {
+    const char* name;
+    const char* signature;
+  };
+  const Entry entries[] = {
+      {"promptNativePurchase", "(JLjava/lang/String;)V"},
+      {"promptNativePurchase", "(JLjava/lang/String;Ljava/lang/String;)V"},
+      {"promptNativePurchaseWithPayload",
+       "(JLjava/lang/String;Ljava/lang/String;)V"},
+      {"promptNativePurchaseWithPaymentSessionId",
+       "(JLjava/lang/String;Ljava/lang/String;)V"},
+      {"promptNativePurchaseWithPaymentSessionId",
+       "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"},
+  };
+  for (const Entry& entry : entries) {
+    jmethodID method =
+        env->GetStaticMethodID(native_gl, entry.name, entry.signature);
+    ASSERT_NE(method, nullptr) << entry.name;
+    env->CallStaticVoidMethod(native_gl, method, jlong{42}, product, extra,
+                              extra);
+    CallStaticVoidMethodVForStoreTest(env, native_gl, method, jlong{43},
+                                      product, extra, extra);
+    jvalue args[4] = {};
+    args[0].j = 44;
+    args[1].l = product;
+    args[2].l = extra;
+    args[3].l = extra;
+    env->CallStaticVoidMethodA(native_gl, method, args);
+  }
+  ASSERT_EQ(probe.requests.size(), 15u);
+  for (std::size_t i = 0; i < probe.requests.size(); ++i) {
+    EXPECT_EQ(probe.requests[i].first, jlong{42} + static_cast<jlong>(i % 3));
+    EXPECT_EQ(probe.requests[i].second, "com.roblox.robux80");
+  }
+
+  jclass other = env->FindClass("java/lang/Object");
+  jmethodID other_method = env->GetStaticMethodID(
+      other, "promptNativePurchase", "(JLjava/lang/String;)V");
+  env->CallStaticVoidMethod(other, other_method, jlong{1}, product);
+  EXPECT_EQ(probe.requests.size(), 15u);
+
+  vm.SetRobloxStorePurchaseHandler(nullptr, nullptr);
+  jmethodID prompt = env->GetStaticMethodID(native_gl, "promptNativePurchase",
+                                            "(JLjava/lang/String;)V");
+  env->CallStaticVoidMethod(native_gl, prompt, jlong{1}, product);
+  EXPECT_EQ(probe.requests.size(), 15u);
 }
 
 } // namespace

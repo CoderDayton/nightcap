@@ -40,8 +40,21 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
                   std::uint32_t width, std::uint32_t height,
                   std::uint8_t* destination);
 
+// Grows a texture with a sharpened bicubic filter in premultiplied alpha. The
+// sharpening is clamped to the 2x2 source texels around each output texel so
+// it cannot ring, and texels whose 3x3 neighbourhood holds just two flat
+// colours stay nearest-neighbour so hard edges stay hard. width and height
+// must each be at least the source's.
+void UpscaleRgba(const std::uint8_t* source, std::uint32_t source_width,
+                 std::uint32_t source_height, std::size_t source_stride_bytes,
+                 std::uint32_t width, std::uint32_t height,
+                 std::uint8_t* destination);
+
 // Replacement textures keyed by the hash of a texture's level-0 compressed
-// bytes. An override lives at <override_dir>/<hash>.png. With a dump
+// bytes. An override lives at <override_dir>/<hash>_<width>x<height>.png,
+// naming the original texture's size so only textures of that size leave
+// the GPU path; files without a size are skipped and logged. The folder is
+// read once, at construction. With a dump
 // directory, every level-0 texture seen is written once as
 // <dump_dir>/<hash>_<width>x<height>.png so the hash can be found.
 // Thread-safe.
@@ -53,6 +66,9 @@ class TextureOverrides {
 
   bool enabled() const { return !override_dir_.empty() || !dump_dir_.empty(); }
   bool dumping() const { return !dump_dir_.empty(); }
+  // Whether a texture of this original size could be replaced or dumped,
+  // which needs its decoded texels on the CPU.
+  bool MayReplace(std::uint32_t width, std::uint32_t height) const;
 
   // Null when no override file exists; lookups are cached either way.
   std::shared_ptr<const RgbaImage> Lookup(std::uint64_t hash);
@@ -62,6 +78,8 @@ class TextureOverrides {
  private:
   std::string override_dir_;
   std::string dump_dir_;
+  std::unordered_map<std::uint64_t, std::string> files_;
+  std::unordered_set<std::uint64_t> sizes_;
   std::mutex mutex_;
   std::unordered_map<std::uint64_t, std::shared_ptr<const RgbaImage>> cache_;
   std::unordered_set<std::uint64_t> dumped_;

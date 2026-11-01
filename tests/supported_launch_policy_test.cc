@@ -217,6 +217,45 @@ TEST(GraphicsLaunchPolicyTest, MakesOpenGlStrictAndVulkanIndependent) {
   ExpectGraphicsPolicyProbe("opengl");
 }
 
+TEST(GraphicsLaunchPolicyTest, KeepsMesaPresentDefaultsUnlessModeIsExplicit) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    setenv("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan", 1);
+    unsetenv("MOCKTAIL_FRAME_RATE_LIMIT");
+    const ProcessEnvironment environment;
+    struct Case {
+      const char* mode;
+      const char* vsync;
+      const char* expected;
+    };
+    for (const Case& test : {Case{"auto", "auto", "mailbox"},
+                             Case{"auto", "off", "immediate"},
+                             Case{"fifo", "auto", nullptr},
+                             Case{"mailbox", "off", nullptr},
+                             Case{"immediate", "on", nullptr}}) {
+      setenv("MOCKTAIL_PRESENT_MODE", test.mode, 1);
+      setenv("MOCKTAIL_VSYNC", test.vsync, 1);
+      setenv("MESA_VK_WSI_PRESENT_MODE", "relaxed", 1);
+      if (std::string(test.mode) == "auto") {
+        unsetenv("MESA_VK_WSI_PRESENT_MODE");
+      }
+      if (!ApplyGraphicsLaunchPolicy(RuntimeConfig::FromEnvironment(environment)))
+        std::_Exit(40);
+      const char* actual = getenv("MESA_VK_WSI_PRESENT_MODE");
+      if (test.expected == nullptr ? actual != nullptr
+                                   : actual == nullptr ||
+                                         std::string(actual) != test.expected)
+        std::_Exit(41);
+    }
+    std::_Exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

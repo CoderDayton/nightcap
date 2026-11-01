@@ -7,6 +7,18 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- From upstream: the Roblox sign-in can be kept in the desktop keyring through libsecret, such as
+  GNOME Keyring or KWallet, instead of a private file. Turn on "Keep the sign-in in the keyring" under
+  Settings > Advanced > Sign-in (`auth.use_libsecret`). It is off by default. Signing out from Roblox
+  also clears the keyring copy, and the hardware cursor reads its sign-in from the keyring too.
+- `mocktail --version` prints the build, and Settings > Advanced > About shows it with a copy button,
+  as the version, the revision since the last release and the commit, like `0.4.0 r54 (8bb1521)`.
+- The Fleasion page in Settings shows a badge for its proxy: Running, Not running, or Not checked for
+  hosts routing. It updates while the window is open, and hovering it shows the full message.
+- In-game video plays, such as livestream screens in events. It used to stay black because Android's
+  video decoder was missing; Nightcap now decodes H.264, HEVC, VP8 and VP9 video and AAC audio with
+  FFmpeg, which is a new dependency. Videos with a sound track no longer fail to load. The log shows
+  `[media]` lines for each video.
 - An optional popup shows the game server's location for a few seconds after each join
   (`overlay.location`), and `overlay.location_offset` moves it down. A separate performance
   overlay keeps your frame rate (`overlay.fps`) and ping (`overlay.ping`) on screen, and
@@ -16,9 +28,33 @@ Release notes on GitHub are taken from the matching section here.
   Settings and sign-in are kept. With Fleasion, `integrations.fleasion.clear_cache_on_launch`
   clears them at every launch so new replacements load. A join from the website closes an open
   Nightcap first, so the clear still runs.
+- Roblox's own account switcher is on for every account 13 or older. Roblox's servers turn it on
+  for some accounts only, and Nightcap's app policy had it off for all. After a switch, Nightcap
+  saves the new sign-in and restarts as that account, as the Android app does. The restart waits
+  up to 5 seconds for Roblox to save its signed-in account list first. Nightcap also keeps the
+  other roblox.com cookies Roblox sets, in `auth/roblox.cookies.json`, and hands them back at
+  start-up like the Android app, so the account switcher gets back the cookies it set. Signing out from
+  Roblox also restarts Nightcap at the sign-in screen, so adding an account that Roblox can only
+  add after signing everyone out finishes instead of loading forever.
+- A MangoHud setting under Performance (`performance.mangohud`) launches Nightcap with `MANGOHUD=1`.
+- Buying Robux opens roblox.com/upgrades/robux in your browser, since Nightcap has no Google
+  Play. This works from a package on the Robux page and from a game's purchase prompt. The game is
+  told nothing was bought, so its prompt closes instead of waiting. A desktop notification says
+  where the purchase went. Sign in to the same account in the browser, buy there, then try the
+  purchase in the game again.
 
 ### Fixed
 
+- The Settings window no longer shows a second Nightcap icon or missing page icons on KDE with the
+  Breeze icon theme.
+- Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy
+  port, for example when Fleasion runs in hosts mode. Nightcap now warns and starts without Fleasion.
+- The security check after Sign In no longer shows a black window on X11 desktops such as Cinnamon. Roblox
+  web pages now use software rendering there too, as on Wayland.
+- Roblox web pages such as a game's server list no longer close right after opening on some NVIDIA
+  setups on Wayland. GTK's OpenGL setup crashed those windows, so Nightcap now turns it off for them.
+- Roblox's in-game Switch Server button joins a different server instead of returning you to the
+  home screen. Roblox sends that launch as the game closes, and Nightcap now picks it up.
 - Fleasion replacements load again. With `integrations.fleasion.enabled`, Nightcap sets
   `FFlagAssetProviderUseAssetDeliveryV3` to `False`, so Roblox requests assets through the endpoint
   Fleasion rewrites. A value in `~/.config/mocktail/fflags.json` still wins.
@@ -32,16 +68,42 @@ Release notes on GitHub are taken from the matching section here.
   status 139". NVIDIA's Vulkan driver crashed when Roblox closed its graphics, so every Roblox version
   failed its startup test.
 - Holding right click over a button, the leaderboard, or the Roblox menu no longer freezes the cursor.
-  The cursor now only holds still while the camera turns, as on Windows.
+  The cursor now only holds still while the camera turns, as on Windows. Once the camera starts turning,
+  it keeps turning until you let go, even when a button in the game world passes under the cursor.
+- Shift lock no longer lets the cursor wander onto buttons when a game turns its lock off and on quickly.
+  Nightcap keeps the pointer captured until the lock has stayed off for a few frames. Leaving shift lock
+  or first person leaves the cursor at the center of the window, as on Windows.
+- Going into first person while holding right click now centers the crosshair in games that draw their own,
+  such as BedWars. Roblox kept the spot where right click was pressed as the mouse position.
 - The app menu entry opens Nightcap again on NixOS. The Nix package wrote the install path twice into
   the `.desktop` file, so the menu entry pointed at a file that does not exist.
+- When the Roblox updater crashes or quits without saying why, the session log and error dialog now
+  give its exit status or signal instead of only "Roblox update preflight failed". When DNS cannot find
+  a download server, the error points to a new FAQ entry with the commands to switch DNS servers.
+- PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.
+  The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
+- Large `fflags.json` files load, and the settings window opens them. Both used to refuse a file over
+  64 KiB.
 
 ### Changed
 
 - ETC2 textures now decode on the graphics card instead of the CPU, so loading them no longer takes CPU
-  time from the game. Small upscaled textures and texture overrides still decode on the CPU. A self-test
-  at startup falls back to the CPU if the card's output differs, and `MOCKTAIL_ETC2_GPU_DECODE=0` turns
-  it off.
+  time from the game. Only textures the size of an override still decode on the CPU. Override files
+  must now be named `<hash>_<width>x<height>.png` with the original size, as the dump names them;
+  a bare `<hash>.png` is skipped and logged. A self-test at startup falls back to
+  the CPU if the card's output differs, and `MOCKTAIL_ETC2_GPU_DECODE=0` turns it off. Cards with BC
+  texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
+  and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
+  `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
+- Small textures are upscaled on the graphics card with a smoothing filter that keeps hard two-colour
+  edges sharp, instead of nearest-neighbour on the CPU. The Small texture upscale setting
+  (`graphics.small_texture_upscale`) offers Adaptive, 1×, 2× or 4×. Adaptive, the default, times the
+  card's BC7 encoder at startup (decode and scale with Compress textures off) and picks up to 4×,
+  or 1× when it can't measure. While textures load, it steps new ones down, or
+  keeps them uncompressed, once encoding would take more than a tenth of the GPU's time, so slower
+  cards no longer stutter with Compress textures on. The log shows the measured speed and what was
+  held back. Upscaling adds sharper levels above a texture's own and leaves Roblox's smaller levels
+  as they are, so textures Roblox streams in no longer turn blurry or lose detail at a distance.
 
 ## [0.4.0] - 2026-10-18
 

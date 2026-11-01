@@ -1,7 +1,11 @@
 #include "runtime/fleasion.h"
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <nlohmann/json.hpp>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <optional>
 #include <string>
@@ -43,6 +47,42 @@ TEST(FleasionTest, AWebsiteJoinGoesToTheOpenNightcapOtherwise) {
   EXPECT_FALSE(NeedsFreshLaunch("1", "0"));
   EXPECT_FALSE(NeedsFreshLaunch("0", "1"));
   EXPECT_FALSE(NeedsFreshLaunch("0", "0"));
+}
+
+int LoopbackSocket(bool listening) {
+  const int fd = socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  EXPECT_EQ(bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+  if (listening) EXPECT_EQ(listen(fd, 1), 0);
+  return fd;
+}
+
+int BoundPort(int fd) {
+  sockaddr_in address{};
+  socklen_t length = sizeof(address);
+  EXPECT_EQ(getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length), 0);
+  return ntohs(address.sin_port);
+}
+
+TEST(FleasionTest, ProxyIsReachableWhenSomethingListens) {
+  const int fd = LoopbackSocket(true);
+  EXPECT_TRUE(FleasionProxyReachable(BoundPort(fd), 500));
+  close(fd);
+}
+
+TEST(FleasionTest, ProxyIsUnreachableWhenNothingListens) {
+  const int fd = LoopbackSocket(false);
+  const int port = BoundPort(fd);
+  EXPECT_FALSE(FleasionProxyReachable(port, 500));
+  close(fd);
+}
+
+TEST(FleasionTest, ProxyIsUnreachableOnAPortThatIsOutOfRange) {
+  EXPECT_FALSE(FleasionProxyReachable(0, 100));
+  EXPECT_FALSE(FleasionProxyReachable(-1, 100));
+  EXPECT_FALSE(FleasionProxyReachable(65536, 100));
 }
 
 nlohmann::json Merge(const std::string& base) {

@@ -25,6 +25,13 @@ Setting Live(Setting setting) {
   return setting;
 }
 
+Setting ConfirmOff(Setting setting, std::string_view title,
+                   std::string_view body) {
+  setting.confirm_off_title = title;
+  setting.confirm_off_body = body;
+  return setting;
+}
+
 // The touch switch. The file holds it inside the device block, which the
 // loader does not let input.touch_enabled be combined with.
 constexpr std::string_view kTouchKey = "device.touch";
@@ -533,6 +540,35 @@ const std::vector<SettingsPage>& SettingsPages() {
                  },
                  "",
                  {}},
+                ConfirmOff(
+                  {"graphics.texture_compression",
+                  "Compress Textures",
+                  "Keeps textures compressed on the GPU to conserve video memory. "
+                  "Disable if you experience texture glitches. Requires a restart.",
+                  SettingKind::kToggle,
+                  {},
+                  "true",
+                  {}},
+                  "Turn Off Texture Compression?",
+                  "You lose:\n"
+                  "• Up to 50% VRAM savings\n\n"
+                  "You gain:\n"
+                  "• May fix broken or black textures\n\n"
+                  "Requires a restart to take effect."),
+                {"graphics.small_texture_upscale",
+                 "Small texture upscale",
+                 "Sharpens textures of 64px or less. Adaptive picks the "
+                 "factor from your GPU's speed and holds back while it is "
+                 "busy. Requires a restart.",
+                 SettingKind::kChoice,
+                 {
+                     {"adaptive", "Adaptive"},
+                     {"1", "1× (off)"},
+                     {"2", "2×"},
+                     {"4", "4×"},
+                 },
+                 "adaptive",
+                 {}},
             }},
            {"Display",
             {
@@ -775,6 +811,14 @@ const std::vector<SettingsPage>& SettingsPages() {
                      {"off", "Off"},
                  },
                  "auto",
+                 {}},
+                {"performance.mangohud",
+                 "MangoHud",
+                 "Show the MangoHud overlay on Vulkan backends. MangoHud "
+                 "must be installed.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
                  {}},
             }},
            {"Memory",
@@ -1046,6 +1090,18 @@ const std::vector<SettingsPage>& SettingsPages() {
             "Custom device identity",
             "What the device reports about itself. Empty fields use the "
             "device preset's values."},
+           {"Sign-in",
+            {
+                {"auth.use_libsecret",
+                 "Keep the sign-in in the keyring",
+                 "Saves the Roblox sign-in with libsecret, such as GNOME "
+                 "Keyring or KWallet, instead of a private file. Applies the "
+                 "next time Nightcap starts. Turning it off signs you out.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+            }},
            {"Runtime",
             {
                 {"runtime.headless",
@@ -1151,6 +1207,44 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
       {std::string(value),
        std::string(value) + (shared ? " (name not unique)" : " (not found)")});
   return choices;
+}
+
+FleasionState GetFleasionState(bool enabled, std::string_view mode,
+                               bool proxy_reachable) {
+  if (!enabled) return FleasionState::kOff;
+  if (mode == "hosts") return FleasionState::kNotChecked;
+  if (mode != "env") return FleasionState::kOff;
+  return proxy_reachable ? FleasionState::kRunning : FleasionState::kNotRunning;
+}
+
+std::string FleasionBadge(FleasionState state) {
+  switch (state) {
+    case FleasionState::kRunning:
+      return "Running";
+    case FleasionState::kNotRunning:
+      return "Not running";
+    case FleasionState::kNotChecked:
+      return "Not checked";
+    case FleasionState::kOff:
+      break;
+  }
+  return {};
+}
+
+std::string FleasionStatus(FleasionState state, int port) {
+  const std::string where = "on port " + std::to_string(port) + ".";
+  switch (state) {
+    case FleasionState::kRunning:
+      return "Fleasion's proxy is running " + where;
+    case FleasionState::kNotRunning:
+      return "Fleasion's proxy is not running " + where +
+             " Start Fleasion first.";
+    case FleasionState::kNotChecked:
+      return "Hosts routing can't be checked from here.";
+    case FleasionState::kOff:
+      break;
+  }
+  return {};
 }
 
 bool ToggleState(const Setting& setting, std::string_view value) {
@@ -1491,15 +1585,7 @@ FFlagsDocument::FFlagsDocument(std::filesystem::path file)
     : file_(std::move(file)) {}
 
 runtime::RuntimeConfigText FFlagsDocument::Read() const {
-  // No more of the file is read than Nightcap itself reads.
-  runtime::RuntimeConfigText read = runtime::ReadOptionalTextFile(
-      file_, static_cast<std::size_t>(services::kMaximumFflagsFileBytes));
-  if (read && read.text.size() > services::kMaximumFflagsFileBytes) {
-    read.error = "fflags.json is larger than 64 KiB, the most Nightcap "
-                 "reads. Shorten or remove " +
-                 file_.string();
-  }
-  return read;
+  return runtime::ReadOptionalTextFile(file_);
 }
 
 bool FFlagsDocument::Load(std::string* error) {

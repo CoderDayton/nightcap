@@ -19,6 +19,7 @@ namespace runtime {
 
 class Environment;
 class RuntimePaths;
+class RobloxSecretStore;
 
 enum class AuthRuntimeStatus {
   kAuthenticated,
@@ -80,8 +81,11 @@ struct AuthRuntimeComposition {
   std::shared_ptr<jnivm::VM> jni_vm;
   jnivm::RobloxAuthIdentity account_identity;
   SecureRobloxCredential credential;
+  // Other roblox.com cookies saved from earlier runs, as a Cookie header.
+  SecureRobloxCredential saved_cookies;
   long http_status = 0;
   bool rejected_credential_retired = false;
+  bool clear_web_view_cookie = false;
   std::string error;
 
   explicit operator bool() const { return jni_vm != nullptr; }
@@ -97,11 +101,18 @@ AuthRuntimeComposition ComposeAuthRuntime(const Environment& environment,
 AuthRuntimeComposition ComposeAuthRuntime(
     const Environment& environment, const RuntimePaths& paths,
     services::AuthService& auth_service,
-    std::shared_ptr<services::HttpClient> live_auth_http_client);
+    std::shared_ptr<services::HttpClient> live_auth_http_client,
+    std::shared_ptr<RobloxSecretStore> secrets = nullptr);
 
-// Persists a raw or prefixed Roblox credential to the given cookie file atomically.
+// Private file holding the RobloxCookieJar next to the managed credential.
+std::filesystem::path RobloxCookieJarFile(const RuntimePaths& paths);
+
+// Persists a raw or prefixed Roblox credential to the given cookie file
+// atomically, or to the secret store when it is enabled.
 bool PersistRobloxCookie(const std::filesystem::path& path,
-                         std::string_view cookie_value);
+                         std::string_view cookie_value,
+                         std::shared_ptr<RobloxSecretStore> secrets = nullptr,
+                         const std::filesystem::path& legacy_webview = {});
 
 }  // namespace runtime
 }  // namespace mocktail

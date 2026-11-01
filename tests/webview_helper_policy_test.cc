@@ -4,6 +4,7 @@
 #include <jsc/jsc.h>
 
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -118,19 +119,16 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitSandboxEnvironment) {
   }
 }
 
-TEST(WebViewHelperPolicyTest, UsesSoftwareCompositingOnlyForWaylandByDefault) {
-  EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(true, nullptr));
-  EXPECT_FALSE(ShouldDisableWebViewHardwareAcceleration(false, nullptr));
+// The security check page rendered black on Cinnamon (X11) with hardware
+// compositing, as it did on Wayland.
+TEST(WebViewHelperPolicyTest, UsesSoftwareCompositingByDefault) {
+  EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(nullptr));
 }
 
 TEST(WebViewHelperPolicyTest, HonorsExplicitCompositingEnvironment) {
-  for (bool wayland_display : {false, true}) {
-    EXPECT_FALSE(
-        ShouldDisableWebViewHardwareAcceleration(wayland_display, "0"));
-    for (const char* value : {"1", "", "false"}) {
-      EXPECT_TRUE(
-          ShouldDisableWebViewHardwareAcceleration(wayland_display, value));
-    }
+  EXPECT_FALSE(ShouldDisableWebViewHardwareAcceleration("0"));
+  for (const char* value : {"1", "", "false"}) {
+    EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(value));
   }
 }
 
@@ -145,6 +143,19 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitGtkRendererEnvironment) {
       EXPECT_FALSE(ShouldForceSoftwareGtkRenderer(software_compositing, value));
     }
   }
+}
+
+TEST(WebViewHelperPolicyTest, DisablesGtkGlWithSoftwareCompositing) {
+  EXPECT_EQ(GdkDisableWithoutGl(true, nullptr), "gl");
+  EXPECT_EQ(GdkDisableWithoutGl(true, ""), "gl");
+  EXPECT_EQ(GdkDisableWithoutGl(true, "vulkan"), "vulkan,gl");
+}
+
+TEST(WebViewHelperPolicyTest, KeepsGdkDisableWhenGlIsOffOrHardwareCompositing) {
+  EXPECT_EQ(GdkDisableWithoutGl(true, "gl"), std::nullopt);
+  EXPECT_EQ(GdkDisableWithoutGl(true, "vulkan,gl"), std::nullopt);
+  EXPECT_EQ(GdkDisableWithoutGl(false, nullptr), std::nullopt);
+  EXPECT_EQ(GdkDisableWithoutGl(false, "vulkan"), std::nullopt);
 }
 
 TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
@@ -350,6 +361,50 @@ TEST(WebViewHelperPolicyTest, KeepsNativeUserAgentForVerificationRoutes) {
        }) {
     EXPECT_FALSE(IsBrowserLoginUrl(url)) << url;
   }
+}
+
+TEST(WebViewHelperPolicyTest, RecognizesAndroidStorePurchaseNavigation) {
+  for (const char* url : {
+           "https://www.roblox.com/mobile-app-upgrades/buy?id=com.roblox.robux80",
+           "https://roblox.com/mobile-app-upgrades/buy?id=x&ctx=robux",
+           "HTTPS://WWW.ROBLOX.COM/Mobile-App-Upgrades/Buy?id=x",
+       }) {
+    EXPECT_TRUE(IsAndroidStorePurchaseNavigation(url)) << url;
+  }
+  for (const char* url : {
+           "https://www.roblox.com/upgrades/robux",
+           "https://www.roblox.com/mobile-app-upgrades/native-ios/bc",
+           "https://www.roblox.com/home?next=/mobile-app-upgrades/buy?id=x",
+           "https://evil.example/mobile-app-upgrades/buy?id=x",
+           "http://www.roblox.com/mobile-app-upgrades/buy?id=x",
+       }) {
+    EXPECT_FALSE(IsAndroidStorePurchaseNavigation(url)) << url;
+  }
+  EXPECT_FALSE(IsAndroidStorePurchaseNavigation(nullptr));
+}
+
+TEST(WebViewHelperPolicyTest, HandsOffStorePurchasesOnlyFromRobloxPages) {
+  const char* buy = "https://www.roblox.com/mobile-app-upgrades/buy?id=x";
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(
+                "https://www.roblox.com/upgrades/robux?showHeader=true", buy),
+            StorePurchaseNavigation::kHandOff);
+  EXPECT_EQ(ClassifyStorePurchaseNavigation("https://roblox.com/home", buy),
+            StorePurchaseNavigation::kHandOff);
+  for (const char* current : {
+           "https://evil.example/", "https://evilroblox.com/",
+           "about:blank", "http://www.roblox.com/upgrades/robux",
+       }) {
+    EXPECT_EQ(ClassifyStorePurchaseNavigation(current, buy),
+              StorePurchaseNavigation::kIgnore)
+        << current;
+  }
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(nullptr, buy),
+            StorePurchaseNavigation::kIgnore);
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(
+                "https://evil.example/", "https://www.roblox.com/home"),
+            StorePurchaseNavigation::kNone);
+  EXPECT_EQ(ClassifyStorePurchaseNavigation(nullptr, nullptr),
+            StorePurchaseNavigation::kNone);
 }
 
 TEST(WebViewHelperPolicyTest, ShowsLoadErrorsForContentWithoutTelemetryNoise) {

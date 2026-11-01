@@ -178,6 +178,7 @@ Status ValidateRequest(const RobloxExperienceLaunchRequest& request) {
       &request.join_attempt_id,
       &request.join_attempt_origin,
       &request.iso_context,
+      &request.game_id_to_exclude,
   };
   for (const std::string* field : fields) {
     if (field->size() > kMaximumLaunchFieldBytes) {
@@ -206,7 +207,8 @@ Status ValidateRequest(const RobloxExperienceLaunchRequest& request) {
       canonical.game_join_context != request.game_join_context ||
       canonical.join_attempt_id != request.join_attempt_id ||
       canonical.join_attempt_origin != request.join_attempt_origin ||
-      canonical.iso_context != request.iso_context) {
+      canonical.iso_context != request.iso_context ||
+      canonical.game_id_to_exclude != request.game_id_to_exclude) {
     return Invalid(
         "fresh game launch fields do not match their canonical JSON");
   }
@@ -327,6 +329,9 @@ Status BuildFreshStartGameParams(JNIEnv* env,
                        request.join_attempt_origin);
   if (status.ok())
     status = SetString(env, params, clazz, "isoContext", request.iso_context);
+  if (status.ok())
+    status = SetString(env, params, clazz, "gameIdToExclude",
+                       request.game_id_to_exclude);
   if (status.ok()) {
     status = SetLong(env, params, clazz, "referredByPlayerId",
                      request.referred_by_player_id);

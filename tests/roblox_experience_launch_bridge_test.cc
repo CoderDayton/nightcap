@@ -113,7 +113,7 @@ TEST(RobloxExperienceLaunchParserTest, ParsesApkLaunchContract) {
       R"("linkCode":"link","launchData":"data","referredByPlayerId":9,)"
       R"("eventId":"event","gameJoinContext":"PlayButton",)"
       R"("joinAttemptId":"attempt","joinAttemptOrigin":"LuaApp",)"
-      R"("isoContext":"iso"})",
+      R"("isoContext":"iso","gameIdToExclude":"old-server"})",
       &request);
 
   ASSERT_TRUE(status.ok()) << status.message();
@@ -125,6 +125,7 @@ TEST(RobloxExperienceLaunchParserTest, ParsesApkLaunchContract) {
   EXPECT_EQ(request.reserved_server_access_code, "reserved");
   EXPECT_EQ(request.game_join_context, "PlayButton");
   EXPECT_EQ(request.join_attempt_origin, "LuaApp");
+  EXPECT_EQ(request.game_id_to_exclude, "old-server");
   EXPECT_FALSE(request.canonical_json.empty());
   const GameJoinRequest join = MakeGameJoinRequest(12, request);
   EXPECT_EQ(join.request_id, 12);

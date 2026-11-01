@@ -73,10 +73,12 @@
 #include "runtime/owned_pthread.h"
 #include "runtime/platform_cache_migration.h"
 #include "runtime/asset_overlay_names.h"
+#include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_cursor_hook.h"
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
+#include "runtime/roblox_store_purchase.h"
 #include "runtime/roblox_experience_composition.h"
 #include "runtime/roblox_haptic_protocol_bridge.h"
 #include "runtime/roblox_game_session_native_adapter.h"
@@ -265,6 +267,14 @@ NativeNoArgFn g_pending_main_thread_start_lua_app_dm = nullptr;
 jclass g_native_gl_class_for_main_thread = nullptr;
 jnivm::VM* g_vm_for_main_thread_pump = nullptr;
 std::atomic<int> g_main_thread_message_pump_ready{0};
+mocktail::runtime::RobloxStorePurchaseQueue g_store_purchases;
+std::atomic<mocktail::runtime::RobloxInGamePurchaseFinishedFn>
+    g_in_game_purchase_finished{nullptr};
+
+void QueueStorePurchase(void*, jlong player_id,
+                        const std::string& product_id) {
+  g_store_purchases.Push(player_id, product_id);
+}
 uint64_t g_pending_main_thread_start_lua_due_ms = 0;
 bool g_pending_main_thread_start_lua_started = false;
 NativeSetTaskSchedulerBackgroundModeFn
@@ -316,6 +326,7 @@ struct EngineStartupContext {
   JavaVM* java_vm;
   jnivm::RobloxAuthIdentity account_identity;
   const mocktail::runtime::SecureRobloxCredential* roblox_credential;
+  const mocktail::runtime::SecureRobloxCredential* startup_cookies;
   mocktail::runtime::RobloxGameSessionRuntime* game_session_runtime;
   bool run_prepare_jni;
   bool run_set_asset_path;
@@ -1085,6 +1096,10 @@ void PumpRobloxMainThreadMessagesOnce() {
                   pump_start_ns, pump_end_ns, args, 1);
     }
   }
+  mocktail::runtime::FinishStorePurchasesInBrowser(
+      g_store_purchases.Take(), env, g_native_gl_class_for_main_thread,
+      g_in_game_purchase_finished.load(),
+      &mocktail::runtime::HandOffRobuxPurchaseToBrowser);
   if (__builtin_expect(trace_pump, 0)) {
     if (pump_count <= 10 || pump_count % 100 == 0) {
       std::cerr << "  [main] nativeCallMessagesFromMainThread returned #"
@@ -2059,8 +2074,28 @@ void InstallCursorHooks(uintptr_t base) {
   if (options.hardware) {
     // Lives as long as the process: the picture worker never stops.
     static auto* http = new mocktail::services::CurlHttpClient;
+    // The sign-in is in its file, or in the keyring with auth.use_libsecret.
+    // Re-read at most once a minute, so a rotated cookie is picked up without
+    // starting the keyring helper for every download.
     static auto* pictures = new mocktail::services::CursorPictureSource(
-        http, CurrentRuntimePaths().cookie_file(),
+        http,
+        [path = CurrentRuntimePaths().cookie_file()] {
+          static std::mutex mutex;
+          static std::string saved;
+          static std::chrono::steady_clock::time_point read_at;
+          std::lock_guard<std::mutex> lock(mutex);
+          const auto now = std::chrono::steady_clock::now();
+          if (saved.empty() || now - read_at >= std::chrono::minutes(1)) {
+            read_at = now;
+            static const auto secrets =
+                mocktail::runtime::OpenRobloxSecretStore();
+            mocktail::runtime::StoredCookie cookie =
+                mocktail::runtime::LoadManagedRobloxCookie(path, *secrets);
+            if (cookie.status == mocktail::runtime::StoredCookieStatus::kFound)
+              saved = std::move(cookie.value);
+          }
+          return saved;
+        },
         CurrentRuntimePaths().asset_overlay_dir(), [] {
           // Roblox reports its asset folder once it starts.
           const char* root = std::getenv("MOCKTAIL_ASSET_ROOT");
@@ -3250,8 +3285,17 @@ void ConfigureNativeSettings(JNIEnv* env, jclass settings_class,
   jstring http_proxy_host_string = env->NewStringUTF(http_proxy_host.c_str());
   jstring cookie_base_url_string = env->NewStringUTF(cookie_base_url.c_str());
   jstring cookie_domain_string = env->NewStringUTF(cookie_domain.c_str());
+  const mocktail::runtime::SecureRobloxCredential* startup_cookies =
+      context->startup_cookies != nullptr ? context->startup_cookies
+                                          : credential;
+  if (startup_cookies != nullptr && credential != nullptr &&
+      startup_cookies->size() > credential->size()) {
+    std::cout << "  [engine] restoring saved Roblox cookies bytes="
+              << startup_cookies->size() - credential->size() << '\n'
+              << std::flush;
+  }
   jstring roblox_cookies_string = env->NewStringUTF(
-      credential != nullptr ? credential->c_str() : "");
+      startup_cookies != nullptr ? startup_cookies->c_str() : "");
   jstring cookie_manager_cookies_string =
       env->NewStringUTF(cookie_manager_cookies.c_str());
   jstring android_id_string = env->NewStringUTF(android_id.c_str());
@@ -5002,6 +5046,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   g_native_gl_class_for_main_thread =
       reinterpret_cast<jclass>(native_gl_interface_class.get());
   g_vm_for_main_thread_pump = jni_vm.get();
+  jni_vm->SetRobloxStorePurchaseHandler(nullptr, &QueueStorePurchase);
   jni_vm->RegisterClass("com/roblox/engine/jni/NativeInputInterface");
   jni_vm->RegisterClass("com/roblox/engine/jni/NativeSettingsInterface");
   jni_vm->RegisterClass("com/roblox/engine/jni/NativeAppBridgeInterface");
@@ -6565,6 +6610,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
             "JNIAppLifecycleNativeAdapter_setActive"));
     g_native_call_messages_from_main_thread =
         native_call_messages_from_main_thread;
+    g_in_game_purchase_finished.store(
+        reinterpret_cast<mocktail::runtime::RobloxInGamePurchaseFinishedFn>(
+            linker::ResolveSymbol(
+                roblox_handle,
+                "Java_com_roblox_engine_jni_NativeGLInterface_"
+                "nativeInGamePurchaseFinishedV2")));
     std::cout << "  [engine] Stage6 symbol resolve done" << std::endl;
     std::cout << "    native_init_with_params="
               << reinterpret_cast<const void*>(native_init_with_params) << '\n'
@@ -6992,6 +7043,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   roblox_handle,
                   "Java_com_roblox_universalapp_messagebus_Connection_"
                   "deleteSharedPtr"));
+      message_bus_symbols.get_last_raw =
+          reinterpret_cast<mocktail::runtime::GetMessageBusLastRawFn>(
+              linker::ResolveSymbol(
+                  roblox_handle,
+                  "Java_com_roblox_universalapp_messagebus_MessageBus_"
+                  "getLastRaw"));
       const mocktail::runtime::RobloxPlatformWebSymbols platform_web_symbols =
           mocktail::runtime::ResolveRobloxPlatformWebSymbols(
               roblox_handle, message_bus_symbols.subscribe_raw,
@@ -7050,6 +7107,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         raw_vm,
         dependencies.account_identity(),
         &dependencies.roblox_credential(),
+        &dependencies.startup_cookies(),
         game_session_runtime.get(),
         run_prepare_jni,
         run_set_asset_path,

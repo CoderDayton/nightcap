@@ -50,6 +50,7 @@ std::shared_ptr<Class> ClassFromJClass(jclass clazz);
 jclass StoreClass(std::shared_ptr<Class> cls);
 jobject StoreObject(std::unique_ptr<Object> object);
 PseudoJavaObject* PseudoObjectFromRef(jobject obj);
+bool IsSegmentHandle(jobject obj);
 jobject MakeObjectForClass(const std::string& name);
 jobject MakeObject(jclass clazz);
 jobject SingletonObject(const std::string& name);

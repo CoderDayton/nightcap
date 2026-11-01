@@ -55,9 +55,11 @@ class WindowPointerCaptureOwner final {
   // Counts the frames presented to the window. Without one, Roblox's
   // reports never go stale.
   using FrameCounter = std::uint64_t (*)();
+  using Clock = std::uint64_t (*)();
 
   explicit WindowPointerCaptureOwner(PointerCaptureBackend* backend,
-                                     FrameCounter presented_frames = nullptr);
+                                     FrameCounter presented_frames = nullptr,
+                                     Clock now_ms = nullptr);
   ~WindowPointerCaptureOwner();
 
   WindowPointerCaptureOwner(const WindowPointerCaptureOwner&) = delete;
@@ -105,6 +107,12 @@ class WindowPointerCaptureOwner final {
     return desktop_shows_roblox_cursor_.load(std::memory_order_relaxed);
   }
 
+  bool TakePointerRecenter() {
+    const bool pending = pointer_recenter_pending_;
+    pointer_recenter_pending_ = false;
+    return pending;
+  }
+
   bool captured() const { return captured_; }
   bool cursor_visible() const { return cursor_ != CursorShape::kHidden; }
   CursorShape cursor() const { return cursor_; }
@@ -118,8 +126,11 @@ class WindowPointerCaptureOwner final {
   // Roblox that presents nothing, as when the screen sits still, leaves the
   // last frame and its cursor on screen, so the report holds.
   static constexpr std::uint64_t kRobloxCursorLifetimeFrames = 8;
+  static constexpr std::uint64_t kNativeUnlockFrames = 3;
+  static constexpr std::uint64_t kNativeUnlockMs = 250;
 
   std::uint64_t PresentedFrames() const;
+  std::uint64_t NowMs() const;
 
   bool Apply(bool capture, CursorShape cursor, CursorImagePtr image = nullptr,
              bool center_pointer = false);
@@ -134,6 +145,7 @@ class WindowPointerCaptureOwner final {
   bool clearing_ = false;
   bool focused_ = true;
   bool right_button_held_ = false;
+  bool right_drag_panning_ = false;
   // Written by the experience composition, read on the SDL thread.
   std::atomic<bool> game_session_active_{false};
   std::atomic<bool> vr_active_{false};
@@ -142,15 +154,20 @@ class WindowPointerCaptureOwner final {
   bool shift_key_pressed_during_right_drag_ = false;
   bool wait_for_native_unlock_after_right_drag_ = false;
   bool discard_next_motion_after_right_drag_ = false;
+  bool native_unlock_pending_ = false;
+  std::uint64_t native_unlock_frame_ = 0;
+  std::uint64_t native_unlock_ms_ = 0;
   bool captured_ = false;
   CursorShape cursor_ = CursorShape::kArrow;
   CursorImagePtr cursor_image_;
   bool pointer_centered_ = false;
+  bool pointer_recenter_pending_ = false;
   // What showed when the current capture began. An RMB camera drag keeps it
   // on screen at the press point; kHidden leaves the drag to Roblox.
   CursorShape capture_cursor_ = CursorShape::kHidden;
   CursorImagePtr capture_cursor_image_;
   FrameCounter presented_frames_ = nullptr;
+  Clock now_ms_ = nullptr;
   // Written on Roblox's render thread, read on the SDL thread.
   std::mutex roblox_cursor_mutex_;
   CursorShape roblox_cursor_ = CursorShape::kHidden;
@@ -185,6 +202,7 @@ class SdlPointerCaptureBackend final : public PointerCaptureBackend {
   bool relative_mode_ = false;
   bool pointer_centered_ = false;
   bool capture_anchor_valid_ = false;
+  bool anchor_centered_ = false;
 };
 
 }  // namespace window

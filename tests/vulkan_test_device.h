@@ -21,6 +21,10 @@ struct VulkanTestDevice {
   VkQueue queue = VK_NULL_HANDLE;
   std::uint32_t family = 0;
   std::string name;
+  // The device was created with textureCompressionBC.
+  bool bc_textures = false;
+  // The device was created with timelineSemaphore.
+  bool timeline = false;
 
   template <typename T>
   T Instance(const char* proc) const {
@@ -52,7 +56,7 @@ inline VkInstance CreateTestInstance(PFN_vkGetInstanceProcAddr* get) {
       (*get)(VK_NULL_HANDLE, "vkCreateInstance"));
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  app.apiVersion = VK_API_VERSION_1_1;
+  app.apiVersion = VK_API_VERSION_1_2;
   VkInstanceCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   info.pApplicationInfo = &app;
@@ -111,10 +115,30 @@ inline std::vector<VulkanTestDevice> OpenTestDevices() {
     queue_info.queueFamilyIndex = vk.family;
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
+    VkPhysicalDeviceFeatures supported{};
+    vk.Instance<PFN_vkGetPhysicalDeviceFeatures>(
+        "vkGetPhysicalDeviceFeatures")(candidate, &supported);
+    VkPhysicalDeviceFeatures features{};
+    features.textureCompressionBC = supported.textureCompressionBC;
+    vk.bc_textures = supported.textureCompressionBC == VK_TRUE;
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
+    timeline.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+    VkPhysicalDeviceFeatures2 query{};
+    query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    query.pNext = &timeline;
+    if (properties.apiVersion >= VK_API_VERSION_1_2) {
+      vk.Instance<PFN_vkGetPhysicalDeviceFeatures2>(
+          "vkGetPhysicalDeviceFeatures2")(candidate, &query);
+    }
+    vk.timeline = timeline.timelineSemaphore == VK_TRUE;
+    timeline.pNext = nullptr;
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_info.pNext = vk.timeline ? &timeline : nullptr;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
+    device_info.pEnabledFeatures = &features;
     if (vk.Instance<PFN_vkCreateDevice>("vkCreateDevice")(
             candidate, &device_info, nullptr, &vk.device) != VK_SUCCESS) {
       continue;

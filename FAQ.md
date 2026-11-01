@@ -55,6 +55,37 @@ attach `latest.log`:
 
 For native installs, a custom `$XDG_STATE_HOME` replaces `~/.local/state`.
 
+## The update says it could not resolve a host
+
+Your DNS server could not find the download server. To check, look up the
+host named in the error, for example:
+
+```sh
+getent hosts api.pureapk.com
+```
+
+No output means DNS is failing. Switch to a public DNS server such as
+Cloudflare (`1.1.1.1`) or Google (`8.8.8.8`).
+
+With NetworkManager (most desktops; `nmcli` is installed), find your
+connection's name, then set its DNS:
+
+```sh
+nmcli -t -f NAME connection show --active
+nmcli connection modify "NAME" ipv4.dns "1.1.1.1 8.8.8.8" ipv4.ignore-auto-dns yes
+nmcli connection up "NAME"
+```
+
+Replace `NAME` with the name from the first command. To undo it, run
+`nmcli connection modify "NAME" ipv4.dns "" ipv4.ignore-auto-dns no`, then
+`nmcli connection up "NAME"` again.
+
+With systemd-resolved and no NetworkManager, set `DNS=1.1.1.1 8.8.8.8` under
+`[Resolve]` in `/etc/systemd/resolved.conf`, then run
+`sudo systemctl restart systemd-resolved`.
+
+Run the `getent` check again, then relaunch Nightcap.
+
 ## Can I run multiple Roblox instances?
 
 No. Nightcap won't add multi-instance launching. It would mean working around

@@ -12,6 +12,7 @@ conflicts=('mocktail')
 depends=(
   'capstone'
   'curl'
+  'ffmpeg'
   'fontconfig'
   'gtk4'
   'libadwaita'
@@ -19,6 +20,7 @@ depends=(
   'libglvnd'
   'libplacebo'
   'libpng'
+  'libsecret'
   'libutf8proc'
   'libyaml'
   'minizip'

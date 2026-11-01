@@ -3,6 +3,7 @@
 .PHONY: all build release debug test apk install register-url-handler release-runtime portable portable-test standalone appimage flatpak flatpak-build run-flatpak run run-smoke run-unlimited run-game run-input run-resize run-network auto-run run-gles run-angle update-roblox update-auto update-auto-launch payload-status payload-rollback support-bundle clean submodules help
 
 BUILD_DIR  := build
+TEST_BUILD_DIR ?= build-test
 BINARY     := $(BUILD_DIR)/mocktail
 JOBS       := $(shell nproc)
 BUILD_TYPE ?= Release
@@ -25,19 +26,19 @@ FLATPAK_JOBS ?= 2
 
 define build_native_runtime
 	@git submodule update --init --recursive
-	@cmake -S . -B "$(BUILD_DIR)" \
+	@cmake -S . -B "$(3)" \
 		-DCMAKE_BUILD_TYPE="$(1)" \
 		-DBUILD_TESTING="$(2)" \
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
 		$(if $(strip $(CMAKE_TOOLCHAIN_FILE)),-DCMAKE_TOOLCHAIN_FILE="$(CMAKE_TOOLCHAIN_FILE)") \
 		$(if $(strip $(CMAKE_SYSROOT)),-DCMAKE_SYSROOT="$(CMAKE_SYSROOT)")
-	@cmake --build "$(BUILD_DIR)" -j"$(JOBS)"
+	@cmake --build "$(3)" -j"$(JOBS)"
 endef
 
 all: build ## Dynamic Release build
 
 build: ## Build the dynamic Release runtime in build/
-	$(call build_native_runtime,$(BUILD_TYPE),OFF)
+	$(call build_native_runtime,$(BUILD_TYPE),OFF,$(BUILD_DIR))
 
 release: ## Build AppImage (LIBC=auto|glibc|musl MODE=standalone|thin)
 	@MOCKTAIL_BUILD_JOBS="$(JOBS)" \
@@ -48,7 +49,7 @@ release: ## Build AppImage (LIBC=auto|glibc|musl MODE=standalone|thin)
 		./scripts/build_release.sh --libc "$(LIBC)" --mode "$(MODE)"
 
 debug: ## Debug build
-	$(call build_native_runtime,Debug,OFF)
+	$(call build_native_runtime,Debug,OFF,$(BUILD_DIR))
 
 install: ## Install an already-built dynamic runtime (use: sudo make install)
 	@cmake --install "$(BUILD_DIR)" --prefix "$(PREFIX)"
@@ -58,9 +59,9 @@ register-url-handler: build ## Select this build for Roblox website links
 		--executable "$(abspath $(BINARY))" \
 		--desktop-file "$(abspath packaging/io.github.CoderDayton.nightcap.desktop)"
 
-test: ## Build and run all unit tests
-	$(call build_native_runtime,Debug,ON)
-	@ctest --test-dir "$(BUILD_DIR)" --output-on-failure -j"$(JOBS)"
+test: ## Build and run all unit tests in build-test/
+	$(call build_native_runtime,Debug,ON,$(TEST_BUILD_DIR))
+	@ctest --test-dir "$(TEST_BUILD_DIR)" --output-on-failure -j"$(JOBS)"
 
 apk: ## Extract libroblox.so and build (usage: make apk APK=/path/to/roblox.apk)
 ifndef APK
@@ -159,13 +160,13 @@ payload-rollback: build ## Atomically restore the previous-good payload
 support-bundle: ## Create a private sanitized diagnostics archive
 	@./scripts/collect_support_bundle.sh --context manual --reason manual-request
 
-submodules: ## Initialise git submodules (libjnivm, mcpelauncher-linker)
+submodules: ## Initialise git submodules (libjnivm, Vulkan-Headers)
 	@./scripts/add_submodules.sh
 
-clean: ## Remove the build directory
-	rm -rf $(BUILD_DIR)
-	@echo "Build directory removed."
+clean: ## Remove the build and test build directories
+	rm -rf $(BUILD_DIR) $(TEST_BUILD_DIR)
+	@echo "Build directories removed."
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'

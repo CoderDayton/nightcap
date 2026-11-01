@@ -15,8 +15,16 @@ constexpr std::uint64_t kMebibyte = 1024U * 1024U;
 
 TEST(TextureMemoryPolicyTest, LeavesTheGuestDefaultOnSmallHosts) {
   EXPECT_EQ(CalculateTextureMemoryBudgetBytes(0), 0U);
-  EXPECT_EQ(CalculateTextureMemoryBudgetBytes(2048U * kMebibyte), 0U);
-  EXPECT_EQ(CalculateTextureMemoryBudgetBytes(4095U * kMebibyte), 0U);
+  EXPECT_EQ(CalculateTextureMemoryBudgetBytes(1024U * kMebibyte), 0U);
+  EXPECT_EQ(CalculateTextureMemoryBudgetBytes(2047U * kMebibyte), 0U);
+}
+
+TEST(TextureMemoryPolicyTest, SizesABudgetForFourGigabyteHosts) {
+  // A "4 GB" laptop reports less than 4096 MiB in MemTotal.
+  EXPECT_EQ(CalculateTextureMemoryBudgetBytes(3800U * kMebibyte),
+            475U * kMebibyte);
+  EXPECT_EQ(CalculateTextureMemoryBudgetBytes(2048U * kMebibyte),
+            256U * kMebibyte);
 }
 
 TEST(TextureMemoryPolicyTest, SizesAClampedShareOfHostMemory) {

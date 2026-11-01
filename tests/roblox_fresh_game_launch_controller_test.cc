@@ -25,6 +25,7 @@ struct Probe {
   int32_t join_request_type = 0;
   bool under_13 = false;
   std::string game_id;
+  std::string game_id_to_exclude;
   std::string access_code;
   std::string launch_data;
   std::string username;
@@ -73,6 +74,8 @@ jint StartGame(JNIEnv* env, jclass, jobject params) {
       env->CallBooleanMethod(
           params, env->GetMethodID(clazz, "isUnder13", "()Z")) == JNI_TRUE;
   g_probe->game_id = StringField(env, params, clazz, "gameId");
+  g_probe->game_id_to_exclude =
+      StringField(env, params, clazz, "gameIdToExclude");
   g_probe->access_code = StringField(env, params, clazz, "accessCode");
   g_probe->launch_data = StringField(env, params, clazz, "launchData");
   g_probe->username = StringField(env, params, clazz, "username");
@@ -172,7 +175,7 @@ class RobloxFreshGameLaunchControllerTest : public ::testing::Test {
         R"("callId":"call","linkCode":"link","referralPage":"detail",)"
         R"("gameJoinContext":"PlayButton","eventId":"event",)"
         R"("joinAttemptId":"attempt","joinAttemptOrigin":"LuaApp",)"
-        R"("isoContext":"iso"})";
+        R"("isoContext":"iso","gameIdToExclude":"old-server"})";
     EXPECT_TRUE(ParseRobloxExperienceLaunchJson(json, &request).ok());
     return request;
   }
@@ -228,6 +231,7 @@ TEST_F(RobloxFreshGameLaunchControllerTest,
   EXPECT_EQ(probe_.join_request_type, 6);
   EXPECT_TRUE(probe_.under_13);
   EXPECT_EQ(probe_.game_id, "instance");
+  EXPECT_EQ(probe_.game_id_to_exclude, "old-server");
   EXPECT_EQ(probe_.access_code, "access");
   EXPECT_EQ(probe_.launch_data, "payload");
   EXPECT_EQ(probe_.username, "typed-user");

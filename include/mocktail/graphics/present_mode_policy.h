@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -15,13 +16,18 @@ enum class PresentModePolicy {
   kHostDefault,
   kVsync,
   kUnthrottled,
+  kFifo,
+  kMailbox,
+  kImmediate,
 };
 
 PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
-                                           std::string_view frame_rate_value);
+                                           std::string_view frame_rate_value,
+                                           std::string_view present_mode = "auto");
 
-// Reads MOCKTAIL_VSYNC / MOCKTAIL_FRAME_RATE_LIMIT once. Window pacing and
-// the Vulkan adapter must use this instead of getenv'ing the same keys.
+std::optional<VkPresentModeKHR> ExplicitPresentMode(PresentModePolicy policy);
+int ResolveSwapInterval(PresentModePolicy policy, int requested);
+
 PresentModePolicy CachedPresentModePolicy();
 
 std::vector<VkPresentModeKHR>

@@ -144,6 +144,7 @@ class RuntimeConfig {
   // MOCKTAIL_VR_ENABLED (--vr, --no-vr) wins over MOCKTAIL_VR_MODE.
   VrMode vr_mode() const { return vr_mode_; }
   bool vr_valid() const { return vr_valid_; }
+  bool use_libsecret() const { return use_libsecret_; }
   const std::filesystem::path& roblox_library_path() const {
     return roblox_library_path_;
   }
@@ -181,7 +182,19 @@ class RuntimeConfig {
     return vr_enabled_ ? vr_frame_rate_ : frame_rate_;
   }
   const std::string& vsync_mode() const { return vsync_mode_; }
+  // Keep ETC2/EAC textures compressed as BC7/BC4/BC5 on the GPU.
+  bool texture_compression() const { return texture_compression_; }
+  // "adaptive", or a fixed factor for textures of 64px or less.
+  const std::string& small_texture_upscale() const {
+    return small_texture_upscale_;
+  }
+  const std::string& present_mode() const { return present_mode_; }
+  static bool IsValidPresentMode(std::string_view mode) {
+    return mode == "auto" || mode == "fifo" || mode == "mailbox" ||
+           mode == "immediate";
+  }
   const PerformancePolicy& performance() const { return performance_; }
+  bool mangohud() const { return mangohud_; }
   const std::string& audio_output_device() const {
     return audio_output_device_;
   }
@@ -227,6 +240,7 @@ class RuntimeConfig {
   bool vr_enabled_ = kDefaultVrEnabled;
   VrMode vr_mode_ = kDefaultVrEnabled ? VrMode::kOn : VrMode::kOff;
   bool vr_valid_ = true;
+  bool use_libsecret_ = false;
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;
   std::string graphics_backend_name_ = "direct-vulkan";
@@ -241,7 +255,11 @@ class RuntimeConfig {
   std::string vr_anti_aliasing_ = "fxaa";
   bool vr_spatial_toolbar_ = true;
   std::string vsync_mode_ = "auto";
+  bool texture_compression_ = true;
+  std::string small_texture_upscale_ = "adaptive";
+  std::string present_mode_ = "auto";
   PerformancePolicy performance_;
+  bool mangohud_ = false;
   std::string audio_output_device_ = "default";
   bool audio_output_device_valid_ = true;
   std::string audio_input_device_ = "default";

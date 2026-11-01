@@ -67,6 +67,9 @@ struct RobloxCredentialView {
 using RobloxCredentialProvider = RobloxCredentialView (*)(const void *context);
 using RobloxCookieGetter = jstring (*)(JNIEnv* env, jclass clazz,
                                        jstring domain);
+using RobloxAccountSwitchHandler = void (*)(void* context, bool signed_in);
+using RobloxStorePurchaseHandler = void (*)(void* context, jlong player_id,
+                                            const std::string& product_id);
 
 jobject CreateAndroidConfiguration(JNIEnv *env);
 
@@ -74,6 +77,12 @@ jobject CreateAndroidConfiguration(JNIEnv *env);
 // lifetime.
 struct RobloxCredentialSinkCallbacks {
   bool (*store)(void *context, const char *data, std::size_t size) = nullptr;
+};
+
+// Receives every raw Set-Cookie value the engine reports, with its URL.
+struct RobloxSetCookieObserverCallbacks {
+  void (*observe)(void *context, const std::string &url,
+                  const std::vector<std::string> &set_cookies) = nullptr;
 };
 
 // The VM keeps the host context opaque. Receiver identities let the backend
@@ -305,12 +314,24 @@ public:
   bool CopyRobloxCredentialFromProvider(std::string *credential) const;
 
   void SetRobloxCookieGetter(RobloxCookieGetter getter);
+  void SetRobloxStorePurchaseHandler(void* context,
+                                     RobloxStorePurchaseHandler handler);
+  void DispatchRobloxStorePurchase(jlong player_id,
+                                   const std::string& product_id);
   bool RefreshRobloxCredentialFromEngine(JNIEnv* env);
+  void SetRobloxAccountSwitchHandler(void* context,
+                                     RobloxAccountSwitchHandler handler);
+  void DispatchRobloxAccountSwitch(bool signed_in);
 
   void SetRobloxCredentialSink(std::shared_ptr<void> context,
                                const RobloxCredentialSinkCallbacks &callbacks);
   void ClearRobloxCredentialSink();
   bool DispatchRobloxCredential(const char *data, std::size_t size);
+
+  void SetRobloxSetCookieObserver(
+      std::shared_ptr<void> context,
+      const RobloxSetCookieObserverCallbacks &callbacks);
+  void ClearRobloxSetCookieObserver();
 
   // Installs an org/fmod/AudioDevice backend. The VM retains context for
   // every in-flight callback and calls shutdown when the binding is cleared or
@@ -478,6 +499,12 @@ private:
 
   mutable std::mutex roblox_cookie_getter_mutex_;
   RobloxCookieGetter roblox_cookie_getter_ = nullptr;
+  void* roblox_account_switch_context_ = nullptr;
+  RobloxAccountSwitchHandler roblox_account_switch_handler_ = nullptr;
+
+  std::mutex roblox_store_purchase_mutex_;
+  void* roblox_store_purchase_context_ = nullptr;
+  RobloxStorePurchaseHandler roblox_store_purchase_handler_ = nullptr;
 
   struct RobloxCredentialSinkBinding {
     std::shared_ptr<void> context;
@@ -485,6 +512,13 @@ private:
   };
   mutable std::mutex roblox_credential_sink_mutex_;
   RobloxCredentialSinkBinding roblox_credential_sink_binding_;
+
+  struct RobloxSetCookieObserverBinding {
+    std::shared_ptr<void> context;
+    RobloxSetCookieObserverCallbacks callbacks;
+  };
+  mutable std::mutex roblox_set_cookie_observer_mutex_;
+  RobloxSetCookieObserverBinding roblox_set_cookie_observer_binding_;
 
   struct FmodAudioDeviceBinding {
     std::shared_ptr<void> context;

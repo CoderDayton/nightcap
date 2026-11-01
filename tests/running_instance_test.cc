@@ -329,7 +329,9 @@ TEST_F(RunningInstanceTest, RestartStartsTheProgramWhereTheOldOneRan) {
 TEST_F(RunningInstanceTest, StartDetachedDoesNotPassOnIgnoredSignals) {
   const std::filesystem::path marker = directory_ / "marker";
   const std::filesystem::path program = directory_ / "program.sh";
-  std::ofstream(program) << "#!/bin/sh\ngrep SigIgn /proc/$$/status > '"
+  // grep reads its own status: bash as /bin/sh ignores SIGQUIT itself while
+  // running a script, but restores what it inherited for its children.
+  std::ofstream(program) << "#!/bin/sh\ngrep SigIgn /proc/self/status > '"
                          << marker.string() << ".tmp' && mv '"
                          << marker.string() << ".tmp' '" << marker.string()
                          << "'\n";
@@ -370,9 +372,11 @@ TEST_F(RunningInstanceTest, StartDetachedReportsAProgramThatCannotRun) {
 TEST_F(RunningInstanceTest, ReplaceProcessRunsTheProgramInThisProcess) {
   const std::filesystem::path marker = directory_ / "marker";
   const std::filesystem::path program = directory_ / "program.sh";
-  std::ofstream(program) << "#!/bin/sh\n{ echo \"$$ $1 $MARK\"; grep -E "
-                            "'^Sig(Ign|Blk)' /proc/$$/status; } > '"
-                         << marker.string() << "'\n";
+  std::ofstream(program)
+      << "#!/bin/sh\n{ echo \"$$ $1 $MARK\"; while read -r line; do "
+         "case $line in SigBlk:*|SigIgn:*) echo \"$line\";; esac; "
+         "done < /proc/$$/status; } > '"
+      << marker.string() << "'\n";
   std::filesystem::permissions(program, std::filesystem::perms::owner_all);
 
   const pid_t child = fork();

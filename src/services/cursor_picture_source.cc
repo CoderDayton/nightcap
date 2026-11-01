@@ -61,8 +61,7 @@ std::string ReadFile(const std::filesystem::path& path) {
 }
 
 // The Cookie header for the asset service, or empty without a usable cookie.
-std::string CookieHeader(const std::filesystem::path& cookie_file) {
-  std::string cookie = ReadFile(cookie_file);
+std::string CookieHeader(std::string cookie) {
   while (!cookie.empty() &&
          std::isspace(static_cast<unsigned char>(cookie.back()))) {
     cookie.pop_back();
@@ -181,11 +180,11 @@ std::vector<std::filesystem::path> LocalCursorPictureCandidates(
 }
 
 CursorPictureSource::CursorPictureSource(
-    HttpClient* http, std::filesystem::path cookie_file,
+    HttpClient* http, std::function<std::string()> read_cookie,
     std::filesystem::path overlay_dir,
     std::function<std::filesystem::path()> asset_root)
     : http_(http),
-      cookie_file_(std::move(cookie_file)),
+      read_cookie_(std::move(read_cookie)),
       overlay_dir_(std::move(overlay_dir)),
       asset_root_(std::move(asset_root)) {}
 
@@ -216,7 +215,8 @@ std::string CursorPictureSource::Download(std::uint64_t asset_id) {
   request.timeout_ms = kTimeoutMs;
   request.maximum_body_bytes = kMaxPictureBytes;
   request.follow_redirects = false;
-  std::string cookie = CookieHeader(cookie_file_);
+  std::string cookie =
+      CookieHeader(read_cookie_ ? read_cookie_() : std::string());
   if (!cookie.empty()) {
     request.headers.push_back(std::move(cookie));
   }

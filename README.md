@@ -48,16 +48,7 @@ More: [custom textures](textures/README.md) ·
 [performance](docs/PERFORMANCE.md) · [FAQ](FAQ.md) ·
 [changelog](CHANGELOG.md) · [roadmap](docs/ROADMAP.md)
 
-## Install with Flatpak
-
-```bash
-flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
-flatpak run io.github.CoderDayton.nightcap
-```
-
-Updates arrive through `flatpak update`. Nightcap is not on Flathub yet.
-
-## AppImage
+## Install with AppImage
 
 Grab the AppImage from the
 [latest release](https://github.com/CoderDayton/nightcap/releases/latest),
@@ -67,6 +58,25 @@ make it executable, and run it:
 chmod +x Nightcap-x86_64.AppImage
 ./Nightcap-x86_64.AppImage
 ```
+
+## Install on Arch Linux from the AUR
+
+[`nightcap-git`](https://aur.archlinux.org/packages/nightcap-git) builds the
+current `main` branch. It is maintained by
+[@dim-ghub](https://github.com/dim-ghub):
+
+```bash
+paru -S nightcap-git    # or: yay -S nightcap-git
+```
+
+## Install with Flatpak
+
+```bash
+flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
+flatpak run io.github.CoderDayton.nightcap
+```
+
+Updates arrive through `flatpak update`. Nightcap is not on Flathub yet.
 
 ## Distribution packages
 
@@ -82,14 +92,6 @@ sudo pacman -U nightcap-<version>-1-x86_64.pkg.tar.zst
 
 They install `/usr/bin/mocktail`, so they conflict with upstream's `mocktail`
 package.
-
-On Arch Linux, [`nightcap-git`](https://aur.archlinux.org/packages/nightcap-git)
-is on the AUR. It builds the current `main` branch and is maintained by
-[@dim-ghub](https://github.com/dim-ghub):
-
-```bash
-yay -S nightcap-git
-```
 
 Nightcap is in no other distribution repository.
 
@@ -183,7 +185,9 @@ inside Linuxulator; it is not a native FreeBSD binary. Building requires CMake
 3.20+, Git, pkg-config, LLD, binutils, a C++17 compiler, SDL 3.4+, SDL3_ttf,
 Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, libpng,
 minizip, Capstone 5, utf8proc, nlohmann/json, GTK4, libadwaita 1.6+, and
-WebKitGTK 6.0.
+WebKitGTK 6.0. FFmpeg's libavcodec is optional: without it, in-game video
+stays black. libsecret is optional: without it, `auth.use_libsecret` has no
+effect and the sign-in stays in a private file.
 
 See the [FreeBSD Guide](packaging/freebsd/README.md) for setup and launch instructions.
 
@@ -196,8 +200,9 @@ sudo apt install build-essential cmake git ninja-build pkg-config lld \
   libsdl3-dev libsdl3-ttf-dev libcurl4-openssl-dev libssl-dev \
   nlohmann-json3-dev libyaml-dev libpng-dev libelf-dev libminizip-dev \
   libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+  libsecret-1-dev \
   libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
-  libplacebo-dev zlib1g-dev
+  libplacebo-dev libavcodec-dev zlib1g-dev
 ```
 </details>
 
@@ -207,8 +212,8 @@ sudo apt install build-essential cmake git ninja-build pkg-config lld \
 ```bash
 sudo pacman -S --needed base-devel cmake git ninja pkgconf lld sdl3 sdl3_ttf \
   curl openssl nlohmann-json libyaml libpng libelf minizip capstone gtk4 \
-  libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
-  libplacebo vulkan-headers vulkan-icd-loader zlib
+  libadwaita libsecret webkitgtk-6.0 libutf8proc fontconfig libglvnd \
+  libplacebo ffmpeg vulkan-headers vulkan-icd-loader zlib
 ```
 </details>
 
@@ -220,9 +225,9 @@ sudo dnf install gcc-c++ cmake git ninja-build pkgconf-pkg-config lld \
   SDL3-devel SDL3_ttf-devel libcurl-devel openssl-devel \
   nlohmann-json-devel libyaml-devel libpng-devel elfutils-libelf-devel \
   minizip-ng-compat-devel \
-  capstone-devel gtk4-devel libadwaita-devel webkitgtk6.0-devel \
+  capstone-devel gtk4-devel libadwaita-devel webkitgtk6.0-devel libsecret-devel \
   utf8proc-devel fontconfig-devel libglvnd-devel vulkan-headers \
-  vulkan-loader-devel libplacebo-devel zlib-ng-compat-devel
+  vulkan-loader-devel libplacebo-devel ffmpeg-free-devel zlib-ng-compat-devel
 ```
 </details>
 
@@ -321,12 +326,13 @@ Run Nightcap without `hardened_malloc` enabled.
 
 ## Support
 
-Support this fork by giving it a star or with cryptocurrency:
+Support this fork by giving it a star or with:
 
-- LTC: `LdABR2ELRYrUESWZWrEk1uNx38gHHMuHUU`
-- SOL: `tjeDnPoWeyW8zfTf8c5CVAm5QTV8vFPaPouaScAdwfT`
+<a href='https://ko-fi.com/U7U01WTJF9' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi2.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
-Support the upstream project, which does most of the heavy lifting:
+LTC: `LdABR2ELRYrUESWZWrEk1uNx38gHHMuHUU`
+
+Support the upstream project:
 
 - USDT (TON): `UQCi6Yzcc9cOctoij6n_r1K90-OdVxAT0D_xo2UzGKkQaJDY`
 - USDT (TRC20): `TNPMG9Vig2xiuo2r1QqnXRChPH7Vu28Jmx`

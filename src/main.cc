@@ -50,6 +50,8 @@
 #include "runtime/platform_cache_migration.h"
 #include "runtime/process_diagnostics.h"
 #include "runtime/process_launch_policy.h"
+#include "runtime/roblox_app_storage.h"
+#include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
@@ -190,14 +192,91 @@ class OtaPatchRestartWatch final {
   std::thread thread_;
 };
 
-void RestartForOtaPatches() {
+constexpr char kSignedOutRestartVariable[] = "MOCKTAIL_SIGNED_OUT_RESTART";
+std::atomic<bool> g_account_switch_pending{false};
+std::atomic<bool> g_account_switch_restart{false};
+std::atomic<bool> g_signed_out_restart{false};
+std::filesystem::path g_account_cookie_file;
+std::filesystem::path g_app_storage_file;
+
+void RequestAccountSwitchRestart(void* vm, bool signed_in) {
+  if (g_account_switch_pending.exchange(true)) {
+    return;
+  }
+  if (signed_in) {
+    const auto since =
+        std::filesystem::file_time_type::clock::now() - std::chrono::seconds(2);
+    std::thread([app_storage = g_app_storage_file, since] {
+      const mocktail::runtime::SavedAccountBlob result =
+          mocktail::runtime::WaitForSavedRobloxAccountBlob(
+              app_storage, since, std::chrono::seconds(5));
+      std::cout << "  [auth] account switched; account blob "
+                << (result.saved ? "saved" : "not saved")
+                << " length=" << result.blob.size()
+                << "; restarting signed in as the new account\n"
+                << std::flush;
+      g_account_switch_restart = true;
+      kill(getpid(), SIGTERM);
+    }).detach();
+    return;
+  }
+  g_account_switch_restart = true;
+  g_signed_out_restart = true;
+  // Stops new saves and finishes a queued one first, so it cannot write the
+  // sign-in back after it is removed below.
+  if (vm != nullptr) static_cast<jnivm::VM*>(vm)->ClearRobloxCredentialSink();
+  std::error_code error;
+  std::filesystem::remove(g_account_cookie_file, error);
+  if (error) {
+    std::cerr << "  [auth] signed out, but the saved sign-in could not be "
+                 "removed: "
+              << error.message() << '\n';
+  }
+  // With auth.use_libsecret the sign-in lives in the keyring, not the file.
+  const auto secrets = mocktail::runtime::OpenRobloxSecretStore();
+  if (secrets->enabled()) {
+    (void)secrets->Clear(g_account_cookie_file);
+    mocktail::runtime::StoredCookie left = secrets->Load(g_account_cookie_file);
+    if (left.status == mocktail::runtime::StoredCookieStatus::kFound) {
+      std::cerr << "  [auth] signed out, but the keyring sign-in could not be "
+                   "removed\n";
+    }
+    std::fill(left.value.begin(), left.value.end(), '\0');
+  }
+  std::cout << "  [auth] signed out; restarting at the Roblox sign-in "
+               "screen\n";
+  std::cout << std::flush;
+  kill(getpid(), SIGTERM);
+}
+
+void RestartNightcap(bool after_ota_patches) {
   std::optional<mocktail::runtime::LaunchCommand> command =
       mocktail::runtime::ReadLaunchCommand(getpid());
   if (!command.has_value() || command->environment.empty()) {
     std::cerr << "  [runtime] cannot read this launch, so no restart\n";
     return;
   }
-  command->environment.push_back(std::string(kOtaRestartedVariable) + "=1");
+  if (after_ota_patches) {
+    command->environment.push_back(std::string(kOtaRestartedVariable) +
+                                   "=1");
+  }
+  std::vector<std::string>& environment = command->environment;
+  const std::string signed_out_prefix =
+      std::string(kSignedOutRestartVariable) + "=";
+  environment.erase(
+      std::remove_if(environment.begin(), environment.end(),
+                     [&](const std::string& variable) {
+                       return variable.rfind(signed_out_prefix, 0) == 0 ||
+                              (g_account_switch_restart &&
+                               (variable.rfind("MOCKTAIL_ROBLOX_COOKIES=", 0) ==
+                                    0 ||
+                                variable.rfind("MOCKTAIL_COOKIE_FILE=", 0) ==
+                                    0));
+                     }),
+      environment.end());
+  if (g_signed_out_restart) {
+    environment.push_back(signed_out_prefix + "1");
+  }
   std::cout.flush();
   std::cerr.flush();
   std::string error;
@@ -356,6 +435,13 @@ int main(int argc, char* argv[]) {
         command_line.options.program_name);
     return EXIT_SUCCESS;
   }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kVersion) {
+    std::cout << "Nightcap "
+              << mocktail::runtime::FormatBuildVersion(
+                     mocktail::runtime::CurrentSessionBuildInformation())
+              << '\n';
+    return EXIT_SUCCESS;
+  }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kSettings) {
     // The window reports a broken config itself, so it starts before the
     // config is loaded.
@@ -396,6 +482,11 @@ int main(int argc, char* argv[]) {
 
   const mocktail::runtime::ProcessEnvironment environment;
   const bool vr_requested = environment.HasNonEmpty("MOCKTAIL_VR_ENABLED");
+  mocktail::runtime::SetRobloxCookieWarningHandler(
+      [](std::string_view message) {
+        (void)mocktail::runtime::ShowWarningDialog(
+            mocktail::runtime::ProcessEnvironment(), message);
+      });
   const std::string built_in_compatibility_manifest = environment.GetOr(
       "MOCKTAIL_UPDATE_COMPATIBILITY_PATH",
       environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
@@ -706,6 +797,24 @@ int main(int argc, char* argv[]) {
     mocktail::runtime::InstallCpuLimitDiagnostics();
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kStartup);
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      runtime_config.config.fleasion_enabled() &&
+      runtime_config.config.fleasion_proxy_mode() == "env" &&
+      !mocktail::runtime::FleasionProxyReachable(
+          runtime_config.config.fleasion_proxy_port(), 250)) {
+    std::cerr << "  [fleasion] nothing is listening on 127.0.0.1:"
+              << runtime_config.config.fleasion_proxy_port()
+              << "; running without Fleasion this session. Start Fleasion, or"
+                 " set its routing mode (env or hosts) to match Nightcap's\n";
+    // The env override also reaches the updater and canary children, and the
+    // reload drops the proxy that Fleasion's env mode would have forced on.
+    setenv("MOCKTAIL_FLEASION_ENABLED", "0", 1);
+    runtime_config = mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
+    if (!runtime_config) {
+      std::cerr << "[FATAL] Cannot apply Fleasion: " << runtime_config.error << '\n';
+      return EXIT_FAILURE;
+    }
   }
   if (runtime_config.config.fleasion_enabled()) {
     const auto fleasion = mocktail::runtime::PrepareFleasion(
@@ -1558,6 +1667,16 @@ int main(int argc, char* argv[]) {
     android_window_callbacks.set_flags = &QueueAndroidWindowFlags;
     composition.jni_vm->SetAndroidWindowCallbacks(
         std::move(android_window_context), android_window_callbacks);
+    g_account_cookie_file = paths.cookie_file();
+    g_app_storage_file = app_storage_file;
+    std::cout << "  [auth] account blob at startup length="
+              << mocktail::runtime::ReadRobloxAccountBlob(g_app_storage_file)
+                     .size()
+              << '\n';
+    composition.clear_web_view_cookie =
+        environment.Get(kSignedOutRestartVariable) == "1";
+    composition.jni_vm->SetRobloxAccountSwitchHandler(
+        composition.jni_vm.get(), &RequestAccountSwitchRestart);
     const mocktail::Status audio_status =
         mocktail::audio::InstallFmodJniAudioBridge(composition.jni_vm.get());
     if (!audio_status.ok()) {
@@ -1631,6 +1750,8 @@ int main(int argc, char* argv[]) {
               << launch_broker_shutdown_status.message() << '\n';
     runtime_status = EXIT_FAILURE;
   }
+  if (dependencies.jni_vm() != nullptr)
+    dependencies.jni_vm()->ClearRobloxCredentialSink();
   if (runtime_status != EXIT_SUCCESS) {
     failure_dialog.SetMessage("Roblox stopped with error code " +
                               std::to_string(runtime_status) + ".");
@@ -1650,9 +1771,9 @@ int main(int argc, char* argv[]) {
       command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog.MarkSuccessful();
     support_bundle_guard.Disarm();
-    if (ota_restart_watch.restart_requested()) {
+    if (ota_restart_watch.restart_requested() || g_account_switch_restart) {
       session_log = mocktail::runtime::SessionLog();
-      RestartForOtaPatches();
+      RestartNightcap(ota_restart_watch.restart_requested());
     }
     // Guest atexit handlers target workers that cannot be joined. Host
     // shutdown is already complete here, so do not re-enter guest teardown.

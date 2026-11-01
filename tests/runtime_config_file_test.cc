@@ -103,8 +103,10 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_EQ(loaded.config.vr_enabled(), kDefaultVrEnabled);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
+  EXPECT_FALSE(loaded.config.use_libsecret());
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
   EXPECT_EQ(loaded.config.vsync_mode(), "auto");
+  EXPECT_EQ(loaded.config.present_mode(), "auto");
   EXPECT_FALSE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().memory_limit_mb, 0U);
   EXPECT_EQ(loaded.config.performance().game_mode, GameModePolicy::kAuto);
@@ -454,7 +456,22 @@ TEST(RuntimeConfigFileTest, UsesDefaultsWhenFileDoesNotExist) {
   EXPECT_FALSE(loaded.file_loaded);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
+  EXPECT_FALSE(loaded.config.use_libsecret());
   EXPECT_EQ(loaded.config.roblox_library_path(), "rbx_bin/libroblox.so");
+}
+
+TEST(RuntimeConfigFileTest, LibsecretUsesYamlBoolean) {
+  TemporaryDirectory temporary;
+  for (const auto value : {"true", "false"}) {
+    const auto file = temporary.Write(std::string("auth:\n  use_libsecret: ") + value + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    ASSERT_TRUE(loaded) << loaded.error;
+    EXPECT_EQ(loaded.config.use_libsecret(), std::string_view(value) == "true");
+  }
+  const auto file = temporary.Write("auth:\n  use_libsecret: auto\n");
+  const auto invalid = LoadRuntimeConfig(MapEnvironment(), file);
+  EXPECT_FALSE(invalid);
+  EXPECT_EQ(invalid.error, "auth.use_libsecret must be true or false");
 }
 
 TEST(RuntimeConfigFileTest, RejectsSymlinkAndOversizedConfiguration) {
@@ -705,6 +722,7 @@ graphics:
   backend: vulkan
   frame_rate_limit: unlimited
   vsync: off
+  present_mode: mailbox
 performance:
   multithreaded_rendering: true
   physics_worker_mode: latency
@@ -756,6 +774,7 @@ updates:
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnlimited);
   EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.present_mode(), "mailbox");
   EXPECT_EQ(loaded.config.theme_mode(), "dark");
   EXPECT_TRUE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().physics_worker_mode,
@@ -874,6 +893,7 @@ graphics:
   backend: system
   frame_rate_limit: 60
   vsync: on
+  present_mode: fifo
 performance:
   multithreaded_rendering: true
   physics_worker_mode: latency
@@ -896,6 +916,7 @@ network:
       {"MOCKTAIL_GRAPHICS_BACKEND", "vulkan"},
       {"MOCKTAIL_FRAME_RATE_LIMIT", "144"},
       {"MOCKTAIL_VSYNC", "off"},
+      {"MOCKTAIL_PRESENT_MODE", "immediate"},
       {"MOCKTAIL_MULTITHREADED_RENDERING", "0"},
       {"MOCKTAIL_PHYSICS_WORKER_MODE", "auto"},
       {"MOCKTAIL_MEMORY_LIMIT_MB", "8192"},
@@ -915,6 +936,7 @@ network:
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.frame_rate().fixed_fps, 144);
   EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.present_mode(), "immediate");
   EXPECT_FALSE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().physics_worker_mode,
             PhysicsWorkerMode::kAuto);
@@ -1173,6 +1195,25 @@ performance:
   ASSERT_NE(getenv("MOCKTAIL_GAMEMODE"), nullptr);
   EXPECT_STREQ(getenv("MOCKTAIL_GAMEMODE"), "on");
   unsetenv("MOCKTAIL_GAMEMODE");
+}
+
+TEST(RuntimeConfigFileTest, ExportsMangoHudWhenEnabled) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path enabled = temporary.Write(R"yaml(
+version: 1
+performance:
+  mangohud: true
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), enabled);
+  ASSERT_TRUE(loaded) << loaded.error;
+
+  unsetenv("MANGOHUD");
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  ASSERT_NE(getenv("MANGOHUD"), nullptr);
+  EXPECT_STREQ(getenv("MANGOHUD"), "1");
+  unsetenv("MANGOHUD");
 }
 
 TEST(RuntimeConfigFileTest, ExportsAudioOutputDevice) {
@@ -1479,6 +1520,129 @@ graphics:
 
   EXPECT_FALSE(loaded);
   EXPECT_NE(loaded.error.find("frame_rate_limit"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, ValidatesAndExportsPresentModes) {
+  TemporaryDirectory temporary;
+  for (const char* mode : {"auto", "fifo", "mailbox", "immediate", "fastest"}) {
+    SCOPED_TRACE(mode);
+    const auto file = temporary.Write(
+        std::string("version: 1\ngraphics:\n  present_mode: ") + mode + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    if (std::string(mode) == "fastest") {
+      EXPECT_FALSE(loaded);
+      EXPECT_NE(loaded.error.find("present_mode"), std::string::npos);
+    } else {
+      ASSERT_TRUE(loaded) << loaded.error;
+      std::string error;
+      ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+      EXPECT_STREQ(getenv("MOCKTAIL_PRESENT_MODE"), mode);
+    }
+  }
+  const auto file = temporary.Write("version: 1\n");
+  const MapEnvironment invalid({{"MOCKTAIL_PRESENT_MODE", "fastest"}});
+  EXPECT_FALSE(LoadRuntimeConfig(invalid, file));
+  std::string error;
+  EXPECT_FALSE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(invalid), &error));
+  unsetenv("MOCKTAIL_PRESENT_MODE");
+}
+
+TEST(RuntimeConfigFileTest, LoadsTextureCompressionFromFile) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  texture_compression: false
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.texture_compression());
+}
+
+TEST(RuntimeConfigFileTest, ExportsTextureCompressionPolicy) {
+  unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
+  std::string error;
+  const RuntimeConfig enabled =
+      RuntimeConfig::FromEnvironment(MapEnvironment());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(enabled, &error)) << error;
+  ASSERT_NE(getenv("MOCKTAIL_ETC2_BC_TRANSCODE"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_BC_TRANSCODE"), "1");
+
+  const RuntimeConfig disabled = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_ETC2_BC_TRANSCODE", "0"}}));
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(disabled, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_BC_TRANSCODE"), "0");
+  unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
+}
+
+TEST(RuntimeConfigFileTest, LoadsSmallTextureUpscaleFromFile) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  small_texture_upscale: 2
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.small_texture_upscale(), "2");
+}
+
+TEST(RuntimeConfigFileTest, ExportsSmallTextureUpscale) {
+  unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
+      << error;
+  ASSERT_NE(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "adaptive");
+
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(
+          MapEnvironment({{"MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4"}})),
+      &error))
+      << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "4");
+  unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
+}
+
+TEST(RuntimeConfigFileTest, RejectsUnsupportedSmallTextureUpscale) {
+  for (const char* value : {"3", "8", "fast"}) {
+    SCOPED_TRACE(value);
+    TemporaryDirectory temporary;
+    const std::filesystem::path file = temporary.Write(
+        std::string("version: 1\ngraphics:\n  small_texture_upscale: ") +
+        value + "\n");
+
+    const RuntimeConfigLoadResult loaded =
+        LoadRuntimeConfig(MapEnvironment(), file);
+
+    EXPECT_FALSE(loaded);
+    EXPECT_NE(loaded.error.find("graphics.small_texture_upscale"),
+              std::string::npos);
+  }
+}
+
+TEST(RuntimeConfigFileTest, RejectsNonBooleanTextureCompression) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  texture_compression: maybe
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("graphics.texture_compression"),
+            std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, RejectsNonBooleanPerformancePolicy) {

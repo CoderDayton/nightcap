@@ -120,6 +120,27 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
                         "Network", "Discord", "Fleasion", "Advanced"}));
 }
 
+TEST_F(SettingsModelTest, OnlyTextureCompressionAsksBeforeItIsTurnedOff) {
+  int asking = 0;
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      for (const Setting& setting : group.settings) {
+        if (setting.confirm_off_body.empty()) {
+          EXPECT_TRUE(setting.confirm_off_title.empty()) << setting.key;
+          continue;
+        }
+        ++asking;
+        EXPECT_EQ(setting.key, "graphics.texture_compression");
+        EXPECT_EQ(setting.kind, SettingKind::kToggle);
+        EXPECT_FALSE(setting.confirm_off_title.empty());
+        EXPECT_NE(setting.confirm_off_body.find("VRAM"),
+                  std::string_view::npos);
+      }
+    }
+  }
+  EXPECT_EQ(asking, 1);
+}
+
 TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
   // Every key the loader and the updater accept, and the row that sets it.
   std::vector<std::pair<std::string_view, std::string_view>> keys = {
@@ -136,10 +157,14 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "device.model", "device.brand", "device.code", "device.sku",
            "device.soc_model", "device.touch", "device.mouse",
            "device.keyboard", "runtime.headless", "runtime.roblox_library",
+           "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
-           "graphics.vsync", "performance.multithreaded_rendering",
+           "graphics.vsync", "graphics.texture_compression",
+           "graphics.small_texture_upscale",
+           "performance.multithreaded_rendering",
            "performance.physics_worker_mode", "performance.memory_limit_mb",
-           "performance.gamemode", "audio.output_device", "audio.input_device",
+           "performance.gamemode", "performance.mangohud",
+           "audio.output_device", "audio.input_device",
            "window.width", "window.height", "window.title", "window.high_dpi",
            "input.raw_mouse", "input.system_cursor", "input.hardware_cursor",
            "overlay.location", "overlay.location_offset", "overlay.fps",
@@ -824,13 +849,13 @@ TEST_F(SettingsModelTest, AnFFlagsFileThatIsNotTextIsNotOpened) {
   }
 }
 
-TEST_F(SettingsModelTest, AnFFlagsFileOverTheReadLimitIsNotOpened) {
+TEST_F(SettingsModelTest, AnFFlagsFileLargerThan64KiBIsOpened) {
   const std::string bytes = "{}" + std::string(64 * 1024, ' ');
   std::ofstream(FFlagsFile(), std::ios::binary) << bytes;
   FFlagsDocument document(FFlagsFile());
   std::string error;
-  EXPECT_FALSE(document.Load(&error));
-  EXPECT_NE(error.find("64 KiB"), std::string::npos) << error;
+  EXPECT_TRUE(document.Load(&error)) << error;
+  EXPECT_EQ(document.Text(), bytes);
   EXPECT_EQ(ReadFFlags(), bytes);
 }
 
@@ -1450,6 +1475,40 @@ TEST_F(SettingsModelTest, ClearingOnLaunchNeedsFleasion) {
       << error;
   EXPECT_TRUE(
       document.IsActive("integrations.fleasion.clear_cache_on_launch"));
+}
+
+TEST(FleasionStatusTest, IsOffWhileFleasionIsOffOrTheModeIsUnknown) {
+  EXPECT_EQ(GetFleasionState(false, "env", true), FleasionState::kOff);
+  EXPECT_EQ(GetFleasionState(false, "hosts", false), FleasionState::kOff);
+  EXPECT_EQ(GetFleasionState(true, "other", true), FleasionState::kOff);
+}
+
+TEST(FleasionStatusTest, ProxyRoutingReportsWhetherTheProxyAnswers) {
+  EXPECT_EQ(GetFleasionState(true, "env", true), FleasionState::kRunning);
+  EXPECT_EQ(GetFleasionState(true, "env", false), FleasionState::kNotRunning);
+}
+
+TEST(FleasionStatusTest, HostsRoutingCannotBeChecked) {
+  EXPECT_EQ(GetFleasionState(true, "hosts", false),
+            FleasionState::kNotChecked);
+}
+
+TEST(FleasionStatusTest, TheBadgeIsShortAndEmptyWhileOff) {
+  EXPECT_EQ(FleasionBadge(FleasionState::kOff), "");
+  EXPECT_EQ(FleasionBadge(FleasionState::kRunning), "Running");
+  EXPECT_EQ(FleasionBadge(FleasionState::kNotRunning), "Not running");
+  EXPECT_EQ(FleasionBadge(FleasionState::kNotChecked), "Not checked");
+}
+
+TEST(FleasionStatusTest, TheTooltipExplainsEachState) {
+  EXPECT_EQ(FleasionStatus(FleasionState::kOff, 58443), "");
+  EXPECT_EQ(FleasionStatus(FleasionState::kRunning, 58443),
+            "Fleasion's proxy is running on port 58443.");
+  EXPECT_EQ(FleasionStatus(FleasionState::kNotRunning, 58443),
+            "Fleasion's proxy is not running on port 58443. Start Fleasion "
+            "first.");
+  EXPECT_EQ(FleasionStatus(FleasionState::kNotChecked, 58443),
+            "Hosts routing can't be checked from here.");
 }
 
 TEST(SettingsPagesTest, TextGroupsExplainTheirPlaceholders) {

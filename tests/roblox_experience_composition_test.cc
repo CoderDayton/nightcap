@@ -67,6 +67,7 @@ struct Probe {
   std::vector<RobloxExperiencePresencePhase> presence_phases;
   std::vector<int64_t> presence_places;
   std::atomic<int> playing_presence_notifications{0};
+  std::string last_launch;
 };
 
 Probe* g_probe = nullptr;
@@ -315,6 +316,12 @@ void BroadcastDataModelFocus(JNIEnv*, jclass, jstring, jstring, jstring) {}
 
 jstring GetLaunchId(JNIEnv* env, jclass) {
   return env->NewStringUTF("experienceLaunch");
+}
+
+jstring GetLastRaw(JNIEnv* env, jclass, jstring id) {
+  const std::string channel = CopyJavaString(env, id);
+  return env->NewStringUTF(
+      channel == "experienceLaunch" ? g_probe->last_launch.c_str() : "");
 }
 
 jstring GetWebViewOpenId(JNIEnv* env, jclass) {
@@ -677,6 +684,201 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_EQ(probe.browser_releases, 4);
   EXPECT_EQ(probe.browser_callbacks_cleared, 4);
   g_probe = nullptr;
+}
+
+void RunSwitchServerScenario(bool switch_pressed) {
+  jnivm::VM vm;
+  Probe probe{&vm};
+  g_probe = &probe;
+  for (const char* class_name : {
+           "com/roblox/engine/jni/NativeGLInterface",
+           "android/view/Surface",
+           "com/roblox/engine/jni/model/PlatformParams",
+           "android/app/Activity",
+           "com/roblox/engine/jni/autovalue/AutoValue_StartGameParams",
+           "com/roblox/engine/jni/autovalue/StartAppParams",
+           "com/roblox/universalapp/messagebus/MessageBus",
+           "com/roblox/universalapp/messagebus/Connection",
+           "com/roblox/engine/jni/memstorage/MemStorage",
+           "com/roblox/engine/jni/memstorage/Connection",
+           "com/roblox/engine/jni/memstorage/Callback",
+       }) {
+    vm.RegisterClass(class_name);
+  }
+  RobloxExperienceComposition composition(
+      {vm.GetJavaVM(), &vm, Prepare},
+      {GetLaunchId, Subscribe, Disconnect, GetLastRaw},
+      {GetWebViewOpenId, GetWebViewHandleWindowCloseId, GetWebViewProtocolName,
+       GetWebViewAvailabilityId, GetWebViewMessageId, InitializeWebViewProtocol,
+       Subscribe, Disconnect, SetRequestHandler, ClearNativeRequestHandler,
+       PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
+       GetWebViewCloseId, SignalWebViewJavascriptCallback,
+       UpdateCookieSetHandler},
+      BrowserServiceSymbols(), PermissionsSymbols(),
+      {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
+       DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
+      JniFactory(&probe), {&probe, RegisterObserver, ClearObserver});
+  RobloxLuaAppExperienceReadiness readiness;
+  readiness.principal = {GameSessionPrincipalKind::kAuthenticated, 4, "42",
+                         "https://www.roblox.com"};
+  readiness.surface = {7, 0x1234, 1280, 720};
+  readiness.username = "typed-user";
+
+  ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
+  ASSERT_TRUE(composition.OnLuaAppReady(readiness).ok());
+  ASSERT_NE(probe.callback, nullptr);
+  JNIEnv* env = vm.GetJNIEnv();
+  jmethodID run = env->GetMethodID(env->GetObjectClass(probe.callback), "run",
+                                   "(Ljava/lang/String;)V");
+  probe.last_launch =
+      R"({"placeId":140409475718339,"joinAttemptId":"menu-play"})";
+  env->CallVoidMethod(probe.callback, run,
+                      env->NewStringUTF(probe.last_launch.c_str()));
+  DrainUntilPresented(&composition);
+  ASSERT_EQ(probe.starts.load(), 1);
+
+  std::shared_ptr<void> lifecycle_context(&composition, [](void*) {});
+  vm.SetRobloxExperienceLifecycleCallbacks(
+      lifecycle_context,
+      jnivm::RobloxExperienceLifecycleCallbacks{&NotifyCompositionReturn});
+  if (switch_pressed) {
+    probe.last_launch = R"({"placeId":140409475718339,)"
+                        R"("referralPage":"peoplepage",)"
+                        R"("gameIdToExclude":"5f1c-old-server",)"
+                        R"("joinAttemptId":"switch-server"})";
+  }
+  jclass native_gl_class =
+      env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+  env->CallStaticVoidMethod(
+      native_gl_class,
+      env->GetStaticMethodID(native_gl_class, "gameDidLeave", "()V"));
+
+  for (int attempt = 0; attempt < 200 && probe.starts.load() < 2; ++attempt) {
+    ASSERT_TRUE(composition.DrainLaunchRequests().ok());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(probe.starts.load(), switch_pressed ? 2 : 1);
+  EXPECT_EQ(probe.started_place, 140409475718339);
+  EXPECT_EQ(probe.leaves, 0);
+  if (switch_pressed) {
+    DrainUntilPresented(&composition);
+  }
+  vm.ClearRobloxExperienceLifecycleCallbacks();
+  EXPECT_TRUE(composition.Shutdown().ok());
+  g_probe = nullptr;
+}
+
+TEST(RobloxExperienceCompositionTest,
+     SwitchServerLaunchKeptOnlyByTheBusStartsAfterTheGameEnds) {
+  RunSwitchServerScenario(true);
+}
+
+TEST(RobloxExperienceCompositionTest, NormalLeaveDoesNotReplayTheLastLaunch) {
+  RunSwitchServerScenario(false);
+}
+
+TEST(RobloxExperienceCompositionTest,
+     LeavingAnExternalLaunchDoesNotReplayTheEarlierBusLaunch) {
+  char directory_pattern[] = "/tmp/mocktail-composition-replay-test-XXXXXX";
+  char* launch_directory = mkdtemp(directory_pattern);
+  ASSERT_NE(launch_directory, nullptr);
+  ASSERT_EQ(chmod(launch_directory, 0700), 0);
+  ExternalLaunchBrokerOptions broker_options;
+  broker_options.socket_path =
+      std::filesystem::path(launch_directory) / "broker.sock";
+  std::shared_ptr<ExternalLaunchBroker> broker;
+  Status status = ExternalLaunchBroker::StartOwnerAfterLockAcquired(
+      broker_options, &broker);
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_TRUE(InstallActiveExternalLaunchBroker(broker).ok());
+
+  jnivm::VM vm;
+  Probe probe{&vm};
+  g_probe = &probe;
+  for (const char* class_name : {
+           "com/roblox/engine/jni/NativeGLInterface",
+           "android/view/Surface",
+           "com/roblox/engine/jni/model/PlatformParams",
+           "android/app/Activity",
+           "com/roblox/engine/jni/autovalue/AutoValue_StartGameParams",
+           "com/roblox/engine/jni/autovalue/StartAppParams",
+           "com/roblox/universalapp/messagebus/MessageBus",
+           "com/roblox/universalapp/messagebus/Connection",
+           "com/roblox/engine/jni/memstorage/MemStorage",
+           "com/roblox/engine/jni/memstorage/Connection",
+           "com/roblox/engine/jni/memstorage/Callback",
+       }) {
+    vm.RegisterClass(class_name);
+  }
+  RobloxExperienceComposition composition(
+      {vm.GetJavaVM(), &vm, Prepare},
+      {GetLaunchId, Subscribe, Disconnect, GetLastRaw},
+      {GetWebViewOpenId, GetWebViewHandleWindowCloseId, GetWebViewProtocolName,
+       GetWebViewAvailabilityId, GetWebViewMessageId, InitializeWebViewProtocol,
+       Subscribe, Disconnect, SetRequestHandler, ClearNativeRequestHandler,
+       PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
+       GetWebViewCloseId, SignalWebViewJavascriptCallback,
+       UpdateCookieSetHandler},
+      BrowserServiceSymbols(), PermissionsSymbols(),
+      {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
+       DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
+      JniFactory(&probe), {&probe, RegisterObserver, ClearObserver});
+  RobloxLuaAppExperienceReadiness readiness;
+  readiness.principal = {GameSessionPrincipalKind::kAuthenticated, 4, "42",
+                         "https://www.roblox.com"};
+  readiness.surface = {7, 0x1234, 1280, 720};
+  readiness.username = "typed-user";
+
+  ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
+  ASSERT_TRUE(composition.OnLuaAppReady(readiness).ok());
+  ASSERT_NE(probe.callback, nullptr);
+  JNIEnv* env = vm.GetJNIEnv();
+  jmethodID run = env->GetMethodID(env->GetObjectClass(probe.callback), "run",
+                                   "(Ljava/lang/String;)V");
+  probe.last_launch =
+      R"({"placeId":140409475718339,"joinAttemptId":"menu-play"})";
+  env->CallVoidMethod(probe.callback, run,
+                      env->NewStringUTF(probe.last_launch.c_str()));
+  DrainUntilPresented(&composition);
+  ASSERT_EQ(probe.starts.load(), 1);
+
+  RobloxExperienceLaunchRequest external_launch;
+  ASSERT_TRUE(ParseRobloxExperienceLaunchJson(
+                  R"({"placeId":17580461965,"gameInstanceId":"next-server"})",
+                  &external_launch)
+                  .ok());
+  ASSERT_TRUE(broker->QueueInitialRequest(std::move(external_launch)).ok());
+  for (int attempt = 0; attempt < 1000 && probe.starts.load() < 2; ++attempt) {
+    ASSERT_TRUE(composition.DrainLaunchRequests().ok());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_EQ(probe.starts.load(), 2);
+  DrainUntilPresented(&composition);
+
+  std::shared_ptr<void> lifecycle_context(&composition, [](void*) {});
+  vm.SetRobloxExperienceLifecycleCallbacks(
+      lifecycle_context,
+      jnivm::RobloxExperienceLifecycleCallbacks{&NotifyCompositionReturn});
+  jclass native_gl_class =
+      env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+  env->CallStaticVoidMethod(
+      native_gl_class,
+      env->GetStaticMethodID(native_gl_class, "gameDidLeave", "()V"));
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    ASSERT_TRUE(composition.DrainLaunchRequests().ok());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(probe.starts.load(), 2);
+  EXPECT_EQ(probe.started_place, 17580461965);
+
+  vm.ClearRobloxExperienceLifecycleCallbacks();
+  EXPECT_TRUE(composition.Shutdown().ok());
+  g_probe = nullptr;
+  ClearActiveExternalLaunchBroker(broker.get());
+  EXPECT_TRUE(broker->Shutdown().ok());
+  broker.reset();
+  std::error_code ignored;
+  std::filesystem::remove_all(launch_directory, ignored);
 }
 
 TEST(RobloxExperienceCompositionTest,

@@ -1,5 +1,7 @@
 #include "runtime/payload_update_preflight.h"
 
+#include "runtime/helper_environment.h"
+
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/socket.h>
@@ -174,8 +176,9 @@ class UpdateProgressMonitor final {
     pid_t child = -1;
     int spawn_status = action_status;
     if (spawn_status == 0) {
+      const auto child_environment = BuildHelperEnvironment(environ);
       spawn_status = posix_spawn(&child, helper.c_str(), &actions, nullptr,
-                                 arguments, environ);
+                                 arguments, child_environment.data());
     }
     posix_spawn_file_actions_destroy(&actions);
     close(sockets[1]);
@@ -460,6 +463,17 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     result.error = force_run_latest ? "forced latest Roblox run failed"
                                      : "Roblox update preflight failed";
     result.details = stderr_relay.failure();
+    if (result.details.empty() && WIFSIGNALED(child_status)) {
+      const int signal_number = WTERMSIG(child_status);
+      result.details = "the updater was killed by signal " +
+                       std::to_string(signal_number) + " (" +
+                       strsignal(signal_number) +
+                       ") before it reported a reason";
+    } else if (result.details.empty()) {
+      result.details = "the updater exited with status " +
+                       std::to_string(WEXITSTATUS(child_status)) +
+                       " without reporting a reason";
+    }
   }
   return result;
 }

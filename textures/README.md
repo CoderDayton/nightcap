@@ -9,7 +9,7 @@ Copy the file into the override directory, keeping its name:
 
 ```sh
 mkdir -p ~/.config/mocktail/textures
-cp textures/75dcd1166a6cbaa9.png ~/.config/mocktail/textures/
+cp textures/75dcd1166a6cbaa9_32x32.png ~/.config/mocktail/textures/
 ```
 
 Restart the game. The log line `[vulkan] texture override loaded: <path>`
@@ -23,19 +23,23 @@ To remove it, delete the file again.
 
 | File | Replaces |
 | --- | --- |
-| `75dcd1166a6cbaa9.png` | The in-game crosshair, as a thin dot-and-ticks reticle (128x128). |
+| `75dcd1166a6cbaa9_32x32.png` | The in-game crosshair, as a thin dot-and-ticks reticle (128x128). |
 
 ## Naming
 
-The file name is the 16 hex digit FNV-1a hash of the texture's level-0
-compressed ETC2 bytes, which is what the override lookup keys on. A texture
+The file name is `<hash>_<width>x<height>.png`. The hash is the 16 hex digit
+FNV-1a hash of the texture's level-0 compressed ETC2 bytes, which is what the
+override lookup keys on. The size is the original texture's, not the
+replacement's: only textures of that size skip GPU decoding and BC
+compression so they can be checked against overrides. A file named just
+`<hash>.png` is skipped, with a `texture override skipped` log line. A texture
 Roblox re-encodes gets a new hash, so an override can stop matching after a
 client update.
 
 To find the hash of a texture you want to replace, set
 `MOCKTAIL_TEXTURE_DUMP_DIR` to an empty directory and play until the texture
 appears. Every uploaded texture is written there once as
-`<hash>_<width>x<height>.png`. Rename the one you want to `<hash>.png` and put
+`<hash>_<width>x<height>.png`. Edit the one you want, keep its name, and put
 it in the override directory.
 
 Overrides are resampled to the size the game asked for, so the replacement does

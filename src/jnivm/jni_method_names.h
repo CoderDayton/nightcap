@@ -215,6 +215,10 @@ namespace jnivm::internal {
   X(kOptString, "optString") \
   X(kOutputAAudioHeadphonesChanged, "OutputAAudioHeadphonesChanged") \
   X(kProAudioFlag, "proAudioFlag") \
+  X(kPromptNativePurchase, "promptNativePurchase") \
+  X(kPromptNativePurchaseWithPayload, "promptNativePurchaseWithPayload") \
+  X(kPromptNativePurchaseWithPaymentSessionId, \
+    "promptNativePurchaseWithPaymentSessionId") \
   X(kQ, "q") \
   X(kRequestOrientationAsDefault, "requestOrientationAsDefault") \
   X(kRequestResponse, "requestResponse") \

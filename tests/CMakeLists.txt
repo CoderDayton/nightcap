@@ -344,6 +344,21 @@ target_link_libraries(display_size_test PRIVATE
   GTest::gtest_main
 )
 
+add_library(vulkan_host_fixture SHARED fixtures/vulkan_host_fixture.cc)
+target_link_libraries(vulkan_host_fixture PRIVATE Vulkan::Headers)
+mocktail_apply_compile_options(vulkan_host_fixture)
+
+add_executable(vulkan_loader_adapter_test vulkan_loader_adapter_test.cc)
+target_link_libraries(vulkan_loader_adapter_test PRIVATE
+  Vulkan::Headers GTest::gtest_main ${CMAKE_DL_LIBS}
+)
+target_compile_definitions(vulkan_loader_adapter_test PRIVATE
+  MOCKTAIL_VULKAN_HOST_FIXTURE="$<TARGET_FILE:vulkan_host_fixture>"
+  MOCKTAIL_VULKAN_ADAPTER="$<TARGET_FILE:stub_vulkan>"
+)
+add_dependencies(vulkan_loader_adapter_test stub_vulkan vulkan_host_fixture)
+mocktail_apply_compile_options(vulkan_loader_adapter_test)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -630,6 +645,22 @@ target_link_libraries(roblox_web_view_bridge_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_web_view_bridge_test)
 
+add_executable(desktop_notification_test desktop_notification_test.cc)
+target_link_libraries(desktop_notification_test PRIVATE
+  Mocktail::Runtime
+  PkgConfig::GIO
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(desktop_notification_test)
+
+add_executable(roblox_store_purchase_test roblox_store_purchase_test.cc)
+target_link_libraries(roblox_store_purchase_test PRIVATE
+  Mocktail::LegacyJni
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(roblox_store_purchase_test)
+
 add_executable(roblox_permissions_bridge_test roblox_permissions_bridge_test.cc)
 target_link_libraries(roblox_permissions_bridge_test PRIVATE
   Mocktail::LegacyJni
@@ -647,6 +678,22 @@ target_link_libraries(roblox_haptic_protocol_bridge_test PRIVATE
   Threads::Threads
 )
 mocktail_apply_compile_options(roblox_haptic_protocol_bridge_test)
+
+add_executable(roblox_app_storage_test roblox_app_storage_test.cc)
+target_link_libraries(roblox_app_storage_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(roblox_app_storage_test)
+
+add_executable(roblox_cookie_jar_test roblox_cookie_jar_test.cc)
+target_link_libraries(roblox_cookie_jar_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(roblox_cookie_jar_test)
 
 add_executable(roblox_account_bridge_test roblox_account_bridge_test.cc)
 target_link_libraries(roblox_account_bridge_test PRIVATE
@@ -817,6 +864,7 @@ mocktail_apply_compile_options(etc2_decoder_test)
 add_executable(etc2_gpu_decoder_test
   etc2_gpu_decoder_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
 )
 target_include_directories(etc2_gpu_decoder_test PRIVATE
@@ -826,7 +874,22 @@ target_link_libraries(etc2_gpu_decoder_test PRIVATE GTest::gtest_main
   Threads::Threads dl)
 mocktail_apply_compile_options(etc2_gpu_decoder_test)
 
+add_executable(etc2_gpu_transcode_test
+  etc2_gpu_transcode_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(etc2_gpu_transcode_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(etc2_gpu_transcode_test PRIVATE GTest::gtest_main
+  Threads::Threads dl)
+mocktail_apply_compile_options(etc2_gpu_transcode_test)
+
 pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
+target_link_libraries(etc2_gpu_transcode_test PRIVATE PkgConfig::LIBPNG)
 
 add_executable(texture_override_test
   texture_override_test.cc
@@ -884,6 +947,7 @@ add_executable(vulkan_etc2_emulation_test
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 target_include_directories(vulkan_etc2_emulation_test PRIVATE
@@ -899,6 +963,7 @@ add_executable(vulkan_etc2_gpu_emulation_test
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 target_include_directories(vulkan_etc2_gpu_emulation_test PRIVATE
@@ -1061,6 +1126,11 @@ target_link_libraries(auth_runtime_composition_test PRIVATE
   GTest::gtest_main
 )
 mocktail_apply_compile_options(auth_runtime_composition_test)
+add_dependencies(auth_runtime_composition_test mocktail_cookie_helper)
+if(LIBSECRET_FOUND)
+  target_compile_definitions(auth_runtime_composition_test PRIVATE
+    MOCKTAIL_TEST_LIBSECRET=1)
+endif()
 
 add_executable(client_settings_service_test client_settings_service_test.cc)
 target_link_libraries(client_settings_service_test PRIVATE
@@ -1366,6 +1436,7 @@ gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
 gtest_discover_tests(device_memory_profile_test)
 gtest_discover_tests(display_size_test)
+gtest_discover_tests(vulkan_loader_adapter_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
@@ -1405,8 +1476,12 @@ gtest_discover_tests(roblox_app_lifecycle_test)
 gtest_discover_tests(roblox_game_session_native_adapter_test)
 gtest_discover_tests(roblox_experience_launch_bridge_test)
 gtest_discover_tests(roblox_web_view_bridge_test)
+gtest_discover_tests(roblox_store_purchase_test)
+gtest_discover_tests(desktop_notification_test)
 gtest_discover_tests(roblox_permissions_bridge_test)
 gtest_discover_tests(roblox_haptic_protocol_bridge_test)
+gtest_discover_tests(roblox_app_storage_test)
+gtest_discover_tests(roblox_cookie_jar_test)
 gtest_discover_tests(roblox_account_bridge_test)
 gtest_discover_tests(roblox_browser_service_bridge_test)
 gtest_discover_tests(roblox_fresh_game_launch_controller_test)
@@ -1424,7 +1499,19 @@ gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(etc2_decoder_test)
 gtest_discover_tests(etc2_gpu_decoder_test)
+gtest_discover_tests(etc2_gpu_transcode_test)
 gtest_discover_tests(texture_override_test)
+if(MOCKTAIL_MEDIANDK_FFMPEG)
+  add_executable(mediandk_decoder_test mediandk_decoder_test.cc)
+  target_compile_definitions(mediandk_decoder_test PRIVATE
+    MOCKTAIL_MEDIA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/media")
+  target_include_directories(mediandk_decoder_test PRIVATE
+    ${MOCKTAIL_FFMPEG_INCLUDE_DIRS})
+  target_link_libraries(mediandk_decoder_test PRIVATE GTest::gtest_main
+    stub_mediandk ${CMAKE_DL_LIBS})
+  mocktail_apply_compile_options(mediandk_decoder_test)
+  gtest_discover_tests(mediandk_decoder_test)
+endif()
 gtest_discover_tests(texture_resample_test)
 gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)

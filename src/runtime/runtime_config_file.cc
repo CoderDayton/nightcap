@@ -167,6 +167,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "device.mouse",
       "device.keyboard",
       "runtime.headless",
+      "auth.use_libsecret",
       "runtime.roblox_library",
       "vr.enabled",
       "vr.mode",
@@ -177,10 +178,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.backend",
       "graphics.frame_rate_limit",
       "graphics.vsync",
+      "graphics.texture_compression",
+      "graphics.small_texture_upscale",
+      "graphics.present_mode",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
       "performance.memory_limit_mb",
       "performance.gamemode",
+      "performance.mangohud",
       "audio.output_device",
       "audio.input_device",
        "window.width",
@@ -446,6 +451,31 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_VSYNC"] = *vsync;
   }
+  if (const auto compression = value("graphics.texture_compression");
+      compression.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*compression, &parsed)) {
+      *error = "graphics.texture_compression must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
+  }
+  if (const auto upscale = value("graphics.small_texture_upscale");
+      upscale.has_value()) {
+    if (*upscale != "adaptive" && *upscale != "1" && *upscale != "2" &&
+        *upscale != "4") {
+      *error = "graphics.small_texture_upscale must be adaptive, 1, 2, or 4";
+      return false;
+    }
+    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] = *upscale;
+  }
+  if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
+    if (!RuntimeConfig::IsValidPresentMode(*mode)) {
+      *error = "graphics.present_mode must be auto, fifo, mailbox, or immediate";
+      return false;
+    }
+    (*environment)["MOCKTAIL_PRESENT_MODE"] = *mode;
+  }
   if (const auto multithreaded_rendering =
           value("performance.multithreaded_rendering");
       multithreaded_rendering.has_value()) {
@@ -486,6 +516,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_GAMEMODE"] = GameModePolicyName(parsed);
+  }
+  if (const auto mangohud = value("performance.mangohud");
+      mangohud.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*mangohud, &parsed)) {
+      *error = "performance.mangohud must be true or false";
+      return false;
+    }
+    (*environment)["MANGOHUD"] = parsed ? "1" : "0";
   }
   if (const auto output_device = value("audio.output_device");
       output_device.has_value()) {
@@ -644,6 +683,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
            {"integrations.fleasion.enabled", "MOCKTAIL_FLEASION_ENABLED"},
            {"integrations.fleasion.clear_cache_on_launch",
             "MOCKTAIL_FLEASION_CLEAR_CACHE_ON_LAUNCH"},
+           {"auth.use_libsecret", "MOCKTAIL_USE_LIBSECRET"},
            {"integrations.discord_rpc.show_place_name",
             "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME"},
            {"integrations.discord_rpc.show_elapsed_time",
@@ -854,8 +894,8 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
           *error = "device must be a preset scalar or detailed mapping";
           valid = false;
         }
-      } else if (key == "runtime" || key == "appearance" || key == "vr" ||
-                 key == "graphics" || key == "performance" ||
+      } else if (key == "runtime" || key == "appearance" || key == "auth" ||
+                 key == "vr" || key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network" ||
                  key == "overlay") {
@@ -948,6 +988,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
              result.config.vsync_mode() != "on" &&
              result.config.vsync_mode() != "off") {
     result.error = "VSync policy is invalid";
+  } else if (!RuntimeConfig::IsValidPresentMode(result.config.present_mode())) {
+    result.error = "graphics.present_mode must be auto, fifo, mailbox, or immediate";
   } else if (!result.config.audio_output_device_valid()) {
     result.error = "audio output device is invalid";
   } else if (!result.config.audio_input_device_valid()) {
@@ -974,6 +1016,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error) {
   if (!config.vr_valid()) {
     if (error != nullptr) *error = "cannot export an invalid VR configuration";
+    return false;
+  }
+  if (!RuntimeConfig::IsValidPresentMode(config.present_mode())) {
+    if (error != nullptr) *error = "cannot export an invalid present mode";
     return false;
   }
   if (!config.fleasion_valid()) {
@@ -1109,6 +1155,11 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_VR_SPATIAL_TOOLBAR",
                           config.vr_spatial_toolbar() ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
+      SetEnvironmentValue("MOCKTAIL_ETC2_BC_TRANSCODE",
+                          config.texture_compression() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_SMALL_TEXTURE_UPSCALE",
+                          config.small_texture_upscale(), error) &&
+      SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",
           config.performance().multithreaded_rendering ? "1" : "0", error) &&
@@ -1167,6 +1218,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_IMAGE_SMALL_TEXT",
                           config.discord_rpc().images.small_text, error);
   if (!base_exported) {
+    return false;
+  }
+  if (config.mangohud() && !SetEnvironmentValue("MANGOHUD", "1", error)) {
     return false;
   }
   if (!SetEnvironmentValue("MOCKTAIL_FLEASION_ENABLED",

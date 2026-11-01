@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 
+#include "runtime/roblox_store_purchase.h"
 #include "runtime/runtime_config.h"
 #include "runtime/webview_helper_launcher.h"
 #include "webview/webview_helper_policy.h"
@@ -45,6 +46,8 @@ using mocktail::webview::CaptchaEventType;
 using mocktail::webview::EvaluateNavigationUri;
 using mocktail::webview::ExtractExecuteRobloxCommand;
 using mocktail::webview::ExtractRobloxWkHybridCommand;
+using mocktail::webview::ClassifyStorePurchaseNavigation;
+using mocktail::webview::StorePurchaseNavigation;
 using mocktail::webview::IsBrowserLoginUrl;
 using mocktail::webview::IsEssentialWebResource;
 using mocktail::webview::ParseCaptchaEvent;
@@ -236,19 +239,6 @@ bool EnsurePrivateDirectory(const char* path) {
   return g_chmod(path, 0700) == 0;
 }
 
-bool EnsurePrivateCookieDatabase(const char* path) {
-  const int descriptor =
-      open(path, O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_RDWR, 0600);
-  if (descriptor < 0) {
-    return false;
-  }
-  struct stat status = {};
-  const bool secured = fstat(descriptor, &status) == 0 &&
-                       S_ISREG(status.st_mode) && fchmod(descriptor, 0600) == 0;
-  close(descriptor);
-  return secured;
-}
-
 bool InitializeNetworkSession(AppState* state) {
   gchar* data_directory =
       g_build_filename(g_get_user_data_dir(), "mocktail", "webview", nullptr);
@@ -264,22 +254,11 @@ bool InitializeNetworkSession(AppState* state) {
     return false;
   }
 
-  gchar* cookie_database =
-      g_build_filename(data_directory, "cookies.sqlite", nullptr);
-  if (cookie_database == nullptr ||
-      !EnsurePrivateCookieDatabase(cookie_database)) {
-    std::cerr << "[webview] cannot secure persistent cookie database\n";
-    g_free(cookie_database);
-    g_free(data_directory);
-    g_free(cache_directory);
-    return false;
-  }
   state->network_session =
       webkit_network_session_new(data_directory, cache_directory);
   g_free(data_directory);
   g_free(cache_directory);
   if (state->network_session == nullptr) {
-    g_free(cookie_database);
     return false;
   }
 
@@ -299,7 +278,6 @@ bool InitializeNetworkSession(AppState* state) {
     if (settings == nullptr) {
       g_object_unref(state->network_session);
       state->network_session = nullptr;
-      g_free(cookie_database);
       return false;
     }
     webkit_network_session_set_proxy_settings(
@@ -313,21 +291,18 @@ bool InitializeNetworkSession(AppState* state) {
 
   WebKitCookieManager* cookies =
       webkit_network_session_get_cookie_manager(state->network_session);
-  webkit_cookie_manager_set_persistent_storage(
-      cookies, cookie_database, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
   webkit_cookie_manager_set_accept_policy(cookies,
                                           WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
   g_signal_connect(cookies, "changed", G_CALLBACK(OnCookiesChanged), state);
-  g_free(cookie_database);
 
   // Android WebView permits the third-party cookies used by Roblox login and
   // CAPTCHA providers. TLS failures remain fail-closed at the network layer.
   webkit_network_session_set_itp_enabled(state->network_session, FALSE);
   webkit_network_session_set_persistent_credential_storage_enabled(
-      state->network_session, TRUE);
+      state->network_session, FALSE);
   webkit_network_session_set_tls_errors_policy(state->network_session,
                                                WEBKIT_TLS_ERRORS_POLICY_FAIL);
-  std::cerr << "[webview] persistent XDG network session ready\n";
+  std::cerr << "[webview] network session ready; cookies stay in memory\n";
   return true;
 }
 
@@ -507,7 +482,7 @@ void ApplyPendingRobloxCookie(AppState* state) {
   if (state->pending_cookie_operation ==
       PendingRobloxCookieOperation::kRetainPersistent) {
     state->pending_cookie_operation = PendingRobloxCookieOperation::kNone;
-    std::cerr << "[webview] persistent Roblox cookies retained before guest "
+    std::cerr << "[webview] in-memory Roblox cookies retained before guest "
                  "navigation\n";
     StartInitialLoad(state);
     return;
@@ -978,6 +953,19 @@ gboolean OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecision* decision,
     webkit_policy_decision_ignore(decision);
     return TRUE;
   }
+  switch (ClassifyStorePurchaseNavigation(webkit_web_view_get_uri(web_view),
+                                          uri)) {
+    case StorePurchaseNavigation::kHandOff:
+      webkit_policy_decision_ignore(decision);
+      mocktail::runtime::HandOffRobuxPurchaseToBrowser();
+      return TRUE;
+    case StorePurchaseNavigation::kIgnore:
+      std::cerr << "[webview] store purchase from a non-Roblox page ignored\n";
+      webkit_policy_decision_ignore(decision);
+      return TRUE;
+    case StorePurchaseNavigation::kNone:
+      break;
+  }
   webkit_policy_decision_use(decision);
   return TRUE;
 }
@@ -1435,13 +1423,11 @@ void Activate(GtkApplication* application, gpointer user_data) {
 #ifdef GDK_WINDOWING_WAYLAND
   wayland_display = GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default());
 #endif
-  // Auth/challenge pages can finish loading while accelerated WebKit surfaces
-  // remain blank on wlroots/Mesa. Use software compositing for these small
-  // helper windows, including popups, without changing the game's renderer.
-  // Inspect GTK's actual display: an XWayland helper may inherit WAYLAND_DISPLAY.
+  // Software compositing for these small helper windows, including popups,
+  // without changing the game's renderer.
   state->disable_hardware_acceleration =
       mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
-          wayland_display, std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
+          std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
   // GTK picks its renderer when a window is realized, which is after this.
   if (mocktail::webview::ShouldForceSoftwareGtkRenderer(
           state->disable_hardware_acceleration, std::getenv("GSK_RENDERER"))) {
@@ -1450,6 +1436,9 @@ void Activate(GtkApplication* application, gpointer user_data) {
   std::cerr << "[webview] display=" << (wayland_display ? "wayland" : "other")
             << " compositing="
             << (state->disable_hardware_acceleration ? "software" : "default")
+            << " gdk_disable="
+            << mocktail::webview::BoundedLogToken(std::getenv("GDK_DISABLE"),
+                                                  "none")
             << '\n';
   if (!InitializeNetworkSession(state)) {
     state->startup_failed = true;
@@ -1516,6 +1505,14 @@ int main(int argc, char *argv[]) {
   }
   g_weak_ref_init(&state.primary_web_view, nullptr);
   g_weak_ref_init(&state.primary_window, nullptr);
+
+  if (const std::optional<std::string> gdk_disable =
+          mocktail::webview::GdkDisableWithoutGl(
+              mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
+                  std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE")),
+              std::getenv("GDK_DISABLE"))) {
+    setenv("GDK_DISABLE", gdk_disable->c_str(), 1);
+  }
 
   const char* flatpak_id = std::getenv("FLATPAK_ID");
   GtkApplication *application = gtk_application_new(

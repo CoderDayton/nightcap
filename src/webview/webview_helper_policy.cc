@@ -126,16 +126,37 @@ bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
 }
 
 bool ShouldDisableWebViewHardwareAcceleration(
-    bool wayland_display, const char* compositing_override) {
-  if (compositing_override != nullptr) {
-    return std::string_view(compositing_override) != "0";
-  }
-  return wayland_display;
+    const char* compositing_override) {
+  return compositing_override == nullptr ||
+         std::string_view(compositing_override) != "0";
 }
 
 bool ShouldForceSoftwareGtkRenderer(bool software_compositing,
                                     const char* renderer_override) {
   return software_compositing && renderer_override == nullptr;
+}
+
+
+std::optional<std::string> GdkDisableWithoutGl(bool software_compositing,
+                                               const char* current) {
+  if (!software_compositing) {
+    return std::nullopt;
+  }
+  if (current == nullptr || *current == '\0') {
+    return "gl";
+  }
+  std::string_view remaining(current);
+  while (!remaining.empty()) {
+    const std::size_t comma = remaining.find(',');
+    if (remaining.substr(0, comma) == "gl") {
+      return std::nullopt;
+    }
+    if (comma == std::string_view::npos) {
+      break;
+    }
+    remaining.remove_prefix(comma + 1);
+  }
+  return std::string(current) + ",gl";
 }
 
 const char* AndroidBridgeSource() { return kBridgeSource; }
@@ -165,6 +186,35 @@ bool IsBrowserLoginUrl(std::string_view url) {
        g_ascii_strcasecmp(path, "/login/") == 0);
   g_uri_unref(parsed);
   return browser_login;
+}
+
+bool IsAndroidStorePurchaseNavigation(const char* uri) {
+  if (uri == nullptr || !EvaluateNavigationUri(uri).allowed) return false;
+  GUri* parsed = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+  if (parsed == nullptr) return false;
+  const char* host = g_uri_get_host(parsed);
+  const char* path = g_uri_get_path(parsed);
+  const bool purchase =
+      host != nullptr &&
+      (g_ascii_strcasecmp(host, "www.roblox.com") == 0 ||
+       g_ascii_strcasecmp(host, "roblox.com") == 0) &&
+      path != nullptr &&
+      g_ascii_strcasecmp(path, "/mobile-app-upgrades/buy") == 0;
+  g_uri_unref(parsed);
+  return purchase;
+}
+
+StorePurchaseNavigation ClassifyStorePurchaseNavigation(const char* current_uri,
+                                                        const char* target_uri) {
+  if (!IsAndroidStorePurchaseNavigation(target_uri)) {
+    return StorePurchaseNavigation::kNone;
+  }
+  const UriPolicyResult current = EvaluateNavigationUri(current_uri);
+  const bool roblox_page =
+      current.allowed && current.scheme == "https" &&
+      (current.host == "www.roblox.com" || current.host == "roblox.com");
+  return roblox_page ? StorePurchaseNavigation::kHandOff
+                     : StorePurchaseNavigation::kIgnore;
 }
 
 bool IsEssentialWebResource(const char* uri) {

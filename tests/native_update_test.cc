@@ -1,3 +1,4 @@
+#include <curl/curl.h>
 #include <gtest/gtest.h>
 #include <minizip/zip.h>
 #include <sys/stat.h>
@@ -242,6 +243,38 @@ TEST(HttpDownloadPolicyTest, RejectsCredentialsAndHostSuffixTricks) {
   EXPECT_FALSE(IsTrustedHttpsUrl("http://download.pureapk.com/a", hosts));
   EXPECT_FALSE(IsTrustedHttpsUrl("https://pureapk.com.attacker.test/a", hosts));
   EXPECT_FALSE(IsTrustedHttpsUrl("https://user@pureapk.com/a", hosts));
+}
+
+TEST(HttpDownloadPolicyTest, PointsAtTheDnsFaqWhenAHostDoesNotResolve) {
+  // .invalid never resolves (RFC 6761), so this needs no network.
+  HttpTransferRequest request;
+  request.url = "https://nightcap-dns-test.invalid/a";
+  request.allowed_hosts = {"nightcap-dns-test.invalid"};
+  request.maximum_bytes = 1024;
+  request.maximum_attempts = 1;
+  request.retry_delay_ms = 0;
+  const HttpBytesResult result = DownloadBytes(request);
+  ASSERT_FALSE(result);
+  EXPECT_NE(result.error.find("nightcap-dns-test.invalid"), std::string::npos)
+      << result.error;
+  EXPECT_NE(result.error.find("your DNS could not find this server"),
+            std::string::npos)
+      << result.error;
+  EXPECT_NE(result.error.find("FAQ"), std::string::npos) << result.error;
+}
+
+TEST(HttpDownloadPolicyTest, PointsAtTheDnsFaqWhenAServerAnswersWithoutTls) {
+  const std::string described = DescribeCurlFailure(
+      CURLE_SSL_CONNECT_ERROR,
+      "TLS connect error: error:0A00010B:SSL routines::wrong version number");
+  EXPECT_NE(described.find("wrong version number"), std::string::npos)
+      << described;
+  EXPECT_NE(described.find("not HTTPS"), std::string::npos) << described;
+  EXPECT_NE(described.find("FAQ"), std::string::npos) << described;
+
+  const std::string other = DescribeCurlFailure(
+      CURLE_SSL_CONNECT_ERROR, "TLS connect error: certificate expired");
+  EXPECT_EQ(other, "TLS connect error: certificate expired");
 }
 
 TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {

@@ -279,6 +279,7 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       config.vr_mode_ = config.vr_enabled_ ? VrMode::kOn : VrMode::kOff;
     }
   }
+  config.use_libsecret_ = environment.GetOr("MOCKTAIL_USE_LIBSECRET", "0") == "1";
   config.roblox_library_path_ = environment.GetOr(
       "ROBLOX_LIB_PATH", config.roblox_library_path_.string());
   config.graphics_backend_name_ = environment.GetOr(
@@ -425,6 +426,12 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
     config.vr_spatial_toolbar_ = *spatial_toolbar;
   }
   config.vsync_mode_ = environment.GetOr("MOCKTAIL_VSYNC", "auto");
+  config.texture_compression_ =
+      environment.GetOr("MOCKTAIL_ETC2_BC_TRANSCODE", "1") != "0";
+  config.small_texture_upscale_ =
+      environment.GetOr("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "adaptive");
+  config.mangohud_ = environment.GetOr("MANGOHUD", "0") == "1";
+  config.present_mode_ = environment.GetOr("MOCKTAIL_PRESENT_MODE", "auto");
   config.performance_ = ParsePerformancePolicy(
       environment.GetOr("MOCKTAIL_MULTITHREADED_RENDERING", "0"),
       environment.GetOr("MOCKTAIL_MEMORY_LIMIT_MB", "0"),

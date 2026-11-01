@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <charconv>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -62,5 +63,7 @@ int main(int argc, char** argv) {
       return 66;
     }
   }
+  const int signal_number = IntegerEnvironment("MOCKTAIL_TEST_UPDATE_SIGNAL", 0);
+  if (signal_number > 0) std::raise(signal_number);
   return IntegerEnvironment("MOCKTAIL_TEST_UPDATE_EXIT", 0);
 }

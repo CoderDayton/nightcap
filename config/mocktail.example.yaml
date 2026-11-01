@@ -32,6 +32,9 @@ runtime:
   # active verified payload.
   # roblox_library: /absolute/path/to/libroblox.so
 
+auth:
+  use_libsecret: false
+
 appearance:
   # String (default: roblox): use Roblox's saved account theme. Supported
   # overrides: dark, light, or system (follow the desktop color scheme).
@@ -52,6 +55,13 @@ graphics:
   # presents through the lowest-latency synchronized mode the driver offers
   # unless frame_rate_limit is unlimited.
   # vsync: off
+  # Boolean (default: true): keep ETC2/EAC textures compressed as BC7/BC4/BC5
+  # on the GPU to use less video memory. Set false if textures look wrong.
+  # texture_compression: true
+  # String (default: adaptive): upscale for textures of 64px or less, as
+  # adaptive, 1, 2, or 4. adaptive picks up to 4 from the GPU's encode speed
+  # and steps down while the GPU is busy encoding.
+  # small_texture_upscale: adaptive
 
 # vr:
   # String (default: off): experimental VR through OpenXR on supported Roblox
@@ -94,6 +104,7 @@ performance:
   # String (default: auto): request Feral GameMode when its host daemon and
   # client library are available. Supported values: auto, on, off.
   gamemode: auto
+  mangohud: false
 
 audio:
   # String (default: default): `default` follows the host system output.

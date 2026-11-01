@@ -1,0 +1,967 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Decodes each ETC2/EAC block in registers and writes it as BC7 (colour),
+// BC4 (R11) or BC5 (RG11). Blocks are written tightly, row by row, one layer
+// after another.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Source { uint src[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Destination { uint dst[]; };
+
+layout(push_constant) uniform Job {
+  uint format;
+  uint blocks_wide;
+  uint blocks_high;
+  uint src_offset;
+  uint src_row_blocks;
+  uint src_layer_blocks;
+  uint dst_offset;
+  uint dst_layer_words;
+} job;
+
+#include "etc2_common.glsl"
+
+const uint kPartition2[64] = uint[64](
+    0xCCCCu, 0x8888u, 0xEEEEu, 0xECC8u, 0xC880u, 0xFEECu, 0xFEC8u, 0xEC80u,
+    0xC800u, 0xFFECu, 0xFE80u, 0xE800u, 0xFFE8u, 0xFF00u, 0xFFF0u, 0xF000u,
+    0xF710u, 0x008Eu, 0x7100u, 0x08CEu, 0x008Cu, 0x7310u, 0x3100u, 0x8CCEu,
+    0x088Cu, 0x3110u, 0x6666u, 0x366Cu, 0x17E8u, 0x0FF0u, 0x718Eu, 0x399Cu,
+    0xAAAAu, 0xF0F0u, 0x5A5Au, 0x33CCu, 0x3C3Cu, 0x55AAu, 0x9696u, 0xA55Au,
+    0x73CEu, 0x13C8u, 0x324Cu, 0x3BDCu, 0x6996u, 0xC33Cu, 0x9966u, 0x0660u,
+    0x0272u, 0x04E4u, 0x4E40u, 0x2720u, 0xC936u, 0x936Cu, 0x39C6u, 0x639Cu,
+    0x9336u, 0x9CC6u, 0x817Eu, 0xE718u, 0xCCF0u, 0x0FCCu, 0x7744u, 0xEE22u);
+
+const uint kAnchor2[64] = uint[64](
+    15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u,
+    15u, 2u, 8u, 2u, 2u, 8u, 8u, 15u, 2u, 8u, 2u, 2u, 8u, 8u, 2u, 2u,
+    15u, 15u, 6u, 8u, 2u, 8u, 15u, 15u, 2u, 8u, 2u, 2u, 2u, 15u, 15u, 6u,
+    6u, 2u, 6u, 8u, 15u, 15u, 2u, 2u, 15u, 15u, 15u, 15u, 15u, 2u, 2u, 15u);
+
+const int kWeights2[4] = int[4](0, 21, 43, 64);
+const int kWeights3[8] = int[8](0, 9, 18, 27, 37, 46, 55, 64);
+const int kWeights4[16] = int[16](0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64);
+
+const uint kInvalid = 0xFFFFFFFFu;
+// Job format of RGBA8 texels, one word each, encoded as BC7.
+const uint kRgbaTexels = 7u;
+// Opaque error below which mode 6 is not tried: an RMS of 2 levels per
+// channel over the block (16 texels x weight 256 x 3 channels x 2^2).
+const uint kGoodEnough = 16u * 256u * 12u;
+
+// Decoded texels of the block in BC order (i = y * 4 + x), RGBA8 packed.
+uint g_px[16];
+// Every texel with alpha below 128 must stay below 128, and every other one
+// at 128 or above, so punch-through cutouts keep their shape.
+bool g_cutout;
+// Every texel has alpha 255; mode 6 then keeps p-bits that decode alpha as
+// 255.
+bool g_opaque;
+// The block is ETC individual or differential, so each half lies on a grey
+// line.
+bool g_halves;
+
+uvec4 g_bits;
+uint g_pos;
+
+void Put(uint value, uint count) {
+  uint word = g_pos >> 5u;
+  uint shift = g_pos & 31u;
+  g_bits[word] |= value << shift;
+  if (shift + count > 32u) {
+    g_bits[word + 1u] |= value >> (32u - shift);
+  }
+  g_pos += count;
+}
+
+void BeginBlock(uint mode) {
+  g_bits = uvec4(0u);
+  g_pos = 0u;
+  Put(1u << mode, mode + 1u);
+}
+
+ivec4 Texel(uint i) {
+  uint v = g_px[i];
+  return ivec4(int(v & 0xFFu), int((v >> 8u) & 0xFFu), int((v >> 16u) & 0xFFu),
+               int(v >> 24u));
+}
+
+int Weight(int bits, int index) {
+  return bits == 2 ? kWeights2[index] : bits == 3 ? kWeights3[index] : kWeights4[index];
+}
+
+ivec4 Interpolate(ivec4 e0, ivec4 e1, int weight) {
+  return ((64 - weight) * e0 + weight * e1 + 32) >> 6;
+}
+
+// Value of an endpoint code of `bits` bits, a trailing p-bit included.
+int Dequantize(int code, int bits) {
+  int shifted = code << (8 - bits);
+  return (shifted | (shifted >> bits)) & 0xFF;
+}
+
+uint GetIndex(uvec2 indices, uint i) {
+  return (indices[i >> 3u] >> ((i & 7u) * 4u)) & 15u;
+}
+
+void SetIndex(inout uvec2 indices, uint i, uint value) {
+  uint shift = (i & 7u) * 4u;
+  indices[i >> 3u] = (indices[i >> 3u] & ~(15u << shift)) | (value << shift);
+}
+
+// Code of `bits` bits for `value`, with p-bit `p` appended unless p < 0.
+int QuantizeChannel(float value, int bits, int p, out int dequantized) {
+  int total = p >= 0 ? bits + 1 : bits;
+  int top = (1 << bits) - 1;
+  float scaled = value / 255.0 * float((1 << total) - 1);
+  int guess = p >= 0 ? int(floor((scaled - float(p)) * 0.5 + 0.5)) : int(floor(scaled + 0.5));
+  int best = 0;
+  float best_error = 1e30;
+  for (int q = guess - 1; q <= guess + 1; ++q) {
+    int code = clamp(q, 0, top);
+    int d = Dequantize(p >= 0 ? (code << 1) | p : code, total);
+    float error = abs(float(d) - value);
+    if (error < best_error) {
+      best_error = error;
+      best = code;
+      dequantized = d;
+    }
+  }
+  return best;
+}
+
+struct Endpoints {
+  ivec4 q0;
+  ivec4 q1;
+  int p0;
+  int p1;
+  ivec4 e0;
+  ivec4 e1;
+};
+
+// abits == 0 stores no alpha, which then decodes as 255.
+float QuantizeEndpoint(vec4 value, int cbits, int abits, int p, out ivec4 q, out ivec4 e) {
+  float error = 0.0;
+  int d;
+  for (int c = 0; c < 3; ++c) {
+    q[c] = QuantizeChannel(value[c], cbits, p, d);
+    e[c] = d;
+    error += (float(d) - value[c]) * (float(d) - value[c]);
+  }
+  if (abits > 0) {
+    q.a = QuantizeChannel(value.a, abits, p, d);
+    e.a = d;
+    error += (float(d) - value.a) * (float(d) - value.a);
+  } else {
+    q.a = 0;
+    e.a = 255;
+  }
+  return error;
+}
+
+// pmode 0: no p-bits; 1: one p-bit shared by the pair; 2: one per endpoint.
+Endpoints QuantizePair(vec4 lo, vec4 hi, int cbits, int abits, int pmode) {
+  Endpoints out_ends;
+  out_ends.p0 = -1;
+  out_ends.p1 = -1;
+  if (pmode == 0) {
+    QuantizeEndpoint(lo, cbits, abits, -1, out_ends.q0, out_ends.e0);
+    QuantizeEndpoint(hi, cbits, abits, -1, out_ends.q1, out_ends.e1);
+    return out_ends;
+  }
+  float best0 = 1e30;
+  float best1 = 1e30;
+  float best_pair = 1e30;
+  for (int p = 0; p < 2; ++p) {
+    if (g_opaque && abits > 0 && p == 0) {
+      continue;
+    }
+    ivec4 q0, q1, e0, e1;
+    float error0 = QuantizeEndpoint(lo, cbits, abits, p, q0, e0);
+    float error1 = QuantizeEndpoint(hi, cbits, abits, p, q1, e1);
+    if (pmode == 1) {
+      if (error0 + error1 < best_pair) {
+        best_pair = error0 + error1;
+        out_ends.q0 = q0; out_ends.e0 = e0; out_ends.p0 = p;
+        out_ends.q1 = q1; out_ends.e1 = e1; out_ends.p1 = p;
+      }
+    } else {
+      if (error0 < best0) {
+        best0 = error0;
+        out_ends.q0 = q0; out_ends.e0 = e0; out_ends.p0 = p;
+      }
+      if (error1 < best1) {
+        best1 = error1;
+        out_ends.q1 = q1; out_ends.e1 = e1; out_ends.p1 = p;
+      }
+    }
+  }
+  return out_ends;
+}
+
+// Picks each texel's palette entry. Colour error is weighted by the
+// reference alpha plus one; `joint` adds alpha error at weight 256 and
+// enforces the cutout rule. Returns kInvalid when a texel has no allowed
+// entry.
+uint Assign(uint mask, ivec4 e0, ivec4 e1, int ibits, bool joint, out uvec2 indices) {
+  uint total = 0u;
+  indices = uvec2(0u);
+  int top = (1 << ibits) - 1;
+  // Outside cutouts only the entries next to the texel's projection onto
+  // the endpoint line can be nearest.
+  bool full = joint && g_cutout;
+  vec4 axis = vec4(e1 - e0);
+  if (!joint) {
+    axis.a = 0.0;
+  }
+  float scale = float(top) / max(dot(axis, axis), 1e-6);
+  for (uint i = 0u; i < 16u; ++i) {
+    if (((mask >> i) & 1u) == 0u) {
+      continue;
+    }
+    ivec4 px = Texel(i);
+    uint best = kInvalid;
+    uint best_j = 0u;
+    int guess = int(round(dot(vec4(px - e0), axis) * scale));
+    int first = full ? 0 : clamp(guess - 1, 0, top);
+    int last = full ? top : clamp(guess + 1, 0, top);
+    for (int j = first; j <= last; ++j) {
+      ivec4 c = Interpolate(e0, e1, Weight(ibits, j));
+      ivec3 d = c.rgb - px.rgb;
+      uint error = uint(px.a + 1) * uint(d.r * d.r + d.g * d.g + d.b * d.b);
+      if (joint) {
+        if (g_cutout && ((c.a < 128) != (px.a < 128))) {
+          continue;
+        }
+        int da = c.a - px.a;
+        error += 256u * uint(da * da);
+      }
+      if (error < best) {
+        best = error;
+        best_j = uint(j);
+      }
+    }
+    if (best == kInvalid) {
+      return kInvalid;
+    }
+    total += best;
+    SetIndex(indices, i, best_j);
+  }
+  return total;
+}
+
+struct Fit {
+  Endpoints ends;
+  uvec2 indices;
+  uint error;
+};
+
+Fit Evaluate(uint mask, vec4 lo, vec4 hi, int cbits, int abits, int pmode, int ibits) {
+  Fit fit;
+  fit.ends = QuantizePair(lo, hi, cbits, abits, pmode);
+  fit.error = Assign(mask, fit.ends.e0, fit.ends.e1, ibits, abits > 0, fit.indices);
+  return fit;
+}
+
+// Least-squares endpoints for the texels of `mask` given their indices.
+bool Refine(uint mask, uvec2 indices, int ibits, bool joint, out vec4 lo, out vec4 hi) {
+  float a00 = 0.0, a01 = 0.0, a11 = 0.0;
+  vec4 b0 = vec4(0.0), b1 = vec4(0.0);
+  for (uint i = 0u; i < 16u; ++i) {
+    if (((mask >> i) & 1u) == 0u) {
+      continue;
+    }
+    float w = float(Weight(ibits, int(GetIndex(indices, i)))) / 64.0;
+    vec4 x = vec4(Texel(i));
+    a00 += (1.0 - w) * (1.0 - w);
+    a01 += (1.0 - w) * w;
+    a11 += w * w;
+    b0 += (1.0 - w) * x;
+    b1 += w * x;
+  }
+  float det = a00 * a11 - a01 * a01;
+  if (det < 1e-4) {
+    return false;
+  }
+  lo = clamp((a11 * b0 - a01 * b1) / det, vec4(0.0), vec4(255.0));
+  hi = clamp((a00 * b1 - a01 * b0) / det, vec4(0.0), vec4(255.0));
+  if (!joint) {
+    lo.a = 255.0;
+    hi.a = 255.0;
+  }
+  return true;
+}
+
+Fit FitExtremes(uint mask, int cbits, int abits, int pmode, int ibits);
+
+struct AlphaFit {
+  int q0;
+  int q1;
+  int e0;
+  int e1;
+  uvec2 indices;
+  uint error;
+};
+
+AlphaFit EvaluateAlpha(float lo, float hi, int abits, int ibits) {
+  AlphaFit fit;
+  fit.q0 = QuantizeChannel(lo, abits, -1, fit.e0);
+  fit.q1 = QuantizeChannel(hi, abits, -1, fit.e1);
+  fit.indices = uvec2(0u);
+  fit.error = 0u;
+  int n = 1 << ibits;
+  for (uint i = 0u; i < 16u; ++i) {
+    int a = Texel(i).a;
+    uint best = kInvalid;
+    uint best_j = 0u;
+    for (int j = 0; j < n; ++j) {
+      int w = Weight(ibits, j);
+      int v = ((64 - w) * fit.e0 + w * fit.e1 + 32) >> 6;
+      if (g_cutout && ((v < 128) != (a < 128))) {
+        continue;
+      }
+      uint error = 256u * uint((v - a) * (v - a));
+      if (error < best) {
+        best = error;
+        best_j = uint(j);
+      }
+    }
+    if (best == kInvalid) {
+      fit.error = kInvalid;
+      return fit;
+    }
+    fit.error += best;
+    SetIndex(fit.indices, i, best_j);
+  }
+  return fit;
+}
+
+AlphaFit FitAlpha(int abits, int ibits) {
+  float lo = 255.0, hi = 0.0;
+  for (uint i = 0u; i < 16u; ++i) {
+    float a = float(Texel(i).a);
+    lo = min(lo, a);
+    hi = max(hi, a);
+  }
+  AlphaFit best = EvaluateAlpha(lo, hi, abits, ibits);
+  for (int it = 0; it < 2 && best.error != kInvalid && best.error != 0u; ++it) {
+    float a00 = 0.0, a01 = 0.0, a11 = 0.0, b0 = 0.0, b1 = 0.0;
+    for (uint i = 0u; i < 16u; ++i) {
+      float w = float(Weight(ibits, int(GetIndex(best.indices, i)))) / 64.0;
+      float x = float(Texel(i).a);
+      a00 += (1.0 - w) * (1.0 - w);
+      a01 += (1.0 - w) * w;
+      a11 += w * w;
+      b0 += (1.0 - w) * x;
+      b1 += w * x;
+    }
+    float det = a00 * a11 - a01 * a01;
+    if (det < 1e-4) {
+      break;
+    }
+    AlphaFit next = EvaluateAlpha(clamp((a11 * b0 - a01 * b1) / det, 0.0, 255.0),
+                                  clamp((a00 * b1 - a01 * b0) / det, 0.0, 255.0), abits, ibits);
+    if (next.error >= best.error) {
+      break;
+    }
+    best = next;
+  }
+  return best;
+}
+
+// Makes the anchor texel's index start with a 0 bit by swapping the
+// endpoints of its subset and mirroring that subset's indices.
+bool NeedsSwap(uvec2 indices, uint anchor, int ibits) {
+  return GetIndex(indices, anchor) >= uint(1 << (ibits - 1));
+}
+
+void MirrorIndices(inout uvec2 indices, uint mask, int ibits) {
+  uint top = uint((1 << ibits) - 1);
+  for (uint i = 0u; i < 16u; ++i) {
+    if (((mask >> i) & 1u) != 0u) {
+      SetIndex(indices, i, top - GetIndex(indices, i));
+    }
+  }
+}
+
+void SwapEndpoints(inout Endpoints ends) {
+  ivec4 q = ends.q0; ends.q0 = ends.q1; ends.q1 = q;
+  ivec4 e = ends.e0; ends.e0 = ends.e1; ends.e1 = e;
+  int p = ends.p0; ends.p0 = ends.p1; ends.p1 = p;
+}
+
+uint EncodeMode6(out uvec4 bits) {
+  Fit f = FitExtremes(0xFFFFu, 7, 7, 2, 4);
+  bits = uvec4(0u);
+  if (f.error == kInvalid) {
+    return kInvalid;
+  }
+  if (NeedsSwap(f.indices, 0u, 4)) {
+    SwapEndpoints(f.ends);
+    MirrorIndices(f.indices, 0xFFFFu, 4);
+  }
+  BeginBlock(6u);
+  for (int c = 0; c < 4; ++c) {
+    Put(uint(f.ends.q0[c]), 7u);
+    Put(uint(f.ends.q1[c]), 7u);
+  }
+  Put(uint(f.ends.p0), 1u);
+  Put(uint(f.ends.p1), 1u);
+  for (uint i = 0u; i < 16u; ++i) {
+    Put(GetIndex(f.indices, i), i == 0u ? 3u : 4u);
+  }
+  bits = g_bits;
+  return f.error;
+}
+
+// Endpoints at the texels of `mask` with the least and greatest r+g+b, then
+// one least-squares pass. The colours of an ETC half, and of a T or H paint
+// group, differ only along (1,1,1), so these are the ends of the line they
+// lie on; for other texels it is a fast approximation.
+Fit FitExtremes(uint mask, int cbits, int abits, int pmode, int ibits) {
+  int lo_sum = 1 << 30, hi_sum = -1;
+  uint lo = 0u, hi = 0u;
+  for (uint i = 0u; i < 16u; ++i) {
+    if (((mask >> i) & 1u) == 0u) {
+      continue;
+    }
+    ivec4 t = Texel(i);
+    int s = t.r + t.g + t.b;
+    if (s < lo_sum) {
+      lo_sum = s;
+      lo = i;
+    }
+    if (s > hi_sum) {
+      hi_sum = s;
+      hi = i;
+    }
+  }
+  Fit fit = Evaluate(mask, vec4(Texel(lo)), vec4(Texel(hi)), cbits, abits, pmode, ibits);
+  vec4 refined_lo, refined_hi;
+  if (fit.error != 0u && Refine(mask, fit.indices, ibits, abits > 0, refined_lo, refined_hi)) {
+    Fit next = Evaluate(mask, refined_lo, refined_hi, cbits, abits, pmode, ibits);
+    if (next.error < fit.error) {
+      fit = next;
+    }
+  }
+  // Rounding each endpoint to its nearest code is not the best pair of
+  // codes. On real ETC halves, widening the pair one code along the grey
+  // axis, one endpoint at a time, recovers 80% of an exhaustive code search.
+  if (g_halves && abits == 0) {
+    int ctop = (1 << cbits) - 1;
+    int total = pmode > 0 ? cbits + 1 : cbits;
+    for (int k = 0; k < 2 && fit.error != 0u; ++k) {
+      Fit next = fit;
+      ivec4 q = clamp(k == 0 ? next.ends.q0 - 1 : next.ends.q1 + 1, 0, ctop);
+      ivec4 e;
+      for (int c = 0; c < 3; ++c) {
+        int p = k == 0 ? next.ends.p0 : next.ends.p1;
+        e[c] = Dequantize(pmode > 0 ? (q[c] << 1) | p : q[c], total);
+      }
+      e.a = 255;
+      if (k == 0) {
+        next.ends.q0.rgb = q.rgb;
+        next.ends.e0.rgb = e.rgb;
+      } else {
+        next.ends.q1.rgb = q.rgb;
+        next.ends.e1.rgb = e.rgb;
+      }
+      next.error = Assign(mask, next.ends.e0, next.ends.e1, ibits, false, next.indices);
+      if (next.error < fit.error) {
+        fit = next;
+      }
+    }
+  }
+  return fit;
+}
+
+// Mode 6 between the two corners furthest apart. A planar block is affine in
+// x and y, so its colours span the corners.
+uint EncodeMode6Corners(out uvec4 bits) {
+  const uint corners[4] = uint[4](0u, 3u, 12u, 15u);
+  uint lo = 0u, hi = 15u;
+  int widest = -1;
+  for (int a = 0; a < 4; ++a) {
+    for (int b = a + 1; b < 4; ++b) {
+      ivec4 d = Texel(corners[a]) - Texel(corners[b]);
+      int distance = d.r * d.r + d.g * d.g + d.b * d.b;
+      if (distance > widest) {
+        widest = distance;
+        lo = corners[a];
+        hi = corners[b];
+      }
+    }
+  }
+  Fit f = Evaluate(0xFFFFu, vec4(Texel(lo)), vec4(Texel(hi)), 7, 7, 2, 4);
+  bits = uvec4(0u);
+  if (f.error == kInvalid) {
+    return kInvalid;
+  }
+  if (NeedsSwap(f.indices, 0u, 4)) {
+    SwapEndpoints(f.ends);
+    MirrorIndices(f.indices, 0xFFFFu, 4);
+  }
+  BeginBlock(6u);
+  for (int c = 0; c < 4; ++c) {
+    Put(uint(f.ends.q0[c]), 7u);
+    Put(uint(f.ends.q1[c]), 7u);
+  }
+  Put(uint(f.ends.p0), 1u);
+  Put(uint(f.ends.p1), 1u);
+  for (uint i = 0u; i < 16u; ++i) {
+    Put(GetIndex(f.indices, i), i == 0u ? 3u : 4u);
+  }
+  bits = g_bits;
+  return f.error;
+}
+
+uint EncodeMode1(uint split, out uvec4 bits) {
+  uint mask = kPartition2[split];
+  uint anchor = kAnchor2[split];
+  Fit s0 = FitExtremes(~mask & 0xFFFFu, 6, 0, 1, 3);
+  Fit s1 = FitExtremes(mask, 6, 0, 1, 3);
+  bits = uvec4(0u);
+  if (s0.error == kInvalid || s1.error == kInvalid) {
+    return kInvalid;
+  }
+  if (NeedsSwap(s0.indices, 0u, 3)) {
+    SwapEndpoints(s0.ends);
+    MirrorIndices(s0.indices, ~mask & 0xFFFFu, 3);
+  }
+  if (NeedsSwap(s1.indices, anchor, 3)) {
+    SwapEndpoints(s1.ends);
+    MirrorIndices(s1.indices, mask, 3);
+  }
+  BeginBlock(1u);
+  Put(split, 6u);
+  for (int c = 0; c < 3; ++c) {
+    Put(uint(s0.ends.q0[c]), 6u);
+    Put(uint(s0.ends.q1[c]), 6u);
+    Put(uint(s1.ends.q0[c]), 6u);
+    Put(uint(s1.ends.q1[c]), 6u);
+  }
+  Put(uint(s0.ends.p0), 1u);
+  Put(uint(s1.ends.p0), 1u);
+  for (uint i = 0u; i < 16u; ++i) {
+    uint index = ((mask >> i) & 1u) != 0u ? GetIndex(s1.indices, i) : GetIndex(s0.indices, i);
+    Put(index, (i == 0u || i == anchor) ? 2u : 3u);
+  }
+  bits = g_bits;
+  return s0.error + s1.error;
+}
+
+// Mode 4 or 5: RGB and alpha with separate indices, no channel rotation.
+// index_select 1 gives mode 4's 3-bit indices to colour instead of alpha.
+uint EncodeMode45(uint mode, uint index_select, out uvec4 bits) {
+  int cbits = mode == 4u ? 5 : 7;
+  int abits = mode == 4u ? 6 : 8;
+  int primary_bits = 2;
+  int secondary_bits = mode == 4u ? 3 : 2;
+  int color_ibits = index_select == 1u ? secondary_bits : primary_bits;
+  int alpha_ibits = index_select == 1u ? primary_bits : secondary_bits;
+  Fit c = FitExtremes(0xFFFFu, cbits, 0, 0, color_ibits);
+  AlphaFit a = FitAlpha(abits, alpha_ibits);
+  bits = uvec4(0u);
+  if (c.error == kInvalid || a.error == kInvalid) {
+    return kInvalid;
+  }
+  if (NeedsSwap(c.indices, 0u, color_ibits)) {
+    SwapEndpoints(c.ends);
+    MirrorIndices(c.indices, 0xFFFFu, color_ibits);
+  }
+  if (NeedsSwap(a.indices, 0u, alpha_ibits)) {
+    int q = a.q0; a.q0 = a.q1; a.q1 = q;
+    MirrorIndices(a.indices, 0xFFFFu, alpha_ibits);
+  }
+  BeginBlock(mode);
+  Put(0u, 2u);
+  if (mode == 4u) {
+    Put(index_select, 1u);
+  }
+  for (int ch = 0; ch < 3; ++ch) {
+    Put(uint(c.ends.q0[ch]), uint(cbits));
+    Put(uint(c.ends.q1[ch]), uint(cbits));
+  }
+  Put(uint(a.q0), uint(abits));
+  Put(uint(a.q1), uint(abits));
+  uvec2 primary = index_select == 1u ? a.indices : c.indices;
+  uvec2 secondary = index_select == 1u ? c.indices : a.indices;
+  for (uint i = 0u; i < 16u; ++i) {
+    Put(GetIndex(primary, i), uint(primary_bits) - (i == 0u ? 1u : 0u));
+  }
+  for (uint i = 0u; i < 16u; ++i) {
+    Put(GetIndex(secondary, i), uint(secondary_bits) - (i == 0u ? 1u : 0u));
+  }
+  bits = g_bits;
+  return c.error + a.error;
+}
+
+const uint kShapeHalves = 0u;
+const uint kShapeTH = 1u;
+const uint kShapePlanar = 2u;
+
+// ETC2 colour mode of a block. Individual and differential blocks split
+// into the halves of BC7 partition 0 (left/right) or 13 (top/bottom). T and H
+// blocks split by their paint colours, returned as a BC-order mask.
+uint EtcShape(uint word, bool punchthrough, out uint split, out uint ideal) {
+  int b0 = Byte(word, 0u), b1 = Byte(word, 1u), b2 = Byte(word, 2u), b3 = Byte(word, 3u);
+  int msb = (Byte(word, 4u) << 8) | Byte(word, 5u);
+  int lsb = (Byte(word, 6u) << 8) | Byte(word, 7u);
+  split = (b3 & 1) != 0 ? 13u : 0u;
+  ideal = 0u;
+  if (!punchthrough && (b3 & 2) == 0) {
+    return kShapeHalves;
+  }
+  int r_sum = (b0 >> 3) + kDelta[b0 & 7];
+  int g_sum = (b1 >> 3) + kDelta[b1 & 7];
+  int b_sum = (b2 >> 3) + kDelta[b2 & 7];
+  bool t_mode = r_sum < 0 || r_sum > 31;
+  bool h_mode = !t_mode && (g_sum < 0 || g_sum > 31);
+  if (t_mode || h_mode) {
+    for (int x = 0; x < 4; ++x) {
+      for (int y = 0; y < 4; ++y) {
+        int t = x * 4 + y;
+        int index = (((msb >> t) & 1) << 1) | ((lsb >> t) & 1);
+        bool second = t_mode ? index != 0 : index >= 2;
+        if (second) {
+          ideal |= 1u << uint(y * 4 + x);
+        }
+      }
+    }
+    return kShapeTH;
+  }
+  if (b_sum < 0 || b_sum > 31) {
+    return kShapePlanar;
+  }
+  return kShapeHalves;
+}
+
+void Keep(uint error, uvec4 bits, inout uint best, inout uvec4 best_bits) {
+  if (error < best) {
+    best = error;
+    best_bits = bits;
+  }
+}
+
+uvec4 EncodeBc7(uint rgb_word, bool punchthrough) {
+  bool opaque = true;
+  for (uint i = 0u; i < 16u; ++i) {
+    opaque = opaque && (g_px[i] >> 24u) == 255u;
+  }
+  g_opaque = opaque;
+  g_halves = false;
+  uint best = kInvalid;
+  uvec4 best_bits = uvec4(0u);
+  uvec4 bits;
+  if (!opaque) {
+    Keep(EncodeMode45(4u, 1u, bits), bits, best, best_bits);
+    Keep(EncodeMode45(5u, 0u, bits), bits, best, best_bits);
+    Keep(EncodeMode6(bits), bits, best, best_bits);
+    return best_bits;
+  }
+  uint split;
+  uint ideal;
+  uint shape = EtcShape(rgb_word, punchthrough, split, ideal);
+  g_halves = shape == kShapeHalves;
+  uint count = shape == kShapeHalves ? 1u : 0u;
+  if (shape == kShapeTH) {
+    uint best_miss = 17u;
+    for (uint p = 0u; p < 64u; ++p) {
+      uint differ = uint(bitCount(kPartition2[p] ^ ideal));
+      uint miss = min(differ, 16u - differ);
+      if (miss < best_miss) {
+        split = p;
+        best_miss = miss;
+      }
+    }
+    count = 1u;
+  }
+  // One call site keeps the lanes of a warp together whatever their shape.
+  for (uint k = 0u; k < count; ++k) {
+    Keep(EncodeMode1(split, bits), bits, best, best_bits);
+  }
+  if (best > kGoodEnough) {
+    Keep(EncodeMode6Corners(bits), bits, best, best_bits);
+  }
+  return best_bits;
+}
+
+// Texels with no ETC2 block behind them, such as an upscaled texture.
+uvec4 EncodeBc7Texels() {
+  bool opaque = true;
+  for (uint i = 0u; i < 16u; ++i) {
+    opaque = opaque && (g_px[i] >> 24u) == 255u;
+  }
+  g_opaque = opaque;
+  g_halves = false;
+  g_cutout = false;
+  uint best = kInvalid;
+  uvec4 best_bits = uvec4(0u);
+  uvec4 bits;
+  if (!opaque) {
+    Keep(EncodeMode45(4u, 1u, bits), bits, best, best_bits);
+    Keep(EncodeMode45(5u, 0u, bits), bits, best, best_bits);
+  } else {
+    // Mode 1 with the partition nearest to splitting the block between its
+    // two most distant colours: the texel farthest from the mean, and the
+    // one farthest from that.
+    ivec3 rgb[16];
+    ivec3 sum = ivec3(0);
+    for (uint i = 0u; i < 16u; ++i) {
+      rgb[i] = ivec3(int(g_px[i] & 0xFFu), int((g_px[i] >> 8u) & 0xFFu),
+                     int((g_px[i] >> 16u) & 0xFFu));
+      sum += rgb[i];
+    }
+    ivec3 a = rgb[0];
+    int far = -1;
+    for (uint i = 0u; i < 16u; ++i) {
+      ivec3 d = rgb[i] * 16 - sum;
+      int distance = d.x * d.x + d.y * d.y + d.z * d.z;
+      if (distance > far) {
+        far = distance;
+        a = rgb[i];
+      }
+    }
+    ivec3 b = a;
+    far = -1;
+    for (uint i = 0u; i < 16u; ++i) {
+      ivec3 d = rgb[i] - a;
+      int distance = d.x * d.x + d.y * d.y + d.z * d.z;
+      if (distance > far) {
+        far = distance;
+        b = rgb[i];
+      }
+    }
+    uint ideal = 0u;
+    for (uint i = 0u; i < 16u; ++i) {
+      ivec3 da = rgb[i] - a;
+      ivec3 db = rgb[i] - b;
+      if (dot(db, db) < dot(da, da)) {
+        ideal |= 1u << i;
+      }
+    }
+    uint split = 0u;
+    uint best_miss = 17u;
+    for (uint p = 0u; p < 64u; ++p) {
+      uint differ = uint(bitCount(kPartition2[p] ^ ideal));
+      uint miss = min(differ, 16u - differ);
+      if (miss < best_miss) {
+        split = p;
+        best_miss = miss;
+      }
+    }
+    Keep(EncodeMode1(split, bits), bits, best, best_bits);
+  }
+  Keep(EncodeMode6(bits), bits, best, best_bits);
+  return best_bits;
+}
+
+// BC4 level `index` of endpoints r0 > r1, in sevenths of an 8-bit step.
+int Bc4Level(int r0, int r1, uint index) {
+  if (index == 0u) {
+    return 7 * r0;
+  }
+  if (index == 1u) {
+    return 7 * r1;
+  }
+  int k = int(index);
+  return (8 - k) * r0 + (k - 1) * r1;
+}
+
+const float kBc4Weight[8] = float[8](0.0, 1.0, 1.0 / 7.0, 2.0 / 7.0, 3.0 / 7.0, 4.0 / 7.0,
+                                     5.0 / 7.0, 6.0 / 7.0);
+
+// Picks indices for endpoints r0 > r1 and returns the squared 16-bit error.
+float AssignBc4(int values[16], bool is_signed, int r0, int r1, out uint indices[2]) {
+  float unit = is_signed ? 32767.0 / (7.0 * 127.0) : 65535.0 / (7.0 * 255.0);
+  float total = 0.0;
+  indices[0] = 0u;
+  indices[1] = 0u;
+  for (uint i = 0u; i < 16u; ++i) {
+    float best = 1e30;
+    uint best_j = 0u;
+    for (uint j = 0u; j < 8u; ++j) {
+      float d = round(float(Bc4Level(r0, r1, j)) * unit) - float(values[i]);
+      if (d * d < best) {
+        best = d * d;
+        best_j = j;
+      }
+    }
+    total += best;
+    uint bit = 16u + 3u * i;
+    if (bit < 32u) {
+      indices[0] |= best_j << bit;
+      if (bit + 3u > 32u) {
+        indices[1] |= best_j >> (32u - bit);
+      }
+    } else {
+      indices[1] |= best_j << (bit - 32u);
+    }
+  }
+  return total;
+}
+
+void Bc4Endpoints(float lo, float hi, int low, int high, out int r0, out int r1) {
+  r0 = clamp(int(round(max(lo, hi))), low, high);
+  r1 = clamp(int(round(min(lo, hi))), low, high);
+  if (r0 == r1) {
+    if (r0 < high) {
+      ++r0;
+    } else {
+      --r1;
+    }
+  }
+}
+
+// Values are 16-bit unorm, or snorm as signed ints, in BC order.
+uvec2 EncodeBc4(int values[16], bool is_signed) {
+  float scale = is_signed ? 127.0 / 32767.0 : 255.0 / 65535.0;
+  int low = is_signed ? -127 : 0;
+  int high = is_signed ? 127 : 255;
+  float lo = 1e30, hi = -1e30;
+  for (uint i = 0u; i < 16u; ++i) {
+    lo = min(lo, float(values[i]) * scale);
+    hi = max(hi, float(values[i]) * scale);
+  }
+  int r0, r1;
+  uint indices[2];
+  float best = 1e30;
+  int best_r0 = 0, best_r1 = 0;
+  uint best_indices[2];
+  for (int start = 0; start < 4; ++start) {
+    int first = start >> 1;
+    int last = 7 - (start & 1);
+    float step = (hi - lo) / float(last - first);
+    Bc4Endpoints(lo - float(first) * step, hi + float(7 - last) * step, low, high, r0, r1);
+    float error = AssignBc4(values, is_signed, r0, r1, indices);
+    if (error < best) {
+      best = error;
+      best_r0 = r0;
+      best_r1 = r1;
+      best_indices = indices;
+    }
+  }
+  for (int it = 0; it < 2 && best > 0.0; ++it) {
+    float a00 = 0.0, a01 = 0.0, a11 = 0.0, b0 = 0.0, b1 = 0.0;
+    for (uint i = 0u; i < 16u; ++i) {
+      uint bit = 16u + 3u * i;
+      uint index = bit < 32u ? ((best_indices[0] >> bit) | (bit > 29u ? best_indices[1] << (32u - bit) : 0u)) & 7u
+                             : (best_indices[1] >> (bit - 32u)) & 7u;
+      float w = kBc4Weight[index];
+      float x = float(values[i]) * scale;
+      a00 += (1.0 - w) * (1.0 - w);
+      a01 += (1.0 - w) * w;
+      a11 += w * w;
+      b0 += (1.0 - w) * x;
+      b1 += w * x;
+    }
+    float det = a00 * a11 - a01 * a01;
+    if (det < 1e-4) {
+      break;
+    }
+    Bc4Endpoints((a11 * b0 - a01 * b1) / det, (a00 * b1 - a01 * b0) / det, low, high, r0, r1);
+    float error = AssignBc4(values, is_signed, r0, r1, indices);
+    if (error >= best) {
+      break;
+    }
+    best = error;
+    best_r0 = r0;
+    best_r1 = r1;
+    best_indices = indices;
+  }
+  for (int step = 0; step < 8 && best > 0.0; ++step) {
+    int next_r0 = best_r0, next_r1 = best_r1;
+    float next = best;
+    for (int d0 = -1; d0 <= 1; ++d0) {
+      for (int d1 = -1; d1 <= 1; ++d1) {
+        int c0 = best_r0 + d0, c1 = best_r1 + d1;
+        if ((d0 == 0 && d1 == 0) || c0 > high || c1 < low || c0 <= c1) {
+          continue;
+        }
+        float error = AssignBc4(values, is_signed, c0, c1, indices);
+        if (error < next) {
+          next = error;
+          next_r0 = c0;
+          next_r1 = c1;
+        }
+      }
+    }
+    if (next >= best) {
+      break;
+    }
+    best = next;
+    best_r0 = next_r0;
+    best_r1 = next_r1;
+  }
+  AssignBc4(values, is_signed, best_r0, best_r1, best_indices);
+  return uvec2(best_indices[0] | (uint(best_r0) & 0xFFu) | ((uint(best_r1) & 0xFFu) << 8u),
+               best_indices[1]);
+}
+
+void main() {
+  uint bx = gl_GlobalInvocationID.x;
+  uint by = gl_GlobalInvocationID.y;
+  uint layer = gl_GlobalInvocationID.z;
+  if (bx >= job.blocks_wide || by >= job.blocks_high) {
+    return;
+  }
+  bool rg = job.format == kRg11 || job.format == kRg11Signed;
+  bool wide = job.format == kRgba8 || rg;
+  uint word = job.src_offset +
+              (layer * job.src_layer_blocks + by * job.src_row_blocks + bx) * (wide ? 4u : 2u);
+  bool single = job.format == kR11 || job.format == kR11Signed;
+  uint out_words = single ? 2u : 4u;
+  uint out_word = job.dst_offset + layer * job.dst_layer_words +
+                  (by * job.blocks_wide + bx) * out_words;
+
+  if (job.format == kRgbaTexels) {
+    uint row = job.src_row_blocks * 4u;
+    uint first = job.src_offset + layer * job.src_layer_blocks * 16u +
+                 by * 4u * row + bx * 4u;
+    for (uint y = 0u; y < 4u; ++y) {
+      for (uint x = 0u; x < 4u; ++x) {
+        g_px[y * 4u + x] = src[first + y * row + x];
+      }
+    }
+    uvec4 bits = EncodeBc7Texels();
+    dst[out_word] = bits.x;
+    dst[out_word + 1u] = bits.y;
+    dst[out_word + 2u] = bits.z;
+    dst[out_word + 3u] = bits.w;
+    return;
+  }
+
+  if (job.format <= kRgba8) {
+    uint texels[16];
+    DecodeColorBlock(word, job.format, texels);
+    for (uint x = 0u; x < 4u; ++x) {
+      for (uint y = 0u; y < 4u; ++y) {
+        g_px[y * 4u + x] = texels[x * 4u + y];
+      }
+    }
+    g_cutout = job.format == kRgb8A1;
+    uvec4 bits = EncodeBc7(job.format == kRgba8 ? word + 2u : word, job.format == kRgb8A1);
+    dst[out_word] = bits.x;
+    dst[out_word + 1u] = bits.y;
+    dst[out_word + 2u] = bits.z;
+    dst[out_word + 3u] = bits.w;
+    return;
+  }
+
+  bool is_signed = job.format == kR11Signed || job.format == kRg11Signed;
+  uint channels = rg ? 2u : 1u;
+  for (uint ch = 0u; ch < channels; ++ch) {
+    uint channel_word = word + ch * 2u;
+    int values[16];
+    for (uint x = 0u; x < 4u; ++x) {
+      for (uint y = 0u; y < 4u; ++y) {
+        uint v = EacValue(channel_word, EacIndex(channel_word, int(x * 4u + y)), is_signed);
+        values[y * 4u + x] = is_signed && v >= 32768u ? int(v) - 65536 : int(v);
+      }
+    }
+    uvec2 block = EncodeBc4(values, is_signed);
+    dst[out_word + ch * 2u] = block.x;
+    dst[out_word + ch * 2u + 1u] = block.y;
+  }
+}

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -16,155 +17,7 @@ layout(push_constant) uniform Job {
   uint dst_layer_words;
 } job;
 
-const uint kRgb8 = 0u;
-const uint kRgb8A1 = 1u;
-const uint kRgba8 = 2u;
-const uint kR11 = 3u;
-const uint kR11Signed = 4u;
-const uint kRg11 = 5u;
-const uint kRg11Signed = 6u;
-
-const int kDistance[8] = int[8](3, 6, 11, 16, 23, 32, 41, 64);
-const int kDelta[8] = int[8](0, 1, 2, 3, -4, -3, -2, -1);
-const int kEtc1Modifiers[32] = int[32](
-    2, 8, -2, -8, 5, 17, -5, -17, 9, 29, -9, -29, 13, 42, -13, -42,
-    18, 60, -18, -60, 24, 80, -24, -80, 33, 106, -33, -106, 47, 183, -47, -183);
-const int kEacModifiers[128] = int[128](
-    -3, -6, -9, -15, 2, 5, 8, 14, -3, -7, -10, -13, 2, 6, 9, 12,
-    -2, -5, -8, -13, 1, 4, 7, 12, -2, -4, -6, -13, 1, 3, 5, 12,
-    -3, -6, -8, -12, 2, 5, 7, 11, -3, -7, -9, -11, 2, 6, 8, 10,
-    -4, -7, -8, -11, 3, 6, 7, 10, -3, -5, -8, -11, 2, 4, 7, 10,
-    -2, -6, -8, -10, 1, 5, 7, 9, -2, -5, -8, -10, 1, 4, 7, 9,
-    -2, -4, -8, -10, 1, 3, 7, 9, -2, -5, -7, -10, 1, 4, 6, 9,
-    -3, -4, -7, -10, 2, 3, 6, 9, -1, -2, -3, -10, 0, 1, 2, 9,
-    -4, -6, -8, -9, 3, 5, 7, 8, -3, -5, -7, -9, 2, 4, 6, 8);
-
-int Byte(uint word, uint index) {
-  return int((src[word + (index >> 2u)] >> ((index & 3u) * 8u)) & 0xFFu);
-}
-
-int Expand4(int v) { return (v << 4) | v; }
-int Expand5(int v) { return (v << 3) | (v >> 2); }
-int Expand6(int v) { return (v << 2) | (v >> 4); }
-int Expand7(int v) { return (v << 1) | (v >> 6); }
-
-uint Rgba(ivec3 c, int a) {
-  ivec4 v = clamp(ivec4(c, a), ivec4(0), ivec4(255));
-  return uint(v.r) | (uint(v.g) << 8u) | (uint(v.b) << 16u) | (uint(v.a) << 24u);
-}
-
-void DecodeRgb(uint word, bool punchthrough, out uint texels[16]) {
-  int b[8];
-  for (uint i = 0u; i < 8u; ++i) {
-    b[i] = Byte(word, i);
-  }
-  bool diff_or_opaque = (b[3] & 2) != 0;
-  bool opaque = !punchthrough || diff_or_opaque;
-  int msb = (b[4] << 8) | b[5];
-  int lsb = (b[6] << 8) | b[7];
-  int r_sum = (b[0] >> 3) + kDelta[b[0] & 7];
-  int g_sum = (b[1] >> 3) + kDelta[b[1] & 7];
-  int b_sum = (b[2] >> 3) + kDelta[b[2] & 7];
-  bool individual = !punchthrough && !diff_or_opaque;
-
-  if (!individual && (r_sum < 0 || r_sum > 31 || g_sum < 0 || g_sum > 31)) {
-    ivec3 paint[4];
-    if (r_sum < 0 || r_sum > 31) {
-      ivec3 c1 = ivec3(Expand4((((b[0] >> 3) & 3) << 2) | (b[0] & 3)),
-                       Expand4(b[1] >> 4), Expand4(b[1] & 15));
-      ivec3 c2 = ivec3(Expand4(b[2] >> 4), Expand4(b[2] & 15), Expand4(b[3] >> 4));
-      int d = kDistance[(((b[3] >> 2) & 3) << 1) | (b[3] & 1)];
-      paint[0] = c1;
-      paint[1] = c2 + d;
-      paint[2] = c2;
-      paint[3] = c2 - d;
-    } else {
-      ivec3 c1 = ivec3(Expand4((b[0] >> 3) & 15),
-                       Expand4(((b[0] & 7) << 1) | ((b[1] >> 4) & 1)),
-                       Expand4((b[1] & 8) | ((b[1] & 3) << 1) | (b[2] >> 7)));
-      ivec3 c2 = ivec3(Expand4((b[2] >> 3) & 15),
-                       Expand4(((b[2] & 7) << 1) | (b[3] >> 7)),
-                       Expand4((b[3] >> 3) & 15));
-      int v1 = (c1.r << 16) | (c1.g << 8) | c1.b;
-      int v2 = (c2.r << 16) | (c2.g << 8) | c2.b;
-      int d = kDistance[(b[3] & 4) | ((b[3] & 1) << 1) | (v1 >= v2 ? 1 : 0)];
-      paint[0] = c1 + d;
-      paint[1] = c1 - d;
-      paint[2] = c2 + d;
-      paint[3] = c2 - d;
-    }
-    for (int t = 0; t < 16; ++t) {
-      int index = (((msb >> t) & 1) << 1) | ((lsb >> t) & 1);
-      texels[t] = (!opaque && index == 2) ? 0u : Rgba(paint[index], 255);
-    }
-    return;
-  }
-
-  if (!individual && (b_sum < 0 || b_sum > 31)) {
-    ivec3 o = ivec3(Expand6((b[0] >> 1) & 63),
-                    Expand7(((b[0] & 1) << 6) | ((b[1] >> 1) & 63)),
-                    Expand6(((b[1] & 1) << 5) | (b[2] & 0x18) | ((b[2] & 3) << 1) |
-                            (b[3] >> 7)));
-    ivec3 h = ivec3(Expand6(((b[3] & 0x7c) >> 1) | (b[3] & 1)), Expand7(b[4] >> 1),
-                    Expand6(((b[4] & 1) << 5) | (b[5] >> 3)));
-    ivec3 v = ivec3(Expand6(((b[5] & 7) << 3) | (b[6] >> 5)),
-                    Expand7(((b[6] & 31) << 2) | (b[7] >> 6)), Expand6(b[7] & 63));
-    for (int x = 0; x < 4; ++x) {
-      for (int y = 0; y < 4; ++y) {
-        texels[x * 4 + y] = Rgba((x * (h - o) + y * (v - o) + 4 * o + 2) >> 2, 255);
-      }
-    }
-    return;
-  }
-
-  ivec3 base[2];
-  if (individual) {
-    base[0] = ivec3(Expand4(b[0] >> 4), Expand4(b[1] >> 4), Expand4(b[2] >> 4));
-    base[1] = ivec3(Expand4(b[0] & 15), Expand4(b[1] & 15), Expand4(b[2] & 15));
-  } else {
-    base[0] = ivec3(Expand5(b[0] >> 3), Expand5(b[1] >> 3), Expand5(b[2] >> 3));
-    base[1] = ivec3(Expand5(r_sum), Expand5(g_sum), Expand5(b_sum));
-  }
-  int tables[2] = int[2](b[3] >> 5, (b[3] >> 2) & 7);
-  bool flipped = (b[3] & 1) != 0;
-  for (int x = 0; x < 4; ++x) {
-    for (int y = 0; y < 4; ++y) {
-      int t = x * 4 + y;
-      int index = (((msb >> t) & 1) << 1) | ((lsb >> t) & 1);
-      int sub = flipped ? (y >= 2 ? 1 : 0) : (x >= 2 ? 1 : 0);
-      if (!opaque && index == 2) {
-        texels[t] = 0u;
-      } else {
-        int modifier = (!opaque && index == 0) ? 0 : kEtc1Modifiers[tables[sub] * 4 + index];
-        texels[t] = Rgba(base[sub] + modifier, 255);
-      }
-    }
-  }
-}
-
-int EacIndex(uint word, int t) {
-  int high = (Byte(word, 2u) << 16) | (Byte(word, 3u) << 8) | Byte(word, 4u);
-  int low = (Byte(word, 5u) << 16) | (Byte(word, 6u) << 8) | Byte(word, 7u);
-  int shift = 45 - t * 3;
-  return shift >= 24 ? (high >> (shift - 24)) & 7 : (low >> shift) & 7;
-}
-
-uint EacValue(uint word, int index, bool is_signed) {
-  int b0 = Byte(word, 0u);
-  int b1 = Byte(word, 1u);
-  int multiplier = b1 >> 4;
-  int modifier = kEacModifiers[(b1 & 15) * 8 + index];
-  int scaled = multiplier != 0 ? modifier * multiplier * 8 : modifier;
-  if (!is_signed) {
-    int value = clamp(b0 * 8 + 4 + scaled, 0, 2047);
-    return uint((value << 5) | (value >> 6));
-  }
-  int base = max(-127, b0 >= 128 ? b0 - 256 : b0);
-  int value = clamp(base * 8 + scaled, -1023, 1023);
-  int magnitude = abs(value);
-  int expanded = (magnitude << 5) | (magnitude >> 5);
-  return uint(value < 0 ? 65536 - expanded : expanded) & 0xFFFFu;
-}
+#include "etc2_common.glsl"
 
 void main() {
   uint bx = gl_GlobalInvocationID.x;
@@ -182,19 +35,7 @@ void main() {
 
   if (job.format <= kRgba8) {
     uint texels[16];
-    if (job.format == kRgba8) {
-      DecodeRgb(word + 2u, false, texels);
-      int alpha_base = Byte(word, 0u);
-      int b1 = Byte(word, 1u);
-      int multiplier = b1 >> 4;
-      for (int t = 0; t < 16; ++t) {
-        int alpha = clamp(alpha_base + kEacModifiers[(b1 & 15) * 8 + EacIndex(word, t)] * multiplier,
-                          0, 255);
-        texels[t] = (texels[t] & 0x00FFFFFFu) | (uint(alpha) << 24u);
-      }
-    } else {
-      DecodeRgb(word, job.format == kRgb8A1, texels);
-    }
+    DecodeColorBlock(word, job.format, texels);
     uint row_words = job.blocks_wide * 4u;
     for (uint y = 0u; y < 4u; ++y) {
       uint row = out_layer + (by * 4u + y) * row_words + bx * 4u;

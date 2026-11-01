@@ -289,6 +289,12 @@ PseudoJavaObject* PseudoObjectFromRef(jobject obj) {
   return nullptr;
 }
 
+bool IsSegmentHandle(jobject obj) {
+  const uintptr_t value = reinterpret_cast<uintptr_t>(obj);
+  return value != 0 && (value & 0xffff) == 0 &&
+         (value >> kJniHandleShift) < kJniSegmentCapacity;
+}
+
 jobject MakeObjectForClass(const std::string& class_name) {
   auto cls = FallbackClassForName(class_name);
   return StoreObject(std::make_unique<PseudoJavaObject>(std::move(cls)));

@@ -1,0 +1,237 @@
+#version 450
+// Scales RGBA8 texels as ScaleRgba does on the CPU: the adaptive upscale of
+// UpscaleRgba (texture_override.cc) when the image grows, otherwise the box
+// resample of ResampleRgba. Keep them in step; the GPU tests compare them.
+// The source is a header (texel width, height, row pitch or 0 for the width,
+// a zero word); the texels start at texels_offset. The output is padded to
+// whole 4x4 blocks by repeating the edge texels.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Source { uint src[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Destination { uint dst[]; };
+
+layout(push_constant) uniform Job {
+  uint unused0;
+  uint blocks_wide;
+  uint blocks_high;
+  uint src_offset;
+  uint width;
+  uint height;
+  uint dst_offset;
+  uint texels_offset;
+} job;
+
+const float kAmount = 1.2;
+const float kRadius = 1.5;
+// Channel distance for "the same flat colour", and the least contrast that
+// makes two of them an edge rather than a smooth patch.
+const float kFlat = 6.0;
+const float kEdge = 3.0 * kFlat;
+const int kTaps = 12;
+
+uint g_sw;
+uint g_sh;
+uint g_pitch;
+
+uint Word(uint x, uint y) { return src[job.texels_offset + y * g_pitch + x]; }
+
+vec4 Straight(uint word) {
+  return vec4(float(word & 0xFFu), float((word >> 8u) & 0xFFu),
+              float((word >> 16u) & 0xFFu), float(word >> 24u));
+}
+
+vec4 Premultiplied(uint x, uint y) {
+  vec4 c = Straight(Word(x, y));
+  return vec4(c.rgb * c.a / 255.0, c.a);
+}
+
+float Cubic(float x) {
+  x = abs(x);
+  if (x < 1.0) {
+    return (1.5 * x - 2.5) * x * x + 1.0;
+  }
+  if (x < 2.0) {
+    return ((-0.5 * x + 2.5) * x - 4.0) * x + 2.0;
+  }
+  return 0.0;
+}
+
+float SourcePosition(uint i, uint source, uint size) {
+  return (float(i) + 0.5) * float(source) / float(size) - 0.5;
+}
+
+int Clamp(int v, uint size) { return clamp(v, 0, int(size) - 1); }
+
+// The bicubic filter of output position i, and that filter after the
+// edge-clamped 7-tap Gaussian of the unsharp mask, as weights over source
+// texels [first, first + kTaps).
+void AxisFilters(uint i, uint source, uint size, out int first,
+                 out float cubic[kTaps], out float blurred[kTaps]) {
+  for (int t = 0; t < kTaps; ++t) {
+    cubic[t] = 0.0;
+    blurred[t] = 0.0;
+  }
+  first = Clamp(int(floor(SourcePosition(uint(Clamp(int(i) - 3, size)),
+                                         source, size))) - 1,
+                source);
+  float sigma = kRadius * float(size) / float(source) / 4.0;
+  float gaussian[7];
+  float sum = 0.0;
+  for (int k = 0; k < 7; ++k) {
+    gaussian[k] = exp(-float((k - 3) * (k - 3)) / (2.0 * sigma * sigma));
+    sum += gaussian[k];
+  }
+  for (int k = 0; k < 7; ++k) {
+    uint j = uint(Clamp(int(i) + k - 3, size));
+    float at = SourcePosition(j, source, size);
+    int base = int(floor(at)) - 1;
+    float tap[kTaps];
+    for (int t = 0; t < kTaps; ++t) {
+      tap[t] = 0.0;
+    }
+    for (int c = 0; c < 4; ++c) {
+      int index = Clamp(base + c, source) - first;
+      if (index >= 0 && index < kTaps) {
+        tap[index] += Cubic(at - float(base + c));
+      }
+    }
+    for (int t = 0; t < kTaps; ++t) {
+      blurred[t] += gaussian[k] / sum * tap[t];
+      if (j == i) {
+        cubic[t] = tap[t];
+      }
+    }
+  }
+}
+
+float Distance(vec4 a, vec4 b) {
+  vec4 d = abs(a - b);
+  return max(max(d.x, d.y), max(d.z, d.w));
+}
+
+// The 3x3 neighbourhood of a source texel holds only two flat colours.
+bool TwoTone(uint x, uint y) {
+  vec4 around[9];
+  int low = 0;
+  int high = 0;
+  float low_sum = 0.0;
+  float high_sum = 0.0;
+  for (int i = 0; i < 9; ++i) {
+    around[i] = Premultiplied(uint(Clamp(int(x) + i % 3 - 1, g_sw)),
+                              uint(Clamp(int(y) + i / 3 - 1, g_sh)));
+    float sum = around[i].x + around[i].y + around[i].z + around[i].w;
+    if (i == 0 || sum < low_sum) {
+      low = i;
+      low_sum = sum;
+    }
+    if (i == 0 || sum > high_sum) {
+      high = i;
+      high_sum = sum;
+    }
+  }
+  bool two = Distance(around[low], around[high]) > kEdge;
+  for (int i = 0; i < 9 && two; ++i) {
+    two = Distance(around[i], around[low]) <= kFlat ||
+          Distance(around[i], around[high]) <= kFlat;
+  }
+  return two;
+}
+
+uint Pack(vec4 v) {
+  uvec4 c = uvec4(clamp(v, 0.0, 255.0));
+  return c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u);
+}
+
+uint Upscale(uint x, uint y) {
+  uint near_x = x * g_sw / job.width;
+  uint near_y = y * g_sh / job.height;
+  if (TwoTone(near_x, near_y)) {
+    return Word(near_x, near_y);
+  }
+  int first_x;
+  int first_y;
+  float cubic_x[kTaps];
+  float cubic_y[kTaps];
+  float blurred_x[kTaps];
+  float blurred_y[kTaps];
+  AxisFilters(x, g_sw, job.width, first_x, cubic_x, blurred_x);
+  AxisFilters(y, g_sh, job.height, first_y, cubic_y, blurred_y);
+  vec4 plain = vec4(0.0);
+  vec4 soft = vec4(0.0);
+  for (int ty = 0; ty < kTaps; ++ty) {
+    if (cubic_y[ty] == 0.0 && blurred_y[ty] == 0.0) {
+      continue;
+    }
+    uint sy = uint(min(first_y + ty, int(g_sh) - 1));
+    vec4 plain_row = vec4(0.0);
+    vec4 soft_row = vec4(0.0);
+    for (int tx = 0; tx < kTaps; ++tx) {
+      if (cubic_x[tx] == 0.0 && blurred_x[tx] == 0.0) {
+        continue;
+      }
+      vec4 p = Premultiplied(uint(min(first_x + tx, int(g_sw) - 1)), sy);
+      plain_row += cubic_x[tx] * p;
+      soft_row += blurred_x[tx] * p;
+    }
+    plain += cubic_y[ty] * plain_row;
+    soft += blurred_y[ty] * soft_row;
+  }
+  // Sharpening stays inside the range of the 2x2 source footprint.
+  uint x0 = uint(Clamp(int(floor(SourcePosition(x, g_sw, job.width))), g_sw));
+  uint y0 = uint(Clamp(int(floor(SourcePosition(y, g_sh, job.height))), g_sh));
+  uint x1 = min(x0 + 1u, g_sw - 1u);
+  uint y1 = min(y0 + 1u, g_sh - 1u);
+  vec4 a = Premultiplied(x0, y0);
+  vec4 b = Premultiplied(x1, y0);
+  vec4 c = Premultiplied(x0, y1);
+  vec4 d = Premultiplied(x1, y1);
+  vec4 low = min(min(a, b), min(c, d));
+  vec4 high = max(max(a, b), max(c, d));
+  vec4 v = min(max(plain + kAmount * (plain - soft), low), high);
+  float scale = v.a > 0.0 ? 255.0 / v.a : 0.0;
+  v.rgb *= scale;
+  return Pack(min(v, vec4(255.0)) + 0.5);
+}
+
+uint Resample(uint x, uint y) {
+  uint x0 = x * g_sw / job.width;
+  uint x1 = max(x0 + 1u, (x + 1u) * g_sw / job.width);
+  uint y0 = y * g_sh / job.height;
+  uint y1 = max(y0 + 1u, (y + 1u) * g_sh / job.height);
+  uvec4 sum = uvec4(0u);
+  for (uint sy = y0; sy < y1; ++sy) {
+    for (uint sx = x0; sx < x1; ++sx) {
+      uint w = Word(sx, sy);
+      sum += uvec4(w & 0xFFu, (w >> 8u) & 0xFFu, (w >> 16u) & 0xFFu, w >> 24u);
+    }
+  }
+  uint count = (y1 - y0) * (x1 - x0);
+  uvec4 c = (sum + count / 2u) / count;
+  return c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u);
+}
+
+void main() {
+  uint px = gl_GlobalInvocationID.x;
+  uint py = gl_GlobalInvocationID.y;
+  uint pitch = job.blocks_wide * 4u;
+  if (px >= pitch || py >= job.blocks_high * 4u) {
+    return;
+  }
+  g_sw = src[job.src_offset];
+  g_sh = src[job.src_offset + 1u];
+  g_pitch = src[job.src_offset + 2u];
+  if (g_pitch == 0u) {
+    g_pitch = g_sw;
+  }
+  uint out_word = job.dst_offset + py * pitch + px;
+  if (g_sw == 0u || g_sh == 0u || job.width == 0u || job.height == 0u) {
+    dst[out_word] = 0u;
+    return;
+  }
+  uint x = min(px, job.width - 1u);
+  uint y = min(py, job.height - 1u);
+  bool grow = job.width >= g_sw && job.height >= g_sh &&
+              (job.width > g_sw || job.height > g_sh);
+  dst[out_word] = grow ? Upscale(x, y) : Resample(x, y);
+}
