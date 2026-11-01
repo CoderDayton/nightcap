@@ -345,6 +345,15 @@ TEST(WebViewHelperPolicyTest, UserAgentTracksValidatedPayloadVersion) {
       " (GlobalDist; GooglePlayStore)");
 }
 
+TEST(WebViewHelperPolicyTest, LogPathDropsQueryAndFragment) {
+  EXPECT_EQ(UriPathForLog("https://www.roblox.com/challenge/cdn/hybrid"
+                          "?generic-challenge-id=secret#frag"),
+            "/challenge/cdn/hybrid");
+  EXPECT_EQ(UriPathForLog("https://www.roblox.com"), "/");
+  EXPECT_EQ(UriPathForLog(nullptr), "none");
+  EXPECT_EQ(UriPathForLog("not a uri"), "none");
+}
+
 TEST(WebViewHelperPolicyTest, KeepsNativeUserAgentForVerificationRoutes) {
   for (const char* url : {
            "https://www.roblox.com/login", "https://roblox.com/Login/",

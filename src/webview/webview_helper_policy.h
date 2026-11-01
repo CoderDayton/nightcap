@@ -54,6 +54,8 @@ std::optional<std::string> GdkDisableWithoutGl(bool software_compositing,
 
 const char* AndroidBridgeSource();
 std::string BuildRobloxAndroidUserAgent();
+// The URI's path for logs, without query or fragment (they can carry tokens).
+std::string UriPathForLog(const char* uri);
 bool IsBrowserLoginUrl(std::string_view url);
 bool IsAndroidStorePurchaseNavigation(const char* uri);
 enum class StorePurchaseNavigation {

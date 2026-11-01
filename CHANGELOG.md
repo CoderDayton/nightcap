@@ -45,6 +45,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Roblox verification windows, such as the press-and-hold check when signing up or joining a game, no longer
+  reload themselves right after they appear. Nightcap reloaded the page when Roblox changed the window,
+  which cut off the check while it loaded and could leave the window blank. Roblox's Android app ignores
+  the address in that change, and Nightcap now does too.
 - The Settings window no longer shows a second Nightcap icon or missing page icons on KDE with the
   Breeze icon theme.
 - Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy
