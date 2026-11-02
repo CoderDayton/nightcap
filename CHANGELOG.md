@@ -45,6 +45,7 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- The camera no longer flicks when you let go of the right mouse button after turning it.
 - Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
   as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
 - Roblox verification windows, such as the press-and-hold check when signing up or joining a game, no longer

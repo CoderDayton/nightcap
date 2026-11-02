@@ -975,10 +975,13 @@ bool ActivateWindowEventLifecycles() {
   {
     std::lock_guard<std::mutex> lock(g_pointer_capture_owner_mutex);
     g_pointer_capture_owner = std::make_shared<WindowPointerCaptureOwner>(
-        g_pointer_capture_backend.get(), [] {
+        g_pointer_capture_backend.get(),
+        [] {
           return static_cast<std::uint64_t>(
               g_real_swap_count.load(std::memory_order_relaxed));
-        });
+        },
+        // SDL's clock, so releases compare with event timestamps.
+        [] { return static_cast<std::uint64_t>(SDL_GetTicks()); });
   }
   fprintf(stderr,
           "  [input] SDL event pump target=%llu Hz raw-motion, no smoothing\n",
@@ -2522,12 +2525,20 @@ bool PumpEvents() {
     }
     if (converted && !fullscreen_shortcut) {
       if (event.type == SDL_EVENT_MOUSE_MOTION) {
-        // Before coalescing, so each SDL event is traced as it arrived.
+        // Before coalescing, so each SDL event is traced as it arrived, and
+        // before the release delta is dropped, so the trace shows it.
         static RightDragMotionTrace drag_trace;
-        if (const auto* motion = std::get_if<platform::MouseMotionEvent>(
+        if (auto* motion = std::get_if<platform::MouseMotionEvent>(
                 &platform_event.payload)) {
           for (const std::string& line : drag_trace.Observe(*motion)) {
             fputs(line.c_str(), stderr);
+          }
+          if (!motion->relative && g_pointer_capture_owner != nullptr &&
+              g_pointer_capture_owner->TakeCaptureReleaseMotion(
+                  platform_event.timestamp_ns / 1000000ULL,
+                  motion->delta_x != 0.0f || motion->delta_y != 0.0f)) {
+            motion->delta_x = 0.0f;
+            motion->delta_y = 0.0f;
           }
         }
         if (!has_pending_motion) {

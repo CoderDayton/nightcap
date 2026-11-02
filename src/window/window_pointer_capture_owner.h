@@ -81,9 +81,17 @@ class WindowPointerCaptureOwner final {
   // key so the subsequent RMB release preserves the intentional lock.
   bool OnShiftKeyPressed(bool text_input_active);
   bool NeedsRightButtonReleaseRecovery(bool observed_pressed) const;
-  // Mirrors Android's captured-pointer listener: the motion that releases a
-  // transient capture is consumed instead of leaking one final camera delta.
-  bool ShouldDispatchMouseMotion();
+  // A capture's end warps the pointer to its anchor, and SDL reports that as
+  // motion whose delta must not reach Roblox. True once, for the first moving
+  // event stamped (on the owner's clock) at or after the release.
+  bool TakeCaptureReleaseMotion(std::uint64_t event_ms, bool moved) {
+    if (!capture_release_motion_pending_ || !moved ||
+        event_ms < capture_release_ms_) {
+      return false;
+    }
+    capture_release_motion_pending_ = false;
+    return true;
+  }
   // Focus loss reveals the system cursor. Regaining focus must re-apply the
   // pointer state immediately: Pump() runs at the top of the frame, before
   // SDL_PollEvent delivers the focus event, so deferring the re-apply leaves
@@ -149,7 +157,8 @@ class WindowPointerCaptureOwner final {
   bool native_lock_was_active_before_right_drag_ = false;
   bool shift_key_pressed_during_right_drag_ = false;
   bool wait_for_native_unlock_after_right_drag_ = false;
-  bool discard_next_motion_after_right_drag_ = false;
+  bool capture_release_motion_pending_ = false;
+  std::uint64_t capture_release_ms_ = 0;
   bool native_unlock_pending_ = false;
   std::uint64_t native_unlock_frame_ = 0;
   std::uint64_t native_unlock_ms_ = 0;
