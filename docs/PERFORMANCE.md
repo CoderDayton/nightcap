@@ -129,16 +129,24 @@ runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
-`graphics.small_texture_upscale` (Small texture upscale in the settings
-window, `MOCKTAIL_SMALL_TEXTURE_UPSCALE` for one run) gives ETC2 textures of
-64px or smaller sharper levels above their own: one at 2, two at 4, upscaled
-from the texture's largest level. The texture's own levels keep their size
-and the texels Roblox sent, so the card picks them at normal draw size and
-the sharper ones only when the texture is drawn larger. 4 is 16 times the
-pixels per affected texture. The default is 1 (off). In the config file,
-any value other than 1, 2 or 4, such as the retired `auto` or `adaptive`,
-reads as 1. The variable also takes 8, and rounds other numbers down to a
-power of two.
+ETC2 colour textures of 32px or smaller get two sharper levels above their
+own, 4× upscaled from the texture's largest level. A desktop screen draws
+these, such as crosshairs, cursors and icons, larger than a phone does. The
+texture's own levels keep their size and the texels Roblox sent, so the card
+picks them at normal draw size and the sharper ones only when the texture is
+drawn larger. 4× is 16 times the pixels per affected texture: a 32px texture
+grows from 4 KiB to 64 KiB uncompressed.
+
+A texture of 64px or less with an override file is sized at least to its
+PNG: the smaller axis's ratio, rounded down to a power of two, up to 8×. A
+128px override for a 64px texture shows at 2×. The factor applies to every
+colour texture of that size, not only the one the override replaces, which
+is why larger textures don't take it. The session log names each size once.
+
+`MOCKTAIL_SMALL_TEXTURE_UPSCALE` sets the factor for one run: 1 turns it off
+for textures without an override, and 2, 4 or 8 apply, with other numbers
+rounded down to a power of two. There is no config setting; an old
+`graphics.small_texture_upscale` is ignored.
 
 At startup Nightcap times the card's BC7 encoder on a few textures, minus the
 round trip of an empty submit. An RTX 4090 measures about 9 ns per block;
@@ -156,7 +164,7 @@ startup measurement.
 The session log shows the measured speed once:
 
 ```text
-[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale 1x; encode budget on
+[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale 4x; encode budget on
 ```
 
 It also shows, every 5 seconds while textures are created, how many landed at
@@ -194,7 +202,7 @@ device without that feature decodes inline as before.
 Set it for one run:
 
 ```bash
-MOCKTAIL_SMALL_TEXTURE_UPSCALE=4 mocktail
+MOCKTAIL_SMALL_TEXTURE_UPSCALE=1 mocktail
 ```
 
 ## Native code in the menus

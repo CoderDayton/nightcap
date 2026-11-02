@@ -342,6 +342,42 @@ TEST(TextureOverrideTest, SizedNameLimitsWhichTexturesMayBeReplaced) {
   EXPECT_FALSE(TextureOverrides("", "").MayReplace(32, 32));
 }
 
+// A 128 px override for a 32 px texture asks for it drawn 4x.
+TEST(TextureOverrideTest, UpscaleFollowsTheOverridePngSize) {
+  TempDir dir;
+  ASSERT_FALSE(dir.path().empty());
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(1) + "_32x32.png",
+                           Gradient(128, 128)));
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(2) + "_48x48.png",
+                           Gradient(96, 96)));
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(3) + "_40x40.png",
+                           Gradient(150, 150)));
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(4) + "_16x16.png",
+                           Gradient(8, 8)));
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(5) + "_4x4.png",
+                           Gradient(64, 64)));
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(6) + "_8x8.png",
+                           Gradient(16, 64)));
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(7) + "_65x65.png",
+                           Gradient(260, 260)));
+  TextureOverrides overrides(dir.path(), "");
+  EXPECT_EQ(overrides.UpscaleFor(32, 32), 4u);
+  EXPECT_EQ(overrides.UpscaleFor(48, 48), 2u);
+  // Rounded down to a power of two.
+  EXPECT_EQ(overrides.UpscaleFor(40, 40), 2u);
+  // Never shrinks, and stops at 8x.
+  EXPECT_EQ(overrides.UpscaleFor(16, 16), 1u);
+  EXPECT_EQ(overrides.UpscaleFor(4, 4), 8u);
+  // The smaller axis decides.
+  EXPECT_EQ(overrides.UpscaleFor(8, 8), 2u);
+  EXPECT_EQ(overrides.UpscaleFor(64, 64), 1u);
+  // Past kOverrideUpscaleMaxExtent.
+  EXPECT_EQ(overrides.UpscaleFor(65, 65), 1u);
+
+  TempDir dump;
+  EXPECT_EQ(TextureOverrides("", dump.path()).UpscaleFor(32, 32), 1u);
+}
+
 TEST(TextureOverrideTest, DumpWritesOnePngPerHash) {
   TempDir dir;
   ASSERT_FALSE(dir.path().empty());

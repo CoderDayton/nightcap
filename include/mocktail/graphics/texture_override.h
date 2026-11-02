@@ -58,6 +58,10 @@ void UpscaleRgba(const std::uint8_t* source, std::uint32_t source_width,
 // directory, every level-0 texture seen is written once as
 // <dump_dir>/<hash>_<width>x<height>.png so the hash can be found.
 // Thread-safe.
+// Overrides are matched by size, so their upscale reaches every texture of
+// that size; only textures up to this extent take it, to bound the memory.
+inline constexpr std::uint32_t kOverrideUpscaleMaxExtent = 64;
+
 class TextureOverrides {
  public:
   TextureOverrides(std::string override_dir, std::string dump_dir);
@@ -69,6 +73,11 @@ class TextureOverrides {
   // Whether a texture of this original size could be replaced or dumped,
   // which needs its decoded texels on the CPU.
   bool MayReplace(std::uint32_t width, std::uint32_t height) const;
+  // How much larger than a texture of this size its override PNGs are: the
+  // smaller axis's ratio rounded down to a power of two, 1 to 8. 1 when no
+  // override is sized for it.
+  std::uint32_t UpscaleFor(std::uint32_t width, std::uint32_t height) const;
+  bool upscales() const { return !upscales_.empty(); }
 
   // Null when no override file exists; lookups are cached either way.
   std::shared_ptr<const RgbaImage> Lookup(std::uint64_t hash);
@@ -80,6 +89,7 @@ class TextureOverrides {
   std::string dump_dir_;
   std::unordered_map<std::uint64_t, std::string> files_;
   std::unordered_set<std::uint64_t> sizes_;
+  std::unordered_map<std::uint64_t, std::uint32_t> upscales_;
   std::mutex mutex_;
   std::unordered_map<std::uint64_t, std::shared_ptr<const RgbaImage>> cache_;
   std::unordered_set<std::uint64_t> dumped_;

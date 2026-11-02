@@ -107,9 +107,10 @@ Release notes on GitHub are taken from the matching section here.
   texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
   and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
   `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
-- Small textures are no longer upscaled by default; they show at the size Roblox sends. The Small
-  texture upscale setting (`graphics.small_texture_upscale`) offers 1× (the default), 2× or 4×; any
-  other saved value, such as `adaptive` or `auto`, reads as 1×.
+- Textures of 32 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
+  screen draws them larger than a phone does. Larger textures are left at the size Roblox sends. An
+  override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×.
+  The Small texture upscale setting is gone; an old `graphics.small_texture_upscale` is ignored.
   Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
   instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while
   textures load it keeps new ones uncompressed once encoding would take more than a tenth of the GPU's

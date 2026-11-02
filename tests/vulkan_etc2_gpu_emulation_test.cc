@@ -2133,10 +2133,10 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtTheSetFactor) {
     // An 8192x8192 chain, 5.6 million blocks, costs several bursts even on
     // an RTX 4090 and leaves the budget in debt for longer than the test.
     CreatedBytes(emulation, vk.device, Etc2ImageInfo(8192, 14), &images);
-    const VkImageCreateInfo small = Etc2ImageInfo(64, 7);
+    const VkImageCreateInfo small = Etc2ImageInfo(32, 6);
     VkDeviceSize compressed = 0;
     VkDeviceSize decoded = 0;
-    ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
+    ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, small.extent, 6, 1,
                                     kTestUpscale, &compressed, &decoded));
     EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
     for (VkImage image : images) {
@@ -2397,9 +2397,9 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPartOfAMipIntoAnUpscaledImage) {
                              vk.get_device_proc_addr, false, true);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    constexpr std::uint32_t kBig = 128;
-    constexpr std::uint32_t kSmall = 32;
-    constexpr std::uint32_t kOffset = 16;
+    constexpr std::uint32_t kBig = 64;
+    constexpr std::uint32_t kSmall = 16;
+    constexpr std::uint32_t kOffset = 8;
     const std::uint32_t host = kSmall * kTestUpscale;
     const TestImage big = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 2);

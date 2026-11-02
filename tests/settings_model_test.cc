@@ -159,7 +159,6 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
            "graphics.vsync", "graphics.texture_compression",
-           "graphics.small_texture_upscale",
            "performance.multithreaded_rendering",
            "performance.physics_worker_mode", "performance.memory_limit_mb",
            "performance.gamemode", "performance.mangohud",
@@ -256,17 +255,6 @@ TEST_F(SettingsModelTest, AutomaticUpdatesIsASwitchThatIsOnUntilTurnedOff) {
     const runtime::RuntimeConfigLoadResult loaded = LoadFile();
     EXPECT_TRUE(loaded) << loaded.error;
   }
-}
-
-TEST_F(SettingsModelTest, OffersOnlyFixedUpscaleFactors) {
-  const Setting& upscale = Find("graphics.small_texture_upscale");
-  ASSERT_EQ(upscale.choices.size(), 3u);
-  EXPECT_EQ(upscale.choices[0].value, "1");
-  EXPECT_EQ(upscale.choices[1].value, "2");
-  EXPECT_EQ(upscale.choices[2].value, "4");
-  // The loader reads the retired values as 1.
-  EXPECT_EQ(ChoiceIndex(upscale, "auto"), ChoiceIndex(upscale, "1"));
-  EXPECT_EQ(ChoiceIndex(upscale, "adaptive"), ChoiceIndex(upscale, "1"));
 }
 
 bool NeedsFixedProxy(std::string_view key) {

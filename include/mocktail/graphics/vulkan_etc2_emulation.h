@@ -56,14 +56,18 @@ bool Etc2SupportAdvertised();
 // decoded, anything else (or unset) transcodes.
 bool Etc2BcTranscodeEnabled(const char* value);
 
-// Factor applied to emulated ETC2 colour images no larger than
-// kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
-// 1 leaves them alone; 2, 4 or 8 add log2(factor) levels above the image's
-// own, upscaled from level 0, so a texture override can carry more detail
-// than the original. Numeric values are clamped to 1..8 and rounded down to
-// a power of two; anything else, unset included, is 1.
-inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
+// Factor for ETC2 colour images up to kSmallTextureMaxExtent: 1 leaves them;
+// 2, 4 or 8 add log2(factor) levels above the image's own, upscaled from
+// level 0. 4 unless MOCKTAIL_SMALL_TEXTURE_UPSCALE holds a number, which is
+// clamped to 1..8 and rounded down to a power of two.
+inline constexpr std::uint32_t kSmallTextureMaxExtent = 32;
 std::uint32_t SmallTextureUpscale(const char* value);
+
+// `upscale` up to kSmallTextureMaxExtent, or `override_upscale` up to
+// kOverrideUpscaleMaxExtent, whichever is larger.
+std::uint32_t SmallTextureScale(std::uint32_t width, std::uint32_t height,
+                                std::uint32_t upscale,
+                                std::uint32_t override_upscale);
 
 // Every mip level and layer, plus the levels a `scale` above 1 adds.
 VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,

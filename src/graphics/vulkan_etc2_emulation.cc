@@ -177,7 +177,7 @@ bool Etc2SupportAdvertised() {
 
 std::uint32_t SmallTextureUpscale(const char* value) {
   if (value == nullptr || value[0] < '0' || value[0] > '9') {
-    return 1;
+    return 4;
   }
   const long parsed = std::strtol(value, nullptr, 10);
   if (parsed < 1) {
@@ -185,6 +185,16 @@ std::uint32_t SmallTextureUpscale(const char* value) {
   }
   return 1u << TopLevelCount(
              parsed > 8 ? 8 : static_cast<std::uint32_t>(parsed));
+}
+
+std::uint32_t SmallTextureScale(std::uint32_t width, std::uint32_t height,
+                                std::uint32_t upscale,
+                                std::uint32_t override_upscale) {
+  const std::uint32_t extent = std::max(width, height);
+  const std::uint32_t small = extent <= kSmallTextureMaxExtent ? upscale : 1;
+  const std::uint32_t overridden =
+      extent <= kOverrideUpscaleMaxExtent ? override_upscale : 1;
+  return std::max(small, overridden);
 }
 
 VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
@@ -1592,6 +1602,8 @@ struct VulkanEtc2Emulation::State {
   TextureOverrides overrides = TextureOverrides::FromEnvironment();
   const std::uint32_t upscale =
       SmallTextureUpscale(std::getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"));
+  // Whether any image can have top levels.
+  const bool upscales = upscale > 1 || overrides.upscales();
   const bool encode_budget =
       OnUnlessZero(std::getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"));
 
@@ -3170,10 +3182,12 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   if (IsColorFormat(format.etc_format) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
       create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
-      create_info->arrayLayers == 1 && create_info->extent.depth == 1 &&
-      create_info->extent.width <= kSmallTextureMaxExtent &&
-      create_info->extent.height <= kSmallTextureMaxExtent) {
-    scale = state_->upscale;
+      create_info->arrayLayers == 1 && create_info->extent.depth == 1) {
+    scale = SmallTextureScale(
+        create_info->extent.width, create_info->extent.height,
+        state_->upscale,
+        state_->overrides.UpscaleFor(create_info->extent.width,
+                                     create_info->extent.height));
   }
   const bool may_override =
       IsColorFormat(format.etc_format) && create_info->arrayLayers == 1 &&
@@ -3369,7 +3383,7 @@ VkResult VulkanEtc2Emulation::CreateSampler(
   // Both clamps count the application's levels; an unclamped maxLod and a
   // minLod of 0 need no shift.
   if (result != VK_SUCCESS || !dev->emulated || create_info == nullptr ||
-      state_->upscale == 1 ||
+      !state_->upscales ||
       (create_info->minLod <= 0 && create_info->maxLod >= VK_LOD_CLAMP_NONE)) {
     return result;
   }
@@ -3538,7 +3552,7 @@ VkResult VulkanEtc2Emulation::CreateDescriptorUpdateTemplate(
   const VkResult result = dev->create_update_template(device, create_info,
                                                       allocator, update_template);
   if (result != VK_SUCCESS || !dev->emulated || create_info == nullptr ||
-      state_->upscale == 1) {
+      !state_->upscales) {
     return result;
   }
   State::TemplateImages images;
