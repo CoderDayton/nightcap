@@ -19,6 +19,7 @@ mkdir -p -- "${TEMP_DIR}/fixtures"
 "${CXX}" -std=c++17 -I"${ROOT}/include" -x c++ - \
   "${ROOT}/src/graphics/bionic_egl_bridge.cc" \
   "${ROOT}/src/runtime/supported_launch_policy.cc" \
+  "${ROOT}/src/runtime/process_launch_policy.cc" \
   "${ROOT}/src/update/readiness_canary.cc" -ldl -pthread \
   -o "${TEMP_DIR}/fixtures/mocktail" <<'EOF'
 #include <cstdlib>
