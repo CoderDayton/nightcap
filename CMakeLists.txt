@@ -229,6 +229,7 @@ add_library(mocktail_update STATIC
   src/update/apk_provider.cc
   src/update/apk_signature.cc
   src/update/apkpure_provider.cc
+  src/update/background_update_process.cc
   src/update/candidate_approval.cc
   src/update/compatibility_catalog.cc
   src/update/http_download.cc
@@ -236,6 +237,7 @@ add_library(mocktail_update STATIC
   src/update/payload_integrity.cc
   src/update/payload_store.cc
   src/update/readiness_canary.cc
+  src/update/state_file.cc
   src/update/unsafe_latest_runner.cc
   src/update/update_config.cc
   src/update/update_coordinator.cc
@@ -542,6 +544,7 @@ add_library(mocktail_window STATIC
   src/window/window_game_surface_bridge.cc
   src/window/window_pointer_capture_owner.cc
   src/window/window_resize_readiness_gate.cc
+  src/window/right_drag_motion_trace.cc
   src/window/window_state_store.cc
   src/window/window_surface_lifecycle.cc
   src/window/window_text_input_owner.cc

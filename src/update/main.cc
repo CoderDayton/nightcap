@@ -14,6 +14,7 @@
 #include "update/apk_bundle.h"
 #include "update/apk_signature.h"
 #include "update/apkpure_provider.h"
+#include "update/background_update_process.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
 #include "update/payload_store.h"
@@ -168,7 +169,7 @@ void Usage(std::ostream& output) {
   output << "Usage: mocktail_updater COMMAND [OPTIONS]\n\n"
             "Commands:\n"
             "  update [--startup-preflight] [--no-latest-check] "
-            "[--skip-canary]\n"
+            "[--skip-canary] [--download-only]\n"
             "  check-latest\n"
             "  verify-current\n"
             "  verify-apk APK\n"
@@ -336,6 +337,8 @@ int main(int argc, char** argv) {
       request.startup_preflight = true;
     } else if (option == "--no-latest-check") {
       request.check_latest = false;
+    } else if (option == "--download-only") {
+      request.download_only = true;
     } else if (option == "--skip-canary") {
       request.run_canary = false;
     } else if (option == "--force-run-latest") {
@@ -346,10 +349,19 @@ int main(int argc, char** argv) {
     }
   }
   if (request.force_run_latest &&
-      (request.startup_preflight || !request.check_latest || !request.run_canary)) {
+      (request.startup_preflight || request.download_only ||
+       !request.check_latest || !request.run_canary)) {
     std::cerr << "[native-updater] --force-run-latest cannot be combined with "
-                 "--startup-preflight, --no-latest-check, or --skip-canary\n";
+                 "--startup-preflight, --download-only, --no-latest-check, or "
+                 "--skip-canary\n";
     return 2;
+  }
+  if (request.download_only) {
+    int parent = 0;
+    if (const auto value = Environment("MOCKTAIL_UPDATE_PARENT_PID")) {
+      std::from_chars(value->data(), value->data() + value->size(), parent);
+    }
+    if (!mocktail::update::EnterBackgroundUpdateMode(parent)) return 0;
   }
   if (request.force_run_latest) {
     std::cerr << "[native-updater] WARNING: latest Roblox will run once without "

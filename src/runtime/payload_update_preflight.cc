@@ -1,8 +1,7 @@
 #include "runtime/payload_update_preflight.h"
 
-#include "runtime/helper_environment.h"
-
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -17,6 +16,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "runtime/helper_environment.h"
 
 extern char** environ;
 
@@ -476,6 +477,78 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     }
   }
   return result;
+}
+
+BackgroundPayloadUpdate::~BackgroundPayloadUpdate() { Stop(); }
+
+void BackgroundPayloadUpdate::Start(const Environment& environment,
+                                    const RuntimePaths& paths,
+                                    std::chrono::milliseconds interval) {
+  if (worker_.joinable() || interval.count() <= 0 ||
+      Enabled(environment, "MOCKTAIL_SKIP_UPDATE_CHECK") ||
+      Enabled(environment, "MOCKTAIL_ISOLATED_CANARY") ||
+      environment.HasNonEmpty("ROBLOX_LIB_PATH"))
+    return;
+  const auto helper = UpdateHelper(environment);
+  if (helper.empty()) return;
+  auto child_environment = ChildEnvironment(paths, false);
+  child_environment.emplace_back("MOCKTAIL_UPDATE_PARENT_PID=" +
+                                 std::to_string(getpid()));
+  stopped_ = false;
+  worker_ =
+      std::thread([this, helper, interval,
+                   child_environment = std::move(child_environment)]() mutable {
+        std::vector<char*> environment_pointers;
+        for (auto& entry : child_environment)
+          environment_pointers.push_back(entry.data());
+        environment_pointers.push_back(nullptr);
+        std::string executable = helper.string();
+        char update[] = "update";
+        char download_only[] = "--download-only";
+        char* arguments[] = {executable.data(), update, download_only, nullptr};
+        // Ignored signals and the mask survive exec; Stop() relies on SIGTERM.
+        posix_spawnattr_t attributes;
+        const bool attributes_ready = posix_spawnattr_init(&attributes) == 0;
+        if (attributes_ready) {
+          sigset_t all;
+          sigset_t none;
+          sigfillset(&all);
+          sigemptyset(&none);
+          posix_spawnattr_setsigdefault(&attributes, &all);
+          posix_spawnattr_setsigmask(&attributes, &none);
+          posix_spawnattr_setflags(&attributes,
+                                   POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+        }
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!wake_.wait_for(lock, interval, [this] { return stopped_; })) {
+          pid_t process = -1;
+          const int status = posix_spawn(
+              &process, executable.c_str(), nullptr,
+              attributes_ready ? &attributes : nullptr, arguments,
+              environment_pointers.data());
+          if (status != 0) continue;
+          child_ = process;
+          while (child_ > 0) {
+            const pid_t exited = waitpid(child_, nullptr, WNOHANG);
+            if (exited == child_ || (exited < 0 && errno == ECHILD)) {
+              child_ = -1;
+            } else {
+              wake_.wait_for(lock, std::chrono::milliseconds(50));
+            }
+          }
+        }
+        if (attributes_ready) posix_spawnattr_destroy(&attributes);
+      });
+}
+
+void BackgroundPayloadUpdate::Stop() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopped_ = true;
+    if (child_ > 0) kill(child_, SIGTERM);
+  }
+  wake_.notify_all();
+  if (worker_.joinable()) worker_.join();
 }
 
 }  // namespace runtime

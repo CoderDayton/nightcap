@@ -28,6 +28,7 @@
 #include "window/host_surface_commit_gate.h"
 #include "window/input_pump_pacer.h"
 #include "window/main_thread_command_gate.h"
+#include "window/right_drag_motion_trace.h"
 #include "window/roblox_fullscreen_menu_request_gate.h"
 #include "window/video_driver_policy.h"
 #include "window/vulkan_present_progress_gate.h"
@@ -2521,6 +2522,14 @@ bool PumpEvents() {
     }
     if (converted && !fullscreen_shortcut) {
       if (event.type == SDL_EVENT_MOUSE_MOTION) {
+        // Before coalescing, so each SDL event is traced as it arrived.
+        static RightDragMotionTrace drag_trace;
+        if (const auto* motion = std::get_if<platform::MouseMotionEvent>(
+                &platform_event.payload)) {
+          for (const std::string& line : drag_trace.Observe(*motion)) {
+            fputs(line.c_str(), stderr);
+          }
+        }
         if (!has_pending_motion) {
           pending_motion = platform_event;
           has_pending_motion = true;

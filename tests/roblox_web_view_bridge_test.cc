@@ -668,9 +668,12 @@ TEST(RobloxWebViewBridgeTest,
       env->GetMethodID(callback_class, "run", "(Ljava/lang/String;)V");
 
   jstring mutation_json = env->NewStringUTF(
-      R"({"title":"Servers","searchParams":{"searchType":"places"},"isVisible":false,"showDomainAsTitle":true})");
+      R"({"url":"https://www.roblox.com/challenge/cdn/hybrid","title":"Servers","searchParams":{"searchType":"places"},"isVisible":false,"showDomainAsTitle":true})");
   env->CallVoidMethod(probe.subscribed_callbacks[1], run, mutation_json);
   ASSERT_EQ(probe.mutation_dispatches, 1);
+  // Roblox's Android client ignores the URL in mutateWindow; reloading here
+  // restarted challenge pages mid-load.
+  EXPECT_FALSE(probe.mutation.url.has_value());
   ASSERT_TRUE(probe.mutation.title.has_value());
   EXPECT_EQ(*probe.mutation.title, "Servers");
   ASSERT_TRUE(probe.mutation.search_type.has_value());

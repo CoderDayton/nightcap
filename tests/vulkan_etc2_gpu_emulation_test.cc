@@ -36,30 +36,26 @@ using mocktail::testing::TestCommands;
 using mocktail::testing::VulkanTestDevice;
 
 // A fixed upscale and no encode budget, so expectations hold on any GPU.
+constexpr std::uint32_t kTestUpscale = 4;
 class FixedUpscaleEnvironment : public ::testing::Environment {
  public:
   void SetUp() override {
-    setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1);
+    setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE",
+           std::to_string(kTestUpscale).c_str(), 1);
     setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1);
   }
 };
 [[maybe_unused]] ::testing::Environment* const kFixedUpscale =
     ::testing::AddGlobalTestEnvironment(new FixedUpscaleEnvironment);
 
-// Adaptive upscale with the encode budget on for one test. The fixed setting
-// comes back even when an assertion returns early.
-class ScopedAdaptiveUpscale final {
+// The encode budget on for one test. It goes back off even when an
+// assertion returns early.
+class ScopedEncodeBudget final {
  public:
-  ScopedAdaptiveUpscale() {
-    unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
-    unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET");
-  }
-  ~ScopedAdaptiveUpscale() {
-    setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1);
-    setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1);
-  }
-  ScopedAdaptiveUpscale(const ScopedAdaptiveUpscale&) = delete;
-  ScopedAdaptiveUpscale& operator=(const ScopedAdaptiveUpscale&) = delete;
+  ScopedEncodeBudget() { unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET"); }
+  ~ScopedEncodeBudget() { setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1); }
+  ScopedEncodeBudget(const ScopedEncodeBudget&) = delete;
+  ScopedEncodeBudget& operator=(const ScopedEncodeBudget&) = delete;
 };
 
 struct UploadCase {
@@ -872,7 +868,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesASmallUploadIntoBc7) {
                              vk.get_device_proc_addr, false, true);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const std::uint32_t host = 32 * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = 32 * kTestUpscale;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 2);
     // Two top levels, 128 and 64, above the image's own 32 and 16.
@@ -1535,7 +1531,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAChainUploadedInOneCopyIntoBc7) {
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
     constexpr std::uint32_t kSize = 32;
     constexpr std::uint32_t kMips = 6;
-    const std::uint32_t host = kSize * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = kSize * kTestUpscale;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSize, kMips);
     std::vector<VkBufferImageCopy> regions;
@@ -1781,7 +1777,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesALaterMipIntoBc7) {
                              vk.get_device_proc_addr, false, true);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const std::uint32_t host = 32 * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = 32 * kTestUpscale;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 2);
     const HostBuffer level0 = CreateRandomEtcSource(&emulation, vk, 32);
@@ -1886,7 +1882,7 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesSmallUploadsOnTheGpu) {
                              vk.get_device_proc_addr, false, false);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const std::uint32_t host = 32 * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = 32 * kTestUpscale;
     const TestImage image = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 2);
     const HostBuffer level0 = CreateRandomEtcSource(&emulation, vk, 32);
@@ -2091,59 +2087,6 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsRobloxSmallTexturesCompressed) {
   CloseTestDevices(&devices);
 }
 
-TEST(VulkanEtc2GpuEmulationTest, AdaptiveUpscaleStepsDownOnceTheBudgetIsSpent) {
-  std::vector<VulkanTestDevice> devices = OpenTestDevices();
-  if (devices.empty()) {
-    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
-  }
-  const ScopedAdaptiveUpscale adaptive;
-  for (VulkanTestDevice& vk : devices) {
-    SCOPED_TRACE(vk.name);
-    if (!vk.bc_textures) {
-      continue;
-    }
-    VulkanEtc2Emulation emulation;
-    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
-                             vk.get_device_proc_addr, false, true);
-    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
-    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    VkImageCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    info.imageType = VK_IMAGE_TYPE_2D;
-    info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
-    info.extent = {64, 64, 1};
-    info.mipLevels = 7;
-    info.arrayLayers = 1;
-    info.samples = VK_SAMPLE_COUNT_1_BIT;
-    info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    // Creating chains back to back outruns any burst within a few thousand.
-    std::vector<VkImage> images;
-    VkDeviceSize first = 0;
-    bool stepped_down = false;
-    for (int i = 0; i < 4000 && !stepped_down; ++i) {
-      const VkDeviceSize before = emulation.TextureBytes().decoded;
-      VkImage image = VK_NULL_HANDLE;
-      ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
-                VK_SUCCESS);
-      images.push_back(image);
-      const VkDeviceSize bytes = emulation.TextureBytes().decoded - before;
-      if (i == 0) {
-        first = bytes;
-      } else {
-        stepped_down = bytes != first;
-      }
-    }
-    EXPECT_TRUE(stepped_down) << images.size() << " images";
-    for (VkImage image : images) {
-      emulation.DestroyImage(vk.device, image, nullptr);
-    }
-    emulation.DestroyDevice(vk.device);
-  }
-  CloseTestDevices(&devices);
-}
-
 VkImageCreateInfo Etc2ImageInfo(std::uint32_t size, std::uint32_t mips) {
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -2170,46 +2113,12 @@ VkDeviceSize CreatedBytes(VulkanEtc2Emulation& emulation, VkDevice device,
   return emulation.TextureBytes().decoded - before;
 }
 
-TEST(VulkanEtc2GpuEmulationTest, AdaptiveUpscaleSizesDecodedSmallTextures) {
+TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtTheSetFactor) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
     GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
   }
-  const ScopedAdaptiveUpscale adaptive;
-  for (VulkanTestDevice& vk : devices) {
-    SCOPED_TRACE(vk.name);
-    // Texture compression off: small textures are decoded and scaled only.
-    VulkanEtc2Emulation emulation;
-    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
-                             vk.get_device_proc_addr, false, false);
-    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
-    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const Etc2GpuSpeed speed = emulation.GpuSpeed(vk.device);
-    EXPECT_EQ(speed.transcode_ns, 0.0);
-    EXPECT_GT(speed.upscale_ns, 0.0);
-    const VkImageCreateInfo small = Etc2ImageInfo(64, 7);
-    VkDeviceSize compressed = 0;
-    VkDeviceSize decoded = 0;
-    ASSERT_TRUE(Etc2ImageByteCounts(
-        EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
-        AdaptiveSmallTextureUpscale(speed.upscale_ns, speed.transcode_ns),
-        &compressed, &decoded));
-    std::vector<VkImage> images;
-    EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
-    for (VkImage image : images) {
-      emulation.DestroyImage(vk.device, image, nullptr);
-    }
-    emulation.DestroyDevice(vk.device);
-  }
-  CloseTestDevices(&devices);
-}
-
-TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtItsOwnSize) {
-  std::vector<VulkanTestDevice> devices = OpenTestDevices();
-  if (devices.empty()) {
-    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
-  }
-  const ScopedAdaptiveUpscale adaptive;
+  const ScopedEncodeBudget budget;
   for (VulkanTestDevice& vk : devices) {
     SCOPED_TRACE(vk.name);
     if (!vk.bc_textures) {
@@ -2228,11 +2137,33 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtItsOwnSize) {
     VkDeviceSize compressed = 0;
     VkDeviceSize decoded = 0;
     ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
-                                    1, &compressed, &decoded));
+                                    kTestUpscale, &compressed, &decoded));
     EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
     for (VkImage image : images) {
       emulation.DestroyImage(vk.device, image, nullptr);
     }
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// Only BC encodes are budgeted, so without them there is nothing to time.
+TEST(VulkanEtc2GpuEmulationTest, SkipsTheSpeedProbeWithoutCompression) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  const ScopedEncodeBudget budget;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, false);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    const Etc2GpuSpeed speed = emulation.GpuSpeed(vk.device);
+    EXPECT_EQ(speed.transcode_ns, 0.0);
+    EXPECT_EQ(speed.upscale_ns, 0.0);
     emulation.DestroyDevice(vk.device);
   }
   CloseTestDevices(&devices);
@@ -2243,7 +2174,7 @@ TEST(VulkanEtc2GpuEmulationTest, ChargesRepeatedUploadsToTheEncodeBudget) {
   if (devices.empty()) {
     GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
   }
-  const ScopedAdaptiveUpscale adaptive;
+  const ScopedEncodeBudget budget;
   for (VulkanTestDevice& vk : devices) {
     SCOPED_TRACE(vk.name);
     if (!vk.bc_textures) {
@@ -2347,7 +2278,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAFullSizeMipIntoAnUpscaledImage) {
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
     constexpr std::uint32_t kBig = 128;
     constexpr std::uint32_t kSmall = 32;
-    const std::uint32_t host = kSmall * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = kSmall * kTestUpscale;
     const TestImage big = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
     const TestImage small = CreateTestImage(
@@ -2469,7 +2400,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesAPartOfAMipIntoAnUpscaledImage) {
     constexpr std::uint32_t kBig = 128;
     constexpr std::uint32_t kSmall = 32;
     constexpr std::uint32_t kOffset = 16;
-    const std::uint32_t host = kSmall * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = kSmall * kTestUpscale;
     const TestImage big = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 2);
     const TestImage small = CreateTestImage(
@@ -2659,7 +2590,7 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsSmallMipBlocksWithoutAGpuWait) {
     StartBcEmulation(&emulation, vk, true);
     constexpr std::uint32_t kBig = 128;
     constexpr std::uint32_t kSmall = 32;
-    const std::uint32_t host = kSmall * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = kSmall * kTestUpscale;
     const TestImage big = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kBig, 3);
     const TestImage small = CreateTestImage(
@@ -3235,7 +3166,7 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenUpscaledCompressedImages) {
                              vk.get_device_proc_addr, false, true);
     emulation.RegisterQueue(vk.device, vk.queue, vk.family);
     ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    const std::uint32_t host = 32 * kDefaultSmallTextureUpscale;
+    const std::uint32_t host = 32 * kTestUpscale;
     const VkDeviceSize bytes = VkDeviceSize{host / 4} * (host / 4) * 16;
     const TestImage first = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 1);
@@ -3343,8 +3274,8 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsOnlyOverrideSizedImagesDecoded) {
     ASSERT_EQ(emulation.CreateImage(vk.device, &image_info, nullptr, &other),
               VK_SUCCESS);
     // Each image: two top levels and its own level, so 21/16 of the top.
-    const VkDeviceSize upscaled = 32 * kDefaultSmallTextureUpscale;
-    const VkDeviceSize other_bc7 = 16 * kDefaultSmallTextureUpscale;
+    const VkDeviceSize upscaled = 32 * kTestUpscale;
+    const VkDeviceSize other_bc7 = 16 * kTestUpscale;
     EXPECT_EQ(emulation.TextureBytes().decoded,
               (upscaled * upscaled * 4 + other_bc7 * other_bc7) * 21 / 16);
     emulation.DestroyImage(vk.device, other, nullptr);

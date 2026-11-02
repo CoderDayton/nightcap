@@ -67,10 +67,12 @@ TEST(VulkanEtc2EmulationTest, TranscodesToBcUnlessSwitchedOff) {
 }
 
 TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
-  EXPECT_EQ(SmallTextureUpscale(nullptr), kAdaptiveSmallTextureUpscale);
-  EXPECT_EQ(SmallTextureUpscale(""), kAdaptiveSmallTextureUpscale);
-  EXPECT_EQ(SmallTextureUpscale("abc"), kAdaptiveSmallTextureUpscale);
-  EXPECT_EQ(SmallTextureUpscale("adaptive"), kAdaptiveSmallTextureUpscale);
+  EXPECT_EQ(SmallTextureUpscale(nullptr), 1u);
+  EXPECT_EQ(SmallTextureUpscale(""), 1u);
+  EXPECT_EQ(SmallTextureUpscale("abc"), 1u);
+  // Retired adaptive values.
+  EXPECT_EQ(SmallTextureUpscale("auto"), 1u);
+  EXPECT_EQ(SmallTextureUpscale("adaptive"), 1u);
   EXPECT_EQ(SmallTextureUpscale("0"), 1u);
   EXPECT_EQ(SmallTextureUpscale("1"), 1u);
   EXPECT_EQ(SmallTextureUpscale("2"), 2u);
@@ -92,24 +94,6 @@ TEST(VulkanEtc2EmulationTest, CountsHostBlocksOfAScaledChain) {
   EXPECT_EQ(Etc2HostBlockCount({64, 64, 1}, 7, 1, 1), 343u);
   EXPECT_EQ(Etc2HostBlockCount({64, 32, 1}, 1, 3, 2),
             3u * (32 * 16 + 16 * 8));
-}
-
-TEST(VulkanEtc2EmulationTest, PicksTheLargestUpscaleTheGpuEncodesInTime) {
-  // A 64x64 chain costs at most kAdaptiveUpscaleTextureNs: its own 343
-  // blocks transcoded, plus top levels of 5120 blocks at 4x or 1024 at 2x
-  // upscaled. Only the factors the setting offers are picked.
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(9.2, 9.2), 4u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(91.0, 91.0), 4u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(120.0, 120.0), 2u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(300.0, 300.0), 2u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(400.0, 400.0), 1u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(726.0, 726.0), 1u);
-  // The own levels are charged at the transcode speed: 5120 * 95 + 343 * 10
-  // fits where 5463 * 95 would not, and so does 1024 * 450 + 343 * 10.
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(95.0, 10.0), 4u);
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(450.0, 10.0), 2u);
-  // Without a measurement the card may be too slow for any upscale.
-  EXPECT_EQ(AdaptiveSmallTextureUpscale(0.0, 0.0), 1u);
 }
 
 TEST(VulkanEtc2EmulationTest, EncodeBudgetRefillsWithWallTime) {
@@ -1133,11 +1117,6 @@ void ExpectStreamedMipChainKept(const char* upscale, std::uint32_t top) {
   }
   emulation->DestroyImage(device, larger, nullptr);
   emulation->DestroyImage(device, image, nullptr);
-}
-
-// Adaptive cannot time this fake GPU, so it falls back to 1x.
-TEST(VulkanEtc2EmulationTest, UnmeasuredAdaptiveUpscaleKeepsTheStreamedMipChain) {
-  ExpectStreamedMipChainKept(nullptr, 0);
 }
 
 TEST(VulkanEtc2EmulationTest, OneTimesUpscaleKeepsTheStreamedMipChain) {

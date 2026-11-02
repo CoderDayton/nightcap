@@ -29,16 +29,22 @@ ProviderVersion ProviderChain::CheckLatest() const {
   std::string failures;
   for (const std::unique_ptr<ApkProvider>& provider : providers_) {
     const ProviderVersion version = provider->CheckLatest();
-    if (version) return version;
-    AppendFailure(&failures, provider->name(), version.error);
+    if (version) {
+      if (!result || version.version_code > result.version_code)
+        result = version;
+    } else {
+      AppendFailure(
+          &failures, provider->name(),
+          version.error.empty() ? "invalid version identity" : version.error);
+    }
   }
-  result.error = std::move(failures);
+  if (!result) result.error = std::move(failures);
   return result;
 }
 
 ProviderDownloadResult ProviderChain::DownloadExact(
-    std::string_view version, const std::filesystem::path& output_directory,
-    int progress_fd) const {
+    const ProviderVersion& version,
+    const std::filesystem::path& output_directory, int progress_fd) const {
   ProviderDownloadResult result;
   if (providers_.empty()) {
     result.error = "no APK provider is configured";
@@ -46,9 +52,8 @@ ProviderDownloadResult ProviderChain::DownloadExact(
   }
   std::string failures;
   for (const std::unique_ptr<ApkProvider>& provider : providers_) {
-    // Each provider gets its own directory: providers refuse to write into a
-    // directory another one already populated, and a failed attempt must not
-    // poison the next.
+    // Each provider gets its own directory: a provider reuses the archives it
+    // finds there, so another provider's files must not be mistaken for them.
     ProviderDownloadResult downloaded = provider->DownloadExact(
         version, output_directory / provider->name(), progress_fd);
     if (downloaded) return downloaded;

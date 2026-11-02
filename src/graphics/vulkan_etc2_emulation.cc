@@ -177,7 +177,7 @@ bool Etc2SupportAdvertised() {
 
 std::uint32_t SmallTextureUpscale(const char* value) {
   if (value == nullptr || value[0] < '0' || value[0] > '9') {
-    return kAdaptiveSmallTextureUpscale;
+    return 1;
   }
   const long parsed = std::strtol(value, nullptr, 10);
   if (parsed < 1) {
@@ -200,30 +200,6 @@ VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
     total += blocks(extent.width, mip) * blocks(extent.height, mip);
   }
   return total * layers;
-}
-
-std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns,
-                                          double transcode_ns) {
-  if (upscale_ns <= 0) {
-    return 1;
-  }
-  // A full chain: 64x64 has 7 levels.
-  constexpr VkExtent3D kLargestSmall{kSmallTextureMaxExtent,
-                                     kSmallTextureMaxExtent, 1};
-  constexpr std::uint32_t kLevels = 7;
-  const auto own =
-      static_cast<double>(Etc2HostBlockCount(kLargestSmall, kLevels, 1, 1));
-  for (std::uint32_t scale = kDefaultSmallTextureUpscale; scale > 1;
-       scale /= 2) {
-    const double top =
-        static_cast<double>(
-            Etc2HostBlockCount(kLargestSmall, kLevels, 1, scale)) -
-        own;
-    if (top * upscale_ns + own * transcode_ns <= kAdaptiveUpscaleTextureNs) {
-      return scale;
-    }
-  }
-  return 1;
 }
 
 void Etc2EncodeBudget::Refill(std::uint64_t now_ns) {
@@ -369,7 +345,6 @@ struct HostDevice {
   VkSemaphore timeline = VK_NULL_HANDLE;
   // From the startup probe; zero leaves encodes unbudgeted.
   Etc2GpuSpeed speed;
-  std::uint32_t adaptive_upscale = 1;
   // Guarded by State::mutex.
   mutable Etc2EncodeBudget budget{kEncodeBudgetShare, kEncodeBudgetBurstNs};
   mutable EncodeStats stats;
@@ -1620,46 +1595,32 @@ struct VulkanEtc2Emulation::State {
   const bool encode_budget =
       OnUnlessZero(std::getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"));
 
-  // Prepays an image's first full upload, probe-measured ns per block times
-  // the host chain's blocks, at the largest scale the budget affords:
-  // `*scale` only, or halving to 1 when `adaptive`. Returns the prepaid ns.
-  // Zero leaves the image decoded, at 1x when `adaptive` so it adds no GPU
-  // scale work either.
+  // Prepays an image's first full upload at `scale`, probe-measured ns per
+  // block times the host chain's blocks. Returns the prepaid ns; zero leaves
+  // the image decoded.
   double BudgetEncode(const HostDevice& dev, const VkImageCreateInfo& info,
-                      bool adaptive, std::uint32_t* scale) {
+                      std::uint32_t scale) {
     std::string line;
     double prepaid = 0;
     {
       std::lock_guard<std::mutex> lock(mutex);
       // Read under the lock so the budget and log never see time go back.
       const std::uint64_t now = TraceClockNanos();
-      for (std::uint32_t candidate = *scale;;
-           candidate = std::max<std::uint32_t>(1, candidate / 2)) {
-        // The image's own levels are only transcoded; the top levels above
-        // them are upscaled.
-        const auto own = static_cast<double>(Etc2HostBlockCount(
-            info.extent, info.mipLevels, info.arrayLayers, 1));
-        const double top =
-            static_cast<double>(Etc2HostBlockCount(
-                info.extent, info.mipLevels, info.arrayLayers, candidate)) -
-            own;
-        const double cost =
-            own * dev.speed.transcode_ns + top * dev.speed.upscale_ns;
-        if (dev.budget.Take(cost, now)) {
-          *scale = candidate;
-          ++dev.stats.by_scale[std::min<std::uint32_t>(candidate, 8)];
-          prepaid = cost;
-          break;
-        }
-        if (!adaptive || candidate == 1) {
-          break;
-        }
-      }
-      if (prepaid == 0) {
+      // The image's own levels are only transcoded; the top levels above
+      // them are upscaled.
+      const auto own = static_cast<double>(Etc2HostBlockCount(
+          info.extent, info.mipLevels, info.arrayLayers, 1));
+      const double top =
+          static_cast<double>(Etc2HostBlockCount(
+              info.extent, info.mipLevels, info.arrayLayers, scale)) -
+          own;
+      const double cost =
+          own * dev.speed.transcode_ns + top * dev.speed.upscale_ns;
+      if (dev.budget.Take(cost, now)) {
+        ++dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+        prepaid = cost;
+      } else {
         ++dev.stats.held_back;
-        if (adaptive) {
-          *scale = 1;
-        }
       }
       line = TakeEncodeLog(&dev.stats, now);
     }
@@ -3205,7 +3166,6 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   VkImageCreateInfo host_info = *create_info;
   host_info.flags &= ~static_cast<VkImageCreateFlags>(
       VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
-  const bool adaptive = state_->upscale == kAdaptiveSmallTextureUpscale;
   std::uint32_t scale = 1;
   if (IsColorFormat(format.etc_format) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
@@ -3213,7 +3173,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       create_info->arrayLayers == 1 && create_info->extent.depth == 1 &&
       create_info->extent.width <= kSmallTextureMaxExtent &&
       create_info->extent.height <= kSmallTextureMaxExtent) {
-    scale = adaptive ? dev->adaptive_upscale : state_->upscale;
+    scale = state_->upscale;
   }
   const bool may_override =
       IsColorFormat(format.etc_format) && create_info->arrayLayers == 1 &&
@@ -3237,7 +3197,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       BcHostFormat(create_info->format, &bc_format);
   double prepaid = 0;
   if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
-    prepaid = state_->BudgetEncode(*dev, *create_info, adaptive, &scale);
+    prepaid = state_->BudgetEncode(*dev, *create_info, scale);
     transcoded = prepaid > 0;
   }
   if (transcoded) {
@@ -4731,32 +4691,23 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
                        "self-test; "
                        "textures stay decoded\n");
   }
-  const bool adaptive = state_->upscale == kAdaptiveSmallTextureUpscale;
   // Measured before the decoder is published, so CreateImage never sees it
-  // without the speed and factor that go with it.
-  // Without BC, small textures are only decoded and scaled, so that is what
-  // the probe times.
-  const bool encode = dev->bc_textures && decoder->CanTranscode();
-  if (decoder->CanScale() && (adaptive || state_->encode_budget)) {
+  // without the speed that goes with it. Only BC encodes are budgeted.
+  if (dev->bc_textures && decoder->CanTranscode() && decoder->CanScale() &&
+      state_->encode_budget) {
     Etc2GpuSpeed speed;
-    if (decoder->MeasureSpeed(queue, queue_family, dev->memory, encode,
-                              &speed, &error)) {
+    if (decoder->MeasureSpeed(queue, queue_family, dev->memory, true, &speed,
+                              &error)) {
       dev->speed = speed;
-      dev->adaptive_upscale =
-          AdaptiveSmallTextureUpscale(speed.upscale_ns, speed.transcode_ns);
       std::fprintf(stderr,
                    "  [vulkan] BC encode speed: transcode %.1f ns/block, "
-                   "upscale %.1f ns/block%s; small texture upscale %s%ux; "
-                   "encode budget %s\n",
-                   speed.transcode_ns, speed.upscale_ns,
-                   encode ? "" : " (decode and scale only)",
-                   adaptive ? "adaptive up to " : "",
-                   adaptive ? dev->adaptive_upscale : state_->upscale,
-                   state_->encode_budget && encode ? "on" : "off");
+                   "upscale %.1f ns/block; small texture upscale %ux; "
+                   "encode budget on\n",
+                   speed.transcode_ns, speed.upscale_ns, state_->upscale);
     } else {
       std::fprintf(stderr,
                    "  [vulkan] BC encode speed probe failed (%s); encodes "
-                   "are not budgeted and adaptive upscale stays at 1x\n",
+                   "are not budgeted\n",
                    error.c_str());
     }
   }

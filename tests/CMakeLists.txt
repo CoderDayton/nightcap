@@ -144,6 +144,16 @@ target_compile_definitions(native_update_test PRIVATE
   MOCKTAIL_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
 
+add_executable(http_download_fixture http_download_fixture.cc)
+target_link_libraries(http_download_fixture PRIVATE Mocktail::Update)
+mocktail_apply_compile_options(http_download_fixture)
+if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
+  add_test(NAME HttpDownloadIntegrationTest.Resume
+    COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/http_download_integration_test.py
+            $<TARGET_FILE:http_download_fixture> ${MOCKTAIL_TEST_OPENSSL})
+  set_tests_properties(HttpDownloadIntegrationTest.Resume PROPERTIES TIMEOUT 60)
+endif()
+
 add_executable(compatibility_catalog_test compatibility_catalog_test.cc)
 target_link_libraries(compatibility_catalog_test PRIVATE
   Mocktail::Update
@@ -953,6 +963,15 @@ target_link_libraries(window_pointer_capture_owner_test PRIVATE
 )
 mocktail_apply_compile_options(window_pointer_capture_owner_test)
 
+add_executable(right_drag_motion_trace_test
+  right_drag_motion_trace_test.cc
+)
+target_link_libraries(right_drag_motion_trace_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(right_drag_motion_trace_test)
+
 add_executable(roblox_text_input_jni_bridge_test
   roblox_text_input_jni_bridge_test.cc
 )
@@ -1382,6 +1401,7 @@ gtest_discover_tests(android_log_observer_test)
 gtest_discover_tests(roblox_output_device_bridge_test)
 gtest_discover_tests(window_text_input_owner_test)
 gtest_discover_tests(window_pointer_capture_owner_test)
+gtest_discover_tests(right_drag_motion_trace_test)
 gtest_discover_tests(roblox_text_input_jni_bridge_test)
 gtest_discover_tests(auth_service_test)
 gtest_discover_tests(auth_runtime_composition_test)

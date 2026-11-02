@@ -31,7 +31,8 @@ int IntegerEnvironment(const char* name, int fallback) {
 int main(int argc, char** argv) {
   if (argc != 3 || std::string_view(argv[1]) != "update" ||
       (std::string_view(argv[2]) != "--startup-preflight" &&
-       std::string_view(argv[2]) != "--force-run-latest")) {
+       std::string_view(argv[2]) != "--force-run-latest" &&
+       std::string_view(argv[2]) != "--download-only")) {
     return 64;
   }
   const char* capture = Environment("MOCKTAIL_TEST_UPDATE_CAPTURE");
@@ -50,6 +51,12 @@ int main(int argc, char** argv) {
     output << argv[2] << '\n';
     if (!output) return 67;
   }
+  const char* parent_capture = Environment("MOCKTAIL_TEST_UPDATE_PARENT_CAPTURE");
+  if (parent_capture[0] != '\0') {
+    std::ofstream output(parent_capture);
+    output << Environment("MOCKTAIL_UPDATE_PARENT_PID") << '\n';
+    if (!output) return 68;
+  }
   const char* diagnostics = Environment("MOCKTAIL_TEST_UPDATE_STDERR");
   if (diagnostics[0] != '\0') {
     std::fputs(diagnostics, stderr);
@@ -65,5 +72,7 @@ int main(int argc, char** argv) {
   }
   const int signal_number = IntegerEnvironment("MOCKTAIL_TEST_UPDATE_SIGNAL", 0);
   if (signal_number > 0) std::raise(signal_number);
+  const int delay = IntegerEnvironment("MOCKTAIL_TEST_UPDATE_SLEEP_MS", 0);
+  if (delay > 0) usleep(static_cast<useconds_t>(delay) * 1000);
   return IntegerEnvironment("MOCKTAIL_TEST_UPDATE_EXIT", 0);
 }

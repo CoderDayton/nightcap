@@ -60,26 +60,15 @@ bool Etc2BcTranscodeEnabled(const char* value);
 // kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
 // 1 leaves them alone; 2, 4 or 8 add log2(factor) levels above the image's
 // own, upscaled from level 0, so a texture override can carry more detail
-// than the original. Unset or non-numeric values ("adaptive") return
-// kAdaptiveSmallTextureUpscale; numeric values are clamped to 1..8 and
-// rounded down to a power of two.
+// than the original. Numeric values are clamped to 1..8 and rounded down to
+// a power of two; anything else, unset included, is 1.
 inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
-inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
-inline constexpr std::uint32_t kAdaptiveSmallTextureUpscale = 0;
 std::uint32_t SmallTextureUpscale(const char* value);
 
 // Every mip level and layer, plus the levels a `scale` above 1 adds.
 VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
                                 std::uint32_t mip_levels, std::uint32_t layers,
                                 std::uint32_t scale);
-
-// The largest of 4, 2 and 1, the factors the setting offers, whose 64x64 BC7
-// chain encodes within kAdaptiveUpscaleTextureNs: the top levels at
-// `upscale_ns` per block, the texture's own levels at `transcode_ns`. 0 ns
-// (unmeasured) gives 1, as an unknown card may be too slow for any upscale.
-inline constexpr double kAdaptiveUpscaleTextureNs = 0.5e6;
-std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns,
-                                          double transcode_ns);
 
 // GPU-time token bucket. A cost above the burst runs from a full bucket and
 // leaves it negative until wall time pays it back. Take asks before work is

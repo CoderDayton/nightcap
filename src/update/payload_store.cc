@@ -1,5 +1,7 @@
 #include "update/payload_store.h"
 
+#include "update/state_file.h"
+
 #define JSON_NOEXCEPTION 1
 #include <fcntl.h>
 #include <sys/file.h>
@@ -1075,6 +1077,7 @@ std::string PayloadStore::StatusJson(std::string* output_error) const {
     return {};
   }
   nlohmann::json document;
+  document["updates"] = ReadStateFile(root_ / "update.json");
   document["current"] =
       current.contents.empty()
           ? nlohmann::json(nullptr)
