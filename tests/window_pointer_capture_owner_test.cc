@@ -85,6 +85,11 @@ bool Query(void* context, MouseLock* lock) {
   return true;
 }
 
+// A moving event stamped after any release.
+bool TakeLaterReleaseMotion(WindowPointerCaptureOwner& owner) {
+  return owner.TakeCaptureReleaseMotion(UINT64_MAX, true);
+}
+
 struct ReentrantQueryState {
   WindowPointerCaptureOwner* owner = nullptr;
 };
@@ -511,7 +516,7 @@ TEST(WindowPointerCaptureOwnerTest,
   query.locked_center = false;
   ASSERT_TRUE(owner.OnRightButton(false, false));
   EXPECT_FALSE(owner.captured());
-  EXPECT_TRUE(owner.ShouldDispatchMouseMotion());
+  EXPECT_TRUE(TakeLaterReleaseMotion(owner));
 }
 
 TEST(WindowPointerCaptureOwnerTest,
@@ -527,7 +532,7 @@ TEST(WindowPointerCaptureOwnerTest,
 
   EXPECT_TRUE(owner.captured());
   EXPECT_FALSE(owner.cursor_visible());
-  EXPECT_TRUE(owner.ShouldDispatchMouseMotion());
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
 }
 
 TEST(WindowPointerCaptureOwnerTest,
@@ -545,7 +550,7 @@ TEST(WindowPointerCaptureOwnerTest,
 
   EXPECT_TRUE(owner.captured());
   EXPECT_FALSE(owner.cursor_visible());
-  EXPECT_TRUE(owner.ShouldDispatchMouseMotion());
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
 }
 
 TEST(WindowPointerCaptureOwnerTest,
@@ -561,7 +566,55 @@ TEST(WindowPointerCaptureOwnerTest,
   ASSERT_TRUE(owner.OnRightButton(false, false));
 
   EXPECT_FALSE(owner.captured());
-  EXPECT_TRUE(owner.ShouldDispatchMouseMotion());
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
+}
+
+TEST(WindowPointerCaptureOwnerTest, CaptureReleaseMotionIsTakenOnce) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
+
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.captured());
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_TRUE(TakeLaterReleaseMotion(owner));
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
+}
+
+TEST(WindowPointerCaptureOwnerTest, NewCaptureCancelsPendingReleaseMotion) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.captured());
+  EXPECT_FALSE(TakeLaterReleaseMotion(owner));
+}
+
+TEST(WindowPointerCaptureOwnerTest, FailedReleaseStillFlagsReleaseMotion) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.captured());
+  backend.succeeds = false;
+  EXPECT_FALSE(owner.OnRightButton(false, false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(TakeLaterReleaseMotion(owner));
 }
 
 TEST(WindowPointerCaptureOwnerTest, RightDragDoesNotDependOnNativeLockQuery) {
@@ -1153,6 +1206,35 @@ TEST(WindowPointerCaptureOwnerTest, FailedLockCaptureGetsNoGrace) {
   for (const FakeBackend::Call& call : backend.calls) {
     EXPECT_FALSE(call.relative_mode);
   }
+}
+
+TEST(WindowPointerCaptureOwnerTest, ReleaseMotionSkipsMotionQueuedDuringCapture) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_now_ms = 1000;
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  g_fake_now_ms = 1005;
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+
+  EXPECT_FALSE(owner.TakeCaptureReleaseMotion(1004, true));
+  EXPECT_TRUE(owner.TakeCaptureReleaseMotion(1005, true));
+}
+
+TEST(WindowPointerCaptureOwnerTest, ReleaseMotionSkipsZeroDeltaMotion) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend, &FakeFrames, &FakeNowMs);
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  g_fake_now_ms = 1000;
+  ASSERT_TRUE(owner.OnRightButton(true, false));
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+
+  EXPECT_FALSE(owner.TakeCaptureReleaseMotion(1000, false));
+  EXPECT_TRUE(owner.TakeCaptureReleaseMotion(1000, true));
 }
 
 }  // namespace
