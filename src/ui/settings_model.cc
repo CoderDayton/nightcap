@@ -530,18 +530,6 @@ const std::vector<SettingsPage>& SettingsPages() {
                   "You gain:\n"
                   "• May fix broken or black textures\n\n"
                   "Requires a restart to take effect."),
-                {"graphics.small_texture_upscale",
-                 "Small texture upscale",
-                 "Sharpens textures of 64px or less. Off by default. "
-                 "Requires a restart.",
-                 SettingKind::kChoice,
-                 {
-                     {"1", "1× (off)"},
-                     {"2", "2×"},
-                     {"4", "4×"},
-                 },
-                 "1",
-                 {{"auto", "1"}, {"adaptive", "1"}}},
             }},
            {"Display",
             {

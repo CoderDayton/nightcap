@@ -67,12 +67,9 @@ TEST(VulkanEtc2EmulationTest, TranscodesToBcUnlessSwitchedOff) {
 }
 
 TEST(VulkanEtc2EmulationTest, ParsesSmallTextureUpscale) {
-  EXPECT_EQ(SmallTextureUpscale(nullptr), 1u);
-  EXPECT_EQ(SmallTextureUpscale(""), 1u);
-  EXPECT_EQ(SmallTextureUpscale("abc"), 1u);
-  // Retired adaptive values.
-  EXPECT_EQ(SmallTextureUpscale("auto"), 1u);
-  EXPECT_EQ(SmallTextureUpscale("adaptive"), 1u);
+  EXPECT_EQ(SmallTextureUpscale(nullptr), 4u);
+  EXPECT_EQ(SmallTextureUpscale(""), 4u);
+  EXPECT_EQ(SmallTextureUpscale("abc"), 4u);
   EXPECT_EQ(SmallTextureUpscale("0"), 1u);
   EXPECT_EQ(SmallTextureUpscale("1"), 1u);
   EXPECT_EQ(SmallTextureUpscale("2"), 2u);
@@ -85,6 +82,26 @@ TEST(VulkanEtc2EmulationTest, RoundsTheUpscaleDownToAPowerOfTwo) {
   EXPECT_EQ(SmallTextureUpscale("4"), 4u);
   EXPECT_EQ(SmallTextureUpscale("7"), 4u);
   EXPECT_EQ(SmallTextureUpscale("8"), 8u);
+}
+
+// Textures up to 32 px take the upscale; an override file sized for a
+// texture sets its own.
+TEST(VulkanEtc2EmulationTest, ScalesTexturesUpTo32PxOrToTheirOverride) {
+  EXPECT_EQ(SmallTextureScale(32, 32, 4, 1), 4u);
+  EXPECT_EQ(SmallTextureScale(16, 32, 4, 1), 4u);
+  EXPECT_EQ(SmallTextureScale(33, 32, 4, 1), 1u);
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 1), 1u);
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 4), 4u);
+  EXPECT_EQ(SmallTextureScale(32, 32, 4, 8), 8u);
+  EXPECT_EQ(SmallTextureScale(32, 32, 1, 1), 1u);
+  EXPECT_EQ(SmallTextureScale(32, 32, 1, 4), 4u);
+}
+
+// An override's scale reaches every texture of its size.
+TEST(VulkanEtc2EmulationTest, ScalesOnlyOverridesUpTo64Px) {
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 8), 8u);
+  EXPECT_EQ(SmallTextureScale(64, 65, 4, 4), 1u);
+  EXPECT_EQ(SmallTextureScale(512, 512, 4, 8), 1u);
 }
 
 TEST(VulkanEtc2EmulationTest, CountsHostBlocksOfAScaledChain) {
