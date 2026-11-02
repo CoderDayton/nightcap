@@ -45,6 +45,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
+  as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
 - The Settings window no longer shows a second Nightcap icon or missing page icons on KDE with the
   Breeze icon theme.
 - Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy

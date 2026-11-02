@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace mocktail::runtime {
 namespace {
@@ -148,6 +149,37 @@ TEST(ProcessLaunchPolicyTest, ClearsInheritedHostMimallocEnvironment) {
                     std::string::npos
                 ? 0
                 : 13);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(ProcessLaunchPolicyTest, ClearHostMimallocEnvironmentReturnsClearedNames) {
+  ASSERT_EXIT(
+      {
+        unsetenv("MOCKTAIL_KEEP_MIMALLOC_ENV");
+        if (setenv("Mimalloc_Purge_Delay", "0", 1) != 0) std::_Exit(10);
+        std::string error;
+        const std::vector<std::string> cleared =
+            ClearHostMimallocEnvironment(&error);
+        std::_Exit(cleared == std::vector<std::string>{"Mimalloc_Purge_Delay"} &&
+                           error.empty() &&
+                           std::getenv("Mimalloc_Purge_Delay") == nullptr
+                       ? 0
+                       : 11);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(ProcessLaunchPolicyTest, KeepsHostMimallocEnvironmentWhenAsked) {
+  ASSERT_EXIT(
+      {
+        if (setenv("MOCKTAIL_KEEP_MIMALLOC_ENV", "1", 1) != 0 ||
+            setenv("MIMALLOC_VERBOSE", "1", 1) != 0) {
+          std::_Exit(10);
+        }
+        ApplyInteractiveProcessLaunchPolicy();
+        const char* kept = std::getenv("MIMALLOC_VERBOSE");
+        std::_Exit(kept != nullptr && std::string(kept) == "1" ? 0 : 11);
       },
       ::testing::ExitedWithCode(0), "");
 }

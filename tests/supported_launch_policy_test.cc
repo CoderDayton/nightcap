@@ -108,6 +108,24 @@ TEST(SupportedLaunchPolicyTest, StripsHostMimallocVariablesInAllModes) {
   }
 }
 
+TEST(SupportedLaunchPolicyTest, KeepsHostMimallocVariablesWhenAsked) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    if (setenv("MOCKTAIL_KEEP_MIMALLOC_ENV", "1", 1) != 0 ||
+        setenv("MIMALLOC_VERBOSE", "1", 1) != 0) {
+      std::_Exit(10);
+    }
+    std::string error;
+    if (!ApplySupportedLaunchPolicy(false, &error)) std::_Exit(11);
+    std::_Exit(getenv("MIMALLOC_VERBOSE") != nullptr ? 0 : 12);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
 void ExpectPackagedManifestProbe(bool candidate_override) {
   const pid_t child = fork();
   ASSERT_GE(child, 0);

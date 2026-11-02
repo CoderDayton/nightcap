@@ -25,38 +25,33 @@ void LogLimit(std::ostringstream& log, const char* name, const rlimit& limit,
       << " hard=" << LimitValue(limit.rlim_max) << " units=" << units << '\n';
 }
 
-void ClearInheritedMimallocEnvironment(std::ostringstream& log) {
-  // Desktop shells and launchers that use mimalloc may export
-  // MIMALLOC_ARENA_RESERVE=0 or MIMALLOC_PURGE_DELAY=0 into their own
-  // environment. libroblox embeds its own mimalloc whose _mi_options_init
-  // constructor scans environ case-insensitively for MIMALLOC_*; inheriting
-  // MIMALLOC_ARENA_RESERVE=0 disables its 1 GiB arena reservation and forces
-  // 64 KiB-aligned segment allocations onto an over-allocation fallback that
-  // crashes during startup.
-  std::vector<std::string> names;
-  if (environ != nullptr) {
-    for (char** entry = environ; *entry != nullptr; ++entry) {
-      const char* equals = std::strchr(*entry, '=');
-      const std::size_t length =
-          equals != nullptr ? static_cast<std::size_t>(equals - *entry)
-                            : std::strlen(*entry);
-      if (length >= 9 && strncasecmp(*entry, "MIMALLOC_", 9) == 0) {
-        names.emplace_back(*entry, length);
-      }
-    }
-  }
-  for (const std::string& name : names) {
-    if (unsetenv(name.c_str()) == 0) {
-      log << "  [process] cleared inherited host mimalloc variable: " << name
-          << '\n';
-    } else {
-      log << "  [process] cannot clear inherited host mimalloc variable "
-          << name << ": " << std::strerror(errno) << '\n';
-    }
-  }
-}
-
 }  // namespace
+
+std::vector<std::string> ClearHostMimallocEnvironment(std::string* error) {
+  // A launcher's MIMALLOC_ARENA_RESERVE=0 disables the engine's 1 GiB arena
+  // reservation and crashes it during Vulkan startup.
+  const char* keep = std::getenv("MOCKTAIL_KEEP_MIMALLOC_ENV");
+  if (keep != nullptr && std::strcmp(keep, "1") == 0) return {};
+  std::vector<std::string> names;
+  for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+    const std::size_t length = std::strcspn(*entry, "=");
+    if (length >= 9 && strncasecmp(*entry, "MIMALLOC_", 9) == 0) {
+      names.emplace_back(*entry, length);
+    }
+  }
+  std::vector<std::string> cleared;
+  for (const std::string& name : names) {
+    if (unsetenv(name.c_str()) != 0) {
+      if (error != nullptr) {
+        *error = "cannot clear host mimalloc variable " + name + ": " +
+                 std::strerror(errno);
+      }
+      break;
+    }
+    cleared.push_back(name);
+  }
+  return cleared;
+}
 
 std::string ApplyInteractiveProcessLaunchPolicy() {
   std::ostringstream log;
@@ -112,7 +107,12 @@ std::string ApplyInteractiveProcessLaunchPolicy() {
     log << "  [process] cannot read RLIMIT_RTTIME: " << std::strerror(errno)
         << '\n';
   }
-  ClearInheritedMimallocEnvironment(log);
+  std::string error;
+  for (const std::string& name : ClearHostMimallocEnvironment(&error)) {
+    log << "  [process] cleared inherited host mimalloc variable: " << name
+        << '\n';
+  }
+  if (!error.empty()) log << "  [process] " << error << '\n';
   return log.str();
 }
 

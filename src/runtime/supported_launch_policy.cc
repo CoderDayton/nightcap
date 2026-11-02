@@ -1,11 +1,11 @@
 #include "runtime/supported_launch_policy.h"
 
-#include <strings.h>
 #include <unistd.h>
+
+#include "runtime/process_launch_policy.h"
 
 #include <array>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -103,35 +103,13 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
   return true;
 }
 
-bool ClearHostMimallocEnvironment(std::string* error) {
-  std::vector<std::string> names;
-  if (environ != nullptr) {
-    for (char** entry = environ; *entry != nullptr; ++entry) {
-      const char* equals = std::strchr(*entry, '=');
-      const std::size_t length =
-          equals != nullptr ? static_cast<std::size_t>(equals - *entry)
-                            : std::strlen(*entry);
-      if (length >= 9 && strncasecmp(*entry, "MIMALLOC_", 9) == 0) {
-        names.emplace_back(*entry, length);
-      }
-    }
-  }
-  for (const std::string& name : names) {
-    if (unsetenv(name.c_str()) != 0) {
-      if (error != nullptr) {
-        *error =
-            std::string("cannot clear host mimalloc environment: ") + name;
-      }
-      return false;
-    }
-  }
-  return true;
-}
-
 }  // namespace
 
 bool ApplySupportedLaunchPolicy(bool interactive, std::string* error) {
-  if (!ClearHostMimallocEnvironment(error)) {
+  std::string mimalloc_error;
+  ClearHostMimallocEnvironment(&mimalloc_error);
+  if (!mimalloc_error.empty()) {
+    if (error != nullptr) *error = mimalloc_error;
     return false;
   }
   // A packaging launcher may reload its environment for each native child.
