@@ -2,6 +2,8 @@
 
 #include <unistd.h>
 
+#include "runtime/process_launch_policy.h"
+
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -104,6 +106,12 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
 }  // namespace
 
 bool ApplySupportedLaunchPolicy(bool interactive, std::string* error) {
+  std::string mimalloc_error;
+  ClearHostMimallocEnvironment(&mimalloc_error);
+  if (!mimalloc_error.empty()) {
+    if (error != nullptr) *error = mimalloc_error;
+    return false;
+  }
   // A packaging launcher may reload its environment for each native child.
   // Keep the bundled default separate from the updater's per-candidate
   // manifest, which must survive both normal launches and isolated canaries.

@@ -45,6 +45,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
+  as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
 - Roblox verification windows, such as the press-and-hold check when signing up or joining a game, no longer
   reload themselves right after they appear. Nightcap reloaded the page when Roblox changed the window,
   which cut off the check while it loaded and could leave the window blank. Roblox's Android app ignores

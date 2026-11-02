@@ -1,11 +1,16 @@
 #include "runtime/process_launch_policy.h"
 
 #include <sched.h>
+#include <strings.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace mocktail::runtime {
 namespace {
@@ -21,6 +26,32 @@ void LogLimit(std::ostringstream& log, const char* name, const rlimit& limit,
 }
 
 }  // namespace
+
+std::vector<std::string> ClearHostMimallocEnvironment(std::string* error) {
+  // A launcher's MIMALLOC_ARENA_RESERVE=0 disables the engine's 1 GiB arena
+  // reservation and crashes it during Vulkan startup.
+  const char* keep = std::getenv("MOCKTAIL_KEEP_MIMALLOC_ENV");
+  if (keep != nullptr && std::strcmp(keep, "1") == 0) return {};
+  std::vector<std::string> names;
+  for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+    const std::size_t length = std::strcspn(*entry, "=");
+    if (length >= 9 && strncasecmp(*entry, "MIMALLOC_", 9) == 0) {
+      names.emplace_back(*entry, length);
+    }
+  }
+  std::vector<std::string> cleared;
+  for (const std::string& name : names) {
+    if (unsetenv(name.c_str()) != 0) {
+      if (error != nullptr) {
+        *error = "cannot clear host mimalloc variable " + name + ": " +
+                 std::strerror(errno);
+      }
+      break;
+    }
+    cleared.push_back(name);
+  }
+  return cleared;
+}
 
 std::string ApplyInteractiveProcessLaunchPolicy() {
   std::ostringstream log;
@@ -76,6 +107,12 @@ std::string ApplyInteractiveProcessLaunchPolicy() {
     log << "  [process] cannot read RLIMIT_RTTIME: " << std::strerror(errno)
         << '\n';
   }
+  std::string error;
+  for (const std::string& name : ClearHostMimallocEnvironment(&error)) {
+    log << "  [process] cleared inherited host mimalloc variable: " << name
+        << '\n';
+  }
+  if (!error.empty()) log << "  [process] " << error << '\n';
   return log.str();
 }
 
