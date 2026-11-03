@@ -129,13 +129,13 @@ runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
-ETC2 colour textures of 32px or smaller get two sharper levels above their
+ETC2 colour textures of 64px or smaller get two sharper levels above their
 own, 4× upscaled from the texture's largest level. A desktop screen draws
 these, such as crosshairs, cursors and icons, larger than a phone does. The
 texture's own levels keep their size and the texels Roblox sent, so the card
 picks them at normal draw size and the sharper ones only when the texture is
-drawn larger. 4× is 16 times the pixels per affected texture: a 32px texture
-grows from 4 KiB to 64 KiB uncompressed.
+drawn larger. 4× is 16 times the pixels per affected texture: a 64px texture
+grows from 16 KiB to 256 KiB uncompressed.
 
 A texture of 64px or less with an override file is sized at least to its
 PNG: the smaller axis's ratio, rounded down to a power of two, up to 8×. A
@@ -172,6 +172,14 @@ each factor, how many stayed decoded, and the estimated GPU time:
 
 ```text
 [vulkan] BC encodes over 5.0 s: 1x 390, kept decoded 22; est 38.1 ms GPU
+```
+
+At the first texture and then every 5 seconds while textures are created, it
+shows what emulated textures take in GPU memory, how much of that is
+upscaling, and how many ETC2 blocks stay in system memory for later copies:
+
+```text
+[vulkan] ETC2 textures: 412.3 MiB on the GPU, 38.1 MiB of it upscaled; 12.4 MiB of blocks kept on the CPU
 ```
 
 Upscaling adds no new detail. Textures grow with a sharpened bicubic filter,

@@ -60,7 +60,7 @@ bool Etc2BcTranscodeEnabled(const char* value);
 // 2, 4 or 8 add log2(factor) levels above the image's own, upscaled from
 // level 0. 4 unless MOCKTAIL_SMALL_TEXTURE_UPSCALE holds a number, which is
 // clamped to 1..8 and rounded down to a power of two.
-inline constexpr std::uint32_t kSmallTextureMaxExtent = 32;
+inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
 std::uint32_t SmallTextureUpscale(const char* value);
 
 // `upscale` up to kSmallTextureMaxExtent, or `override_upscale` up to

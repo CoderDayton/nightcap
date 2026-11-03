@@ -45,6 +45,9 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- With texture compression off, small textures such as crosshairs no longer turn blurry when the game
+  copies them in while it streams textures. With it on, such a texture no longer shows an old picture
+  after the game moves it between textures, or turns black on slower GPUs.
 - The camera no longer flicks when you let go of the right mouse button after turning it.
 - Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
   as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
@@ -109,7 +112,7 @@ Release notes on GitHub are taken from the matching section here.
   texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
   and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
   `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
-- Textures of 32 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
+- Textures of 64 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
   screen draws them larger than a phone does. Larger textures are left at the size Roblox sends. An
   override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×.
   The Small texture upscale setting is gone; an old `graphics.small_texture_upscale` is ignored.

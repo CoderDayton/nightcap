@@ -84,22 +84,16 @@ TEST(VulkanEtc2EmulationTest, RoundsTheUpscaleDownToAPowerOfTwo) {
   EXPECT_EQ(SmallTextureUpscale("8"), 8u);
 }
 
-// Textures up to 32 px take the upscale; an override file sized for a
+// Textures up to 64 px take the upscale; an override file sized for a
 // texture sets its own.
-TEST(VulkanEtc2EmulationTest, ScalesTexturesUpTo32PxOrToTheirOverride) {
+TEST(VulkanEtc2EmulationTest, ScalesTexturesUpTo64PxOrToTheirOverride) {
   EXPECT_EQ(SmallTextureScale(32, 32, 4, 1), 4u);
-  EXPECT_EQ(SmallTextureScale(16, 32, 4, 1), 4u);
-  EXPECT_EQ(SmallTextureScale(33, 32, 4, 1), 1u);
-  EXPECT_EQ(SmallTextureScale(64, 64, 4, 1), 1u);
-  EXPECT_EQ(SmallTextureScale(64, 64, 4, 4), 4u);
-  EXPECT_EQ(SmallTextureScale(32, 32, 4, 8), 8u);
+  EXPECT_EQ(SmallTextureScale(16, 64, 4, 1), 4u);
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 1), 4u);
+  EXPECT_EQ(SmallTextureScale(65, 64, 4, 1), 1u);
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 8), 8u);
   EXPECT_EQ(SmallTextureScale(32, 32, 1, 1), 1u);
   EXPECT_EQ(SmallTextureScale(32, 32, 1, 4), 4u);
-}
-
-// An override's scale reaches every texture of its size.
-TEST(VulkanEtc2EmulationTest, ScalesOnlyOverridesUpTo64Px) {
-  EXPECT_EQ(SmallTextureScale(64, 64, 4, 8), 8u);
   EXPECT_EQ(SmallTextureScale(64, 65, 4, 4), 1u);
   EXPECT_EQ(SmallTextureScale(512, 512, 4, 8), 1u);
 }
@@ -953,6 +947,76 @@ TEST(VulkanEtc2EmulationTest, UpscalesLevelZeroIntoTheTopLevel) {
   EXPECT_EQ(own->imageExtent.height, 4u);
   ExpectStaged(*own, level0);
   emulation->ReleaseCommandBuffer(command_buffer);
+}
+
+// The memory upscaling costs reaches the session log: a 32 px texture at
+// 4x is 128 + 64 + 32 px of RGBA8 on the GPU, all of it upscaled.
+TEST(VulkanEtc2EmulationTest, LogsTheMemoryOfUpscaledTextures) {
+  const VkDevice device = FakeHandle<VkDevice>(0x16);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x26));
+  ::testing::internal::CaptureStderr();
+  CreateEtc2Image(*emulation, device, 32, 1);
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  EXPECT_NE(log.find("[vulkan] ETC2 textures: 84 KiB on the GPU, 84 KiB of "
+                     "it upscaled; 0 KiB of blocks kept on the CPU"),
+            std::string::npos)
+      << log;
+}
+
+// An upload of part of level 0 scales the whole level again, the new block
+// among its kept neighbours, so the filter does not see a cut edge.
+TEST(VulkanEtc2EmulationTest, UpscalesAPartialUploadWithItsNeighbours) {
+  const VkDevice device = FakeHandle<VkDevice>(0x15);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x205);
+  const VkCommandBuffer first = FakeHandle<VkCommandBuffer>(0x705);
+  const VkCommandBuffer second = FakeHandle<VkCommandBuffer>(0x706);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  g_uploaded_regions.clear();
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x25));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 1);
+  MapSource(*emulation, device, source);
+
+  std::vector<std::uint8_t> blocks;
+  for (const std::uint8_t grey : {0x20, 0x60, 0xA0, 0xE0}) {
+    const auto block = GreyBlock(grey);
+    blocks.insert(blocks.end(), block.begin(), block.end());
+  }
+  VkBufferImageCopy whole{};
+  whole.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  whole.imageExtent = {8, 8, 1};
+  emulation->CmdCopyBufferToImage(device, first, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &whole);
+  std::memcpy(g_source.data(), blocks.data(), blocks.size());
+  emulation->PrepareSubmit(&first, 1);
+
+  g_uploaded_regions.clear();
+  VkBufferImageCopy part{};
+  part.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  part.imageOffset = {4, 4, 0};
+  part.imageExtent = {4, 4, 1};
+  emulation->CmdCopyBufferToImage(device, second, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &part);
+  const auto patch = GreyBlock(0x10);
+  std::memcpy(g_source.data(), patch.data(), patch.size());
+  emulation->PrepareSubmit(&second, 1);
+
+  std::memcpy(blocks.data() + 3 * 8, patch.data(), patch.size());
+  const VkBufferImageCopy* top = UploadedLevel(0);
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(top->imageOffset.x, 0);
+  EXPECT_EQ(top->imageOffset.y, 0);
+  EXPECT_EQ(top->imageExtent.width, 16u);
+  EXPECT_EQ(top->imageExtent.height, 16u);
+  ExpectStaged(*top,
+               UpscaleSquare(DecodeSquare(blocks.data(), blocks.size(), 8), 8,
+                             16));
+  emulation->ReleaseCommandBuffer(first);
+  emulation->ReleaseCommandBuffer(second);
 }
 
 // Block-rounded uploads (a 1x1 mip sent as 4x4) stop at the mip's edge.
