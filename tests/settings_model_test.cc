@@ -1001,6 +1001,33 @@ TEST_F(SettingsModelTest, TheFixedProxyIsOneHostAndPortRow) {
   EXPECT_FALSE(loaded.config.network_proxy().has_value());
 }
 
+TEST_F(SettingsModelTest, DesktopDrawnGameCursorIsUnderMore) {
+  const SettingsPage* input = nullptr;
+  for (const SettingsPage& page : SettingsPages()) {
+    if (page.name == "input") input = &page;
+  }
+  ASSERT_NE(input, nullptr);
+  ASSERT_FALSE(input->groups.empty());
+  const SettingsGroup& mouse = input->groups[0];
+  EXPECT_EQ(mouse.title, "Mouse and touch");
+  ASSERT_EQ(mouse.settings.size(), 4U);
+  EXPECT_EQ(mouse.settings[1].key, "input.system_cursor");
+  EXPECT_EQ(mouse.settings[1].title, "System cursor");
+  EXPECT_EQ(mouse.more_from, 3U);
+  EXPECT_EQ(mouse.settings[3].key, "input.hardware_cursor");
+  EXPECT_EQ(mouse.settings[3].title, "Desktop-drawn game cursor");
+}
+
+TEST_F(SettingsModelTest, MoreRowsSitInsideTheirGroup) {
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      if (group.more_from == 0) continue;
+      EXPECT_LT(group.more_from, group.settings.size()) << group.title;
+      EXPECT_TRUE(group.expander.empty()) << group.title;
+    }
+  }
+}
+
 TEST_F(SettingsModelTest, LocationAndPerformanceOverlayAreSeparateGroups) {
   const SettingsGroup* location = nullptr;
   const SettingsGroup* performance = nullptr;

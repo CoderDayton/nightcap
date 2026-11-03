@@ -114,10 +114,9 @@ input:
   # Boolean (default: false): use the desktop's cursor theme for the arrow,
   # hand and text cursors instead of Roblox's pictures.
   system_cursor: false
-  # Boolean (default: false): have the desktop draw the cursor instead of
-  # Roblox drawing it into the game, so cursor effects and tools work with it.
-  # Uses Roblox's pictures, a game's own cursor included. The shift lock
-  # cursor is still drawn by Roblox.
+  # Boolean (default: false): only for desktop cursor effects, like Hyprland
+  # plugins. The desktop draws a game's own cursor instead of Roblox; the
+  # shift lock cursor stays Roblox's. Most people should leave this off.
   hardware_cursor: false
 
 overlay:

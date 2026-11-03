@@ -96,6 +96,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Changed
 
+- In Settings > Input, System cursor theme is now called System cursor, and Hardware cursor is now
+  Desktop-drawn game cursor, under More, with a description of what it is for.
 - Roblox updates now download in the background while Nightcap runs and install on the next launch.
   An interrupted download resumes where it stopped. It runs at low CPU and disk priority, and stops
   if Nightcap closes or crashes.
