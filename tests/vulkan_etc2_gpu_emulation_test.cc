@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -3692,6 +3693,265 @@ TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenUpscaledCompressedImages) {
     emulation.DestroyDevice(vk.device);
   }
   CloseTestDevices(&devices);
+}
+
+// The upscale budget can give two 32 px textures different scales. A copy
+// from the 4x one into the 2x one is scaled again from the source's ETC2
+// blocks rather than skipped, which left the destination black.
+// A 1 MiB card has a 128 KiB budget; as BC7 a 32 px texture takes 21 KiB at
+// 4x and 5 KiB at 2x, a 16 px one 5.25 KiB at 4x, so five 32 px textures
+// and one 16 px leave room for 2x but not 4x.
+TEST(VulkanEtc2GpuEmulationTest, CopiesBetweenCompressedImagesOfDifferentScales) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    EXPECT_EQ(setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1), 0);
+    EXPECT_EQ(setenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB", "1", 1), 0);
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), 0);
+    EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"), 0);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    constexpr std::uint32_t kSize = 32;
+    const std::uint32_t host = kSize * 2;
+    const TestImage first = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSize, 1);
+    std::vector<TestImage> fillers;
+    for (int index = 0; index < 4; ++index) {
+      fillers.push_back(CreateTestImage(
+          &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSize, 1));
+    }
+    fillers.push_back(CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 16, 1));
+    ::testing::internal::CaptureStderr();
+    const TestImage second = CreateTestImage(
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, kSize, 1);
+    const std::string log = ::testing::internal::GetCapturedStderr();
+    ASSERT_NE(log.find("stepped down to 2x"), std::string::npos) << log;
+    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, kSize);
+    HostBuffer readback = CreateHostBuffer(vk, Bc7MipBytes(host),
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    BindAndMap(vk, &readback);
+
+    TestCommands commands = BeginTestCommands(vk);
+    UploadLevel(&emulation, vk, commands.buffer, source.buffer, first.image,
+                kSize);
+    ImageBarrier(Emu(emulation), vk, commands.buffer, second.image, 1,
+                 VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {kSize, kSize, 1};
+    emulation.CmdCopyImage(vk.device, commands.buffer, first.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, second.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    ImageBarrier(Emu(emulation), vk, commands.buffer, second.image, 1,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    ReadMipBc7(vk, commands.buffer, second.image, 0, host, readback.buffer, 0);
+    HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+    vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+    ASSERT_TRUE(SubmitThroughEmulation(&emulation, vk, commands.buffer));
+
+    UploadCase expected;
+    expected.etc = EtcFormat::kEtc2Rgb8;
+    expected.width = kSize;
+    expected.height = kSize;
+    UploadCase actual = expected;
+    actual.width = host;
+    actual.height = host;
+    const auto mean = [](const std::vector<std::uint8_t>& texels) {
+      double sum = 0;
+      for (std::size_t i = 0; i < texels.size(); i += 4) {
+        sum += texels[i] + texels[i + 1] + texels[i + 2];
+      }
+      return sum / (texels.size() / 4 * 3);
+    };
+    EXPECT_NEAR(mean(DecodeBcReadback(
+                    actual, static_cast<std::uint8_t*>(readback.mapped))),
+                mean(DecodeOnCpu(expected,
+                                 static_cast<std::uint8_t*>(source.mapped))),
+                12.0);
+
+    emulation.ReleaseCommandBuffer(commands.buffer);
+    DestroyTestCommands(vk, commands);
+    DestroyHostBuffer(vk, readback);
+    DestroyEtcSource(&emulation, vk, source);
+    DestroyTestImage(&emulation, vk, second);
+    for (const TestImage& filler : fillers) {
+      DestroyTestImage(&emulation, vk, filler);
+    }
+    DestroyTestImage(&emulation, vk, first);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
+// The driver's VK_EXT_memory_budget numbers reach the upscale budget and the
+// session log, as the loader wires them.
+TEST(VulkanEtc2GpuEmulationTest, ReadsTheDriversFreeVideoMemory) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    const auto get_memory2 =
+        vk.Instance<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+            "vkGetPhysicalDeviceMemoryProperties2");
+    ASSERT_NE(get_memory2, nullptr);
+    EXPECT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1), 0);
+    VulkanEtc2Emulation emulation;
+    EXPECT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr);
+    const VkPhysicalDevice physical = vk.physical_device;
+    emulation.SetMemoryBudgetQuery(
+        vk.device, [get_memory2, physical](
+                       VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+          VkPhysicalDeviceMemoryProperties2 memory{};
+          memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+          budget->pNext = nullptr;
+          memory.pNext = budget;
+          get_memory2(physical, &memory);
+          return true;
+        });
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+    info.extent = {32, 32, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImage image = VK_NULL_HANDLE;
+    ::testing::internal::CaptureStderr();
+    ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
+              VK_SUCCESS);
+    const std::string log = ::testing::internal::GetCapturedStderr();
+    EXPECT_NE(log.find(" free; 4x 1, 2x 0, 1x 0)"), std::string::npos) << log;
+    emulation.DestroyImage(vk.device, image, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+}
+
+// Creates the small textures of an offline count across many games at once,
+// 9,352 of 64 px or less, about 2.1 GB at 4x decoded, and prints what the
+// driver needs for them on cards of several sizes. Nothing is allocated.
+TEST(VulkanEtc2GpuEmulationTest, DISABLED_SimulatesTheSmallTextureCount) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  VulkanTestDevice& vk = devices.front();
+  const auto requirements =
+      vk.Device<PFN_vkGetImageMemoryRequirements>("vkGetImageMemoryRequirements");
+  const auto get_memory2 = vk.Instance<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+      "vkGetPhysicalDeviceMemoryProperties2");
+  struct Card {
+    const char* video_mb;
+    bool compress;
+  };
+  const Card cards[] = {{nullptr, true},  {nullptr, false}, {"8192", true},
+                        {"8192", false},  {"4096", true},   {"4096", false},
+                        {"2048", true},   {"2048", false}};
+  for (const Card& card : cards) {
+    if (card.compress && !vk.bc_textures) {
+      continue;
+    }
+    EXPECT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1), 0);
+    // Every texture stays BC with compression on, as with time to encode.
+    EXPECT_EQ(setenv("MOCKTAIL_ETC2_ENCODE_BUDGET", "0", 1), 0);
+    if (card.video_mb != nullptr) {
+      EXPECT_EQ(setenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB", card.video_mb, 1), 0);
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, card.compress);
+    EXPECT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+    EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), 0);
+    EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"), 0);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    const VkPhysicalDevice physical = vk.physical_device;
+    emulation.SetMemoryBudgetQuery(
+        vk.device, [get_memory2, physical](
+                       VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+          VkPhysicalDeviceMemoryProperties2 memory{};
+          memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+          budget->pNext = nullptr;
+          memory.pNext = budget;
+          get_memory2(physical, &memory);
+          return true;
+        });
+
+    const auto create = [&](std::uint32_t size, std::uint32_t mips) {
+      VkImageCreateInfo info{};
+      info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      info.imageType = VK_IMAGE_TYPE_2D;
+      info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+      info.extent = {size, size, 1};
+      info.mipLevels = mips;
+      info.arrayLayers = 1;
+      info.samples = VK_SAMPLE_COUNT_1_BIT;
+      info.tiling = VK_IMAGE_TILING_OPTIMAL;
+      info.usage =
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      VkImage image = VK_NULL_HANDLE;
+      EXPECT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
+                VK_SUCCESS);
+      return image;
+    };
+    ::testing::internal::CaptureStderr();
+    std::vector<VkImage> images;
+    VkDeviceSize needed = 0;
+    for (int index = 0; index < 9352; ++index) {
+      // 5 of every 9 are 64 px, the rest 32 px.
+      const bool large = index % 9 < 5;
+      const VkImage image = create(large ? 64 : 32, large ? 7 : 6);
+      VkMemoryRequirements memory{};
+      requirements(vk.device, image, &memory);
+      needed += memory.size;
+      images.push_back(image);
+    }
+    // The memory line prints at most every 5 s; one more image after that
+    // prints the final counts.
+    std::this_thread::sleep_for(std::chrono::milliseconds(5100));
+    images.push_back(create(256, 9));
+    const std::string log = ::testing::internal::GetCapturedStderr();
+    std::string summary;
+    for (std::size_t at = log.find("[vulkan] "); at != std::string::npos;
+         at = log.find("[vulkan] ", at + 1)) {
+      const std::string line = log.substr(at, log.find('\n', at) - at);
+      if (line.find("ETC2 textures:") != std::string::npos ||
+          line.find("stepped down") != std::string::npos) {
+        summary += "    " + line + "\n";
+      }
+    }
+    std::printf("card %s MiB, compression %s: driver needs %.1f MiB for the "
+                "small textures\n%s",
+                card.video_mb != nullptr ? card.video_mb : "real",
+                card.compress ? "on" : "off",
+                static_cast<double>(needed) / (1U << 20), summary.c_str());
+    for (const VkImage image : images) {
+      emulation.DestroyImage(vk.device, image, nullptr);
+    }
+    emulation.DestroyDevice(vk.device);
+  }
 }
 
 // A higher mip recorded before its level 0 still takes the override level 0

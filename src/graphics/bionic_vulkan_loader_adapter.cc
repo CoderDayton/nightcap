@@ -1959,6 +1959,42 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
                               memory_properties, host_get_device_proc_addr,
                               enabled.vulkan12.timelineSemaphore == VK_TRUE,
                               bc_textures);
+  // A physical-device query of a supported device extension needs no
+  // enabling on the device, only Vulkan 1.1.
+  const auto host_memory_properties2 =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+          HostInstanceProc(instance, "vkGetPhysicalDeviceMemoryProperties2"));
+  const auto host_device_extensions =
+      reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+          HostInstanceProc(instance, "vkEnumerateDeviceExtensionProperties"));
+  if (etc2_emulated && properties.apiVersion >= VK_API_VERSION_1_1 &&
+      host_memory_properties2 != nullptr &&
+      host_device_extensions != nullptr) {
+    std::uint32_t count = 0;
+    host_device_extensions(physical_device, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> extensions(count);
+    host_device_extensions(physical_device, nullptr, &count,
+                           extensions.data());
+    extensions.resize(count);
+    const bool has_budget = std::any_of(
+        extensions.begin(), extensions.end(),
+        [](const VkExtensionProperties& extension) {
+          return std::strcmp(extension.extensionName,
+                             VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;
+        });
+    if (has_budget) {
+      State().etc2.SetMemoryBudgetQuery(
+          *device, [host_memory_properties2, physical_device](
+                       VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+            VkPhysicalDeviceMemoryProperties2 memory{};
+            memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+            budget->pNext = nullptr;
+            memory.pNext = budget;
+            host_memory_properties2(physical_device, &memory);
+            return true;
+          });
+    }
+  }
 
   std::uint32_t queue_family_count = 0;
   const auto host_get_queue_families =

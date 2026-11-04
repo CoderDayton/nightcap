@@ -245,6 +245,35 @@ bool Etc2EncodeBudget::Take(double cost_ns, std::uint64_t now_ns) {
 
 namespace {
 
+// Bytes as KiB below 1 MiB, else MiB with one decimal.
+std::string FormatBytes(std::uint64_t bytes) {
+  char text[32];
+  if (bytes < (1U << 20)) {
+    std::snprintf(text, sizeof(text), "%llu KiB",
+                  static_cast<unsigned long long>(bytes / 1024));
+  } else {
+    std::snprintf(text, sizeof(text), "%.1f MiB",
+                  static_cast<double>(bytes) / (1U << 20));
+  }
+  return text;
+}
+
+VkDeviceSize HostTextureBytes(EtcFormat format, const VkImageCreateInfo& info,
+                              std::uint32_t scale, bool transcoded) {
+  if (transcoded) {
+    return Etc2HostBlockCount(info.extent, info.mipLevels, info.arrayLayers,
+                              scale) *
+           BcBlockBytes(BcFormatFor(format));
+  }
+  VkDeviceSize compressed = 0;
+  VkDeviceSize decoded = 0;
+  if (!Etc2ImageByteCounts(format, info.extent, info.mipLevels,
+                           info.arrayLayers, scale, &compressed, &decoded)) {
+    return 0;
+  }
+  return decoded;
+}
+
 bool ShouldLog(std::atomic<unsigned>* counter, unsigned limit) {
   return counter->fetch_add(1, std::memory_order_relaxed) < limit;
 }
@@ -266,6 +295,18 @@ struct EncodeStats {
 };
 
 constexpr std::uint64_t kEncodeLogIntervalNs = 5'000'000'000;
+constexpr std::uint64_t kVideoFreeRefreshNs = 250'000'000;
+// Crosshairs and cursors: cheap enough to keep 4x until the budget is full.
+constexpr std::uint32_t kSharpestMaxExtent = 32;
+
+// MiB from MOCKTAIL_ETC2_VIDEO_MEMORY_MB, or 0 when unset or not a number.
+std::uint64_t VideoMemoryOverrideMib(const char* value) {
+  if (value == nullptr || value[0] < '0' || value[0] > '9') {
+    return 0;
+  }
+  const unsigned long long parsed = std::strtoull(value, nullptr, 10);
+  return parsed > (1ULL << 30) ? 0 : parsed;
+}
 
 // A line every kEncodeLogIntervalNs while images are created, so a session
 // log shows what the budget held back on the reporter's GPU.
@@ -407,6 +448,8 @@ struct ImageRecord {
   // An override file names this image's size, so its uploads decode on the
   // CPU where they can be hashed and replaced.
   bool may_override = false;
+  // The scale before the upscale budget; above `scale` when it stepped down.
+  std::uint32_t asked_scale = 1;
   // Compressed blocks of each full-mip upload to a scaled or decoded image,
   // by mip. Copies into a BC image are transcoded from them.
   std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> blocks;
@@ -1340,6 +1383,25 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkImage, ImageRecord> images;
   // Sum over `images`; guarded by `mutex`.
   EmulatedTextureBytes texture_bytes;
+  // GPU bytes of upscaled images, and the most a small texture's upscale may
+  // add to them: an eighth of video memory, 0 when unknown. Roblox sizes its
+  // texture budget for the textures it sent, not for upscaled ones.
+  VkDeviceSize upscaled_bytes = 0;
+  VkDeviceSize upscale_budget = 0;
+  // Live free video memory from VK_EXT_memory_budget, refreshed at most
+  // every kVideoFreeRefreshNs. Upscales reserved since then are subtracted,
+  // as the driver has not seen them yet, and a tenth of video memory stays
+  // free for Roblox.
+  VulkanEtc2Emulation::MemoryBudgetQuery budget_query;
+  VkDevice budget_device = VK_NULL_HANDLE;
+  std::uint32_t video_heap = VK_MAX_MEMORY_HEAPS;
+  VkDeviceSize video_memory = 0;
+  bool video_memory_overridden = false;
+  bool video_free_known = false;
+  VkDeviceSize video_free = 0;
+  VkDeviceSize reserved_since_free = 0;
+  std::uint64_t video_free_ns = 0;
+  unsigned stepped_down_logged = 0;
   // Top level counts of upscaled images, read by every barrier the
   // application records, so it has a lock of its own. `top_images` lets a
   // session without upscaled images skip the lock.
@@ -1727,30 +1789,116 @@ struct VulkanEtc2Emulation::State {
       return {};
     }
     memory_log_ns = now;
-    VkDeviceSize upscaled = 0;
     std::size_t kept = 0;
+    // Small textures by the scale they got: 1x, 2x, 4x, 8x.
+    std::size_t at_scale[4] = {};
     for (const auto& [image, record] : images) {
-      if (record.scale > 1) {
-        upscaled += record.bytes.decoded;
-      }
       for (const auto& blocks : record.blocks) {
         kept += blocks == nullptr ? 0 : blocks->size();
       }
-    }
-    const auto size = [](std::uint64_t bytes) {
-      char text[32];
-      if (bytes < (1U << 20)) {
-        std::snprintf(text, sizeof(text), "%llu KiB",
-                      static_cast<unsigned long long>(bytes / 1024));
-      } else {
-        std::snprintf(text, sizeof(text), "%.1f MiB",
-                      static_cast<double>(bytes) / (1U << 20));
+      if (record.asked_scale > 1) {
+        ++at_scale[std::min<std::uint32_t>(3, TopLevelCount(record.scale))];
       }
-      return std::string(text);
-    };
-    return "  [vulkan] ETC2 textures: " + size(texture_bytes.decoded) +
-           " on the GPU, " + size(upscaled) + " of it upscaled; " +
-           size(kept) + " of blocks kept on the CPU\n";
+    }
+    std::string budget;
+    if (upscale_budget != 0) {
+      budget = " (budget " + FormatBytes(upscale_budget);
+      if (video_free_known) {
+        budget += ", " + FormatBytes(video_free) + " free";
+      }
+      budget += "; ";
+      if (at_scale[3] != 0) {
+        budget += "8x " + std::to_string(at_scale[3]) + ", ";
+      }
+      budget += "4x " + std::to_string(at_scale[2]) + ", 2x " +
+                std::to_string(at_scale[1]) + ", 1x " +
+                std::to_string(at_scale[0]) + ")";
+    }
+    return "  [vulkan] ETC2 textures: " + FormatBytes(texture_bytes.decoded) +
+           " on the GPU, " + FormatBytes(upscaled_bytes) + " of it upscaled" +
+           budget + "; " + FormatBytes(kept) + " of blocks kept on the CPU\n";
+  }
+
+  void RefreshVideoFree() {
+    VulkanEtc2Emulation::MemoryBudgetQuery query;
+    std::uint32_t heap = VK_MAX_MEMORY_HEAPS;
+    VkDeviceSize reserved_before = 0;
+    const std::uint64_t now = TraceClockNanos();
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (!budget_query || video_memory_overridden ||
+          (video_free_ns != 0 && now - video_free_ns < kVideoFreeRefreshNs)) {
+        return;
+      }
+      video_free_ns = now;
+      query = budget_query;
+      heap = video_heap;
+      reserved_before = reserved_since_free;
+    }
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    const bool known = heap < VK_MAX_MEMORY_HEAPS && query(&budget) &&
+                       budget.heapBudget[heap] != 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    video_free_known = known;
+    video_free = known && budget.heapBudget[heap] > budget.heapUsage[heap]
+                     ? budget.heapBudget[heap] - budget.heapUsage[heap]
+                     : 0;
+    // Reservations made while the query ran are not in its count.
+    reserved_since_free -= std::min(reserved_since_free, reserved_before);
+  }
+
+  struct UpscaleRung {
+    std::uint32_t scale = 1;
+    VkDeviceSize cost = 0;
+  };
+
+  // Reserves the first rung that fits and returns its index, or
+  // rungs.size() when none does. Unless the driver reports a fifth of video
+  // memory free, textures above kSharpestMaxExtent take 4x only in the first
+  // half of the budget, so the cheaper ones keep it longest.
+  std::size_t ReserveUpscale(const std::vector<UpscaleRung>& rungs,
+                             bool larger, std::string* log) {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::size_t pick = 0;
+    for (; pick < rungs.size(); ++pick) {
+      const UpscaleRung& rung = rungs[pick];
+      const auto free_after = [&](VkDeviceSize keep_free) {
+        return video_free_known &&
+               video_free >= reserved_since_free + rung.cost + keep_free;
+      };
+      const bool tight = !free_after(video_memory / 5);
+      const VkDeviceSize limit = larger && rung.scale >= 4 && tight
+                                     ? upscale_budget / 2
+                                     : upscale_budget;
+      const bool in_budget =
+          upscale_budget == 0 || upscaled_bytes + rung.cost <= limit;
+      const bool in_free = !video_free_known || free_after(video_memory / 10);
+      if (in_budget && in_free) {
+        upscaled_bytes += rung.cost;
+        reserved_since_free += rung.cost;
+        break;
+      }
+    }
+    if (pick == 0) {
+      return pick;
+    }
+    const std::uint32_t scale =
+        pick < rungs.size() ? rungs[pick].scale : rungs.back().scale / 2;
+    const unsigned bit = 1u << TopLevelCount(scale);
+    if ((stepped_down_logged & bit) == 0) {
+      stepped_down_logged |= bit;
+      char text[256];
+      std::snprintf(text, sizeof(text),
+                    "  [vulkan] small texture upscaling stepped down to %ux: "
+                    "%s of a %s budget used, %s free\n",
+                    scale, FormatBytes(upscaled_bytes).c_str(),
+                    FormatBytes(upscale_budget).c_str(),
+                    video_free_known ? FormatBytes(video_free).c_str()
+                                     : "unknown");
+      *log = text;
+    }
+    return pick;
   }
 
   // Prepays an image's first full upload at `scale`, probe-measured ns per
@@ -3418,6 +3566,31 @@ void VulkanEtc2Emulation::RegisterDevice(
   dev->emulated = emulated;
   dev->bc_textures = emulated && bc_textures;
   dev->memory = memory;
+  if (emulated) {
+    VkDeviceSize video_memory = 0;
+    std::uint32_t video_heap = VK_MAX_MEMORY_HEAPS;
+    for (std::uint32_t heap = 0;
+         heap < memory.memoryHeapCount && heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+      if ((memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) !=
+              0 &&
+          memory.memoryHeaps[heap].size > video_memory) {
+        video_memory = memory.memoryHeaps[heap].size;
+        video_heap = heap;
+      }
+    }
+    // Lets a large card act as a small one; the driver's free memory is then
+    // not read.
+    const std::uint64_t overridden =
+        VideoMemoryOverrideMib(std::getenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"));
+    if (overridden != 0) {
+      video_memory = overridden << 20;
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->video_memory = video_memory;
+    state_->video_heap = video_heap;
+    state_->video_memory_overridden = overridden != 0;
+    state_->upscale_budget = video_memory / 8;
+  }
   dev->create_image = DeviceProc<PFN_vkCreateImage>(get, device, "vkCreateImage");
   dev->destroy_image =
       DeviceProc<PFN_vkDestroyImage>(get, device, "vkDestroyImage");
@@ -3552,9 +3725,26 @@ void VulkanEtc2Emulation::RegisterDevice(
   g_devices_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
+void VulkanEtc2Emulation::SetMemoryBudgetQuery(VkDevice device,
+                                               MemoryBudgetQuery query) {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  state_->budget_query = std::move(query);
+  state_->budget_device = device;
+  state_->video_free_known = false;
+  state_->video_free_ns = 0;
+}
+
 void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->budget_device == device) {
+      state_->budget_query = nullptr;
+      state_->budget_device = VK_NULL_HANDLE;
+      state_->video_free_known = false;
+    }
+  }
   std::vector<VkSampler> shifted;
   {
     std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
@@ -3619,6 +3809,9 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
       if (it->second.device == device) {
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        if (it->second.scale > 1) {
+          state_->upscaled_bytes -= it->second.bytes.decoded;
+        }
         if (it->second.top != 0) {
           destroyed.push_back(it->first);
         }
@@ -3688,15 +3881,19 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   host_info.flags &= ~static_cast<VkImageCreateFlags>(
       VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
   std::uint32_t scale = 1;
+  std::uint32_t override_scale = 1;
   if (IsColorFormat(format.etc_format) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
       create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
       create_info->arrayLayers == 1 && create_info->extent.depth == 1) {
-    scale = SmallTextureScale(
-        create_info->extent.width, create_info->extent.height,
-        state_->upscale,
-        state_->overrides.UpscaleFor(create_info->extent.width,
-                                     create_info->extent.height));
+    const std::uint32_t override_upscale = state_->overrides.UpscaleFor(
+        create_info->extent.width, create_info->extent.height);
+    scale = SmallTextureScale(create_info->extent.width,
+                              create_info->extent.height, state_->upscale,
+                              override_upscale);
+    override_scale =
+        SmallTextureScale(create_info->extent.width,
+                          create_info->extent.height, 1, override_upscale);
   }
   const bool may_override =
       IsColorFormat(format.etc_format) && create_info->arrayLayers == 1 &&
@@ -3709,15 +3906,44 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // only the decoded path has always passed through. Drivers rarely support
   // BC with linear tiling.
   VkFormat bc_format = VK_FORMAT_UNDEFINED;
-  bool transcoded =
-      dev->bc_textures && dev->gpu != nullptr &&
-      dev->gpu->CanTranscode() && !may_override &&
-      (scale == 1 || dev->gpu->CanScale()) &&
-      create_info->imageType == VK_IMAGE_TYPE_2D &&
-      create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
-      (create_info->usage & ~kBcUsage) == 0 &&
-      (create_info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) == 0 &&
-      BcHostFormat(create_info->format, &bc_format);
+  const bool bc_format_known = BcHostFormat(create_info->format, &bc_format);
+  const auto bc_eligible = [&](std::uint32_t at_scale) {
+    return bc_format_known && dev->bc_textures && dev->gpu != nullptr &&
+           dev->gpu->CanTranscode() && !may_override &&
+           (at_scale == 1 || dev->gpu->CanScale()) &&
+           create_info->imageType == VK_IMAGE_TYPE_2D &&
+           create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
+           (create_info->usage & ~kBcUsage) == 0 &&
+           (create_info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) == 0;
+  };
+  // Over budget the scale halves, down to an override's or the texture's
+  // own; the reservation is settled against the real size once created.
+  const std::uint32_t asked_scale = scale;
+  VkDeviceSize reserved = 0;
+  if (scale > override_scale) {
+    state_->RefreshVideoFree();
+    std::vector<State::UpscaleRung> rungs;
+    for (std::uint32_t rung = scale; rung > override_scale; rung /= 2) {
+      rungs.push_back({rung, HostTextureBytes(format.etc_format, *create_info,
+                                              rung, bc_eligible(rung))});
+    }
+    std::string log;
+    const std::size_t pick = state_->ReserveUpscale(
+        rungs,
+        std::max(create_info->extent.width, create_info->extent.height) >
+            kSharpestMaxExtent,
+        &log);
+    if (pick < rungs.size()) {
+      scale = rungs[pick].scale;
+      reserved = rungs[pick].cost;
+    } else {
+      scale = override_scale;
+    }
+    if (!log.empty()) {
+      std::fputs(log.c_str(), stderr);
+    }
+  }
+  bool transcoded = bc_eligible(scale);
   double prepaid = 0;
   if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
     prepaid = state_->BudgetEncode(*dev, *create_info, scale);
@@ -3749,9 +3975,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
     }
     if (transcoded) {
       bytes.decoded =
-          Etc2HostBlockCount(create_info->extent, create_info->mipLevels,
-                             create_info->arrayLayers, scale) *
-          BcBlockBytes(BcFormatFor(format.etc_format));
+          HostTextureBytes(format.etc_format, *create_info, scale, true);
     }
     EmulatedTextureBytes totals;
     std::uint64_t now = 0;
@@ -3770,8 +3994,18 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.transcoded = transcoded;
       record.prepaid_ns = prepaid;
       record.may_override = may_override;
+      record.asked_scale = asked_scale;
       state_->texture_bytes.compressed += bytes.compressed;
       state_->texture_bytes.decoded += bytes.decoded;
+      // A failed encode prepay leaves the image decoded, larger than the
+      // BC size reserved, so both counts take the real size.
+      state_->upscaled_bytes -= reserved;
+      state_->reserved_since_free -=
+          std::min(state_->reserved_since_free, reserved);
+      if (scale > 1) {
+        state_->upscaled_bytes += bytes.decoded;
+        state_->reserved_since_free += bytes.decoded;
+      }
       totals = state_->texture_bytes;
       now = TraceClockNanos();
       memory_log = state_->TakeMemoryLogLocked(now);
@@ -3792,6 +4026,11 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
                    static_cast<int>(create_info->format),
                    static_cast<int>(format.host_format), top);
     }
+  } else if (reserved != 0) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->upscaled_bytes -= reserved;
+    state_->reserved_since_free -=
+        std::min(state_->reserved_since_free, reserved);
   }
   return result;
 }
@@ -3825,6 +4064,9 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
         dev->budget.Refund(it->second.prepaid_ns);
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        if (it->second.scale > 1) {
+          state_->upscaled_bytes -= it->second.bytes.decoded;
+        }
         state_->images.erase(it);
         totals = state_->texture_bytes;
         now = TraceClockNanos();

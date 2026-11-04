@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "mocktail/graphics/etc2_decoder.h"
@@ -146,6 +147,11 @@ class VulkanEtc2Emulation final {
                       PFN_vkGetDeviceProcAddr get_device_proc_addr,
                       bool timeline_semaphore = false,
                       bool bc_textures = false);
+  // False when VK_EXT_memory_budget is unavailable. With it, small texture
+  // upscaling also leaves a tenth of video memory free by the driver's count.
+  using MemoryBudgetQuery =
+      std::function<bool(VkPhysicalDeviceMemoryBudgetPropertiesEXT*)>;
+  void SetMemoryBudgetQuery(VkDevice device, MemoryBudgetQuery query);
   void DestroyDevice(VkDevice device);
 
   void RegisterQueue(VkDevice device, VkQueue queue,

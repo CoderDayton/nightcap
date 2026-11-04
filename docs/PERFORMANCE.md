@@ -137,6 +137,27 @@ picks them at normal draw size and the sharper ones only when the texture is
 drawn larger. 4× is 16 times the pixels per affected texture: a 64px texture
 grows from 16 KiB to 256 KiB uncompressed.
 
+Upscaled textures share a budget of an eighth of the card's video memory,
+as Vulkan reports it: 256 MiB on a 2 GB card, 3 GiB on a 24 GB one. Roblox
+sizes its own texture budget for the textures it sends, so it cannot see
+this cost. Past the budget a new small texture steps down to 2×, then to
+its own size, so it stays as sharp as memory allows:
+
+- Textures of 32px or less, such as crosshairs and cursors, cost a quarter
+  of a 64px one or less, and keep 4× until the budget is full. Larger ones
+  take 2× once half of it is used, unless the driver reports more than a
+  fifth of video memory free.
+- Where the driver reports free video memory (`VK_EXT_memory_budget`, read
+  at most every 250 ms), an upscale must also leave a tenth of video memory
+  free, which counts what Roblox and other programs use.
+- Destroyed textures give their share back, so later ones get 4× again.
+- The upscale an override file asks for is not limited, but counts toward
+  the budget.
+
+The session log says the first time textures step down to each size.
+`MOCKTAIL_ETC2_VIDEO_MEMORY_MB` sets the video memory for one run, so a large
+card acts as a small one; the driver's free memory is then not read.
+
 A texture of 64px or less with an override file is sized at least to its
 PNG: the smaller axis's ratio, rounded down to a power of two, up to 8×. A
 128px override for a 64px texture shows at 2×. The factor applies to every
@@ -176,10 +197,12 @@ each factor, how many stayed decoded, and the estimated GPU time:
 
 At the first texture and then every 5 seconds while textures are created, it
 shows what emulated textures take in GPU memory, how much of that is
-upscaling, and how many ETC2 blocks stay in system memory for later copies:
+upscaling against its budget and the driver's free video memory, how many
+small textures got each scale, and how many ETC2 blocks stay in system
+memory for later copies:
 
 ```text
-[vulkan] ETC2 textures: 412.3 MiB on the GPU, 38.1 MiB of it upscaled; 12.4 MiB of blocks kept on the CPU
+[vulkan] ETC2 textures: 412.3 MiB on the GPU, 38.1 MiB of it upscaled (budget 256.0 MiB, 640.2 MiB free; 4x 310, 2x 42, 1x 0); 12.4 MiB of blocks kept on the CPU
 ```
 
 Upscaling adds no new detail. Textures grow with a sharpened bicubic filter,

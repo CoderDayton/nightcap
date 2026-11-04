@@ -114,7 +114,9 @@ Release notes on GitHub are taken from the matching section here.
   `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
 - Textures of 64 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
   screen draws them larger than a phone does. Larger textures are left at the size Roblox sends. An
-  override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×.
+  override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×. Upscaled
+  textures take at most an eighth of video memory and leave a tenth of it free; past that, new ones
+  are upscaled 2×, then left at their own size, with crosshair-sized ones kept at 4× longest.
   The Small texture upscale setting is gone; an old `graphics.small_texture_upscale` is ignored.
   Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
   instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while
