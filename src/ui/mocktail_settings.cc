@@ -485,7 +485,8 @@ void RefreshSkyRow(Row* row) {
       window->sky_previews_running
           ? "Making previews. Import is back in a moment."
           : "Add sky packs from a zip or folder. Each pack has six images "
-            "named like sky_bk … sky_up: PNGs, or Roblox .tex files.");
+            "named like sky_bk … sky_up: PNG, JPEG, WebP, DDS or Roblox "
+            ".tex files.");
 }
 
 void AppendImportTile(SettingsWindow* window) {
@@ -1540,7 +1541,7 @@ void RunSkyPreviews(GTask* task, gpointer, gpointer task_data,
       std::filesystem::rename(partial, preview, ignored);
       ++job->made;
     } else {
-      // KTX faces, which GdkPixbuf cannot read, keep the plain tile.
+      // KTX and DDS faces, which GdkPixbuf cannot read, keep the plain tile.
       std::filesystem::remove(partial, ignored);
       std::ofstream(preview.parent_path() / ".no-preview");
     }
