@@ -38,8 +38,8 @@ side by side.
   and your own cursor theme.
 - **Performance.** Less idle CPU use and faster texture loading.
 - **Custom assets.** Cursors, fonts and skies go in
-  `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Fleasion
-  works too.
+  `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Settings >
+  Customization imports sky packs, zips included, and switches between them. Fleasion works too.
 - **Overlays.** FPS, ping, and the server's location when you join.
 - **Discord.** Shows the game you're playing.
 - **Settings window.** Every option in one place.

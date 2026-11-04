@@ -575,8 +575,10 @@ std::uint32_t TextureOverrides::UpscaleFor(std::uint32_t width,
 }
 
 TextureOverrides TextureOverrides::FromEnvironment() {
-  return TextureOverrides(EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
-                          EnvironmentString("MOCKTAIL_TEXTURE_DUMP_DIR"));
+  const bool off = EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDES") == "0";
+  return TextureOverrides(
+      off ? std::string() : EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
+      EnvironmentString("MOCKTAIL_TEXTURE_DUMP_DIR"));
 }
 
 std::shared_ptr<const RgbaImage> TextureOverrides::Lookup(std::uint64_t hash) {

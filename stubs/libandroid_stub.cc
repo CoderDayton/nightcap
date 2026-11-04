@@ -183,8 +183,12 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   const char* root_env = GetEnvNonEmpty("MOCKTAIL_ASSET_ROOT");
   const std::string root = root_env != nullptr ? root_env : "rbx_bin/assets";
   const char* overlay_env = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY_DIR");
+  const char* overlay_switch = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY");
   const std::string overlay =
-      overlay_env != nullptr ? overlay_env : "rbx_bin/asset_overlay";
+      overlay_switch != nullptr && std::string_view(overlay_switch) == "0"
+          ? std::string()
+      : overlay_env != nullptr ? overlay_env
+                               : "rbx_bin/asset_overlay";
   const std::string cache_key = AssetCacheKey(root, overlay, requested);
 
   {

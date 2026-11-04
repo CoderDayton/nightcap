@@ -2,10 +2,14 @@
 #include <adwaita.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,6 +25,7 @@
 #include "runtime/runtime_paths.h"
 #include "runtime/single_instance_lock.h"
 #include "ui/settings_model.h"
+#include "ui/sky_pack.h"
 
 namespace {
 
@@ -132,6 +137,24 @@ struct SettingsWindow {
   std::filesystem::path roblox_data_lock;
   Row* cache = nullptr;
   GtkWidget* cache_button = nullptr;
+  std::filesystem::path asset_overlay_dir;
+  std::filesystem::path textures_dir;
+  std::filesystem::path sky_library;
+  GtkWidget* sky_import = nullptr;
+  GtkWidget* sky_grid = nullptr;
+  // The right-click menu of a library sky, and which sky it is for.
+  GtkWidget* sky_menu = nullptr;
+  std::string sky_menu_target;
+  GSimpleAction* sky_remove = nullptr;
+  // The "Importing…" toast, and the flag its Cancel button sets.
+  AdwToast* sky_progress = nullptr;
+  std::shared_ptr<std::atomic<bool>> sky_stop;
+  bool sky_previews_running = false;
+  // Greying the grid during a job drops its focus; this puts it back after.
+  bool sky_refocus = false;
+  // Set while a sky import or switch runs on a worker thread; the Sky row is
+  // locked until it ends.
+  bool sky_busy = false;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -208,6 +231,216 @@ void RefreshDeviceRow(Row* row, const std::string& value) {
   adw_combo_row_set_selected(ADW_COMBO_ROW(row->widget), selected);
 }
 
+// Stands for a sky put in the overlay by hand; no library name can be it.
+constexpr char kOtherSky[] = "\n";
+
+// Cached beside each pack's faces; a re-import replaces the folder, so a
+// stale preview cannot outlive its pack.
+std::filesystem::path PreviewFile(const SettingsWindow* window,
+                                  const std::string& name) {
+  return window->sky_library / name / ".preview.png";
+}
+std::filesystem::path NoPreviewFile(const SettingsWindow* window,
+                                    const std::string& name) {
+  return window->sky_library / name / ".no-preview";
+}
+
+constexpr int kSkyTileSize = 112;
+// Twice the tile size, for 2x displays.
+constexpr int kSkyPreviewSize = 224;
+
+GtkWidget* NewSkyTile(const std::string& label, const char* icon,
+                      const std::filesystem::path& preview, bool selected) {
+  GtkWidget* image;
+  std::error_code error;
+  // GtkImage, unlike GtkPicture, asks only for its pixel size, so tiles stay
+  // small and more fit on a line.
+  if (!preview.empty() && std::filesystem::exists(preview, error)) {
+    image = gtk_image_new_from_file(preview.c_str());
+    gtk_image_set_pixel_size(GTK_IMAGE(image), kSkyTileSize);
+  } else {
+    GtkWidget* icon_image = gtk_image_new_from_icon_name(icon);
+    gtk_image_set_pixel_size(GTK_IMAGE(icon_image), 40);
+    gtk_widget_add_css_class(icon_image, "dim-label");
+    image = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_valign(icon_image, GTK_ALIGN_CENTER);
+    gtk_widget_set_vexpand(icon_image, TRUE);
+    gtk_box_append(GTK_BOX(image), icon_image);
+  }
+  gtk_widget_set_size_request(image, kSkyTileSize, kSkyTileSize);
+  gtk_widget_set_halign(image, GTK_ALIGN_CENTER);
+  gtk_widget_add_css_class(image, "card");
+  gtk_widget_set_overflow(image, GTK_OVERFLOW_HIDDEN);
+  GtkWidget* overlay = gtk_overlay_new();
+  gtk_overlay_set_child(GTK_OVERLAY(overlay), image);
+  if (selected) {
+    GtkWidget* check = gtk_image_new_from_icon_name("object-select-symbolic");
+    gtk_widget_add_css_class(check, "osd");
+    gtk_widget_add_css_class(check, "circular");
+    gtk_widget_set_halign(check, GTK_ALIGN_END);
+    gtk_widget_set_valign(check, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(check, 6);
+    gtk_widget_set_margin_end(check, 6);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), check);
+  }
+  GtkWidget* text = gtk_label_new(label.c_str());
+  gtk_label_set_ellipsize(GTK_LABEL(text), PANGO_ELLIPSIZE_END);
+  gtk_label_set_max_width_chars(GTK_LABEL(text), 1);
+  gtk_widget_set_size_request(text, kSkyTileSize, -1);
+  gtk_widget_add_css_class(text, "caption");
+  if (selected) gtk_widget_add_css_class(text, "heading");
+  GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+  gtk_box_append(GTK_BOX(box), overlay);
+  gtk_box_append(GTK_BOX(box), text);
+  gtk_widget_set_tooltip_text(box, label.c_str());
+  return box;
+}
+
+void OpenSkyMenu(Row* row, GtkWidget* tile, double x, double y) {
+  SettingsWindow* window = row->window;
+  const char* name = static_cast<const char*>(g_object_get_data(
+      G_OBJECT(tile), "sky"));
+  graphene_rect_t bounds;
+  if (name == nullptr || window->sky_busy ||
+      !gtk_widget_compute_bounds(tile, row->widget, &bounds)) {
+    return;
+  }
+  window->sky_menu_target = name;
+  // The sky in use cannot leave the library.
+  g_simple_action_set_enabled(
+      window->sky_remove,
+      mocktail::ui::InstalledSky(window->asset_overlay_dir,
+                                 window->sky_library) != name);
+  const GdkRectangle at = {static_cast<int>(bounds.origin.x + x),
+                           static_cast<int>(bounds.origin.y + y), 1, 1};
+  gtk_popover_set_pointing_to(GTK_POPOVER(window->sky_menu), &at);
+  gtk_popover_popup(GTK_POPOVER(window->sky_menu));
+}
+
+void OnSkyTileClicked(GtkGestureClick* gesture, int, double x, double y,
+                      gpointer row) {
+  OpenSkyMenu(static_cast<Row*>(row),
+              gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)),
+              x, y);
+}
+
+void OnSkyTilePressed(GtkGestureLongPress* gesture, double x, double y,
+                      gpointer row) {
+  OpenSkyMenu(static_cast<Row*>(row),
+              gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)),
+              x, y);
+}
+
+// Menu or Shift+F10 opens the focused sky's menu.
+gboolean OnSkyGridKey(GtkEventControllerKey*, guint key, guint,
+                      GdkModifierType state, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  const bool shift = (state & GDK_SHIFT_MASK) != 0;
+  if (key != GDK_KEY_Menu && !(key == GDK_KEY_F10 && shift)) return FALSE;
+  GtkWidget* child = gtk_widget_get_focus_child(row->window->sky_grid);
+  if (child == nullptr || !GTK_IS_FLOW_BOX_CHILD(child)) return FALSE;
+  GtkWidget* tile = gtk_flow_box_child_get_child(GTK_FLOW_BOX_CHILD(child));
+  OpenSkyMenu(row, tile, gtk_widget_get_width(tile) / 2.0,
+              gtk_widget_get_height(tile) / 2.0);
+  return TRUE;
+}
+
+void StartSkyPreviews(Row* row);
+
+void RefreshSkyRow(Row* row) {
+  SettingsWindow* window = row->window;
+  const std::optional<std::string> installed = mocktail::ui::InstalledSky(
+      window->asset_overlay_dir, window->sky_library);
+  const std::string chosen = installed.value_or(kOtherSky);
+  std::vector<DeviceChoice> choices = {{"", "Roblox's own"}};
+  if (!installed) choices.push_back({kOtherSky, "Custom"});
+  for (std::string& name : mocktail::ui::ListSkyLibrary(window->sky_library)) {
+    choices.push_back({name, name});
+  }
+  row->devices = std::move(choices);
+
+  GtkFlowBox* grid = GTK_FLOW_BOX(window->sky_grid);
+  while (GtkFlowBoxChild* child = gtk_flow_box_get_child_at_index(grid, 0)) {
+    gtk_flow_box_remove(grid, GTK_WIDGET(child));
+  }
+  bool previews_missing = false;
+  for (const DeviceChoice& choice : row->devices) {
+    const bool selected = choice.value == chosen;
+    const bool library = !choice.value.empty() && choice.value != kOtherSky;
+    std::filesystem::path preview;
+    if (library) {
+      preview = PreviewFile(window, choice.value);
+      std::error_code error;
+      if (!std::filesystem::exists(preview, error) &&
+          !std::filesystem::exists(NoPreviewFile(window, choice.value),
+                                   error)) {
+        previews_missing = true;
+      }
+    }
+    const char* icon = choice.value.empty()     ? "weather-few-clouds-symbolic"
+                       : choice.value == kOtherSky ? "image-x-generic-symbolic"
+                                                   : "weather-overcast-symbolic";
+    GtkWidget* tile = NewSkyTile(choice.label, icon, preview, selected);
+    if (library) {
+      g_object_set_data_full(G_OBJECT(tile), "sky",
+                             g_strdup(choice.value.c_str()), g_free);
+      GtkGesture* click = gtk_gesture_click_new();
+      gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                    GDK_BUTTON_SECONDARY);
+      g_signal_connect(click, "pressed", G_CALLBACK(OnSkyTileClicked), row);
+      gtk_widget_add_controller(tile, GTK_EVENT_CONTROLLER(click));
+      GtkGesture* hold = gtk_gesture_long_press_new();
+      gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(hold), TRUE);
+      g_signal_connect(hold, "pressed", G_CALLBACK(OnSkyTilePressed), row);
+      gtk_widget_add_controller(tile, GTK_EVENT_CONTROLLER(hold));
+    }
+    gtk_flow_box_append(grid, tile);
+    if (selected) {
+      GtkWidget* child = gtk_widget_get_parent(tile);
+      gtk_flow_box_select_child(grid, GTK_FLOW_BOX_CHILD(child));
+      if (window->sky_refocus && !window->sky_busy) {
+        window->sky_refocus = false;
+        gtk_widget_grab_focus(child);
+      }
+    }
+  }
+
+  GtkWidget* plus = gtk_image_new_from_icon_name("list-add-symbolic");
+  gtk_image_set_pixel_size(GTK_IMAGE(plus), 32);
+  GtkWidget* plus_label = gtk_label_new("Import");
+  GtkWidget* import_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_valign(import_box, GTK_ALIGN_CENTER);
+  gtk_box_append(GTK_BOX(import_box), plus);
+  gtk_box_append(GTK_BOX(import_box), plus_label);
+  window->sky_import = gtk_menu_button_new();
+  gtk_menu_button_set_child(GTK_MENU_BUTTON(window->sky_import), import_box);
+  GMenu* menu = g_menu_new();
+  g_menu_append(menu, "Zip File…", "sky.import-zip");
+  g_menu_append(menu, "Folder…", "sky.import-folder");
+  gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(window->sky_import),
+                                 G_MENU_MODEL(menu));
+  g_object_unref(menu);
+  gtk_widget_set_size_request(window->sky_import, kSkyTileSize, kSkyTileSize);
+  gtk_widget_set_valign(window->sky_import, GTK_ALIGN_START);
+  gtk_widget_set_halign(window->sky_import, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text(
+      window->sky_import,
+      "Add sky packs from a zip or folder. Each pack has six images named "
+      "like sky_bk … sky_up: PNGs, or Roblox .tex files.");
+  gtk_flow_box_append(grid, window->sky_import);
+
+  if (previews_missing && !window->sky_previews_running && !window->sky_busy) {
+    StartSkyPreviews(row);
+  }
+  // An import could replace a pack whose preview is being made.
+  gtk_widget_set_sensitive(window->sky_import, !window->sky_busy &&
+                                                   !window->sky_previews_running);
+  if (window->sky_previews_running) {
+    gtk_widget_set_tooltip_text(window->sky_import,
+                                "Making previews. Import is back in a moment.");
+  }
+}
+
 // Shows the file's value in `row`. With `keep_edit`, text typed into the row
 // and not saved yet is left alone.
 void RefreshRow(Row* row, bool keep_edit) {
@@ -275,6 +508,10 @@ void RefreshRow(Row* row, bool keep_edit) {
     case SettingKind::kDevice:
       RefreshDeviceRow(row, value);
       break;
+    case SettingKind::kSky:
+      // A 65-sky library costs ~1000 stats a scan, too many for every save.
+      if (row->devices.empty()) RefreshSkyRow(row);
+      break;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
     case SettingKind::kCache:
@@ -286,8 +523,10 @@ void RefreshRow(Row* row, bool keep_edit) {
 // switched-off block leaves without effect are greyed out.
 void ShowChanged(SettingsWindow* window) {
   for (Row& row : window->rows) {
-    gtk_widget_set_sensitive(row.widget,
-                             window->document.IsActive(row.setting->key));
+    gtk_widget_set_sensitive(
+        row.widget, window->document.IsActive(row.setting->key) &&
+                        !(row.setting->kind == SettingKind::kSky &&
+                          window->sky_busy));
     if (row.reset != nullptr) {
       gtk_widget_set_visible(row.reset,
                              window->document.IsChanged(*row.setting));
@@ -1006,15 +1245,399 @@ void OnFolderOpened(GObject* source, GAsyncResult* result,
   g_error_free(error);
 }
 
-// Shows config.yaml in the file manager.
+void OnFolderLaunched(GObject* source, GAsyncResult* result,
+                      gpointer user_data) {
+  GError* error = nullptr;
+  if (gtk_file_launcher_launch_finish(GTK_FILE_LAUNCHER(source), result,
+                                      &error)) {
+    return;
+  }
+  if (!g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED)) {
+    ShowError(static_cast<SettingsWindow*>(user_data), error->message);
+  }
+  g_error_free(error);
+}
+
+// Shows config.yaml in the file manager, or opens the asset or textures
+// folder, creating it first.
 void OnFolderActivated(AdwActionRow*, gpointer user_data) {
-  auto* window = static_cast<SettingsWindow*>(user_data);
-  GFile* file = g_file_new_for_path(window->document.config_file().c_str());
+  const Row* row = static_cast<const Row*>(user_data);
+  SettingsWindow* window = row->window;
+  if (row->setting->key == "config_folder") {
+    GFile* file = g_file_new_for_path(window->document.config_file().c_str());
+    GtkFileLauncher* launcher = gtk_file_launcher_new(file);
+    gtk_file_launcher_open_containing_folder(
+        launcher, GTK_WINDOW(window->widget), nullptr, OnFolderOpened, window);
+    g_object_unref(launcher);
+    g_object_unref(file);
+    return;
+  }
+  const std::filesystem::path& folder =
+      row->setting->key == "asset_folder"   ? window->asset_overlay_dir
+      : row->setting->key == "sky_library" ? window->sky_library
+                                            : window->textures_dir;
+  std::error_code error;
+  std::filesystem::create_directories(folder, error);
+  if (error) {
+    ShowError(window, "Cannot create " + folder.string() + ": " +
+                          error.message());
+    return;
+  }
+  GFile* file = g_file_new_for_path(folder.c_str());
   GtkFileLauncher* launcher = gtk_file_launcher_new(file);
-  gtk_file_launcher_open_containing_folder(
-      launcher, GTK_WINDOW(window->widget), nullptr, OnFolderOpened, window);
+  gtk_file_launcher_launch(launcher, GTK_WINDOW(window->widget), nullptr,
+                           OnFolderLaunched, window);
   g_object_unref(launcher);
   g_object_unref(file);
+}
+
+// Undo cannot take back a change to the sky files.
+void OnSkyChanged(Row* row) {
+  SettingsWindow* window = row->window;
+  window->document.ForgetUndo();
+  OnChangeSaved(window, false);
+  gtk_widget_set_visible(window->undo, FALSE);
+  RefreshSkyRow(row);
+}
+
+void SetSkyBusy(Row* row, bool busy) {
+  SettingsWindow* window = row->window;
+  window->sky_busy = busy;
+  gtk_widget_set_sensitive(window->sky_import, !busy);
+  gtk_widget_set_sensitive(row->widget,
+                           !busy && window->document.IsActive("sky"));
+}
+
+// Copying faces can take seconds on a slow disk, so imports and switches run
+// on a worker thread.
+struct SkyJob {
+  Row* row = nullptr;
+  std::filesystem::path library;
+  std::filesystem::path overlay;
+  // An import when set, else a switch to `sky` (empty for Roblox's own).
+  std::filesystem::path import_from;
+  std::string sky;
+  std::shared_ptr<std::atomic<bool>> stop;
+  mocktail::ui::SkyImport imported;
+  bool switched = false;
+  std::string kept;
+  std::string error;
+};
+
+void RunSkyJob(GTask* task, gpointer, gpointer task_data, GCancellable*) {
+  auto* job = static_cast<SkyJob*>(task_data);
+  if (!job->import_from.empty()) {
+    job->imported = mocktail::ui::ImportSkies(job->import_from, job->library,
+                                              {}, job->stop.get());
+    // One pack is what the user means to use.
+    if (job->imported.added.size() != 1 || job->imported.cancelled) {
+      g_task_return_boolean(task, TRUE);
+      return;
+    }
+    job->sky = job->imported.added.front();
+  }
+  job->switched =
+      job->sky.empty()
+          ? mocktail::ui::UseRobloxSky(job->library, job->overlay, &job->error,
+                                       &job->kept)
+          : mocktail::ui::UseLibrarySky(job->sky, job->library, job->overlay,
+                                        &job->error, &job->kept);
+  g_task_return_boolean(task, TRUE);
+}
+
+void Toast(SettingsWindow* window, const std::string& message) {
+  AdwToast* toast = adw_toast_new(message.c_str());
+  adw_toast_set_use_markup(toast, FALSE);
+  adw_toast_overlay_add_toast(window->toasts, toast);
+}
+
+void OnSkyJobDone(GObject*, GAsyncResult* result, gpointer) {
+  const auto* job =
+      static_cast<const SkyJob*>(g_task_get_task_data(G_TASK(result)));
+  g_application_release(g_application_get_default());
+  Row* row = job->row;
+  SettingsWindow* window = row->window;
+  if (window->closed) return;
+  SetSkyBusy(row, false);
+  if (window->sky_progress != nullptr) {
+    adw_toast_dismiss(window->sky_progress);
+    g_object_unref(window->sky_progress);
+    window->sky_progress = nullptr;
+  }
+  window->sky_stop.reset();
+  std::string message;
+  if (!job->import_from.empty() && job->imported.cancelled) {
+    const std::size_t added = job->imported.added.size();
+    message = added == 0 ? "Import cancelled."
+                         : "Import cancelled after " + std::to_string(added) +
+                               (added == 1 ? " sky." : " skies.");
+  } else if (!job->import_from.empty()) {
+    const mocktail::ui::SkyImport& imported = job->imported;
+    for (const std::string& skipped : imported.skipped) {
+      std::fprintf(stderr, "  [sky] not imported: %s\n", skipped.c_str());
+    }
+    std::string skipped;
+    for (std::size_t index = 0; index < imported.skipped.size() && index < 2;
+         ++index) {
+      skipped += " " + imported.skipped[index] + ".";
+    }
+    if (imported.skipped.size() > 2) {
+      skipped += " " + std::to_string(imported.skipped.size() - 2) + " more.";
+    }
+    if (!imported.error.empty()) {
+      ShowError(window, imported.error + skipped);
+      RefreshSkyRow(row);
+      return;
+    }
+    message = imported.added.size() == 1
+                  ? "Added " + imported.added.front() + "."
+                  : "Added " + std::to_string(imported.added.size()) +
+                        " skies.";
+    if (!imported.skipped.empty()) message += " Not added:" + skipped;
+  }
+  if (!job->kept.empty()) {
+    message += (message.empty() ? "" : " ") +
+               std::string("The sky you had is kept as ") + job->kept + ".";
+  }
+  if (!message.empty()) Toast(window, message);
+  if (!job->error.empty()) ShowError(window, job->error);
+  if (job->switched) {
+    OnSkyChanged(row);
+  } else {
+    RefreshSkyRow(row);
+  }
+}
+
+void StartSkyJob(Row* row, std::filesystem::path import_from,
+                 std::string sky) {
+  SettingsWindow* window = row->window;
+  window->sky_refocus =
+      gtk_widget_get_focus_child(window->sky_grid) != nullptr;
+  SetSkyBusy(row, true);
+  g_application_hold(g_application_get_default());
+  auto* job = new SkyJob;
+  job->row = row;
+  job->library = window->sky_library;
+  job->overlay = window->asset_overlay_dir;
+  job->import_from = std::move(import_from);
+  job->sky = std::move(sky);
+  if (!job->import_from.empty()) {
+    job->stop = std::make_shared<std::atomic<bool>>(false);
+    window->sky_stop = job->stop;
+    const std::string text =
+        "Importing " + job->import_from.filename().string() + "…";
+    window->sky_progress = adw_toast_new(text.c_str());
+    adw_toast_set_use_markup(window->sky_progress, FALSE);
+    adw_toast_set_timeout(window->sky_progress, 0);
+    adw_toast_set_button_label(window->sky_progress, "Cancel");
+    g_signal_connect(window->sky_progress, "button-clicked",
+                     G_CALLBACK(+[](AdwToast*, gpointer data) {
+                       auto* window = static_cast<SettingsWindow*>(data);
+                       if (window->sky_stop) window->sky_stop->store(true);
+                     }),
+                     window);
+    g_object_ref(window->sky_progress);
+    adw_toast_overlay_add_toast(window->toasts, window->sky_progress);
+  }
+  GTask* task = g_task_new(nullptr, nullptr, OnSkyJobDone, nullptr);
+  g_task_set_task_data(task, job, [](gpointer data) {
+    delete static_cast<SkyJob*>(data);
+  });
+  g_task_run_in_thread(task, RunSkyJob);
+  g_object_unref(task);
+}
+
+struct SkyPreviewJob {
+  Row* row = nullptr;
+  // Each pack's front face and where its preview goes.
+  std::vector<std::pair<std::filesystem::path, std::filesystem::path>> todo;
+  int made = 0;
+  gint64 started = 0;
+};
+
+void RunSkyPreviews(GTask* task, gpointer, gpointer task_data,
+                    GCancellable*) {
+  auto* job = static_cast<SkyPreviewJob*>(task_data);
+  for (const auto& [face, preview] : job->todo) {
+    GError* error = nullptr;
+    GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_scale(
+        face.c_str(), kSkyPreviewSize, kSkyPreviewSize, TRUE, &error);
+    std::filesystem::path partial = preview;
+    partial += ".part";
+    std::error_code ignored;
+    if (pixbuf != nullptr &&
+        gdk_pixbuf_save(pixbuf, partial.c_str(), "png", &error, nullptr)) {
+      std::filesystem::rename(partial, preview, ignored);
+      ++job->made;
+    } else {
+      // KTX faces, which GdkPixbuf cannot read, keep the plain tile.
+      std::filesystem::remove(partial, ignored);
+      std::ofstream(preview.parent_path() / ".no-preview");
+    }
+    if (pixbuf != nullptr) g_object_unref(pixbuf);
+    if (error != nullptr) g_error_free(error);
+  }
+  g_task_return_boolean(task, TRUE);
+}
+
+void OnSkyPreviewsMade(GObject*, GAsyncResult* result, gpointer) {
+  const auto* job = static_cast<const SkyPreviewJob*>(
+      g_task_get_task_data(G_TASK(result)));
+  g_application_release(g_application_get_default());
+  std::fprintf(stderr, "  [sky] made %d of %zu previews in %lld ms\n",
+               job->made, job->todo.size(),
+               static_cast<long long>((g_get_monotonic_time() - job->started) /
+                                      1000));
+  SettingsWindow* window = job->row->window;
+  window->sky_previews_running = false;
+  if (window->closed || window->sky_busy) return;
+  RefreshSkyRow(job->row);
+}
+
+// One worker makes every missing preview, so a 2-core machine keeps a core
+// free for the window.
+void StartSkyPreviews(Row* row) {
+  SettingsWindow* window = row->window;
+  auto* job = new SkyPreviewJob;
+  job->row = row;
+  job->started = g_get_monotonic_time();
+  for (const DeviceChoice& choice : row->devices) {
+    if (choice.value.empty() || choice.value == kOtherSky) continue;
+    std::error_code error;
+    if (std::filesystem::exists(PreviewFile(window, choice.value), error) ||
+        std::filesystem::exists(NoPreviewFile(window, choice.value), error)) {
+      continue;
+    }
+    std::filesystem::path face =
+        mocktail::ui::SkyPreviewFace(window->sky_library, choice.value);
+    if (!face.empty()) {
+      job->todo.emplace_back(std::move(face),
+                             PreviewFile(window, choice.value));
+    }
+  }
+  if (job->todo.empty()) {
+    delete job;
+    return;
+  }
+  window->sky_previews_running = true;
+  g_application_hold(g_application_get_default());
+  GTask* task = g_task_new(nullptr, nullptr, OnSkyPreviewsMade, nullptr);
+  g_task_set_task_data(task, job, [](gpointer data) {
+    delete static_cast<SkyPreviewJob*>(data);
+  });
+  g_task_run_in_thread(task, RunSkyPreviews);
+  g_object_unref(task);
+}
+
+void OnRemoveSky(GSimpleAction*, GVariant*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  if (window->sky_busy || window->sky_menu_target.empty()) return;
+  std::string error;
+  if (!mocktail::ui::RemoveLibrarySky(window->sky_menu_target,
+                                      window->sky_library,
+                                      window->asset_overlay_dir, &error)) {
+    ShowError(window, error);
+    return;
+  }
+  Toast(window, "Removed " + window->sky_menu_target + ".");
+  RefreshSkyRow(row);
+}
+
+void OnSkyTileActivated(GtkFlowBox*, GtkFlowBoxChild* child,
+                        gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  if (window->sky_busy) return;
+  const int index = gtk_flow_box_child_get_index(child);
+  if (index >= 0 && static_cast<std::size_t>(index) == row->devices.size()) {
+    // The Import tile, reached with the keyboard.
+    if (gtk_widget_get_sensitive(window->sky_import)) {
+      gtk_menu_button_popup(GTK_MENU_BUTTON(window->sky_import));
+    }
+    return;
+  }
+  if (index < 0 || static_cast<std::size_t>(index) >= row->devices.size()) {
+    return;
+  }
+  const std::size_t selected = static_cast<std::size_t>(index);
+  if (row->devices[selected].value == kOtherSky) return;
+  const std::string value = row->devices[selected].value;
+  if (mocktail::ui::InstalledSky(window->asset_overlay_dir,
+                                 window->sky_library) == value) {
+    return;
+  }
+  StartSkyJob(row, {}, value);
+}
+
+// The picked path, or empty when the dialog was closed or failed.
+std::filesystem::path PickedPath(Row* row, GFile* file, GError* error) {
+  SettingsWindow* window = row->window;
+  if (file == nullptr) {
+    if (!window->closed && !g_error_matches(error, GTK_DIALOG_ERROR,
+                                            GTK_DIALOG_ERROR_DISMISSED)) {
+      ShowError(window, error->message);
+    }
+    g_error_free(error);
+    return {};
+  }
+  char* path = g_file_get_path(file);
+  g_object_unref(file);
+  std::filesystem::path picked = path != nullptr ? path : "";
+  g_free(path);
+  return window->closed ? std::filesystem::path() : picked;
+}
+
+void OnSkyZipPicked(GObject* source, GAsyncResult* result,
+                    gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  GError* error = nullptr;
+  GFile* file =
+      gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+  std::filesystem::path path = PickedPath(row, file, error);
+  if (!path.empty() && !row->window->sky_busy &&
+      !row->window->sky_previews_running) {
+    StartSkyJob(row, std::move(path), {});
+  }
+}
+
+void OnSkyFolderPicked(GObject* source, GAsyncResult* result,
+                       gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  GError* error = nullptr;
+  GFile* folder = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(source),
+                                                       result, &error);
+  std::filesystem::path path = PickedPath(row, folder, error);
+  if (!path.empty() && !row->window->sky_busy &&
+      !row->window->sky_previews_running) {
+    StartSkyJob(row, std::move(path), {});
+  }
+}
+
+void OnImportSkyZip(GSimpleAction*, GVariant*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  GtkFileDialog* dialog = gtk_file_dialog_new();
+  gtk_file_dialog_set_title(dialog, "Import Skies From a Zip File");
+  GtkFileFilter* filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "Zip files");
+  gtk_file_filter_add_suffix(filter, "zip");
+  GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+  g_list_store_append(filters, filter);
+  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+  g_object_unref(filters);
+  g_object_unref(filter);
+  gtk_file_dialog_open(dialog, GTK_WINDOW(row->window->widget), nullptr,
+                       OnSkyZipPicked, row);
+  g_object_unref(dialog);
+}
+
+void OnImportSkyFolder(GSimpleAction*, GVariant*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  GtkFileDialog* dialog = gtk_file_dialog_new();
+  gtk_file_dialog_set_title(dialog, "Import Skies From a Folder");
+  gtk_file_dialog_select_folder(dialog, GTK_WINDOW(row->window->widget),
+                                nullptr, OnSkyFolderPicked, row);
+  g_object_unref(dialog);
 }
 
 void SetRowText(GtkWidget* widget, std::string_view title,
@@ -1249,8 +1872,60 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
           gtk_image_new_from_icon_name("folder-open-symbolic"));
       gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row.widget), TRUE);
       g_signal_connect(row.widget, "activated",
-                       G_CALLBACK(OnFolderActivated), window);
+                       G_CALLBACK(OnFolderActivated), &row);
       break;
+    case SettingKind::kSky: {
+      row.widget = adw_preferences_row_new();
+      gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row.widget), FALSE);
+      window->sky_grid = gtk_flow_box_new();
+      GtkFlowBox* grid = GTK_FLOW_BOX(window->sky_grid);
+      gtk_flow_box_set_selection_mode(grid, GTK_SELECTION_SINGLE);
+      gtk_flow_box_set_activate_on_single_click(grid, TRUE);
+      gtk_flow_box_set_homogeneous(grid, TRUE);
+      gtk_flow_box_set_min_children_per_line(grid, 2);
+      gtk_flow_box_set_max_children_per_line(grid, 8);
+      gtk_flow_box_set_row_spacing(grid, 12);
+      gtk_flow_box_set_column_spacing(grid, 12);
+      gtk_widget_set_margin_top(window->sky_grid, 12);
+      gtk_widget_set_margin_bottom(window->sky_grid, 12);
+      gtk_widget_set_margin_start(window->sky_grid, 12);
+      gtk_widget_set_margin_end(window->sky_grid, 12);
+      gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row.widget),
+                                 window->sky_grid);
+      g_signal_connect(window->sky_grid, "child-activated",
+                       G_CALLBACK(OnSkyTileActivated), &row);
+      GtkEventController* keys = gtk_event_controller_key_new();
+      g_signal_connect(keys, "key-pressed", G_CALLBACK(OnSkyGridKey), &row);
+      gtk_widget_add_controller(window->sky_grid, keys);
+      GMenu* remove_menu = g_menu_new();
+      g_menu_append(remove_menu, "Remove From Library", "sky.remove");
+      window->sky_menu =
+          gtk_popover_menu_new_from_model(G_MENU_MODEL(remove_menu));
+      g_object_unref(remove_menu);
+      gtk_popover_set_has_arrow(GTK_POPOVER(window->sky_menu), FALSE);
+      gtk_widget_set_halign(window->sky_menu, GTK_ALIGN_START);
+      gtk_widget_set_parent(window->sky_menu, row.widget);
+      // A popover is not a child the row knows to drop.
+      g_signal_connect(row.widget, "destroy",
+                       G_CALLBACK(+[](GtkWidget*, gpointer menu) {
+                         gtk_widget_unparent(GTK_WIDGET(menu));
+                       }),
+                       window->sky_menu);
+      const GActionEntry entries[] = {
+          {"import-zip", OnImportSkyZip, nullptr, nullptr, nullptr, {}},
+          {"import-folder", OnImportSkyFolder, nullptr, nullptr, nullptr, {}},
+          {"remove", OnRemoveSky, nullptr, nullptr, nullptr, {}},
+      };
+      GSimpleActionGroup* actions = g_simple_action_group_new();
+      g_action_map_add_action_entries(G_ACTION_MAP(actions), entries,
+                                      G_N_ELEMENTS(entries), &row);
+      gtk_widget_insert_action_group(row.widget, "sky",
+                                     G_ACTION_GROUP(actions));
+      window->sky_remove = G_SIMPLE_ACTION(
+          g_action_map_lookup_action(G_ACTION_MAP(actions), "remove"));
+      g_object_unref(actions);
+      break;
+    }
     case SettingKind::kCache:
       row.widget = adw_action_row_new();
       window->cache = &row;
@@ -1264,7 +1939,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
   }
   if (row.reset == nullptr && setting.kind != SettingKind::kEditor &&
       setting.kind != SettingKind::kFolder &&
-      setting.kind != SettingKind::kCache) {
+      setting.kind != SettingKind::kCache &&
+      setting.kind != SettingKind::kSky) {
     row.reset = NewResetButton(&row);
     adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.reset);
     // Before the row's own control, so the control stays at the edge.
@@ -1705,7 +2381,8 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   GtkWidget* window_widget = adw_application_window_new(application);
   window->widget = window_widget;
   gtk_window_set_title(GTK_WINDOW(window_widget), "Nightcap Settings");
-  gtk_window_set_default_size(GTK_WINDOW(window_widget), 860, 620);
+  // Fits a 1366x768 screen with a panel.
+  gtk_window_set_default_size(GTK_WINDOW(window_widget), 960, 700);
   gtk_widget_set_size_request(window_widget, 360, 420);
   gtk_window_set_icon_name(GTK_WINDOW(window_widget), kApplicationId);
   g_signal_connect(window_widget, "close-request",
@@ -1751,6 +2428,9 @@ int main(int argc, char* argv[]) {
   window.instance_lock =
       absolute_path(mocktail::runtime::kInstanceLockVariable);
   window.android_data_root = paths.android_data_root();
+  window.asset_overlay_dir = paths.asset_overlay_dir();
+  window.textures_dir = paths.texture_override_dir();
+  window.sky_library = paths.sky_library_dir();
   window.roblox_data_lock = mocktail::runtime::RobloxDataLockPath(paths);
   window.restart_program =
       absolute_path(mocktail::runtime::kRestartProgramVariable);

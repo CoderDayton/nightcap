@@ -116,7 +116,8 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
     }
   }
   EXPECT_EQ(titles, (std::vector<std::string_view>{
-                        "Graphics", "Input", "Performance", "Audio",
+                        "Graphics", "Input", "Customization",
+                        "Performance", "Audio",
                         "Network", "Discord", "Fleasion", "Advanced"}));
 }
 
@@ -159,6 +160,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
            "graphics.vsync", "graphics.texture_compression",
+           "assets.overlay", "assets.texture_overrides",
            "performance.multithreaded_rendering",
            "performance.physics_worker_mode", "performance.memory_limit_mb",
            "performance.gamemode", "performance.mangohud",
@@ -216,6 +218,36 @@ TEST_F(SettingsModelTest, TheAdvancedPageOpensTheConfigFolder) {
   const Setting& folder = Find("config_folder");
   EXPECT_EQ(folder.kind, SettingKind::kFolder);
   EXPECT_EQ(&advanced.groups.back().settings.back(), &folder);
+}
+
+TEST_F(SettingsModelTest, TheCustomizationPageHoldsTheSkyAndCustomFiles) {
+  const SettingsPage* customization = nullptr;
+  for (const SettingsPage& page : SettingsPages()) {
+    if (page.name == "customization") customization = &page;
+  }
+  ASSERT_NE(customization, nullptr);
+  EXPECT_EQ(customization->section, "Display & input");
+  EXPECT_EQ(Find("sky").kind, SettingKind::kSky);
+  for (const std::string_view key :
+       {"assets.overlay", "assets.texture_overrides"}) {
+    EXPECT_EQ(Find(key).kind, SettingKind::kToggle) << key;
+    EXPECT_EQ(Find(key).default_value, "true") << key;
+  }
+  EXPECT_EQ(Find("asset_folder").kind, SettingKind::kFolder);
+  EXPECT_EQ(Find("textures_folder").kind, SettingKind::kFolder);
+  EXPECT_EQ(Find("sky_library").kind, SettingKind::kFolder);
+}
+
+TEST_F(SettingsModelTest, TheSkyIsGreyedOutWhileCustomAssetsAreOff) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("sky"));
+  ASSERT_TRUE(document.Set("assets.overlay", "false", &error)) << error;
+  EXPECT_FALSE(document.IsActive("sky"));
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.asset_overlay());
 }
 
 TEST_F(SettingsModelTest, TheAdvancedPageClearsTheRobloxCache) {
@@ -1252,6 +1284,7 @@ std::optional<std::string> ChangedSample(const Setting& setting) {
     case SettingKind::kEditor:
     case SettingKind::kFolder:
     case SettingKind::kCache:
+    case SettingKind::kSky:
       return std::nullopt;
   }
   return std::nullopt;

@@ -174,6 +174,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.frame_rate_limit",
       "graphics.vsync",
       "graphics.texture_compression",
+      "assets.overlay",
+      "assets.texture_overrides",
       // Retired: still accepted so old configs load, and ignored.
       "graphics.small_texture_upscale",
       "graphics.present_mode",
@@ -406,6 +408,18 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
+  }
+  for (const auto& [key, variable] :
+       {std::pair{"assets.overlay", "MOCKTAIL_ASSET_OVERLAY"},
+        std::pair{"assets.texture_overrides", "MOCKTAIL_TEXTURE_OVERRIDES"}}) {
+    if (const auto setting = value(key); setting.has_value()) {
+      bool parsed = false;
+      if (!ParseBoolean(*setting, &parsed)) {
+        *error = std::string(key) + " must be true or false";
+        return false;
+      }
+      (*environment)[variable] = parsed ? "1" : "0";
+    }
   }
   if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
     if (!RuntimeConfig::IsValidPresentMode(*mode)) {
@@ -836,7 +850,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network" ||
-                 key == "overlay") {
+                 key == "overlay" || key == "assets") {
         valid = ReadMapping(&document, value_node, key, values, error);
       } else if (key == "integrations") {
         valid = ReadNestedMapping(&document, value_node, key, 2, values, error);
@@ -1077,6 +1091,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue("MOCKTAIL_ETC2_BC_TRANSCODE",
                           config.texture_compression() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_ASSET_OVERLAY",
+                          config.asset_overlay() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_TEXTURE_OVERRIDES",
+                          config.texture_overrides() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

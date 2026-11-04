@@ -1322,6 +1322,15 @@ std::string DefaultAssetPath() {
   return CurrentRuntimePaths().DefaultAssetPath().string();
 }
 
+// Empty while config.yaml's assets.overlay is off.
+std::filesystem::path ActiveAssetOverlayDir() {
+  const char* overlay = std::getenv("MOCKTAIL_ASSET_OVERLAY");
+  if (overlay != nullptr && std::string_view(overlay) == "0") {
+    return {};
+  }
+  return CurrentRuntimePaths().asset_overlay_dir();
+}
+
 bool RegisterFreshGamePresentObserver(
     void* context, mocktail::runtime::FreshLaunchPresentObserver observer,
     void* observer_context) {
@@ -1993,8 +2002,8 @@ extern "C" void MocktailConstructorWrapper() {
 // before any libroblox code does: the segment loses PROT_EXEC while it is
 // written.
 void DisableOverlaidAssetMappings(uintptr_t base) {
-  std::vector<std::string> names = mocktail::runtime::OverlayRbxAssetNames(
-      CurrentRuntimePaths().asset_overlay_dir());
+  std::vector<std::string> names =
+      mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir());
   // Stock cursors become transparent local files under the system theme.
   if (mocktail::runtime::RobloxCursorThemeActive()) {
     for (std::string& name :
@@ -2092,7 +2101,7 @@ void InstallCursorHooks(uintptr_t base) {
           }
           return saved;
         },
-        CurrentRuntimePaths().asset_overlay_dir(), [] {
+        ActiveAssetOverlayDir(), [] {
           // Roblox reports its asset folder once it starts.
           const char* root = std::getenv("MOCKTAIL_ASSET_ROOT");
           return std::filesystem::path(root != nullptr ? root

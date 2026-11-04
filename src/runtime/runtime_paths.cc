@@ -357,6 +357,11 @@ RuntimePaths RuntimePaths::FromEnvironment(
         paths.sober_data_root_ / "asset_overlay",
         paths.data_root_ / "asset_overlay");
   }
+  paths.texture_override_dir_ =
+      environment.HasNonEmpty("MOCKTAIL_TEXTURE_OVERRIDE_DIR")
+          ? std::filesystem::path(
+                environment.GetOr("MOCKTAIL_TEXTURE_OVERRIDE_DIR", ""))
+          : paths.config_root_ / "textures";
   return paths;
 }
 
@@ -618,7 +623,7 @@ bool ExportRuntimePathEnvironment(const RuntimePaths& paths,
          SetEnvironmentDefault("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH",
                                paths.vulkan_shader_cache_file(), error) &&
          SetEnvironmentDefault("MOCKTAIL_TEXTURE_OVERRIDE_DIR",
-                               paths.config_root() / "textures", error) &&
+                               paths.texture_override_dir(), error) &&
          SetEnvironmentDefault("MOCKTAIL_ASSET_OVERLAY_DIR",
                                paths.asset_overlay_dir(), error);
 }
