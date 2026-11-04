@@ -77,6 +77,9 @@ struct SettingsGroup {
   // Shown under the title. Text rows have no subtitle, so their format is
   // explained here.
   std::string_view description = {};
+  // Settings from this index on sit in a collapsed More row at the end of
+  // the group. 0 for none.
+  std::size_t more_from = 0;
 };
 
 struct SettingsPage {

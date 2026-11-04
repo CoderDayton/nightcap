@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "mocktail/graphics/etc2_decoder.h"
@@ -60,7 +61,7 @@ bool Etc2BcTranscodeEnabled(const char* value);
 // 2, 4 or 8 add log2(factor) levels above the image's own, upscaled from
 // level 0. 4 unless MOCKTAIL_SMALL_TEXTURE_UPSCALE holds a number, which is
 // clamped to 1..8 and rounded down to a power of two.
-inline constexpr std::uint32_t kSmallTextureMaxExtent = 32;
+inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
 std::uint32_t SmallTextureUpscale(const char* value);
 
 // `upscale` up to kSmallTextureMaxExtent, or `override_upscale` up to
@@ -146,6 +147,12 @@ class VulkanEtc2Emulation final {
                       PFN_vkGetDeviceProcAddr get_device_proc_addr,
                       bool timeline_semaphore = false,
                       bool bc_textures = false);
+  // False when VK_EXT_memory_budget is unavailable. With it, small texture
+  // upscaling also leaves a tenth of video memory, and at least 96 MiB, free
+  // by the driver's count.
+  using MemoryBudgetQuery =
+      std::function<bool(VkPhysicalDeviceMemoryBudgetPropertiesEXT*)>;
+  void SetMemoryBudgetQuery(VkDevice device, MemoryBudgetQuery query);
   void DestroyDevice(VkDevice device);
 
   void RegisterQueue(VkDevice device, VkQueue queue,

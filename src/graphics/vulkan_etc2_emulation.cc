@@ -6,6 +6,7 @@
 #include "mocktail/graphics/texture_override.h"
 
 #include <algorithm>
+#include <limits>
 
 #include <atomic>
 #include <condition_variable>
@@ -18,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <thread>
 #include <unordered_map>
@@ -243,6 +245,35 @@ bool Etc2EncodeBudget::Take(double cost_ns, std::uint64_t now_ns) {
 
 namespace {
 
+// Bytes as KiB below 1 MiB, else MiB with one decimal.
+std::string FormatBytes(std::uint64_t bytes) {
+  char text[32];
+  if (bytes < (1U << 20)) {
+    std::snprintf(text, sizeof(text), "%llu KiB",
+                  static_cast<unsigned long long>(bytes / 1024));
+  } else {
+    std::snprintf(text, sizeof(text), "%.1f MiB",
+                  static_cast<double>(bytes) / (1U << 20));
+  }
+  return text;
+}
+
+VkDeviceSize HostTextureBytes(EtcFormat format, const VkImageCreateInfo& info,
+                              std::uint32_t scale, bool transcoded) {
+  if (transcoded) {
+    return Etc2HostBlockCount(info.extent, info.mipLevels, info.arrayLayers,
+                              scale) *
+           BcBlockBytes(BcFormatFor(format));
+  }
+  VkDeviceSize compressed = 0;
+  VkDeviceSize decoded = 0;
+  if (!Etc2ImageByteCounts(format, info.extent, info.mipLevels,
+                           info.arrayLayers, scale, &compressed, &decoded)) {
+    return 0;
+  }
+  return decoded;
+}
+
 bool ShouldLog(std::atomic<unsigned>* counter, unsigned limit) {
   return counter->fetch_add(1, std::memory_order_relaxed) < limit;
 }
@@ -264,6 +295,18 @@ struct EncodeStats {
 };
 
 constexpr std::uint64_t kEncodeLogIntervalNs = 5'000'000'000;
+constexpr std::uint64_t kVideoFreeRefreshNs = 250'000'000;
+// Crosshairs and cursors: cheap enough to keep 4x until the budget is full.
+constexpr std::uint32_t kSharpestMaxExtent = 32;
+
+// MiB from MOCKTAIL_ETC2_VIDEO_MEMORY_MB, or 0 when unset or not a number.
+std::uint64_t VideoMemoryOverrideMib(const char* value) {
+  if (value == nullptr || value[0] < '0' || value[0] > '9') {
+    return 0;
+  }
+  const unsigned long long parsed = std::strtoull(value, nullptr, 10);
+  return parsed > (1ULL << 30) ? 0 : parsed;
+}
 
 // A line every kEncodeLogIntervalNs while images are created, so a session
 // log shows what the budget held back on the reporter's GPU.
@@ -405,9 +448,14 @@ struct ImageRecord {
   // An override file names this image's size, so its uploads decode on the
   // CPU where they can be hashed and replaced.
   bool may_override = false;
+  // The scale before the upscale budget; above `scale` when it stepped down.
+  std::uint32_t asked_scale = 1;
   // Compressed blocks of each full-mip upload to a scaled or decoded image,
   // by mip. Copies into a BC image are transcoded from them.
   std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> blocks;
+  // The last queued batch that reads or writes `blocks`, so a copy waits
+  // only for the batches it depends on.
+  std::uint64_t ticket = 0;
 };
 
 // The application's levels of an image, planned unscaled and recorded
@@ -591,6 +639,16 @@ struct PendingUpload {
   // Level 0 resampled into a top level; its blocks are kept by the image's
   // own level-0 upload.
   bool top_level = false;
+  // Application texel offset of the region inside its mip.
+  std::uint32_t region_x = 0;
+  std::uint32_t region_y = 0;
+  // Part of an upscaled mip: the whole mip is scaled again from its kept
+  // blocks with this region patched in, so the filter sees the texels
+  // around the region. source_* and target_* then cover the whole mip.
+  bool widened = false;
+  // Place among the uploads and block copies of its submit, which replay in
+  // that order because each may read kept blocks another writes.
+  std::uint64_t order = 0;
 };
 
 template <typename Region>
@@ -684,6 +742,8 @@ struct BlockCopy {
   std::uint32_t keep_y = 0;
   std::uint32_t keep_blocks_wide = 0;
   std::uint32_t keep_blocks_high = 0;
+  // As PendingUpload::order.
+  std::uint64_t order = 0;
 };
 
 void KeepIn(BlockCopy* copy, VkImage destination, const ImageRecord& record,
@@ -698,27 +758,120 @@ void KeepIn(BlockCopy* copy, VkImage destination, const ImageRecord& record,
       (std::max<std::uint32_t>(1, record.height >> mip) + 3) / 4;
 }
 
+bool IsSmallMip(const ImageRecord& record, std::uint32_t mip) {
+  return std::max<std::uint32_t>(record.width >> mip, record.height >> mip) <=
+         kSmallTextureMaxExtent;
+}
+
+// Uploads the CPU decodes rather than the GPU. A decoded image beside BC
+// ones is one, so its blocks are kept for copies into a BC image.
+bool DecodesOnCpu(const HostDevice& dev, const ImageRecord& record) {
+  const bool decoded_beside_bc =
+      !record.transcoded && IsColorFormat(record.format.etc_format) &&
+      dev.bc_textures && dev.gpu != nullptr && dev.gpu->CanTranscode();
+  return dev.gpu == nullptr || dev.copy_buffer == nullptr ||
+         record.scale != 1 || record.may_override || decoded_beside_bc;
+}
+
 // Mips whose ETC2 blocks stay on the CPU, so a copy out of them can be
-// encoded again: every mip of an upscaled or decoded colour image, and the
-// mips of a BC image no larger than a texture that is upscaled.
-bool KeepsMipBlocks(const ImageRecord& record, std::uint32_t mip) {
+// scaled or encoded again: every mip of an upscaled image or of a colour
+// image the CPU decodes, and the small mips of the rest.
+bool KeepsMipBlocks(const HostDevice& dev, const ImageRecord& record,
+                    std::uint32_t mip) {
   if (record.scale > 1) {
     return true;
   }
-  if (!record.transcoded) {
-    return IsColorFormat(record.format.etc_format);
+  if (!record.transcoded && IsColorFormat(record.format.etc_format) &&
+      DecodesOnCpu(dev, record)) {
+    return true;
   }
-  return std::max<std::uint32_t>(record.width >> mip, record.height >> mip) <=
-         kSmallTextureMaxExtent;
+  return IsSmallMip(record, mip);
+}
+
+// The kept blocks that follow a copy into layer 0 of `destination`. A copy
+// from another layer leaves them unknown, which a null source image records.
+BlockCopy KeepCopy(VkImage source, const ImageRecord& source_record,
+                   VkImage destination, const ImageRecord& destination_record,
+                   const VkImageCopy& region) {
+  const std::uint32_t source_mip = region.srcSubresource.mipLevel;
+  BlockCopy keep;
+  if (region.srcSubresource.baseArrayLayer == 0 &&
+      region.srcSubresource.layerCount == 1) {
+    keep.image = source;
+  }
+  keep.mip = source_mip;
+  keep.block_bytes = EtcBlockBytes(source_record.format.etc_format);
+  keep.mip_blocks_wide =
+      (std::max<std::uint32_t>(1, source_record.width >> source_mip) + 3) / 4;
+  keep.mip_blocks_high =
+      (std::max<std::uint32_t>(1, source_record.height >> source_mip) + 3) / 4;
+  keep.x = static_cast<std::uint32_t>(std::max(region.srcOffset.x, 0)) / 4;
+  keep.y = static_cast<std::uint32_t>(std::max(region.srcOffset.y, 0)) / 4;
+  keep.wide = (region.extent.width + 3) / 4;
+  keep.high = (region.extent.height + 3) / 4;
+  KeepIn(&keep, destination, destination_record,
+         region.dstSubresource.mipLevel, region.dstOffset);
+  return keep;
+}
+
+// A whole mip's kept blocks with `upload`'s region written in, or null when
+// there are none to patch or the region does not fit them.
+std::shared_ptr<const std::vector<std::uint8_t>> PatchKeptBlocks(
+    const std::vector<std::uint8_t>* kept, const ImageRecord& record,
+    const PendingUpload& upload, const std::uint8_t* compressed) {
+  const std::uint32_t mip = upload.mip_level;
+  const std::size_t block_bytes = EtcBlockBytes(upload.format);
+  const std::uint32_t wide =
+      (std::max<std::uint32_t>(1, record.width >> mip) + 3) / 4;
+  const std::uint32_t high =
+      (std::max<std::uint32_t>(1, record.height >> mip) + 3) / 4;
+  const std::uint32_t x = upload.region_x / 4;
+  const std::uint32_t y = upload.region_y / 4;
+  const std::uint32_t region_wide = (upload.width + 3) / 4;
+  const std::uint32_t region_high = (upload.height + 3) / 4;
+  if (kept == nullptr || upload.layers != 1 ||
+      kept->size() != std::size_t{wide} * high * block_bytes ||
+      upload.region_x % 4 != 0 || upload.region_y % 4 != 0 ||
+      x + region_wide > wide || y + region_high > high) {
+    return nullptr;
+  }
+  auto patched = std::make_shared<std::vector<std::uint8_t>>(*kept);
+  const std::size_t row_bytes = std::size_t{region_wide} * block_bytes;
+  for (std::uint32_t row = 0; row < region_high; ++row) {
+    std::memcpy(patched->data() +
+                    (std::size_t{y + row} * wide + x) * block_bytes,
+                compressed + row * row_bytes, row_bytes);
+  }
+  return patched;
 }
 
 struct CommandRecord {
   std::vector<PendingUpload> uploads;
   std::vector<BlockCopy> block_copies;
+  // Recording order of the uploads and block copies above.
+  std::uint64_t next_order = 0;
+
+  void AddUploads(const std::vector<PendingUpload>& added) {
+    for (const PendingUpload& upload : added) {
+      uploads.push_back(upload);
+      uploads.back().order = next_order++;
+    }
+  }
+
+  void AddBlockCopies(const std::vector<BlockCopy>& added) {
+    for (const BlockCopy& copy : added) {
+      block_copies.push_back(copy);
+      block_copies.back().order = next_order++;
+    }
+  }
+
   std::vector<GpuUpload> gpu_uploads;
   std::vector<DecodeCommands> decode_commands;
   std::vector<Staging> staging;
   std::vector<VkCommandBuffer> secondaries;
+  // Where each of `secondaries` replays among this record's orders; its
+  // uploads and block copies take that many orders from next_order.
+  std::vector<std::uint64_t> secondary_orders;
   // Highest decode ticket dispatched for this command buffer. Its staging
   // must not be released before that ticket completes.
   std::uint64_t last_ticket = 0;
@@ -752,6 +905,7 @@ std::atomic<unsigned> g_image_logs{0};
 std::atomic<unsigned> g_transcoded_image_logs{0};
 std::atomic<unsigned> g_decode_logs{0};
 std::atomic<unsigned> g_sampler_logs{0};
+std::atomic<unsigned> g_scaled_copy_logs{0};
 // Messages are literals, keyed by address.
 struct FailureCounts {
   std::mutex mutex;
@@ -763,17 +917,18 @@ FailureCounts& Failures() {
   return *failures;
 }
 
-// Each failure message is logged up to eight times on its own count, so a
-// frequent one cannot hide a rarer one.
-void LogFailure(const char* message) {
+// Counts a failure; true for the first eight of each message, so a frequent
+// one cannot hide a rarer one.
+bool CountFailure(const char* message) {
   FailureCounts& failures = Failures();
-  {
-    std::lock_guard<std::mutex> lock(failures.mutex);
-    if (++failures.counts[message] > 8) {
-      return;
-    }
+  std::lock_guard<std::mutex> lock(failures.mutex);
+  return ++failures.counts[message] <= 8;
+}
+
+void LogFailure(const char* message) {
+  if (CountFailure(message)) {
+    std::fprintf(stderr, "  [vulkan] ETC2 emulation: %s\n", message);
   }
-  std::fprintf(stderr, "  [vulkan] ETC2 emulation: %s\n", message);
 }
 
 bool CreateStagingBlock(const HostDevice& dev, VkDeviceSize size,
@@ -1132,6 +1287,8 @@ bool PlanRegions(const ImageRecord& record, VkDevice device, VkBuffer source,
     upload.target_width = upload.width;
     upload.target_height = upload.height;
     upload.target_bytes = upload.decoded;
+    upload.region_x = static_cast<std::uint32_t>(region.imageOffset.x);
+    upload.region_y = static_cast<std::uint32_t>(region.imageOffset.y);
     const VkDeviceSize row_texels =
         region.bufferRowLength != 0 ? region.bufferRowLength : upload.width;
     const VkDeviceSize layer_rows =
@@ -1227,8 +1384,31 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkPhysicalDevice, bool> physical_devices;
   std::vector<std::unique_ptr<HostDevice>> devices;
   std::unordered_map<VkImage, ImageRecord> images;
+  // Destroyed images a queued batch may still look up, by that batch's
+  // ticket. A new image that reuses the handle waits for it first, so it
+  // never takes the old image's kept blocks or override.
+  std::unordered_map<VkImage, std::uint64_t> retired_images;
   // Sum over `images`; guarded by `mutex`.
   EmulatedTextureBytes texture_bytes;
+  // GPU bytes of upscaled images, and the most a small texture's upscale may
+  // add to them: an eighth of video memory, 0 when unknown. Roblox sizes its
+  // texture budget for the textures it sent, not for upscaled ones.
+  VkDeviceSize upscaled_bytes = 0;
+  VkDeviceSize upscale_budget = 0;
+  // Live free video memory from VK_EXT_memory_budget, refreshed at most
+  // every kVideoFreeRefreshNs. Upscales reserved since then are subtracted,
+  // as the driver has not seen them yet, and KeepFree() stays free for
+  // Roblox.
+  VulkanEtc2Emulation::MemoryBudgetQuery budget_query;
+  VkDevice budget_device = VK_NULL_HANDLE;
+  std::uint32_t video_heap = VK_MAX_MEMORY_HEAPS;
+  VkDeviceSize video_memory = 0;
+  bool video_memory_overridden = false;
+  bool video_free_known = false;
+  VkDeviceSize video_free = 0;
+  VkDeviceSize reserved_since_free = 0;
+  std::uint64_t video_free_ns = 0;
+  unsigned stepped_down_logged = 0;
   // Top level counts of upscaled images, read by every barrier the
   // application records, so it has a lock of its own. `top_images` lets a
   // session without upscaled images skip the lock.
@@ -1606,6 +1786,140 @@ struct VulkanEtc2Emulation::State {
   const bool upscales = upscale > 1 || overrides.upscales();
   const bool encode_budget =
       OnUnlessZero(std::getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"));
+  std::uint64_t memory_log_ns = 0;
+
+  // What emulated textures cost, at the first image and then every
+  // kEncodeLogIntervalNs while images are created, so a reporter's log
+  // shows the upscale's share. Called with `mutex` held.
+  std::string TakeMemoryLogLocked(std::uint64_t now) {
+    if (memory_log_ns != 0 && now - memory_log_ns < kEncodeLogIntervalNs) {
+      return {};
+    }
+    memory_log_ns = now;
+    std::size_t kept = 0;
+    // Small textures by the scale they got: 1x, 2x, 4x, 8x.
+    std::size_t at_scale[4] = {};
+    for (const auto& [image, record] : images) {
+      for (const auto& blocks : record.blocks) {
+        kept += blocks == nullptr ? 0 : blocks->size();
+      }
+      if (record.asked_scale > 1) {
+        ++at_scale[std::min<std::uint32_t>(3, TopLevelCount(record.scale))];
+      }
+    }
+    std::string budget;
+    if (upscale_budget != 0) {
+      budget = " (budget " + FormatBytes(upscale_budget);
+      if (video_free_known) {
+        budget += ", " + FormatBytes(video_free) + " free";
+      }
+      budget += "; ";
+      if (at_scale[3] != 0) {
+        budget += "8x " + std::to_string(at_scale[3]) + ", ";
+      }
+      budget += "4x " + std::to_string(at_scale[2]) + ", 2x " +
+                std::to_string(at_scale[1]) + ", 1x " +
+                std::to_string(at_scale[0]) + ")";
+    }
+    return "  [vulkan] ETC2 textures: " + FormatBytes(texture_bytes.decoded) +
+           " on the GPU, " + FormatBytes(upscaled_bytes) + " of it upscaled" +
+           budget + "; " + FormatBytes(kept) + " of blocks kept on the CPU\n";
+  }
+
+  void RefreshVideoFree() {
+    VulkanEtc2Emulation::MemoryBudgetQuery query;
+    std::uint32_t heap = VK_MAX_MEMORY_HEAPS;
+    VkDeviceSize reserved_before = 0;
+    const std::uint64_t now = TraceClockNanos();
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (!budget_query || video_memory_overridden ||
+          (video_free_ns != 0 && now - video_free_ns < kVideoFreeRefreshNs)) {
+        return;
+      }
+      video_free_ns = now;
+      query = budget_query;
+      heap = video_heap;
+      reserved_before = reserved_since_free;
+    }
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    const bool known = heap < VK_MAX_MEMORY_HEAPS && query(&budget) &&
+                       budget.heapBudget[heap] != 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    video_free_known = known;
+    video_free = known && budget.heapBudget[heap] > budget.heapUsage[heap]
+                     ? budget.heapBudget[heap] - budget.heapUsage[heap]
+                     : 0;
+    // Reservations made while the query ran are not in its count.
+    reserved_since_free -= std::min(reserved_since_free, reserved_before);
+  }
+
+  // Video memory upscaling leaves free: a tenth, and at least what one
+  // 250 ms refresh of a loading burst can take (about 17 decoded 1024 px
+  // textures with mips in a 2-core reporter's log, ~90 MiB).
+  VkDeviceSize KeepFree() const {
+    return std::max<VkDeviceSize>(video_memory / 10, VkDeviceSize{96} << 20);
+  }
+
+  void ReleaseUpscale(VkDeviceSize reserved) {
+    std::lock_guard<std::mutex> lock(mutex);
+    upscaled_bytes -= reserved;
+    reserved_since_free -= std::min(reserved_since_free, reserved);
+  }
+
+  struct UpscaleRung {
+    std::uint32_t scale = 1;
+    VkDeviceSize cost = 0;
+  };
+
+  // Reserves the first rung that fits and returns its index, or
+  // rungs.size() when none does. Unless the driver reports twice KeepFree()
+  // free, textures above kSharpestMaxExtent take 4x only in the first half
+  // of the budget, so the cheaper ones keep it longest.
+  std::size_t ReserveUpscale(const std::vector<UpscaleRung>& rungs,
+                             bool larger, std::string* log) {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::size_t pick = 0;
+    for (; pick < rungs.size(); ++pick) {
+      const UpscaleRung& rung = rungs[pick];
+      const auto free_after = [&](VkDeviceSize keep_free) {
+        return video_free_known &&
+               video_free >= reserved_since_free + rung.cost + keep_free;
+      };
+      const bool tight = !free_after(KeepFree() * 2);
+      const VkDeviceSize limit = larger && rung.scale >= 4 && tight
+                                     ? upscale_budget / 2
+                                     : upscale_budget;
+      const bool in_budget =
+          upscale_budget == 0 || upscaled_bytes + rung.cost <= limit;
+      const bool in_free = !video_free_known || free_after(KeepFree());
+      if (in_budget && in_free) {
+        upscaled_bytes += rung.cost;
+        reserved_since_free += rung.cost;
+        break;
+      }
+    }
+    if (pick == 0) {
+      return pick;
+    }
+    const std::uint32_t scale =
+        pick < rungs.size() ? rungs[pick].scale : rungs.back().scale / 2;
+    const unsigned bit = 1u << TopLevelCount(scale);
+    if ((stepped_down_logged & bit) == 0) {
+      stepped_down_logged |= bit;
+      char text[256];
+      std::snprintf(text, sizeof(text),
+                    "  [vulkan] small texture upscaling stepped down to %ux: "
+                    "%s of a %s budget used, %s free\n",
+                    scale, FormatBytes(upscaled_bytes).c_str(),
+                    FormatBytes(upscale_budget).c_str(),
+                    video_free_known ? FormatBytes(video_free).c_str()
+                                     : "unknown");
+      *log = text;
+    }
+    return pick;
+  }
 
   // Prepays an image's first full upload at `scale`, probe-measured ns per
   // block times the host chain's blocks. Returns the prepaid ns; zero leaves
@@ -1703,9 +2017,7 @@ struct VulkanEtc2Emulation::State {
     }
     std::shared_ptr<const RgbaImage> replacement;
     if (upload.mip_level == 0) {
-      const std::uint64_t hash = HashBytes(compressed, upload.compressed);
-      overrides.Dump(hash, upload.width, upload.height, decoded);
-      replacement = overrides.Lookup(hash);
+      replacement = LookupOverride(upload, compressed, decoded);
       std::lock_guard<std::mutex> lock(mutex);
       const auto record = images.find(upload.image);
       if (record != images.end()) {
@@ -1721,8 +2033,18 @@ struct VulkanEtc2Emulation::State {
     return replacement;
   }
 
+  std::shared_ptr<const RgbaImage> LookupOverride(
+      const PendingUpload& upload, const std::uint8_t* compressed,
+      const std::uint8_t* decoded) {
+    const std::uint64_t hash = HashBytes(compressed, upload.compressed);
+    overrides.Dump(hash, upload.width, upload.height, decoded);
+    return overrides.Lookup(hash);
+  }
+
+  // `picked` is level 0's override when DecodeAndEmit chose it already.
   void EmitUpload(const PendingUpload& upload, const std::uint8_t* compressed,
-                  const std::uint8_t* decoded) {
+                  const std::uint8_t* decoded,
+                  const std::shared_ptr<const RgbaImage>* picked = nullptr) {
     if (upload.keep_only) {
       StoreScaledUpload(upload, compressed);
       return;
@@ -1732,10 +2054,24 @@ struct VulkanEtc2Emulation::State {
       return;
     }
     const std::shared_ptr<const RgbaImage> replacement =
-        FindOverride(upload, compressed, decoded);
+        picked != nullptr ? *picked : FindOverride(upload, compressed, decoded);
     if (replacement != nullptr) {
       ResampleRgba(*replacement, upload.target_width, upload.target_height,
                    upload.target);
+    } else if (upload.widened) {
+      StoreScaledUpload(upload, compressed);
+      const std::vector<std::uint8_t> blocks = WidenedBlocks(upload, compressed);
+      std::vector<std::uint8_t> mip(std::size_t{upload.source_width} *
+                                    upload.source_height * 4);
+      if (!DecodeEtcImage(upload.format, blocks.data(), blocks.size(),
+                          upload.source_width, upload.source_height,
+                          mip.data(), mip.size())) {
+        LogFailure("could not decode a widened upload");
+        return;
+      }
+      ScaleRgba(mip.data(), upload.source_width, upload.source_height,
+                std::size_t{upload.source_width} * 4, upload.target_width,
+                upload.target_height, upload.target);
     } else if (upload.scale > 1) {
       StoreScaledUpload(upload, compressed);
       ScaleRgba(decoded, upload.source_width, upload.source_height,
@@ -1758,7 +2094,6 @@ struct VulkanEtc2Emulation::State {
     }
   }
 
-  // The GPU decodes and scales the upload's own blocks.
   void EmitScaleSource(const PendingUpload& upload,
                        const std::uint8_t* compressed) {
     StoreScaledUpload(upload, compressed);
@@ -1767,11 +2102,68 @@ struct VulkanEtc2Emulation::State {
     std::uint8_t* blocks = upload.target + kEtc2ScaleHeaderBytes;
     const std::uint32_t header[4] = {upload.source_width, upload.source_height,
                                      upload.scale_row_blocks * 4, 0};
-    const std::size_t own = (std::size_t{upload.width} + 3) / 4 * block_bytes;
-    for (std::uint32_t row = 0; row < (upload.height + 3) / 4; ++row) {
-      std::memcpy(blocks + row * pitch, compressed + row * own, own);
+    if (upload.widened) {
+      const std::vector<std::uint8_t> mip = WidenedBlocks(upload, compressed);
+      const std::size_t own = (std::size_t{upload.source_width} + 3) / 4 *
+                              block_bytes;
+      for (std::uint32_t row = 0; row < (upload.source_height + 3) / 4; ++row) {
+        std::memcpy(blocks + row * pitch, mip.data() + row * own, own);
+      }
+    } else {
+      const std::size_t own = (std::size_t{upload.width} + 3) / 4 * block_bytes;
+      for (std::uint32_t row = 0; row < (upload.height + 3) / 4; ++row) {
+        std::memcpy(blocks + row * pitch, compressed + row * own, own);
+      }
     }
     std::memcpy(upload.target, header, sizeof(header));
+  }
+
+  // A widened upload's whole mip: its kept blocks with the region patched
+  // in. Without kept blocks the region's edge blocks fill the rest.
+  std::vector<std::uint8_t> WidenedBlocks(const PendingUpload& upload,
+                                          const std::uint8_t* compressed) {
+    std::shared_ptr<const std::vector<std::uint8_t>> kept;
+    ImageRecord record;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto found = images.find(upload.image);
+      if (found != images.end()) {
+        // PatchKeptBlocks reads only the extent.
+        record.width = found->second.width;
+        record.height = found->second.height;
+        if (upload.mip_level < found->second.blocks.size()) {
+          kept = found->second.blocks[upload.mip_level];
+        }
+      }
+    }
+    const std::shared_ptr<const std::vector<std::uint8_t>> patched =
+        PatchKeptBlocks(kept.get(), record, upload, compressed);
+    if (patched != nullptr) {
+      return *patched;
+    }
+    LogFailure("rescaled part of an upscaled mip without its kept blocks");
+    const std::size_t block_bytes = EtcBlockBytes(upload.format);
+    const std::uint32_t wide = (upload.source_width + 3) / 4;
+    const std::uint32_t high = (upload.source_height + 3) / 4;
+    const std::uint32_t region_wide = (upload.width + 3) / 4;
+    const std::uint32_t region_high = (upload.height + 3) / 4;
+    const std::int32_t x = static_cast<std::int32_t>(upload.region_x / 4);
+    const std::int32_t y = static_cast<std::int32_t>(upload.region_y / 4);
+    std::vector<std::uint8_t> mip(std::size_t{wide} * high * block_bytes);
+    for (std::uint32_t by = 0; by < high; ++by) {
+      for (std::uint32_t bx = 0; bx < wide; ++bx) {
+        const std::int32_t sx = std::clamp(static_cast<std::int32_t>(bx) - x, 0,
+                                           static_cast<std::int32_t>(region_wide) - 1);
+        const std::int32_t sy = std::clamp(static_cast<std::int32_t>(by) - y, 0,
+                                           static_cast<std::int32_t>(region_high) - 1);
+        std::memcpy(mip.data() + (std::size_t{by} * wide + bx) * block_bytes,
+                    compressed + (static_cast<std::size_t>(sy) * region_wide +
+                                  static_cast<std::size_t>(sx)) *
+                                     block_bytes,
+                    block_bytes);
+      }
+    }
+    return mip;
   }
 
   void StoreScaledUpload(const PendingUpload& upload,
@@ -1793,12 +2185,15 @@ struct VulkanEtc2Emulation::State {
         mips[upload.mip_level] = std::move(blocks);
       }
     } else {
-      // Part of a mip changed, so its kept blocks are stale.
+      // Dropped when there is nothing to patch, so no copy reads stale
+      // texels.
       std::lock_guard<std::mutex> lock(mutex);
       const auto record = images.find(upload.image);
       if (record != images.end() &&
           upload.mip_level < record->second.blocks.size()) {
-        record->second.blocks[upload.mip_level] = nullptr;
+        std::shared_ptr<const std::vector<std::uint8_t>>& kept =
+            record->second.blocks[upload.mip_level];
+        kept = PatchKeptBlocks(kept.get(), record->second, upload, compressed);
       }
     }
   }
@@ -1807,6 +2202,8 @@ struct VulkanEtc2Emulation::State {
     const PendingUpload* upload = nullptr;
     const std::uint8_t* compressed = nullptr;
     const std::uint8_t* decoded = nullptr;
+    bool picked = false;
+    std::shared_ptr<const RgbaImage> replacement;
   };
 
   struct EmitQueue {
@@ -1821,7 +2218,8 @@ struct VulkanEtc2Emulation::State {
           return;
         }
         const EmitJob& job = jobs[index];
-        state->EmitUpload(*job.upload, job.compressed, job.decoded);
+        state->EmitUpload(*job.upload, job.compressed, job.decoded,
+                          job.picked ? &job.replacement : nullptr);
       }
     }
   };
@@ -1834,6 +2232,8 @@ struct VulkanEtc2Emulation::State {
     if (jobs.empty()) {
       return;
     }
+    // DecodeAndEmit keeps uploads that share kept blocks in separate
+    // batches, so a batch needs no order of its own.
     std::vector<EmitJob> level_zero;
     std::vector<EmitJob> rest;
     for (const EmitJob& job : jobs) {
@@ -1841,6 +2241,55 @@ struct VulkanEtc2Emulation::State {
     }
     EmitPass(std::move(level_zero), worker_count);
     EmitPass(std::move(rest), worker_count);
+  }
+
+  // Hashing level 0 is the cost, so lookups run across the decode workers.
+  // The images then take their matches in order, so the last level 0 of an
+  // image wins, as when they were picked one at a time.
+  void PickOverrides(std::vector<EmitJob>* jobs) {
+    struct Picks {
+      State* state = nullptr;
+      std::vector<EmitJob*> jobs;
+      std::atomic<std::size_t> next{0};
+    } picks;
+    picks.state = this;
+    for (EmitJob& job : *jobs) {
+      const PendingUpload& upload = *job.upload;
+      if (upload.mip_level == 0 && !upload.keep_only &&
+          upload.scale_row_blocks == 0) {
+        job.picked = true;
+        if (upload.layers == 1 && IsColorFormat(upload.format)) {
+          picks.jobs.push_back(&job);
+        }
+      }
+    }
+    if (picks.jobs.empty()) {
+      return;
+    }
+    const auto threads = static_cast<unsigned>(std::min<std::size_t>(
+        std::max(DecodeWorkerCount(), 1U), picks.jobs.size()));
+    RunOnDecodeWorkers(
+        [](void* context) {
+          auto* picks = static_cast<Picks*>(context);
+          for (;;) {
+            const std::size_t index =
+                picks->next.fetch_add(1, std::memory_order_relaxed);
+            if (index >= picks->jobs.size()) {
+              return;
+            }
+            EmitJob& job = *picks->jobs[index];
+            job.replacement = picks->state->LookupOverride(
+                *job.upload, job.compressed, job.decoded);
+          }
+        },
+        &picks, threads);
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const EmitJob* job : picks.jobs) {
+      const auto record = images.find(job->upload->image);
+      if (record != images.end()) {
+        record->second.override = job->replacement;
+      }
+    }
   }
 
   void EmitPass(std::vector<EmitJob> jobs, unsigned worker_count) {
@@ -1984,13 +2433,7 @@ struct VulkanEtc2Emulation::State {
                      std::vector<GpuCopy<Region>>* copies,
                      bool keep_small_mips = true) {
     copies->clear();
-    // A decoded image beside BC ones decodes on the CPU, which keeps its
-    // blocks for the copies into a BC image that the GPU path cannot see.
-    const bool decoded_beside_bc =
-        !record.transcoded && IsColorFormat(record.format.etc_format) &&
-        dev.bc_textures && dev.gpu != nullptr && dev.gpu->CanTranscode();
-    if (dev.gpu == nullptr || dev.copy_buffer == nullptr ||
-        record.scale != 1 || record.may_override || decoded_beside_bc) {
+    if (DecodesOnCpu(dev, record)) {
       return false;
     }
     std::vector<Region> split;
@@ -2033,13 +2476,14 @@ struct VulkanEtc2Emulation::State {
                       rewritten, copies)) {
       return false;
     }
-    // Small mips of a BC image keep their blocks on the CPU, so a copy into
-    // an upscaled BC image can be scaled and encoded from them. A partial
-    // upload drops them instead.
+    // Small mips keep their blocks on the CPU, so a copy into an upscaled
+    // image can be scaled (and encoded, for BC) from them.
     std::vector<PendingUpload> kept;
     for (const PendingUpload& upload : uploads) {
-      if (keep_small_mips && record.transcoded &&
-          KeepsMipBlocks(record, upload.mip_level)) {
+      // Blocks kept by an earlier CPU fallback are refreshed, not left stale.
+      if (keep_small_mips &&
+          (KeepsMipBlocks(dev, record, upload.mip_level) ||
+           HasKeptBlocks(destination, upload.mip_level))) {
         PendingUpload keep = upload;
         keep.keep_only = true;
         keep.decoded = 0;
@@ -2052,10 +2496,137 @@ struct VulkanEtc2Emulation::State {
     if (!kept.empty()) {
       std::lock_guard<std::mutex> lock(mutex);
       CommandRecord& command = commands[command_buffer];
-      command.uploads.insert(command.uploads.end(), kept.begin(), kept.end());
+      command.AddUploads(kept);
       has_commands.store(true, std::memory_order_release);
     }
     return true;
+  }
+
+  // Ignores work still recorded in a command buffer; see BlocksWillBeKept.
+  bool HasKeptBlocks(VkImage image, std::uint32_t mip) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto found = images.find(image);
+    return found != images.end() && mip < found->second.blocks.size() &&
+           found->second.blocks[mip] != nullptr;
+  }
+
+  // Whether `image` will hold whole kept blocks of `mip` when the work
+  // recorded so far in `command_buffer` replays at submit. Another command
+  // buffer submitted in between is not seen; a copy then logs no blocks.
+  bool BlocksWillBeKept(VkCommandBuffer command_buffer, VkImage image,
+                        std::uint32_t mip) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return BlocksWillBeKeptLocked(command_buffer, image, mip,
+                                  std::numeric_limits<std::uint64_t>::max(),
+                                  0);
+  }
+
+  bool BlocksWillBeKeptLocked(VkCommandBuffer command_buffer, VkImage image,
+                              std::uint32_t mip, std::uint64_t before,
+                              unsigned depth) {
+    const auto found = images.find(image);
+    if (found == images.end() || depth > 4) {
+      return false;
+    }
+    const ImageRecord& record = found->second;
+    const std::size_t bytes =
+        std::size_t{(std::max<std::uint32_t>(1, record.width >> mip) + 3) / 4} *
+        ((std::max<std::uint32_t>(1, record.height >> mip) + 3) / 4) *
+        EtcBlockBytes(record.format.etc_format);
+    bool kept = mip < record.blocks.size() && record.blocks[mip] != nullptr &&
+                record.blocks[mip]->size() == bytes;
+    const auto command = commands.find(command_buffer);
+    if (command == commands.end()) {
+      return kept;
+    }
+    const std::vector<PendingUpload>& uploads = command->second.uploads;
+    const std::vector<BlockCopy>& copies = command->second.block_copies;
+    std::size_t next_upload = 0;
+    std::size_t next_copy = 0;
+    while (true) {
+      const bool upload_next =
+          next_upload < uploads.size() &&
+          uploads[next_upload].order < before &&
+          (next_copy >= copies.size() ||
+           uploads[next_upload].order < copies[next_copy].order);
+      if (upload_next) {
+        const PendingUpload& upload = uploads[next_upload++];
+        if (upload.image == image && upload.mip_level == mip &&
+            !upload.top_level && upload.full_mip && upload.layers == 1) {
+          kept = true;
+        }
+        continue;
+      }
+      if (next_copy >= copies.size() || copies[next_copy].order >= before) {
+        break;
+      }
+      const BlockCopy& copy = copies[next_copy++];
+      if (copy.keep != image || copy.keep_mip != mip) {
+        continue;
+      }
+      const bool whole = copy.keep_x == 0 && copy.keep_y == 0 &&
+                         copy.wide == copy.keep_blocks_wide &&
+                         copy.high == copy.keep_blocks_high;
+      kept = (whole || kept) &&
+             BlocksWillBeKeptLocked(command_buffer, copy.image, copy.mip,
+                                    copy.order, depth + 1);
+    }
+    return kept;
+  }
+
+  // A part upload into an upscaled mip whose blocks will be kept is widened
+  // to the whole mip, so the filter sees the texels around it. Overrides are
+  // matched on the region, so those records are not widened.
+  template <typename Region>
+  void WidenPartialUploads(VkCommandBuffer command_buffer,
+                           const ImageRecord& record, VkImage destination,
+                           std::vector<PendingUpload>* uploads,
+                           std::vector<Region>* rewritten) {
+    if (record.scale <= 1 || record.may_override) {
+      return;
+    }
+    for (std::size_t index = 0; index < uploads->size(); ++index) {
+      PendingUpload& upload = (*uploads)[index];
+      if (upload.full_mip || upload.layers != 1) {
+        continue;
+      }
+      const std::uint32_t mip = upload.mip_level;
+      const std::uint32_t wide = std::max<std::uint32_t>(1, record.width >> mip);
+      const std::uint32_t high =
+          std::max<std::uint32_t>(1, record.height >> mip);
+      const bool filled_before = std::any_of(
+          uploads->begin(), uploads->begin() + static_cast<std::ptrdiff_t>(index),
+          [&](const PendingUpload& earlier) {
+            return earlier.mip_level == mip && earlier.full_mip &&
+                   earlier.layers == 1;
+          });
+      if (!filled_before &&
+          !BlocksWillBeKept(command_buffer, destination, mip)) {
+        continue;
+      }
+      std::uint32_t texels = 0;
+      std::uint32_t start = 0;
+      std::uint32_t host_wide = 0;
+      std::uint32_t host_high = 0;
+      if (!ScaledAxis(record.width, record.scale, mip, 0, wide, &texels,
+                      &start, &host_wide) ||
+          !ScaledAxis(record.height, record.scale, mip, 0, high, &texels,
+                      &start, &host_high)) {
+        continue;
+      }
+      upload.widened = true;
+      upload.source_width = wide;
+      upload.source_height = high;
+      upload.target_width = host_wide;
+      upload.target_height = host_high;
+      upload.target_bytes = VkDeviceSize{host_wide} * host_high *
+                            EtcDecodedTexelBytes(upload.format);
+      Region& region = (*rewritten)[index];
+      region.imageOffset.x = 0;
+      region.imageOffset.y = 0;
+      region.imageExtent.width = host_wide;
+      region.imageExtent.height = host_high;
+    }
   }
 
   // Upscaled images: the CPU only copies ETC2 blocks to staging at submit;
@@ -2077,6 +2648,8 @@ struct VulkanEtc2Emulation::State {
                      &rewritten, &uploads, &total)) {
       return false;
     }
+    WidenPartialUploads(command_buffer, record, destination, &uploads,
+                        &rewritten);
     // Every source fits the level-0 block grid, the largest it scales from.
     const std::uint32_t row_blocks = (record.width + 3) / 4;
     const std::uint32_t rows = (record.height + 3) / 4;
@@ -2176,6 +2749,14 @@ struct VulkanEtc2Emulation::State {
                      &rewritten, &uploads, &total)) {
       LogFailure("skipped an upload with an unsupported region");
       return;
+    }
+    WidenPartialUploads(command_buffer, record, destination, &uploads,
+                        &rewritten);
+    total = 0;
+    for (std::size_t index = 0; index < uploads.size(); ++index) {
+      uploads[index].target_offset = total;
+      rewritten[index].bufferOffset = total;
+      total += uploads[index].target_bytes;
     }
     if (!AcquireStaging(dev, total, &staging)) {
       LogFailure("could not allocate a host-visible staging buffer");
@@ -2513,7 +3094,7 @@ struct VulkanEtc2Emulation::State {
                      VkImageLayout destination_layout, std::uint32_t count,
                      const VkImageCopy* regions);
 
-  void ScaledTranscodeCopy(const HostDevice& dev,
+  bool ScaledTranscodeCopy(const HostDevice& dev,
                            VkCommandBuffer command_buffer,
                            VkImage source_image, const ImageRecord& source,
                            VkImage destination,
@@ -2546,8 +3127,7 @@ struct VulkanEtc2Emulation::State {
               std::vector<PendingUpload> uploads, const Staging& staging) {
     std::lock_guard<std::mutex> lock(mutex);
     CommandRecord& record = commands[command_buffer];
-    record.uploads.insert(record.uploads.end(), uploads.begin(),
-                          uploads.end());
+    record.AddUploads(uploads);
     record.staging.push_back(staging);
     has_commands.store(true, std::memory_order_release);
   }
@@ -2671,9 +3251,11 @@ struct VulkanEtc2Emulation::State {
       std::uint8_t* decoded = decoded_base + decoded_offset;
       const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
       const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
-      for (std::uint32_t layer = 0; layer < upload.layers &&
-                                    upload.scale_row_blocks == 0 &&
-                                    !upload.keep_only;
+      // A widened upload decodes its whole mip when emitted; only an
+      // override dump still reads the region.
+      const bool decodes = upload.scale_row_blocks == 0 && !upload.keep_only &&
+                           !(upload.widened && !overrides.enabled());
+      for (std::uint32_t layer = 0; decodes && layer < upload.layers;
            ++layer) {
         EtcDecodeJob job;
         job.format = upload.format;
@@ -2703,13 +3285,87 @@ struct VulkanEtc2Emulation::State {
     std::vector<EmitJob> emit_jobs;
     emit_jobs.reserve(uploads.size());
     for (const PendingUpload& upload : uploads) {
-      emit_jobs.push_back({&upload, source_base + compressed_offset,
-                           decoded_base + decoded_offset});
+      EmitJob job;
+      job.upload = &upload;
+      job.compressed = source_base + compressed_offset;
+      job.decoded = decoded_base + decoded_offset;
+      emit_jobs.push_back(std::move(job));
       compressed_offset += upload.compressed;
       decoded_offset += upload.decoded;
     }
-    EmitBatch(std::move(emit_jobs), DecodeWorkerCount());
-    FillBlockCopies(block_copies);
+    // Uploads emit across the workers in runs. A run never holds two writers
+    // of one mip's kept blocks, or a writer and a reader, and a copy that
+    // touches a mip the run writes waits for it.
+    const auto by_order = [](const auto& a, const auto& b) {
+      return a.order < b.order;
+    };
+    std::stable_sort(emit_jobs.begin(), emit_jobs.end(),
+                     [&](const EmitJob& a, const EmitJob& b) {
+                       return by_order(*a.upload, *b.upload);
+                     });
+    // Level 0 picks the override its image's other mips are resampled from,
+    // so every level 0 of the submit picks first, as when one batch emitted
+    // them all ahead of the rest; runs could otherwise reorder them.
+    if (overrides.enabled()) {
+      PickOverrides(&emit_jobs);
+    }
+    std::vector<const BlockCopy*> copies;
+    copies.reserve(block_copies.size());
+    for (const BlockCopy& copy : block_copies) {
+      copies.push_back(&copy);
+    }
+    std::stable_sort(copies.begin(), copies.end(),
+                     [&](const BlockCopy* a, const BlockCopy* b) {
+                       return by_order(*a, *b);
+                     });
+    using MipKey = std::pair<VkImage, std::uint32_t>;
+    std::vector<EmitJob> run;
+    std::set<MipKey> run_writes;
+    std::set<MipKey> run_reads;
+    const auto flush = [&]() {
+      EmitBatch(std::move(run), DecodeWorkerCount());
+      run.clear();
+      run_writes.clear();
+      run_reads.clear();
+    };
+    // Every upload but a top level's stores or patches kept blocks; a
+    // widened one also reads them.
+    const auto add = [&](const EmitJob& job) {
+      const PendingUpload& upload = *job.upload;
+      const MipKey key{upload.image, upload.mip_level};
+      const bool writes = !upload.top_level;
+      const bool reads = upload.widened;
+      if ((writes && (run_writes.count(key) != 0 ||
+                      run_reads.count(key) != 0)) ||
+          (reads && run_writes.count(key) != 0)) {
+        flush();
+      }
+      if (writes) {
+        run_writes.insert(key);
+      }
+      if (reads) {
+        run_reads.insert(key);
+      }
+      run.push_back(job);
+    };
+    std::size_t next = 0;
+    for (const BlockCopy* copy : copies) {
+      while (next < emit_jobs.size() &&
+             emit_jobs[next].upload->order < copy->order) {
+        add(emit_jobs[next++]);
+      }
+      const MipKey read{copy->image, copy->mip};
+      const MipKey write{copy->keep, copy->keep_mip};
+      if (run_writes.count(read) != 0 || run_writes.count(write) != 0 ||
+          run_reads.count(write) != 0) {
+        flush();
+      }
+      FillBlockCopy(*copy);
+    }
+    while (next < emit_jobs.size()) {
+      add(emit_jobs[next++]);
+    }
+    flush();
   }
 
   // Writes `region` (copy.wide x copy.high blocks, or null when unknown) into
@@ -2757,58 +3413,137 @@ struct VulkanEtc2Emulation::State {
     }
   }
 
+  // Names the source of a copy written black, so a reporter's log shows
+  // which textures lack kept blocks.
+  void LogMissingSource(const BlockCopy& copy, const ImageRecord* source,
+                        bool has_blocks) {
+    if (!CountFailure("copied into a compressed image without its source")) {
+      return;
+    }
+    if (source == nullptr) {
+      std::fprintf(stderr,
+                   "  [vulkan] ETC2 emulation: copied into a compressed image "
+                   "without its source: %s\n",
+                   copy.image == VK_NULL_HANDLE ? "a layer other than 0"
+                                                : "unknown image");
+      return;
+    }
+    const char* reason = has_blocks ? "region outside them" : "no kept blocks";
+    std::fprintf(stderr,
+                 "  [vulkan] ETC2 emulation: copied into a compressed image "
+                 "without its source: %ux%u %s mip %u, %s\n",
+                 source->width, source->height,
+                 source->scale > 1
+                     ? (source->transcoded ? "upscaled BC" : "upscaled RGBA8")
+                     : (source->transcoded ? "BC" : "RGBA8"),
+                 copy.mip, reason);
+  }
+
+  // Collected primary first, then its secondaries, so they run by order.
   void FillBlockCopies(const std::vector<BlockCopy>& block_copies) {
+    std::vector<const BlockCopy*> ordered;
+    ordered.reserve(block_copies.size());
     for (const BlockCopy& copy : block_copies) {
-      const std::size_t row_bytes = std::size_t{copy.wide} * copy.block_bytes;
-      std::uint8_t* const target =
-          copy.target == nullptr
-              ? nullptr
-              : copy.target + (copy.scale_header ? kEtc2ScaleHeaderBytes : 0);
-      if (copy.scale_header && copy.target != nullptr) {
-        const std::uint32_t header[4] = {copy.texels_wide, copy.texels_high,
-                                         copy.wide * 4, 0};
-        std::memcpy(copy.target, header, sizeof(header));
-      }
-      std::shared_ptr<const std::vector<std::uint8_t>> blocks;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        const auto record = images.find(copy.image);
-        if (record != images.end() &&
-            copy.mip < record->second.blocks.size()) {
+      ordered.push_back(&copy);
+    }
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const BlockCopy* a, const BlockCopy* b) {
+                       return a->order < b->order;
+                     });
+    for (const BlockCopy* copy : ordered) {
+      FillBlockCopy(*copy);
+    }
+  }
+
+  void FillBlockCopy(const BlockCopy& copy) {
+    const std::size_t row_bytes = std::size_t{copy.wide} * copy.block_bytes;
+    std::uint8_t* const target =
+        copy.target == nullptr
+            ? nullptr
+            : copy.target + (copy.scale_header ? kEtc2ScaleHeaderBytes : 0);
+    if (copy.scale_header && copy.target != nullptr) {
+      const std::uint32_t header[4] = {copy.texels_wide, copy.texels_high,
+                                       copy.wide * 4, 0};
+      std::memcpy(copy.target, header, sizeof(header));
+    }
+    std::shared_ptr<const std::vector<std::uint8_t>> blocks;
+    ImageRecord source;
+    bool found = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto record = images.find(copy.image);
+      if (record != images.end()) {
+        found = true;
+        // Only what the log names; the blocks and override stay behind.
+        source.width = record->second.width;
+        source.height = record->second.height;
+        source.scale = record->second.scale;
+        source.transcoded = record->second.transcoded;
+        if (copy.mip < record->second.blocks.size()) {
           blocks = record->second.blocks[copy.mip];
         }
       }
-      if (blocks == nullptr ||
-          copy.x + copy.wide > copy.mip_blocks_wide ||
-          copy.y + copy.high > copy.mip_blocks_high ||
-          blocks->size() < std::size_t{copy.mip_blocks_wide} *
-                               copy.mip_blocks_high * copy.block_bytes) {
-        if (target != nullptr) {
-          LogFailure("copied into a compressed image without its source");
-          std::memset(target, 0, row_bytes * copy.high);
-        }
-        KeepBlocks(copy, nullptr);
-        continue;
-      }
-      std::vector<std::uint8_t> region(row_bytes * copy.high);
-      for (std::uint32_t row = 0; row < copy.high; ++row) {
-        std::memcpy(region.data() + row * row_bytes,
-                    blocks->data() + (std::size_t{copy.y + row} *
-                                          copy.mip_blocks_wide +
-                                      copy.x) *
-                                         copy.block_bytes,
-                    row_bytes);
-      }
-      if (target != nullptr) {
-        std::memcpy(target, region.data(), region.size());
-      }
-      KeepBlocks(copy, &region);
     }
+    if (blocks == nullptr || copy.x + copy.wide > copy.mip_blocks_wide ||
+        copy.y + copy.high > copy.mip_blocks_high ||
+        blocks->size() < std::size_t{copy.mip_blocks_wide} *
+                             copy.mip_blocks_high * copy.block_bytes) {
+      if (target != nullptr) {
+        LogMissingSource(copy, found ? &source : nullptr, blocks != nullptr);
+        std::memset(target, 0, row_bytes * copy.high);
+      }
+      KeepBlocks(copy, nullptr);
+      return;
+    }
+    std::vector<std::uint8_t> region(row_bytes * copy.high);
+    for (std::uint32_t row = 0; row < copy.high; ++row) {
+      std::memcpy(region.data() + row * row_bytes,
+                  blocks->data() +
+                      (std::size_t{copy.y + row} * copy.mip_blocks_wide +
+                       copy.x) *
+                          copy.block_bytes,
+                  row_bytes);
+    }
+    if (target != nullptr) {
+      std::memcpy(target, region.data(), region.size());
+    }
+    KeepBlocks(copy, &region);
   }
 
   std::uint64_t IssuedTicket() {
     std::lock_guard<std::mutex> lock(queue_mutex);
     return issued_ticket;
+  }
+
+  std::uint64_t CompletedTicket() {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    return completed_ticket;
+  }
+
+  // The last queued batch that touches an image `copies` read or write.
+  std::uint64_t TicketTouching(const std::vector<BlockCopy>& copies) {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::uint64_t ticket = 0;
+    for (const BlockCopy& copy : copies) {
+      for (const VkImage image : {copy.image, copy.keep}) {
+        const auto found = images.find(image);
+        if (found != images.end()) {
+          ticket = std::max(ticket, found->second.ticket);
+        }
+      }
+    }
+    return ticket;
+  }
+
+  // Called with `mutex` held, after `ticket` is queued.
+  void RememberTickets(const std::vector<VkImage>& touched,
+                       std::uint64_t ticket) {
+    for (const VkImage image : touched) {
+      const auto found = images.find(image);
+      if (found != images.end()) {
+        found->second.ticket = ticket;
+      }
+    }
   }
 
   // Blocks until every batch up to `ticket` has been decoded and emitted.
@@ -2909,6 +3644,31 @@ void VulkanEtc2Emulation::RegisterDevice(
   dev->emulated = emulated;
   dev->bc_textures = emulated && bc_textures;
   dev->memory = memory;
+  if (emulated) {
+    VkDeviceSize video_memory = 0;
+    std::uint32_t video_heap = VK_MAX_MEMORY_HEAPS;
+    for (std::uint32_t heap = 0;
+         heap < memory.memoryHeapCount && heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+      if ((memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) !=
+              0 &&
+          memory.memoryHeaps[heap].size > video_memory) {
+        video_memory = memory.memoryHeaps[heap].size;
+        video_heap = heap;
+      }
+    }
+    // Lets a large card act as a small one; the driver's free memory is then
+    // not read.
+    const std::uint64_t overridden =
+        VideoMemoryOverrideMib(std::getenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"));
+    if (overridden != 0) {
+      video_memory = overridden << 20;
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->video_memory = video_memory;
+    state_->video_heap = video_heap;
+    state_->video_memory_overridden = overridden != 0;
+    state_->upscale_budget = video_memory / 8;
+  }
   dev->create_image = DeviceProc<PFN_vkCreateImage>(get, device, "vkCreateImage");
   dev->destroy_image =
       DeviceProc<PFN_vkDestroyImage>(get, device, "vkDestroyImage");
@@ -3043,9 +3803,26 @@ void VulkanEtc2Emulation::RegisterDevice(
   g_devices_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
+void VulkanEtc2Emulation::SetMemoryBudgetQuery(VkDevice device,
+                                               MemoryBudgetQuery query) {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  state_->budget_query = std::move(query);
+  state_->budget_device = device;
+  state_->video_free_known = false;
+  state_->video_free_ns = 0;
+}
+
 void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->budget_device == device) {
+      state_->budget_query = nullptr;
+      state_->budget_device = VK_NULL_HANDLE;
+      state_->video_free_known = false;
+    }
+  }
   std::vector<VkSampler> shifted;
   {
     std::unique_lock<std::shared_mutex> lock(state_->lod_mutex);
@@ -3110,6 +3887,9 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
       if (it->second.device == device) {
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        if (it->second.scale > 1) {
+          state_->upscaled_bytes -= it->second.bytes.decoded;
+        }
         if (it->second.top != 0) {
           destroyed.push_back(it->first);
         }
@@ -3179,15 +3959,19 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   host_info.flags &= ~static_cast<VkImageCreateFlags>(
       VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
   std::uint32_t scale = 1;
+  std::uint32_t override_scale = 1;
   if (IsColorFormat(format.etc_format) &&
       create_info->imageType == VK_IMAGE_TYPE_2D &&
       create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
       create_info->arrayLayers == 1 && create_info->extent.depth == 1) {
-    scale = SmallTextureScale(
-        create_info->extent.width, create_info->extent.height,
-        state_->upscale,
-        state_->overrides.UpscaleFor(create_info->extent.width,
-                                     create_info->extent.height));
+    const std::uint32_t override_upscale = state_->overrides.UpscaleFor(
+        create_info->extent.width, create_info->extent.height);
+    scale = SmallTextureScale(create_info->extent.width,
+                              create_info->extent.height, state_->upscale,
+                              override_upscale);
+    override_scale =
+        SmallTextureScale(create_info->extent.width,
+                          create_info->extent.height, 1, override_upscale);
   }
   const bool may_override =
       IsColorFormat(format.etc_format) && create_info->arrayLayers == 1 &&
@@ -3200,38 +3984,99 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // only the decoded path has always passed through. Drivers rarely support
   // BC with linear tiling.
   VkFormat bc_format = VK_FORMAT_UNDEFINED;
-  bool transcoded =
-      dev->bc_textures && dev->gpu != nullptr &&
-      dev->gpu->CanTranscode() && !may_override &&
-      (scale == 1 || dev->gpu->CanScale()) &&
-      create_info->imageType == VK_IMAGE_TYPE_2D &&
-      create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
-      (create_info->usage & ~kBcUsage) == 0 &&
-      (create_info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) == 0 &&
-      BcHostFormat(create_info->format, &bc_format);
+  const bool bc_format_known = BcHostFormat(create_info->format, &bc_format);
+  const auto bc_eligible = [&](std::uint32_t at_scale) {
+    return bc_format_known && dev->bc_textures && dev->gpu != nullptr &&
+           dev->gpu->CanTranscode() && !may_override &&
+           (at_scale == 1 || dev->gpu->CanScale()) &&
+           create_info->imageType == VK_IMAGE_TYPE_2D &&
+           create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
+           (create_info->usage & ~kBcUsage) == 0 &&
+           (create_info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) == 0;
+  };
+  // Over budget the scale halves, down to an override's or the texture's
+  // own; the reservation is settled against the real size once created.
+  const std::uint32_t asked_scale = scale;
+  VkDeviceSize reserved = 0;
+  const auto reserve = [&](bool bc) {
+    scale = asked_scale;
+    reserved = 0;
+    if (scale <= override_scale) {
+      return;
+    }
+    state_->RefreshVideoFree();
+    std::vector<State::UpscaleRung> rungs;
+    for (std::uint32_t rung = scale; rung > override_scale; rung /= 2) {
+      rungs.push_back({rung, HostTextureBytes(format.etc_format, *create_info,
+                                              rung, bc && bc_eligible(rung))});
+    }
+    std::string log;
+    const std::size_t pick = state_->ReserveUpscale(
+        rungs,
+        std::max(create_info->extent.width, create_info->extent.height) >
+            kSharpestMaxExtent,
+        &log);
+    if (pick < rungs.size()) {
+      scale = rungs[pick].scale;
+      reserved = rungs[pick].cost;
+    } else {
+      scale = override_scale;
+    }
+    if (!log.empty()) {
+      std::fputs(log.c_str(), stderr);
+    }
+  };
+  reserve(true);
+  // Left decoded, a texture priced as BC is up to 8x larger, so its scale
+  // is picked again at the decoded size and the budget holds.
+  const auto reserve_decoded = [&] {
+    if (reserved != 0 && bc_eligible(scale)) {
+      state_->ReleaseUpscale(reserved);
+      reserve(false);
+    }
+  };
+  bool transcoded = bc_eligible(scale);
   double prepaid = 0;
   if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
     prepaid = state_->BudgetEncode(*dev, *create_info, scale);
     transcoded = prepaid > 0;
+    if (!transcoded) {
+      reserve_decoded();
+    }
   }
   if (transcoded) {
     format.host_format = bc_format;
   }
-  host_info.extent.width *= scale;
-  host_info.extent.height *= scale;
-  const std::uint32_t top = TopLevelCount(scale);
-  host_info.mipLevels += top;
-  host_info.format = format.host_format;
+  std::uint32_t top = 0;
+  const auto size_host = [&] {
+    host_info.extent.width = create_info->extent.width * scale;
+    host_info.extent.height = create_info->extent.height * scale;
+    top = TopLevelCount(scale);
+    host_info.mipLevels = create_info->mipLevels + top;
+    host_info.format = format.host_format;
+  };
+  size_host();
   VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (transcoded && result != VK_SUCCESS) {
     state_->RefundEncode(*dev, prepaid, scale);
     prepaid = 0;
     transcoded = false;
+    reserve_decoded();
     LookupEmulatedEtc2Format(create_info->format, &format);
-    host_info.format = format.host_format;
+    size_host();
     result = dev->create_image(device, &host_info, allocator, image);
   }
   if (result == VK_SUCCESS && image != nullptr) {
+    std::uint64_t retired_ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      const auto retired = state_->retired_images.find(*image);
+      if (retired != state_->retired_images.end()) {
+        retired_ticket = retired->second;
+        state_->retired_images.erase(retired);
+      }
+    }
+    state_->WaitForTicket(retired_ticket);
     EmulatedTextureBytes bytes;
     if (!Etc2ImageByteCounts(format.etc_format, create_info->extent,
                              create_info->mipLevels, create_info->arrayLayers,
@@ -3240,12 +4085,11 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
     }
     if (transcoded) {
       bytes.decoded =
-          Etc2HostBlockCount(create_info->extent, create_info->mipLevels,
-                             create_info->arrayLayers, scale) *
-          BcBlockBytes(BcFormatFor(format.etc_format));
+          HostTextureBytes(format.etc_format, *create_info, scale, true);
     }
     EmulatedTextureBytes totals;
     std::uint64_t now = 0;
+    std::string memory_log;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
       ImageRecord& record = state_->images[*image];
@@ -3260,12 +4104,29 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.transcoded = transcoded;
       record.prepaid_ns = prepaid;
       record.may_override = may_override;
+      record.asked_scale = asked_scale;
       state_->texture_bytes.compressed += bytes.compressed;
       state_->texture_bytes.decoded += bytes.decoded;
+      // A failed encode prepay leaves the image decoded, larger than the
+      // BC size reserved, so both counts take the real size. Only the
+      // difference moves reserved_since_free: a refresh since the
+      // reservation may already have taken it out.
+      const VkDeviceSize settled = scale > 1 ? bytes.decoded : 0;
+      state_->upscaled_bytes = state_->upscaled_bytes - reserved + settled;
+      if (settled >= reserved) {
+        state_->reserved_since_free += settled - reserved;
+      } else {
+        state_->reserved_since_free -=
+            std::min(state_->reserved_since_free, reserved - settled);
+      }
       totals = state_->texture_bytes;
       now = TraceClockNanos();
+      memory_log = state_->TakeMemoryLogLocked(now);
     }
     TraceTextureBytes(totals, now);
+    if (!memory_log.empty()) {
+      std::fputs(memory_log.c_str(), stderr);
+    }
     if (top > 0) {
       state_->AddTopLevels(*image, top);
     }
@@ -3278,6 +4139,8 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
                    static_cast<int>(create_info->format),
                    static_cast<int>(format.host_format), top);
     }
+  } else if (reserved != 0) {
+    state_->ReleaseUpscale(reserved);
   }
   return result;
 }
@@ -3289,16 +4152,33 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
     return;
   }
   if (dev->emulated) {
+    // A batch the GPU does not wait for may still keep this image's blocks.
+    // It finds no record and drops them; CreateImage waits for it only when
+    // the driver reuses the handle, so destroying never blocks on it.
+    const std::uint64_t completed = state_->CompletedTicket();
     EmulatedTextureBytes totals;
     std::uint64_t now = 0;
     bool changed = false;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
+      auto& retired = state_->retired_images;
+      if (retired.size() >= 64) {
+        for (auto entry = retired.begin(); entry != retired.end();) {
+          entry = entry->second <= completed ? retired.erase(entry)
+                                             : std::next(entry);
+        }
+      }
       const auto it = state_->images.find(image);
       if (it != state_->images.end()) {
+        if (it->second.ticket > completed) {
+          retired[image] = it->second.ticket;
+        }
         dev->budget.Refund(it->second.prepaid_ns);
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
+        if (it->second.scale > 1) {
+          state_->upscaled_bytes -= it->second.bytes.decoded;
+        }
         state_->images.erase(it);
         totals = state_->texture_bytes;
         now = TraceClockNanos();
@@ -3865,7 +4745,8 @@ void VulkanEtc2Emulation::State::TranscodeCopy(
     }
     // Kept blocks hold layer 0 only.
     if (region.dstSubresource.baseArrayLayer == 0 &&
-        KeepsMipBlocks(destination_record, region.dstSubresource.mipLevel)) {
+        KeepsMipBlocks(dev, destination_record,
+                       region.dstSubresource.mipLevel)) {
       KeepIn(&piece, destination, destination_record,
              region.dstSubresource.mipLevel, region.dstOffset);
     }
@@ -3900,8 +4781,7 @@ void VulkanEtc2Emulation::State::TranscodeCopy(
     std::lock_guard<std::mutex> lock(mutex);
     CommandRecord& command = commands[command_buffer];
     command.staging.push_back(staging);
-    command.block_copies.insert(command.block_copies.end(), pieces.begin(),
-                                pieces.end());
+    command.AddBlockCopies(pieces);
     has_commands.store(true, std::memory_order_release);
   }
   for (GpuCopy<VkBufferImageCopy>& copy : copies) {
@@ -3913,20 +4793,28 @@ void VulkanEtc2Emulation::State::TranscodeCopy(
   }
 }
 
-// A copy from an unscaled image that fills a whole mip of an upscaled BC
-// image is decoded, scaled and encoded on the GPU from the source mip's kept
-// blocks, which the destination mip then keeps as its own.
-void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
+// A copy from an unscaled image that fills a whole mip of an upscaled image
+// is decoded and scaled on the GPU from the source mip's kept blocks, and
+// encoded when the destination is BC. The destination mip then keeps the
+// blocks as its own. False when the copy does not fit; a decoded
+// destination then falls back to a blit.
+bool VulkanEtc2Emulation::State::ScaledTranscodeCopy(
     const HostDevice& dev, VkCommandBuffer command_buffer,
     VkImage source_image, const ImageRecord& source, VkImage destination,
     const ImageRecord& destination_record, VkImageLayout destination_layout,
     std::uint32_t count, const VkImageCopy* regions) {
+  const bool encode = destination_record.transcoded;
+  const auto fail = [encode](const char* why) {
+    if (encode) {
+      LogFailure(why);
+    }
+    return false;
+  };
   const EtcFormat format = source.format.etc_format;
   if (dev.copy_buffer_to_image == nullptr || dev.gpu == nullptr ||
       !dev.gpu->CanScale() || dev.copy_buffer == nullptr ||
       format != destination_record.format.etc_format) {
-    LogFailure("skipped a copy into an upscaled compressed image");
-    return;
+    return fail("skipped a copy into an upscaled compressed image");
   }
   const VkDeviceSize block_bytes = EtcBlockBytes(format);
   std::vector<BlockCopy> pieces;
@@ -3960,12 +4848,16 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
         static_cast<std::uint32_t>(region.srcOffset.x) + wide > source_wide ||
         static_cast<std::uint32_t>(region.srcOffset.y) + high >
             source_high) {
-      LogFailure("skipped a copy into an upscaled compressed image");
-      return;
+      return fail("skipped a copy into an upscaled compressed image");
     }
-    if (!KeepsMipBlocks(source, source_mip)) {
-      LogFailure("skipped a copy from a mip too large to keep");
-      return;
+    if (!KeepsMipBlocks(dev, source, source_mip)) {
+      return fail("skipped a copy from a mip too large to keep");
+    }
+    // A decoded destination blits instead when the blocks will be missing,
+    // which would otherwise write black.
+    if (!encode &&
+        !BlocksWillBeKept(command_buffer, source_image, source_mip)) {
+      return false;
     }
     VkBufferImageCopy app{};
     app.imageSubresource = region.dstSubresource;
@@ -3975,8 +4867,7 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
     VkDeviceSize ignored = 0;
     if (!PlanRegions(destination_record, dev.device, VK_NULL_HANDLE,
                      destination, 1, &app, &host, &planned, &ignored)) {
-      LogFailure("skipped a copy into an upscaled compressed image");
-      return;
+      return fail("skipped a copy into an upscaled compressed image");
     }
     BlockCopy piece;
     piece.image = source_image;
@@ -3998,7 +4889,7 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
         VkDeviceSize{piece.wide} * piece.high * block_bytes;
     GpuUpload gpu = ScaleJob(dev.device, format, piece.wide, piece.high,
                              planned.front().target_width,
-                             planned.front().target_height, true);
+                             planned.front().target_height, encode);
     gpu.source_offset = total;
     gpu.source_span = bytes;
     gpus.push_back(gpu);
@@ -4009,8 +4900,7 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
   }
   Staging texels;
   if (gpus.empty() || !AcquireStaging(dev, total, &texels)) {
-    LogFailure("skipped a copy into an upscaled compressed image");
-    return;
+    return fail("skipped a copy into an upscaled compressed image");
   }
   for (std::size_t index = 0; index < pieces.size(); ++index) {
     pieces[index].target = texels.block->mapped + texels.offset + offsets[index];
@@ -4023,15 +4913,13 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
   if (!StageGpuJobs(dev, command_buffer, destination, std::move(gpus),
                     rewritten, &copies)) {
     ReleaseStaging({texels});
-    LogFailure("skipped a copy into an upscaled compressed image");
-    return;
+    return fail("skipped a copy into an upscaled compressed image");
   }
   {
     std::lock_guard<std::mutex> lock(mutex);
     CommandRecord& command = commands[command_buffer];
     command.staging.push_back(texels);
-    command.block_copies.insert(command.block_copies.end(), pieces.begin(),
-                                pieces.end());
+    command.AddBlockCopies(pieces);
     has_commands.store(true, std::memory_order_release);
   }
   for (GpuCopy<VkBufferImageCopy>& copy : copies) {
@@ -4041,6 +4929,7 @@ void VulkanEtc2Emulation::State::ScaledTranscodeCopy(
                              static_cast<std::uint32_t>(copy.regions.size()),
                              copy.regions.data());
   }
+  return true;
 }
 
 // Copies between upscaled BC7 images of one scale move whole blocks on host
@@ -4059,32 +4948,10 @@ bool VulkanEtc2Emulation::State::CopyScaledBlocks(
   copies.reserve(count);
   std::vector<BlockCopy> kept;
   for (std::uint32_t index = 0; index < count; ++index) {
-    const VkImageCopy& region = regions[index];
-    const std::uint32_t source_mip = region.srcSubresource.mipLevel;
-    // Kept blocks hold layer 0 only. A copy from another layer into layer 0
-    // leaves them unknown, which a null source image records.
-    if (region.dstSubresource.baseArrayLayer == 0) {
-      BlockCopy keep;
-      if (region.srcSubresource.baseArrayLayer == 0 &&
-          region.srcSubresource.layerCount == 1) {
-        keep.image = source;
-      }
-      keep.mip = source_mip;
-      keep.block_bytes = EtcBlockBytes(source_record.format.etc_format);
-      keep.mip_blocks_wide =
-          (std::max<std::uint32_t>(1, source_record.width >> source_mip) + 3) /
-          4;
-      keep.mip_blocks_high =
-          (std::max<std::uint32_t>(1, source_record.height >> source_mip) +
-           3) /
-          4;
-      keep.x = static_cast<std::uint32_t>(std::max(region.srcOffset.x, 0)) / 4;
-      keep.y = static_cast<std::uint32_t>(std::max(region.srcOffset.y, 0)) / 4;
-      keep.wide = (region.extent.width + 3) / 4;
-      keep.high = (region.extent.height + 3) / 4;
-      KeepIn(&keep, destination, destination_record,
-             region.dstSubresource.mipLevel, region.dstOffset);
-      kept.push_back(keep);
+    // Kept blocks hold layer 0 only.
+    if (regions[index].dstSubresource.baseArrayLayer == 0) {
+      kept.push_back(KeepCopy(source, source_record, destination,
+                              destination_record, regions[index]));
     }
     VkImageCopy copy = regions[index];
     VkOffset3D source_end{};
@@ -4113,8 +4980,7 @@ bool VulkanEtc2Emulation::State::CopyScaledBlocks(
   if (!kept.empty()) {
     std::lock_guard<std::mutex> lock(mutex);
     CommandRecord& command = commands[command_buffer];
-    command.block_copies.insert(command.block_copies.end(), kept.begin(),
-                                kept.end());
+    command.AddBlockCopies(kept);
     has_commands.store(true, std::memory_order_release);
   }
   dev.copy_image(command_buffer, source, source_layout, destination,
@@ -4247,7 +5113,7 @@ void VulkanEtc2Emulation::State::CopyTopImageRegions(
     // Rebuilding BC top levels re-encodes the source's kept blocks; without
     // them the top levels keep their old content. Logged once, not per level.
     if (!same_top && destination_record.transcoded && source_found &&
-        !KeepsMipBlocks(source_record, region.srcSubresource.mipLevel)) {
+        !KeepsMipBlocks(dev, source_record, region.srcSubresource.mipLevel)) {
       LogFailure("skipped a copy from a mip too large to keep");
       continue;
     }
@@ -4284,11 +5150,51 @@ bool VulkanEtc2Emulation::State::RedirectRecords(
   // Kept blocks follow copies between BC images below top levels too.
   const bool shifted =
       source_record.mip_offset != 0 || destination_record.mip_offset != 0;
+  // The first few copies into an upscaled image, so a reporter's log shows
+  // whether Roblox fills textures this way and which filter they got.
+  const auto log_scaled_copy = [&](const char* filter) {
+    if (!destination_scaled || source_scaled || count == 0 ||
+        !ShouldLog(&g_scaled_copy_logs, 8)) {
+      return;
+    }
+    std::fprintf(stderr,
+                 "  [vulkan] copy into a %ux upscaled %ux%u image, mip %u from "
+                 "%ux%u mip %u: %s\n",
+                 destination_record.scale, destination_record.width,
+                 destination_record.height, regions[0].dstSubresource.mipLevel,
+                 source_record.width, source_record.height,
+                 regions[0].srcSubresource.mipLevel, filter);
+  };
+  // A plain copy between unscaled images: the destination's kept blocks
+  // follow it, so a later copy into an upscaled image scales the new ones.
+  const auto keep_plain_copy = [&]() {
+    std::vector<BlockCopy> kept;
+    for (std::uint32_t index = 0; destination_found && index < count;
+         ++index) {
+      const VkImageCopy& region = regions[index];
+      if (region.dstSubresource.baseArrayLayer == 0 &&
+          (KeepsMipBlocks(dev, destination_record,
+                          region.dstSubresource.mipLevel) ||
+           HasKeptBlocks(destination, region.dstSubresource.mipLevel))) {
+        kept.push_back(KeepCopy(source, source_record, destination,
+                                destination_record, region));
+      }
+    }
+    if (!kept.empty()) {
+      std::lock_guard<std::mutex> lock(mutex);
+      CommandRecord& command = commands[command_buffer];
+      command.AddBlockCopies(kept);
+      has_commands.store(true, std::memory_order_release);
+    }
+  };
   if (destination_record.transcoded) {
     if (source_record.transcoded &&
         source_record.scale == destination_record.scale) {
-      return (source_scaled || shifted) &&
-             CopyScaledBlocks(dev, command_buffer, source, source_layout,
+      if (!source_scaled && !shifted) {
+        keep_plain_copy();
+        return false;
+      }
+      return CopyScaledBlocks(dev, command_buffer, source, source_layout,
                               source_record, destination, destination_layout,
                               destination_record, count, regions);
     }
@@ -4297,17 +5203,32 @@ bool VulkanEtc2Emulation::State::RedirectRecords(
       TranscodeCopy(dev, command_buffer, source, source_record, destination,
                     destination_record, destination_layout, count, regions);
     } else if (destination_scaled && source_found && !source_scaled) {
-      ScaledTranscodeCopy(dev, command_buffer, source, source_record,
-                          destination, destination_record, destination_layout,
-                          count, regions);
+      log_scaled_copy(ScaledTranscodeCopy(dev, command_buffer, source,
+                                          source_record, destination,
+                                          destination_record,
+                                          destination_layout, count, regions)
+                          ? "sharp, BC"
+                          : "skipped");
     } else {
       LogFailure("skipped a copy into a compressed image");
     }
     return true;
   }
   if (!source_scaled && !destination_scaled && !decompress) {
+    keep_plain_copy();
     return false;
   }
+  // Into an upscaled decoded image with the same filter as an upload, not a
+  // bilinear stretch.
+  if (destination_scaled && source_found && !source_scaled &&
+      !source_record.transcoded &&
+      ScaledTranscodeCopy(dev, command_buffer, source, source_record,
+                          destination, destination_record, destination_layout,
+                          count, regions)) {
+    log_scaled_copy("sharp");
+    return true;
+  }
+  log_scaled_copy("bilinear blit");
   if (dev.blit_image == nullptr) {
     LogFailure("skipped an image copy that needs a blit");
     return true;
@@ -4345,6 +5266,15 @@ bool VulkanEtc2Emulation::State::RedirectRecords(
     blit.srcSubresource.mipLevel += source_record.mip_offset;
     blit.dstSubresource.mipLevel += destination_record.mip_offset;
     blits.push_back(blit);
+  }
+  // The blit does not carry kept blocks, so they follow it here; a later copy
+  // into a BC image otherwise has no source and writes black. Top levels
+  // share their image's level 0 blocks. A top level's record sits below its
+  // image's own levels.
+  const bool top_level =
+      destination_record.mip_offset < destination_record.top;
+  if (!top_level) {
+    keep_plain_copy();
   }
   const bool same_scale = source_record.scale == destination_record.scale;
   dev.blit_image(command_buffer, source, source_layout, destination,
@@ -4647,9 +5577,13 @@ void VulkanEtc2Emulation::CmdExecuteCommands(
       state_->has_commands.load(std::memory_order_acquire)) {
     std::lock_guard<std::mutex> lock(state_->mutex);
     for (std::uint32_t index = 0; index < count; ++index) {
-      if (state_->commands.count(secondaries[index]) != 0) {
-        state_->commands[command_buffer].secondaries.push_back(
-            secondaries[index]);
+      const auto secondary = state_->commands.find(secondaries[index]);
+      if (secondary != state_->commands.end()) {
+        const std::uint64_t span = secondary->second.next_order;
+        CommandRecord& primary = state_->commands[command_buffer];
+        primary.secondaries.push_back(secondaries[index]);
+        primary.secondary_orders.push_back(primary.next_order);
+        primary.next_order += span;
       }
     }
   }
@@ -4748,16 +5682,21 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   };
   std::vector<Work> work;
   std::vector<BlockCopy> block_copies;
+  // Orders are per command buffer; command buffers follow in submit order.
+  std::uint64_t submit_order = 0;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    auto collect = [this, &work, &block_copies](VkCommandBuffer command_buffer) {
+    // A secondary's orders sit where vkCmdExecuteCommands recorded it.
+    auto collect = [this, &work, &block_copies](VkCommandBuffer command_buffer,
+                                                std::uint64_t base) {
       const auto record = state_->commands.find(command_buffer);
       if (record == state_->commands.end()) {
         return;
       }
-      block_copies.insert(block_copies.end(),
-                          record->second.block_copies.begin(),
-                          record->second.block_copies.end());
+      for (const BlockCopy& copy : record->second.block_copies) {
+        block_copies.push_back(copy);
+        block_copies.back().order += base;
+      }
       for (const PendingUpload& upload : record->second.uploads) {
         const auto binding = state_->buffers.find(upload.source);
         if (binding == state_->buffers.end()) {
@@ -4766,6 +5705,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
         }
         Work item;
         item.upload = upload;
+        item.upload.order += base;
         item.source_memory = binding->second.memory;
         const VkDeviceSize absolute =
             binding->second.offset + upload.source_offset;
@@ -4799,18 +5739,24 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       }
     };
     for (std::uint32_t index = 0; index < count; ++index) {
-      collect(command_buffers[index]);
       const auto record = state_->commands.find(command_buffers[index]);
-      if (record != state_->commands.end()) {
-        for (VkCommandBuffer secondary : record->second.secondaries) {
-          collect(secondary);
-        }
+      if (record == state_->commands.end()) {
+        continue;
+      }
+      const std::uint64_t base = submit_order;
+      submit_order += record->second.next_order;
+      collect(command_buffers[index], base);
+      const CommandRecord& primary = record->second;
+      for (std::size_t inner = 0; inner < primary.secondaries.size();
+           ++inner) {
+        collect(primary.secondaries[inner],
+                base + primary.secondary_orders[inner]);
       }
     }
   }
   if (work.empty()) {
     if (!block_copies.empty()) {
-      state_->WaitForTicket(state_->IssuedTicket());
+      state_->WaitForTicket(state_->TicketTouching(block_copies));
       state_->FillBlockCopies(block_copies);
     }
     return result;
@@ -4829,6 +5775,28 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   const bool async = allow_async && single_device && batch_dev != nullptr &&
                      batch_dev->timeline != VK_NULL_HANDLE &&
                      batch_dev->signal_semaphore != nullptr;
+  // Copies that touch no mip this batch keeps blocks of run now, as they do
+  // in a submit without uploads, so kept blocks alone never hold the GPU.
+  if (async && !block_copies.empty() &&
+      std::all_of(work.begin(), work.end(),
+                  [](const Work& item) { return item.upload.keep_only; })) {
+    std::set<std::pair<VkImage, std::uint32_t>> kept;
+    for (const Work& item : work) {
+      kept.emplace(item.upload.image, item.upload.mip_level);
+    }
+    const bool apart = std::none_of(
+        block_copies.begin(), block_copies.end(), [&](const BlockCopy& copy) {
+          return kept.count({copy.image, copy.mip}) != 0 ||
+                 kept.count({copy.keep, copy.keep_mip}) != 0;
+        });
+    // A copy that depends on a batch still running leaves the GPU to wait
+    // instead of blocking this thread.
+    if (apart && state_->TicketTouching(block_copies) <=
+                     state_->CompletedTicket()) {
+      state_->FillBlockCopies(block_copies);
+      block_copies.clear();
+    }
+  }
   // Kept blocks feed only later copies, which run after them in ticket
   // order, so a batch that only keeps blocks writes nothing the GPU reads.
   // Its bytes are gathered now, so the GPU need not wait for it.
@@ -4836,6 +5804,19 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       !block_copies.empty() ||
       std::any_of(work.begin(), work.end(),
                   [](const Work& item) { return !item.upload.keep_only; });
+  std::vector<VkImage> touched;
+  touched.reserve(work.size() + 2 * block_copies.size());
+  for (const Work& item : work) {
+    touched.push_back(item.upload.image);
+  }
+  for (const BlockCopy& copy : block_copies) {
+    touched.push_back(copy.image);
+    touched.push_back(copy.keep);
+  }
+  std::sort(touched.begin(), touched.end());
+  touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+  touched.erase(std::remove(touched.begin(), touched.end(), VK_NULL_HANDLE),
+                touched.end());
 
   TraceScope trace_scope(ActiveProfileTrace(),
                          async ? "etc2 gather" : "etc2 decode", "texture");
@@ -4958,6 +5939,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     ticket = state_->Enqueue(std::move(batch));
+    state_->RememberTickets(touched, ticket);
     if (!gpu_waits) {
       return result;
     }

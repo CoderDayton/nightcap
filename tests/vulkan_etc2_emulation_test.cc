@@ -13,11 +13,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 namespace mocktail::graphics {
 namespace {
@@ -84,22 +88,16 @@ TEST(VulkanEtc2EmulationTest, RoundsTheUpscaleDownToAPowerOfTwo) {
   EXPECT_EQ(SmallTextureUpscale("8"), 8u);
 }
 
-// Textures up to 32 px take the upscale; an override file sized for a
+// Textures up to 64 px take the upscale; an override file sized for a
 // texture sets its own.
-TEST(VulkanEtc2EmulationTest, ScalesTexturesUpTo32PxOrToTheirOverride) {
+TEST(VulkanEtc2EmulationTest, ScalesTexturesUpTo64PxOrToTheirOverride) {
   EXPECT_EQ(SmallTextureScale(32, 32, 4, 1), 4u);
-  EXPECT_EQ(SmallTextureScale(16, 32, 4, 1), 4u);
-  EXPECT_EQ(SmallTextureScale(33, 32, 4, 1), 1u);
-  EXPECT_EQ(SmallTextureScale(64, 64, 4, 1), 1u);
-  EXPECT_EQ(SmallTextureScale(64, 64, 4, 4), 4u);
-  EXPECT_EQ(SmallTextureScale(32, 32, 4, 8), 8u);
+  EXPECT_EQ(SmallTextureScale(16, 64, 4, 1), 4u);
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 1), 4u);
+  EXPECT_EQ(SmallTextureScale(65, 64, 4, 1), 1u);
+  EXPECT_EQ(SmallTextureScale(64, 64, 4, 8), 8u);
   EXPECT_EQ(SmallTextureScale(32, 32, 1, 1), 1u);
   EXPECT_EQ(SmallTextureScale(32, 32, 1, 4), 4u);
-}
-
-// An override's scale reaches every texture of its size.
-TEST(VulkanEtc2EmulationTest, ScalesOnlyOverridesUpTo64Px) {
-  EXPECT_EQ(SmallTextureScale(64, 64, 4, 8), 8u);
   EXPECT_EQ(SmallTextureScale(64, 65, 4, 4), 1u);
   EXPECT_EQ(SmallTextureScale(512, 512, 4, 8), 1u);
 }
@@ -953,6 +951,280 @@ TEST(VulkanEtc2EmulationTest, UpscalesLevelZeroIntoTheTopLevel) {
   EXPECT_EQ(own->imageExtent.height, 4u);
   ExpectStaged(*own, level0);
   emulation->ReleaseCommandBuffer(command_buffer);
+}
+
+// Level 0 uploads of one submit look up their overrides across the decode
+// workers, and each distinct texture is dumped once.
+TEST(VulkanEtc2EmulationTest, DumpsEveryLevelZeroOfASubmit) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1d);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20d);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x70d);
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() /
+      ("mocktail_dump_test_" + std::to_string(getpid()));
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  ASSERT_EQ(setenv("MOCKTAIL_TEXTURE_DUMP_DIR", dir.c_str(), 1), 0);
+  auto emulation =
+      UpscalingEmulation("1", device, FakeHandle<VkPhysicalDevice>(0x2d));
+  ASSERT_EQ(unsetenv("MOCKTAIL_TEXTURE_DUMP_DIR"), 0);
+  MapSource(*emulation, device, source);
+  g_source.fill(0);
+  // As many 8-byte blocks as the mapped source holds.
+  constexpr std::uint32_t kImages = 8;
+  for (std::uint32_t index = 0; index < kImages; ++index) {
+    const VkImage image = CreateEtc2Image(*emulation, device, 4, 1);
+    const auto block = GreyBlock(static_cast<std::uint8_t>(index * 7));
+    std::memcpy(g_source.data() + index * block.size(), block.data(),
+                block.size());
+    VkBufferImageCopy region{};
+    region.bufferOffset = index * block.size();
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {4, 4, 1};
+    emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                    &region);
+  }
+  emulation->PrepareSubmit(&command_buffer, 1);
+  emulation->ReleaseCommandBuffer(command_buffer);
+
+  std::size_t dumped = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    dumped += entry.path().extension() == ".png";
+  }
+  EXPECT_EQ(dumped, kImages);
+  std::filesystem::remove_all(dir);
+}
+
+// The memory upscaling costs reaches the session log: a 32 px texture at
+// 4x is 128 + 64 + 32 px of RGBA8 on the GPU, all of it upscaled.
+TEST(VulkanEtc2EmulationTest, LogsTheMemoryOfUpscaledTextures) {
+  const VkDevice device = FakeHandle<VkDevice>(0x16);
+  auto emulation =
+      UpscalingEmulation("4", device, FakeHandle<VkPhysicalDevice>(0x26));
+  ::testing::internal::CaptureStderr();
+  CreateEtc2Image(*emulation, device, 32, 1);
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  EXPECT_NE(log.find("[vulkan] ETC2 textures: 84 KiB on the GPU, 84 KiB of "
+                     "it upscaled; 0 KiB of blocks kept on the CPU"),
+            std::string::npos)
+      << log;
+}
+
+// Heap 0 stands for system memory, heap 1 for the card's video memory.
+std::unique_ptr<VulkanEtc2Emulation> EmulationWithVideoMemory(
+    VkDevice device, std::uint64_t video_mib) {
+  EXPECT_EQ(setenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4", 1), 0);
+  auto emulation = std::make_unique<VulkanEtc2Emulation>();
+  EXPECT_EQ(unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), 0);
+  VkPhysicalDeviceMemoryProperties memory = CoherentMemory();
+  memory.memoryTypeCount = 2;
+  memory.memoryTypes[1].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  memory.memoryTypes[1].heapIndex = 1;
+  memory.memoryHeapCount = 2;
+  memory.memoryHeaps[0].size = VkDeviceSize{64} << 20;
+  memory.memoryHeaps[1].size = VkDeviceSize{video_mib} << 20;
+  memory.memoryHeaps[1].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+  emulation->RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x29), true,
+                            memory, FakeGetDeviceProcAddr);
+  return emulation;
+}
+
+// Upscaled textures take at most an eighth of video memory, 128 KiB on a
+// 1 MiB card. A 32 px texture costs 84 KiB at 4x and 20 KiB at 2x, so past
+// the budget the next ones step down to 2x, then 1x, and destroying one
+// makes room for 4x again.
+TEST(VulkanEtc2EmulationTest, StepsDownTheUpscaleWithinAShareOfVideoMemory) {
+  const VkDevice device = FakeHandle<VkDevice>(0x17);
+  auto emulation = EmulationWithVideoMemory(device, 1);
+
+  ::testing::internal::CaptureStderr();
+  const VkImage first = CreateEtc2Image(*emulation, device, 32, 1);
+  std::string log = ::testing::internal::GetCapturedStderr();
+  EXPECT_EQ(g_created_extent.width, 128u);
+  EXPECT_NE(log.find("84 KiB of it upscaled (budget 128 KiB; 4x 1, 2x 0, "
+                     "1x 0)"),
+            std::string::npos)
+      << log;
+
+  ::testing::internal::CaptureStderr();
+  CreateEtc2Image(*emulation, device, 32, 1);
+  log = ::testing::internal::GetCapturedStderr();
+  EXPECT_EQ(g_created_extent.width, 64u);
+  EXPECT_EQ(g_created_mip_levels, 2u);
+  EXPECT_NE(log.find("[vulkan] small texture upscaling stepped down to 2x: "
+                     "104 KiB of a 128 KiB budget used, unknown free"),
+            std::string::npos)
+      << log;
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 64u);
+
+  ::testing::internal::CaptureStderr();
+  const VkImage fourth = CreateEtc2Image(*emulation, device, 32, 1);
+  log = ::testing::internal::GetCapturedStderr();
+  EXPECT_EQ(g_created_extent.width, 32u);
+  EXPECT_EQ(g_created_mip_levels, 1u);
+  EXPECT_NE(log.find("stepped down to 1x"), std::string::npos) << log;
+
+  emulation->DestroyImage(device, first, nullptr);
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+  emulation->DestroyImage(device, fourth, nullptr);
+}
+
+// Past half the budget, textures above 32 px take 2x while 32 px ones still
+// take 4x. On an 8 MiB card (1 MiB budget) a 64 px texture costs 336 KiB at
+// 4x and 80 KiB at 2x.
+TEST(VulkanEtc2EmulationTest, LargerSmallTexturesStepDownFirst) {
+  const VkDevice device = FakeHandle<VkDevice>(0x18);
+  auto emulation = EmulationWithVideoMemory(device, 8);
+  CreateEtc2Image(*emulation, device, 64, 1);
+  EXPECT_EQ(g_created_extent.width, 256u);
+  CreateEtc2Image(*emulation, device, 64, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+}
+
+// With more than twice the kept-free share of video memory free by the
+// driver's count, larger small textures keep 4x past half the budget.
+TEST(VulkanEtc2EmulationTest, LargerSmallTexturesKeep4xWithPlentyFree) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1b);
+  auto emulation = EmulationWithVideoMemory(device, 8);
+  emulation->SetMemoryBudgetQuery(
+      device, [](VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+        budget->heapBudget[1] = VkDeviceSize{1} << 30;
+        budget->heapUsage[1] = 0;
+        return true;
+      });
+  CreateEtc2Image(*emulation, device, 64, 1);
+  EXPECT_EQ(g_created_extent.width, 256u);
+  CreateEtc2Image(*emulation, device, 64, 1);
+  EXPECT_EQ(g_created_extent.width, 256u);
+}
+
+// On a small card a tenth of video memory is less than one loading burst of
+// Roblox's own textures, so at least 96 MiB stays free: on a 512 MiB card
+// with 96 MiB plus 100 KiB free, one 32 px texture fits at 4x (84 KiB) and
+// the next fits at neither 4x nor 2x.
+TEST(VulkanEtc2EmulationTest, KeepsAFixedFloorFreeOnASmallCard) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1c);
+  auto emulation = EmulationWithVideoMemory(device, 512);
+  emulation->SetMemoryBudgetQuery(
+      device, [](VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+        budget->heapBudget[1] = VkDeviceSize{512} << 20;
+        budget->heapUsage[1] =
+            budget->heapBudget[1] - (VkDeviceSize{96} << 20) - 100 * 1024;
+        return true;
+      });
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 32u);
+}
+
+// The driver's free video memory gates upscaling too, keeping a tenth of
+// video memory free for Roblox: with a tenth plus 100 KiB free, one 32 px
+// texture fits at 4x (84 KiB) and the next fits at neither 4x nor 2x.
+TEST(VulkanEtc2EmulationTest, KeepsATenthOfVideoMemoryFree) {
+  const VkDevice device = FakeHandle<VkDevice>(0x19);
+  auto emulation = EmulationWithVideoMemory(device, 1024);
+  int queries = 0;
+  emulation->SetMemoryBudgetQuery(
+      device, [&queries](VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+        ++queries;
+        budget->heapBudget[1] = VkDeviceSize{1} << 30;
+        budget->heapUsage[1] =
+            budget->heapBudget[1] - budget->heapBudget[1] / 10 - 100 * 1024;
+        return true;
+      });
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+  ::testing::internal::CaptureStderr();
+  CreateEtc2Image(*emulation, device, 32, 1);
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  EXPECT_EQ(g_created_extent.width, 32u);
+  EXPECT_NE(log.find("stepped down to 1x: 84 KiB of a 128.0 MiB budget used, "
+                     "102.5 MiB free"),
+            std::string::npos)
+      << log;
+  // Both images fell within one refresh interval.
+  EXPECT_EQ(queries, 1);
+}
+
+// MOCKTAIL_ETC2_VIDEO_MEMORY_MB makes a large card act as a small one, and
+// the driver's own free memory is then not read.
+TEST(VulkanEtc2EmulationTest, VideoMemoryOverrideActsAsASmallCard) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1a);
+  EXPECT_EQ(setenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB", "1", 1), 0);
+  auto emulation = EmulationWithVideoMemory(device, 1024);
+  EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"), 0);
+  int queries = 0;
+  emulation->SetMemoryBudgetQuery(
+      device, [&queries](VkPhysicalDeviceMemoryBudgetPropertiesEXT*) {
+        ++queries;
+        return false;
+      });
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 64u);
+  EXPECT_EQ(queries, 0);
+}
+
+// An upload of part of level 0 scales the whole level again, the new block
+// among its kept neighbours, so the filter does not see a cut edge.
+TEST(VulkanEtc2EmulationTest, UpscalesAPartialUploadWithItsNeighbours) {
+  const VkDevice device = FakeHandle<VkDevice>(0x15);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x205);
+  const VkCommandBuffer first = FakeHandle<VkCommandBuffer>(0x705);
+  const VkCommandBuffer second = FakeHandle<VkCommandBuffer>(0x706);
+  g_source.fill(0);
+  g_staging.fill(0xAA);
+  g_uploaded_regions.clear();
+  auto emulation =
+      UpscalingEmulation("2", device, FakeHandle<VkPhysicalDevice>(0x25));
+  const VkImage image = CreateEtc2Image(*emulation, device, 8, 1);
+  MapSource(*emulation, device, source);
+
+  std::vector<std::uint8_t> blocks;
+  for (const std::uint8_t grey : {0x20, 0x60, 0xA0, 0xE0}) {
+    const auto block = GreyBlock(grey);
+    blocks.insert(blocks.end(), block.begin(), block.end());
+  }
+  VkBufferImageCopy whole{};
+  whole.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  whole.imageExtent = {8, 8, 1};
+  emulation->CmdCopyBufferToImage(device, first, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &whole);
+  std::memcpy(g_source.data(), blocks.data(), blocks.size());
+  emulation->PrepareSubmit(&first, 1);
+
+  g_uploaded_regions.clear();
+  VkBufferImageCopy part{};
+  part.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  part.imageOffset = {4, 4, 0};
+  part.imageExtent = {4, 4, 1};
+  emulation->CmdCopyBufferToImage(device, second, source, image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &part);
+  const auto patch = GreyBlock(0x10);
+  std::memcpy(g_source.data(), patch.data(), patch.size());
+  emulation->PrepareSubmit(&second, 1);
+
+  std::memcpy(blocks.data() + 3 * 8, patch.data(), patch.size());
+  const VkBufferImageCopy* top = UploadedLevel(0);
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(top->imageOffset.x, 0);
+  EXPECT_EQ(top->imageOffset.y, 0);
+  EXPECT_EQ(top->imageExtent.width, 16u);
+  EXPECT_EQ(top->imageExtent.height, 16u);
+  ExpectStaged(*top,
+               UpscaleSquare(DecodeSquare(blocks.data(), blocks.size(), 8), 8,
+                             16));
+  emulation->ReleaseCommandBuffer(first);
+  emulation->ReleaseCommandBuffer(second);
 }
 
 // Block-rounded uploads (a 1x1 mip sent as 4x4) stop at the mip's edge.

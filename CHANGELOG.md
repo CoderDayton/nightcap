@@ -45,6 +45,9 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- With texture compression off, small textures such as crosshairs no longer turn blurry when the game
+  copies them in while it streams textures. With it on, such a texture no longer shows an old picture
+  after the game moves it between textures, or turns black on slower GPUs.
 - The camera no longer flicks when you let go of the right mouse button after turning it.
 - Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
   as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
@@ -96,6 +99,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Changed
 
+- In Settings > Input, System cursor theme is now called System cursor, and Hardware cursor is now
+  Desktop-drawn game cursor, under More, with a description of what it is for.
 - Roblox updates now download in the background while Nightcap runs and install on the next launch.
   An interrupted download resumes where it stopped. It runs at low CPU and disk priority, and stops
   if Nightcap closes or crashes.
@@ -107,9 +112,11 @@ Release notes on GitHub are taken from the matching section here.
   texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
   and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
   `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
-- Textures of 32 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
+- Textures of 64 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
   screen draws them larger than a phone does. Larger textures are left at the size Roblox sends. An
-  override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×.
+  override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×. Upscaled
+  textures take at most an eighth of video memory and leave a tenth (at least 96 MiB) free; past that,
+  new ones are upscaled 2×, then left at their own size, with crosshair-sized ones kept at 4× longest.
   The Small texture upscale setting is gone; an old `graphics.small_texture_upscale` is ignored.
   Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
   instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while

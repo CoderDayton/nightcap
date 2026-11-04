@@ -1552,6 +1552,20 @@ GtkWidget* BuildPages(SettingsWindow* window) {
       }
       for (std::size_t index = first; index < group.settings.size();
            ++index) {
+        if (group.more_from != 0 && index == group.more_from) {
+          GtkWidget* more = adw_expander_row_new();
+          SetRowText(more, "More", {});
+          adw_preferences_group_add(ADW_PREFERENCES_GROUP(group_widget), more);
+          // Open, so a changed setting inside is not hidden.
+          for (std::size_t inner = index; inner < group.settings.size();
+               ++inner) {
+            if (window->document.IsChanged(group.settings[inner])) {
+              adw_expander_row_set_expanded(ADW_EXPANDER_ROW(more), TRUE);
+              break;
+            }
+          }
+          container = more;
+        }
         AddRow(window, container, group.settings[index]);
       }
       gtk_box_append(GTK_BOX(groups), group_widget);
