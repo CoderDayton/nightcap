@@ -1085,14 +1085,23 @@ TEST(VulkanEtc2GpuEmulationTest, BcPlaceholderHopsReachBc) {
 }
 
 TEST(VulkanEtc2GpuEmulationTest, LogsTheSourceOfACopyWithoutBlocks) {
+  const char* const kMessage =
+      "copied into a compressed image without its source";
+  // Each message logs eight times per process, and other tests may have
+  // used them up.
+  const std::uint64_t before = Etc2FailureCount(kMessage);
   ::testing::internal::CaptureStderr();
   ExpectPlaceholderHopReachesBc(false, true, 128, false);
   const std::string log = ::testing::internal::GetCapturedStderr();
   // Devices without BC textures never copy into a compressed image.
   if (log.find("stay compressed as BC7") != std::string::npos) {
-    EXPECT_NE(log.find("without its source: 128x128 RGBA8 mip 0, no kept blocks"),
-              std::string::npos)
-        << log;
+    EXPECT_GT(Etc2FailureCount(kMessage), before);
+    if (before < 8) {
+      EXPECT_NE(
+          log.find("without its source: 128x128 RGBA8 mip 0, no kept blocks"),
+          std::string::npos)
+          << log;
+    }
   }
 }
 
@@ -3558,10 +3567,6 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAnUploadFollowedByAnUnrelatedCopy) {
     TestCommands alone = BeginTestCommands(vk);
     UploadLevel(&emulation, vk, alone.buffer, source.buffer, control.image,
                 32);
-    ImageBarrier(Emu(emulation), vk, alone.buffer, control.image, 1,
-                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     copy_back(alone.buffer, control.image,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &back);
     HostReadBarrier(vk, alone.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -3587,10 +3592,6 @@ TEST(VulkanEtc2GpuEmulationTest, UpscalesAnUploadFollowedByAnUnrelatedCopy) {
     emulation.CmdCopyImage(vk.device, commands.buffer, other.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sink.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    ImageBarrier(Emu(emulation), vk, commands.buffer, first.image, 1,
-                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     back.bufferOffset = bytes;
     copy_back(commands.buffer, first.image,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &back);
@@ -4116,11 +4117,6 @@ void ExpectTopLevelsFollowLevelZero(LevelZeroWrite write,
           write == LevelZeroWrite::kCopyThenPartUpload) {
         UploadMip(&emulation, vk, again.buffer, second.buffer, big.image, 2,
                   32);
-        ImageBarrier(Emu(emulation), vk, again.buffer, big.image, 1,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                     2);
       }
       ImageBarrier(Emu(emulation), vk, again.buffer, small.image, 1,
                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
