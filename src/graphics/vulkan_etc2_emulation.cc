@@ -2279,9 +2279,7 @@ struct VulkanEtc2Emulation::State {
     return true;
   }
 
-  // Whether `image` will hold whole kept blocks of `mip` when the work
-  // recorded so far in `command_buffer` replays at submit. Another command
-  // buffer submitted in between is not seen; a copy then logs no blocks.
+  // Ignores work still recorded in a command buffer; see BlocksWillBeKept.
   bool HasKeptBlocks(VkImage image, std::uint32_t mip) {
     std::lock_guard<std::mutex> lock(mutex);
     const auto found = images.find(image);
@@ -2289,6 +2287,9 @@ struct VulkanEtc2Emulation::State {
            found->second.blocks[mip] != nullptr;
   }
 
+  // Whether `image` will hold whole kept blocks of `mip` when the work
+  // recorded so far in `command_buffer` replays at submit. Another command
+  // buffer submitted in between is not seen; a copy then logs no blocks.
   bool BlocksWillBeKept(VkCommandBuffer command_buffer, VkImage image,
                         std::uint32_t mip) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -4914,8 +4915,11 @@ bool VulkanEtc2Emulation::State::RedirectRecords(
   }
   // The blit does not carry kept blocks, so they follow it here; a later copy
   // into a BC image otherwise has no source and writes black. Top levels
-  // share their image's level 0 blocks.
-  if (destination_record.mip_offset >= destination_record.top) {
+  // share their image's level 0 blocks. A top level's record sits below its
+  // image's own levels.
+  const bool top_level =
+      destination_record.mip_offset < destination_record.top;
+  if (!top_level) {
     keep_plain_copy();
   }
   const bool same_scale = source_record.scale == destination_record.scale;
@@ -5437,21 +5441,19 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       !block_copies.empty() ||
       std::any_of(work.begin(), work.end(),
                   [](const Work& item) { return !item.upload.keep_only; });
-  // Uploads of one image's mips arrive together, so neighbours repeat.
   std::vector<VkImage> touched;
-  const auto touch = [&touched](VkImage image) {
-    if (image != VK_NULL_HANDLE &&
-        (touched.empty() || touched.back() != image)) {
-      touched.push_back(image);
-    }
-  };
+  touched.reserve(work.size() + 2 * block_copies.size());
   for (const Work& item : work) {
-    touch(item.upload.image);
+    touched.push_back(item.upload.image);
   }
   for (const BlockCopy& copy : block_copies) {
-    touch(copy.image);
-    touch(copy.keep);
+    touched.push_back(copy.image);
+    touched.push_back(copy.keep);
   }
+  std::sort(touched.begin(), touched.end());
+  touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+  touched.erase(std::remove(touched.begin(), touched.end(), VK_NULL_HANDLE),
+                touched.end());
 
   TraceScope trace_scope(ActiveProfileTrace(),
                          async ? "etc2 gather" : "etc2 decode", "texture");
