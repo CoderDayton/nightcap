@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -320,6 +321,19 @@ TEST(TextureOverrideTest, DisabledWithoutASizedOverridePng) {
   ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(1) + "_2x2.png",
                            Gradient(2, 2)));
   EXPECT_TRUE(TextureOverrides(dir.path(), "").enabled());
+}
+
+TEST(TextureOverrideTest, TheSettingsSwitchTurnsOverridesOff) {
+  TempDir dir;
+  ASSERT_FALSE(dir.path().empty());
+  ASSERT_TRUE(WritePngRgba(dir.path() + "/" + HashName(1) + "_2x2.png",
+                           Gradient(2, 2)));
+  ASSERT_EQ(setenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR", dir.path().c_str(), 1), 0);
+  EXPECT_TRUE(TextureOverrides::FromEnvironment().enabled());
+  ASSERT_EQ(setenv("MOCKTAIL_TEXTURE_OVERRIDES", "0", 1), 0);
+  EXPECT_FALSE(TextureOverrides::FromEnvironment().enabled());
+  unsetenv("MOCKTAIL_TEXTURE_OVERRIDES");
+  unsetenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR");
 }
 
 TEST(TextureOverrideTest, SizedNameLimitsWhichTexturesMayBeReplaced) {

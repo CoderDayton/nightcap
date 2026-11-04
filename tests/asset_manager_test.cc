@@ -65,6 +65,7 @@ class AssetManagerTest : public ::testing::Test {
   void TearDown() override {
     unsetenv("MOCKTAIL_ASSET_ROOT");
     unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
+    unsetenv("MOCKTAIL_ASSET_OVERLAY");
     if (had_backend_) {
       setenv("MOCKTAIL_GRAPHICS_BACKEND", previous_backend_.c_str(), 1);
     } else {
@@ -324,6 +325,55 @@ TEST_F(AssetManagerTest, CacheSeparatesRuntimeAssetRootChanges) {
                         static_cast<std::size_t>(AAsset_getLength(second))),
             "second-root");
   AAsset_close(second);
+}
+
+// A reporter's session log shows which overlay files Roblox used, once each
+// however often it opens them.
+TEST_F(AssetManagerTest, LogsAnOverlayFileOnceWhenServed) {
+  WriteAsset("content/android/textures/sky/sky512_up.tex", "stock-sky");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/android/textures/sky/sky512_up.tex",
+               "custom-sky");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  ::testing::internal::CaptureStderr();
+  for (int open = 0; open < 2; ++open) {
+    AAsset* asset =
+        AAssetManager_open(manager, "android/textures/sky/sky512_up.tex", 0);
+    ASSERT_NE(asset, nullptr);
+    AAsset_close(asset);
+  }
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  const std::string line = "  [asset] overlay served "
+                           "android/textures/sky/sky512_up.tex from " +
+                           overlay_root +
+                           "/content/android/textures/sky/sky512_up.tex\n";
+  const std::size_t first = log.find(line);
+  ASSERT_NE(first, std::string::npos) << log;
+  EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
+}
+
+TEST_F(AssetManagerTest, CustomAssetsOffServesTheStockFile) {
+  WriteAsset("content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
+             "stock-arrow");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root,
+               "content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
+               "custom-overlay-arrow");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY", "0", 1), 0);
+
+  AAsset* asset = AAssetManager_open(
+      AAssetManager_fromJava(nullptr, nullptr),
+      "content/textures/Cursors/KeyboardMouse/ArrowCursor.png", 0);
+  ASSERT_NE(asset, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(asset)),
+                        static_cast<std::size_t>(AAsset_getLength(asset))),
+            "stock-arrow");
+  AAsset_close(asset);
 }
 
 TEST_F(AssetManagerTest, OverlayAssetTakesPrecedenceOverRootAsset) {

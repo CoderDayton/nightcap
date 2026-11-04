@@ -33,9 +33,12 @@ enum class SettingKind {
   kDevice,
   // A row that opens the editor for fflags.json.
   kEditor,
-  // A row that opens the folder config.yaml is in.
+  // A row that opens a folder: config_folder, asset_folder or
+  // textures_folder.
   kFolder,
   kCache,
+  // Installs a sky pack into the asset overlay, or removes it.
+  kSky,
 };
 
 struct SettingChoice {

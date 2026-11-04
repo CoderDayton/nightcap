@@ -59,6 +59,12 @@ graphics:
   # on the GPU to use less video memory. Set false if textures look wrong.
   # texture_compression: true
 
+assets:
+  # Boolean (default: true): use asset_overlay's cursors, fonts and sky.
+  overlay: true
+  # Boolean (default: true): use the PNGs in the textures folder.
+  texture_overrides: true
+
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every
   # physical CPU core. A place's Lua/main thread can still remain serial.

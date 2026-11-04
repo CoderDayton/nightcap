@@ -1430,6 +1430,52 @@ graphics:
             std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, CustomAssetsAreOnUnlessTheFileTurnsThemOff) {
+  unsetenv("MOCKTAIL_ASSET_OVERLAY");
+  unsetenv("MOCKTAIL_TEXTURE_OVERRIDES");
+  std::string error;
+  const RuntimeConfig defaults =
+      RuntimeConfig::FromEnvironment(MapEnvironment());
+  EXPECT_TRUE(defaults.asset_overlay());
+  EXPECT_TRUE(defaults.texture_overrides());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(defaults, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ASSET_OVERLAY"), "1");
+  EXPECT_STREQ(getenv("MOCKTAIL_TEXTURE_OVERRIDES"), "1");
+
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+assets:
+  overlay: false
+  texture_overrides: false
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.asset_overlay());
+  EXPECT_FALSE(loaded.config.texture_overrides());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ASSET_OVERLAY"), "0");
+  EXPECT_STREQ(getenv("MOCKTAIL_TEXTURE_OVERRIDES"), "0");
+  unsetenv("MOCKTAIL_ASSET_OVERLAY");
+  unsetenv("MOCKTAIL_TEXTURE_OVERRIDES");
+}
+
+TEST(RuntimeConfigFileTest, RejectsNonBooleanCustomAssetSwitches) {
+  for (const char* key : {"overlay", "texture_overrides"}) {
+    SCOPED_TRACE(key);
+    TemporaryDirectory temporary;
+    const std::filesystem::path file = temporary.Write(
+        std::string("version: 1\nassets:\n  ") + key + ": sometimes\n");
+    const RuntimeConfigLoadResult loaded =
+        LoadRuntimeConfig(MapEnvironment(), file);
+    EXPECT_FALSE(loaded);
+    EXPECT_NE(loaded.error.find(std::string("assets.") + key),
+              std::string::npos)
+        << loaded.error;
+  }
+}
+
 TEST(RuntimeConfigFileTest, RejectsNonBooleanPerformancePolicy) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(

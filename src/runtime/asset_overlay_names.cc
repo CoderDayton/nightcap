@@ -10,6 +10,9 @@ namespace runtime {
 std::vector<std::string> OverlayRbxAssetNames(
     const std::filesystem::path& overlay_dir) {
   std::vector<std::string> names;
+  if (overlay_dir.empty()) {
+    return names;
+  }
   const std::filesystem::path content = overlay_dir / "content";
   std::error_code error;
   std::filesystem::recursive_directory_iterator it(

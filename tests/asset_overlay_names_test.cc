@@ -80,6 +80,18 @@ TEST(AssetOverlayNamesTest, MissingOverlayFolderHasNoNames) {
   EXPECT_TRUE(OverlayRbxAssetNames(overlay.path()).empty());
 }
 
+// The runtime passes no folder while Custom assets is off.
+TEST(AssetOverlayNamesTest, NoFolderListsNothingFromTheWorkingDirectory) {
+  TemporaryDirectory working;
+  ASSERT_FALSE(working.path().empty());
+  WriteFile(working.path() / "content/textures/MouseLockedCursor.png");
+  const std::filesystem::path previous = std::filesystem::current_path();
+  std::filesystem::current_path(working.path());
+  const std::vector<std::string> names = OverlayRbxAssetNames({});
+  std::filesystem::current_path(previous);
+  EXPECT_TRUE(names.empty());
+}
+
 TEST(AssetOverlayNamesTest, ChangesOnlyTheNamedWholeStrings) {
   const std::string name = "rbxasset://textures/MouseLockedCursor.png";
   const std::string longer = name + ".bak";

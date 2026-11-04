@@ -58,6 +58,12 @@ target_link_libraries(settings_model_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(sky_pack_test sky_pack_test.cc)
+target_link_libraries(sky_pack_test PRIVATE
+  Mocktail::SettingsModel
+  GTest::gtest_main
+)
+
 add_executable(runtime_config_store_test runtime_config_store_test.cc)
 target_link_libraries(runtime_config_store_test PRIVATE
   Mocktail::Runtime
@@ -1290,6 +1296,7 @@ gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_editor_test)
 gtest_discover_tests(runtime_config_store_test)
 gtest_discover_tests(settings_model_test)
+gtest_discover_tests(sky_pack_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)

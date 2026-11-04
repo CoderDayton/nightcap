@@ -7,6 +7,13 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- A Customization page in Settings. Sky shows a grid of previews: Roblox's own and every sky in the library
+  (`~/.local/share/mocktail/skies`). Import adds sky packs from a folder or a .zip, including a zip of
+  pack zips: six images up to 2048 px named like `sky_bk` … `sky_up`, PNGs or Roblox .tex files. An
+  import can be cancelled. A sky already in the asset
+  folder is kept in the library as "Custom sky" before another replaces it. Switches turn the asset folder
+  (`assets.overlay`) and texture overrides (`assets.texture_overrides`) off without deleting files,
+  and rows open the sky library, asset folder and textures folder.
 - From upstream: the Roblox sign-in can be kept in the desktop keyring through libsecret, such as
   GNOME Keyring or KWallet, instead of a private file. Turn on "Keep the sign-in in the keyring" under
   Settings > Advanced > Sign-in (`auth.use_libsecret`). It is off by default. Signing out from Roblox
@@ -47,7 +54,7 @@ Release notes on GitHub are taken from the matching section here.
 
 - A custom sky in the asset overlay folder now shows on Vulkan. Put Android-format `sky512_*.tex` files in
   `content/android/textures/sky/`. Nightcap converts the stock sky so Vulkan can draw it, but skipped
-  overlay files.
+  overlay files. The session log now names each overlay file the game uses.
 - With texture compression off, small textures such as crosshairs no longer turn blurry when the game
   copies them in while it streams textures. With it on, such a texture no longer shows an old picture
   after the game moves it between textures, or turns black on slower GPUs.

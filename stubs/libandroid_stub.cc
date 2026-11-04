@@ -33,6 +33,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Read-only asset access
@@ -155,6 +156,20 @@ ResolvedAsset CacheResolvedAsset(const std::string& cache_key,
   return resolved;
 }
 
+// Once per file, as Roblox opens some of them every frame.
+void LogOverlayServed(const char* filename, const std::string& path) {
+  static std::mutex mutex;
+  static std::unordered_set<std::string> logged;
+  {
+    std::scoped_lock lock(mutex);
+    if (!logged.insert(path).second) {
+      return;
+    }
+  }
+  std::fprintf(stderr, "  [asset] overlay served %s from %s\n", filename,
+               path.c_str());
+}
+
 ResolvedAsset ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
@@ -168,8 +183,12 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   const char* root_env = GetEnvNonEmpty("MOCKTAIL_ASSET_ROOT");
   const std::string root = root_env != nullptr ? root_env : "rbx_bin/assets";
   const char* overlay_env = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY_DIR");
+  const char* overlay_switch = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY");
   const std::string overlay =
-      overlay_env != nullptr ? overlay_env : "rbx_bin/asset_overlay";
+      overlay_switch != nullptr && std::string_view(overlay_switch) == "0"
+          ? std::string()
+      : overlay_env != nullptr ? overlay_env
+                               : "rbx_bin/asset_overlay";
   const std::string cache_key = AssetCacheKey(root, overlay, requested);
 
   {
@@ -400,6 +419,9 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   if (!LoadFile(resolved.path, &asset->data)) {
     delete asset;
     return nullptr;
+  }
+  if (resolved.is_overlay) {
+    LogOverlayServed(filename, resolved.path);
   }
   if (MocktailUsesDirectVulkan()) {
     asset->transcoded =

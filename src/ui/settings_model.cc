@@ -686,6 +686,66 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}, "true", {}},
             }},
        }},
+      {"customization",
+       "Customization",
+       "applications-graphics-symbolic",
+       "Display & input",
+       {
+           {"Sky",
+            {
+                {"sky",
+                 "Sky",
+                 "",
+                 SettingKind::kSky,
+                 {},
+                 "",
+                 {}},
+                {"sky_library",
+                 "Open sky library",
+                 "Imported skies, one folder each.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            "The sky in games. A new pick shows the next time Nightcap "
+            "starts. Right-click a sky to remove it."},
+           {"Custom files",
+            {
+                {"assets.overlay",
+                 "Custom assets",
+                 "Use the cursors, fonts and sky in the asset folder.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
+                {"assets.texture_overrides",
+                 "Texture overrides",
+                 "Use the replacement PNGs in the textures folder.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
+                {"asset_folder",
+                 "Open asset folder",
+                 "Cursors, fonts and the sky, laid out like Roblox's "
+                 "content folder.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
+                 {}},
+                {"textures_folder",
+                 "Open textures folder",
+                 "Replacement textures, named by the texture they replace.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
+                 {}},
+            }},
+       }},
       {"performance",
        "Performance",
        "power-profile-performance-symbolic",
@@ -1304,6 +1364,9 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
+  if (key == "sky" && !IsSwitchedOn("assets.overlay")) {
+    return false;
+  }
   if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
     return false;
   }
@@ -1356,6 +1419,7 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
     case SettingKind::kEditor:
     case SettingKind::kFolder:
     case SettingKind::kCache:
+    case SettingKind::kSky:
       return false;
   }
   return false;
