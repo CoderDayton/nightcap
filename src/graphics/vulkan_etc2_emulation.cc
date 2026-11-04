@@ -1862,6 +1862,12 @@ struct VulkanEtc2Emulation::State {
     return std::max<VkDeviceSize>(video_memory / 10, VkDeviceSize{96} << 20);
   }
 
+  void ReleaseUpscale(VkDeviceSize reserved) {
+    std::lock_guard<std::mutex> lock(mutex);
+    upscaled_bytes -= reserved;
+    reserved_since_free -= std::min(reserved_since_free, reserved);
+  }
+
   struct UpscaleRung {
     std::uint32_t scale = 1;
     VkDeviceSize cost = 0;
@@ -3433,9 +3439,19 @@ struct VulkanEtc2Emulation::State {
                  copy.mip, reason);
   }
 
+  // Collected primary first, then its secondaries, so they run by order.
   void FillBlockCopies(const std::vector<BlockCopy>& block_copies) {
+    std::vector<const BlockCopy*> ordered;
+    ordered.reserve(block_copies.size());
     for (const BlockCopy& copy : block_copies) {
-      FillBlockCopy(copy);
+      ordered.push_back(&copy);
+    }
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const BlockCopy* a, const BlockCopy* b) {
+                       return a->order < b->order;
+                     });
+    for (const BlockCopy* copy : ordered) {
+      FillBlockCopy(*copy);
     }
   }
 
@@ -3982,12 +3998,17 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // own; the reservation is settled against the real size once created.
   const std::uint32_t asked_scale = scale;
   VkDeviceSize reserved = 0;
-  if (scale > override_scale) {
+  const auto reserve = [&](bool bc) {
+    scale = asked_scale;
+    reserved = 0;
+    if (scale <= override_scale) {
+      return;
+    }
     state_->RefreshVideoFree();
     std::vector<State::UpscaleRung> rungs;
     for (std::uint32_t rung = scale; rung > override_scale; rung /= 2) {
       rungs.push_back({rung, HostTextureBytes(format.etc_format, *create_info,
-                                              rung, bc_eligible(rung))});
+                                              rung, bc && bc_eligible(rung))});
     }
     std::string log;
     const std::size_t pick = state_->ReserveUpscale(
@@ -4004,28 +4025,45 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
     if (!log.empty()) {
       std::fputs(log.c_str(), stderr);
     }
-  }
+  };
+  reserve(true);
+  // Left decoded, a texture priced as BC is up to 8x larger, so its scale
+  // is picked again at the decoded size and the budget holds.
+  const auto reserve_decoded = [&] {
+    if (reserved != 0 && bc_eligible(scale)) {
+      state_->ReleaseUpscale(reserved);
+      reserve(false);
+    }
+  };
   bool transcoded = bc_eligible(scale);
   double prepaid = 0;
   if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
     prepaid = state_->BudgetEncode(*dev, *create_info, scale);
     transcoded = prepaid > 0;
+    if (!transcoded) {
+      reserve_decoded();
+    }
   }
   if (transcoded) {
     format.host_format = bc_format;
   }
-  host_info.extent.width *= scale;
-  host_info.extent.height *= scale;
-  const std::uint32_t top = TopLevelCount(scale);
-  host_info.mipLevels += top;
-  host_info.format = format.host_format;
+  std::uint32_t top = 0;
+  const auto size_host = [&] {
+    host_info.extent.width = create_info->extent.width * scale;
+    host_info.extent.height = create_info->extent.height * scale;
+    top = TopLevelCount(scale);
+    host_info.mipLevels = create_info->mipLevels + top;
+    host_info.format = format.host_format;
+  };
+  size_host();
   VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (transcoded && result != VK_SUCCESS) {
     state_->RefundEncode(*dev, prepaid, scale);
     prepaid = 0;
     transcoded = false;
+    reserve_decoded();
     LookupEmulatedEtc2Format(create_info->format, &format);
-    host_info.format = format.host_format;
+    size_host();
     result = dev->create_image(device, &host_info, allocator, image);
   }
   if (result == VK_SUCCESS && image != nullptr) {
@@ -4102,10 +4140,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
                    static_cast<int>(format.host_format), top);
     }
   } else if (reserved != 0) {
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    state_->upscaled_bytes -= reserved;
-    state_->reserved_since_free -=
-        std::min(state_->reserved_since_free, reserved);
+    state_->ReleaseUpscale(reserved);
   }
   return result;
 }
