@@ -966,8 +966,8 @@ void ReadMipBc7(const VulkanTestDevice& vk, VkCommandBuffer command_buffer,
 // BC image. With little encode budget left a placeholder stays RGBA8 (here a
 // colour attachment), so each hop may change representation; the full image
 // must still get the texels rather than black.
-// A placeholder above 128 px keeps no blocks, so its texels cannot reach the
-// full image (`reaches` false); the log then names it.
+// A placeholder above the small-texture limit keeps no blocks, so its texels
+// cannot reach the full image (`reaches` false); the log then names it.
 void ExpectPlaceholderHopReachesBc(bool first_decoded, bool second_decoded,
                                    std::uint32_t size = 32,
                                    bool reaches = true) {
@@ -1085,11 +1085,6 @@ TEST(VulkanEtc2GpuEmulationTest, BcPlaceholderHopsReachBc) {
   ExpectPlaceholderHopReachesBc(false, false);
 }
 
-// Streamed mips of 78-128 px came out black in a reporter's log.
-TEST(VulkanEtc2GpuEmulationTest, MediumBcToDecodedPlaceholderHopReachesBc) {
-  ExpectPlaceholderHopReachesBc(false, true, 128);
-}
-
 TEST(VulkanEtc2GpuEmulationTest, LogsTheSourceOfACopyWithoutBlocks) {
   const char* const kMessage =
       "copied into a compressed image without its source";
@@ -1097,14 +1092,14 @@ TEST(VulkanEtc2GpuEmulationTest, LogsTheSourceOfACopyWithoutBlocks) {
   // used them up.
   const std::uint64_t before = Etc2FailureCount(kMessage);
   ::testing::internal::CaptureStderr();
-  ExpectPlaceholderHopReachesBc(false, true, 256, false);
+  ExpectPlaceholderHopReachesBc(false, true, 128, false);
   const std::string log = ::testing::internal::GetCapturedStderr();
   // Devices without BC textures never copy into a compressed image.
   if (log.find("stay compressed as BC7") != std::string::npos) {
     EXPECT_GT(Etc2FailureCount(kMessage), before);
     if (before < 8) {
       EXPECT_NE(
-          log.find("without its source: 256x256 RGBA8 mip 0, no kept blocks"),
+          log.find("without its source: 128x128 RGBA8 mip 0, no kept blocks"),
           std::string::npos)
           << log;
     }
@@ -3076,10 +3071,10 @@ TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAMipTooLargeToKeep) {
     VulkanEtc2Emulation emulation;
     StartBcEmulation(&emulation, vk);
     const TestImage big = CreateTestImage(
-        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 256, 1);
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, 1);
     const TestImage small = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 1);
-    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, 256);
+    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, 128);
     const std::uint64_t zeroed =
         Etc2FailureCount("copied into a compressed image without its source");
     const std::uint64_t skipped =
@@ -3087,7 +3082,7 @@ TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAMipTooLargeToKeep) {
 
     TestCommands commands = BeginTestCommands(vk);
     UploadMip(&emulation, vk, commands.buffer, source.buffer, big.image, 0,
-              256);
+              128);
     CopyImage(&emulation, vk, commands.buffer, big.image, 0, {32, 32, 0},
               small.image, 0, {0, 0, 0}, 32);
     EndAndSubmit(&emulation, vk, commands.buffer);

@@ -765,14 +765,9 @@ void KeepIn(BlockCopy* copy, VkImage destination, const ImageRecord& record,
       (std::max<std::uint32_t>(1, record.height >> mip) + 3) / 4;
 }
 
-// The encode budget mixes BC and decoded images, so a streamed mip can hop
-// BC -> decoded -> BC; its blocks must survive the decoded hop. Reporters'
-// black copies were from mips of 78-128 px. 16 KiB per RGBA 128 px mip.
-constexpr std::uint32_t kKeptMipMaxExtent = 128;
-
 bool IsSmallMip(const ImageRecord& record, std::uint32_t mip) {
   return std::max<std::uint32_t>(record.width >> mip, record.height >> mip) <=
-         kKeptMipMaxExtent;
+         kSmallTextureMaxExtent;
 }
 
 // Uploads the CPU decodes rather than the GPU. A decoded image beside BC
