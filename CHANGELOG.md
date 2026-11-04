@@ -57,7 +57,8 @@ Release notes on GitHub are taken from the matching section here.
   overlay files. The session log now names each overlay file the game uses.
 - With texture compression off, small textures such as crosshairs no longer turn blurry when the game
   copies them in while it streams textures. With it on, such a texture no longer shows an old picture
-  after the game moves it between textures, or turns black on slower GPUs.
+  after the game moves it between textures, or turns black on slower GPUs. Streamed textures up to
+  128 px no longer turn black on slower GPUs, which showed as dark patches that followed the camera.
 - The camera no longer flicks when you let go of the right mouse button after turning it.
 - Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
   as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
@@ -130,12 +131,11 @@ Release notes on GitHub are taken from the matching section here.
   The Small texture upscale setting is gone; an old `graphics.small_texture_upscale` is ignored.
   Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
   instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while
-  textures load it keeps new ones uncompressed once encoding would take more than a tenth of the GPU's
-  time, so slower cards no longer stutter with Compress textures on. Textures kept uncompressed this
-  way take at most a sixteenth of video memory; past that, new ones are compressed anyway, so video
-  memory no longer climbs during long sessions. The log shows the measured speed and what was held
-  back. Upscaling adds sharper levels above a texture's own and leaves
-  Roblox's smaller levels as they are, so streamed textures keep their detail at a distance.
+  textures load it switches new ones to a fast encoder at 40% less GPU cost once encoding would take
+  more than a tenth of the GPU's time, so slower cards stutter less with Compress textures on. Every
+  texture stays compressed, so video memory no longer climbs during long sessions. The log shows the
+  measured speed and how many used the fast encoder. Upscaling adds sharper levels above a texture's
+  own and leaves Roblox's smaller levels as they are, so streamed textures keep their detail at a distance.
 
 ## [0.4.0] - 2026-10-18
 

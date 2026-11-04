@@ -150,6 +150,28 @@ TEST(VulkanEtc2EmulationTest, EncodeBudgetChargesWorkAlreadyRecorded) {
   EXPECT_TRUE(budget.Take(1e3, kStart + 50'000'000));
 }
 
+TEST(VulkanEtc2EmulationTest, EncodeBudgetCapsTheDebtOfCharges) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  // Charges stop at four bursts of debt, so a long burst of fast encodes is
+  // paid back within 0.64 s of wall time.
+  for (int charge = 0; charge < 100; ++charge) {
+    budget.Charge(10e6, kStart);
+  }
+  EXPECT_FALSE(budget.Take(1e3, kStart + 630'000'000));
+  EXPECT_TRUE(budget.Take(1e3, kStart + 650'000'000));
+}
+
+TEST(VulkanEtc2EmulationTest, EncodeBudgetKeepsTheDebtOfALargeEncode) {
+  constexpr std::uint64_t kStart = 1'000'000'000;
+  Etc2EncodeBudget budget(0.1, 16e6);
+  // A Take past the cap stays in debt; a later charge does not forgive it.
+  EXPECT_TRUE(budget.Take(116e6, kStart));
+  budget.Charge(1e6, kStart);
+  EXPECT_FALSE(budget.Take(1e3, kStart + 1'000'000'000));
+  EXPECT_TRUE(budget.Take(1e3, kStart + 1'020'000'000));
+}
+
 TEST(VulkanEtc2EmulationTest, EncodeBudgetTakesBackARefund) {
   constexpr std::uint64_t kStart = 1'000'000'000;
   Etc2EncodeBudget budget(0.1, 16e6);

@@ -77,8 +77,8 @@ VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
 
 // GPU-time token bucket. A cost above the burst runs from a full bucket and
 // leaves it negative until wall time pays it back. Take asks before work is
-// planned; Charge books work already recorded; Refund returns a Take whose
-// work never ran.
+// planned; Charge books work already recorded, down to four bursts of debt;
+// Refund returns a Take whose work never ran.
 inline constexpr double kEncodeBudgetShare = 0.1;
 inline constexpr double kEncodeBudgetBurstNs = 16e6;
 class Etc2EncodeBudget {
@@ -315,6 +315,9 @@ class VulkanEtc2Emulation final {
   EmulatedTextureBytes TextureBytes() const;
   // The startup speed probe's result; zero when it did not run.
   Etc2GpuSpeed GpuSpeed(VkDevice device) const;
+  // The encode budget was dry when `image` was created, so its BC encodes
+  // take the fast path.
+  bool EncodesFast(VkImage image) const;
 
   struct State;
 

@@ -966,8 +966,8 @@ void ReadMipBc7(const VulkanTestDevice& vk, VkCommandBuffer command_buffer,
 // BC image. With little encode budget left a placeholder stays RGBA8 (here a
 // colour attachment), so each hop may change representation; the full image
 // must still get the texels rather than black.
-// A placeholder above the small-texture limit keeps no blocks, so its texels
-// cannot reach the full image (`reaches` false); the log then names it.
+// A placeholder above 128 px keeps no blocks, so its texels cannot reach the
+// full image (`reaches` false); the log then names it.
 void ExpectPlaceholderHopReachesBc(bool first_decoded, bool second_decoded,
                                    std::uint32_t size = 32,
                                    bool reaches = true) {
@@ -1085,6 +1085,11 @@ TEST(VulkanEtc2GpuEmulationTest, BcPlaceholderHopsReachBc) {
   ExpectPlaceholderHopReachesBc(false, false);
 }
 
+// Streamed mips of 78-128 px came out black in a reporter's log.
+TEST(VulkanEtc2GpuEmulationTest, MediumBcToDecodedPlaceholderHopReachesBc) {
+  ExpectPlaceholderHopReachesBc(false, true, 128);
+}
+
 TEST(VulkanEtc2GpuEmulationTest, LogsTheSourceOfACopyWithoutBlocks) {
   const char* const kMessage =
       "copied into a compressed image without its source";
@@ -1092,14 +1097,14 @@ TEST(VulkanEtc2GpuEmulationTest, LogsTheSourceOfACopyWithoutBlocks) {
   // used them up.
   const std::uint64_t before = Etc2FailureCount(kMessage);
   ::testing::internal::CaptureStderr();
-  ExpectPlaceholderHopReachesBc(false, true, 128, false);
+  ExpectPlaceholderHopReachesBc(false, true, 256, false);
   const std::string log = ::testing::internal::GetCapturedStderr();
   // Devices without BC textures never copy into a compressed image.
   if (log.find("stay compressed as BC7") != std::string::npos) {
     EXPECT_GT(Etc2FailureCount(kMessage), before);
     if (before < 8) {
       EXPECT_NE(
-          log.find("without its source: 128x128 RGBA8 mip 0, no kept blocks"),
+          log.find("without its source: 256x256 RGBA8 mip 0, no kept blocks"),
           std::string::npos)
           << log;
     }
@@ -2258,7 +2263,10 @@ VkDeviceSize CreatedBytes(VulkanEtc2Emulation& emulation, VkDevice device,
   return emulation.TextureBytes().decoded - before;
 }
 
-TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtTheSetFactor) {
+// Over budget, textures are encoded fast rather than left decoded, so a
+// streamed mip never hops between BC and decoded images. A 256 px RGBA
+// texture takes 64 KiB as BC7 and 256 KiB decoded.
+TEST(VulkanEtc2GpuEmulationTest, CompressesEveryTextureWhileTheBudgetIsInDebt) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
     GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
@@ -2278,56 +2286,19 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtTheSetFactor) {
     // An 8192x8192 chain, 5.6 million blocks, costs several bursts even on
     // an RTX 4090 and leaves the budget in debt for longer than the test.
     CreatedBytes(emulation, vk.device, Etc2ImageInfo(8192, 14), &images);
+    constexpr VkDeviceSize kBc = VkDeviceSize{64} << 10;
+    for (int index = 0; index < 12; ++index) {
+      EXPECT_EQ(CreatedBytes(emulation, vk.device, Etc2ImageInfo(256, 1),
+                             &images),
+                kBc);
+      EXPECT_TRUE(emulation.EncodesFast(images.back()));
+    }
     const VkImageCreateInfo small = Etc2ImageInfo(64, 7);
     VkDeviceSize compressed = 0;
     VkDeviceSize decoded = 0;
     ASSERT_TRUE(Etc2ImageByteCounts(EtcFormat::kEtc2Rgba8, small.extent, 7, 1,
                                     kTestUpscale, &compressed, &decoded));
-    EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), decoded);
-    for (VkImage image : images) {
-      emulation.DestroyImage(vk.device, image, nullptr);
-    }
-    emulation.DestroyDevice(vk.device);
-  }
-  CloseTestDevices(&devices);
-}
-
-// Textures the encode budget leaves decoded stay that way for their whole
-// life, so the extra they take is capped at a sixteenth of video memory:
-// 1 MiB on a 16 MiB card. A 256 px RGBA texture takes 256 KiB decoded and
-// 64 KiB as BC7, so at most five are held back and the rest are compressed
-// while the budget is in debt.
-TEST(VulkanEtc2GpuEmulationTest, CapsTheMemoryTexturesKeptDecodedTake) {
-  std::vector<VulkanTestDevice> devices = OpenTestDevices();
-  if (devices.empty()) {
-    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
-  }
-  const ScopedEncodeBudget budget;
-  for (VulkanTestDevice& vk : devices) {
-    SCOPED_TRACE(vk.name);
-    if (!vk.bc_textures) {
-      continue;
-    }
-    EXPECT_EQ(setenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB", "16", 1), 0);
-    VulkanEtc2Emulation emulation;
-    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
-                             vk.get_device_proc_addr, false, true);
-    EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"), 0);
-    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
-    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
-    std::vector<VkImage> images;
-    CreatedBytes(emulation, vk.device, Etc2ImageInfo(8192, 14), &images);
-    constexpr VkDeviceSize kBc = VkDeviceSize{64} << 10;
-    constexpr VkDeviceSize kDecoded = VkDeviceSize{256} << 10;
-    VkDeviceSize extra = 0;
-    for (int index = 0; index < 12; ++index) {
-      const VkDeviceSize bytes = CreatedBytes(
-          emulation, vk.device, Etc2ImageInfo(256, 1), &images);
-      ASSERT_TRUE(bytes == kBc || bytes == kDecoded) << bytes;
-      extra += bytes - kBc;
-    }
-    EXPECT_GT(extra, 0u);
-    EXPECT_LE(extra, VkDeviceSize{1} << 20);
+    EXPECT_LT(CreatedBytes(emulation, vk.device, small, &images), decoded);
     for (VkImage image : images) {
       emulation.DestroyImage(vk.device, image, nullptr);
     }
@@ -2430,7 +2401,9 @@ TEST(VulkanEtc2GpuEmulationTest, ChargesRepeatedUploadsToTheEncodeBudget) {
                                      &region);
     }
     vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
-    EXPECT_NE(CreatedBytes(emulation, vk.device, small, &images), fresh);
+    EXPECT_FALSE(emulation.EncodesFast(images.front()));
+    EXPECT_EQ(CreatedBytes(emulation, vk.device, small, &images), fresh);
+    EXPECT_TRUE(emulation.EncodesFast(images.back()));
 
     emulation.ReleaseCommandBuffer(commands.buffer);
     DestroyTestCommands(vk, commands);
@@ -3103,10 +3076,10 @@ TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAMipTooLargeToKeep) {
     VulkanEtc2Emulation emulation;
     StartBcEmulation(&emulation, vk);
     const TestImage big = CreateTestImage(
-        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 128, 1);
+        &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 256, 1);
     const TestImage small = CreateTestImage(
         &emulation, vk, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, 32, 1);
-    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, 128);
+    const HostBuffer source = CreateRandomEtcSource(&emulation, vk, 256);
     const std::uint64_t zeroed =
         Etc2FailureCount("copied into a compressed image without its source");
     const std::uint64_t skipped =
@@ -3114,7 +3087,7 @@ TEST(VulkanEtc2GpuEmulationTest, SkipsACopyFromAMipTooLargeToKeep) {
 
     TestCommands commands = BeginTestCommands(vk);
     UploadMip(&emulation, vk, commands.buffer, source.buffer, big.image, 0,
-              128);
+              256);
     CopyImage(&emulation, vk, commands.buffer, big.image, 0, {32, 32, 0},
               small.image, 0, {0, 0, 0}, 32);
     EndAndSubmit(&emulation, vk, commands.buffer);
