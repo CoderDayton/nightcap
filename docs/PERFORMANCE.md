@@ -171,29 +171,35 @@ rounded down to a power of two. There is no config setting; an old
 `graphics.small_texture_upscale` is ignored.
 
 At startup Nightcap times the card's BC7 encoder on a few textures, minus the
-round trip of an empty submit. An RTX 4090 measures about 9 ns per block;
-llvmpipe measures about 700 ns. With texture compression off there is no
+round trip of an empty submit, in both its full and fast modes. An RTX 4090
+measures about 9 ns per block, and about 5 ns fast; llvmpipe measures about
+700 ns. Half the timed blocks are opaque and half have alpha, since the fast
+encoder saves more on alpha blocks. With texture compression off there is no
 encode to time, so it is skipped.
 
-Every BC encode draws from a budget of a tenth of wall time, with a 16 ms
+The encode budget aims BC encoding at a tenth of wall time, with a 16 ms
 burst. Creating a texture prepays its first upload; later uploads, re-uploads
 included, are charged as they are recorded, and a texture destroyed before
 its upload gives its prepayment back. When the budget runs dry, new textures
-stay decoded at the set factor, as with texture compression off, until it
-refills. `MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off and skips the
+are still compressed, with the fast encoder: one least-squares fit per BC7
+mode and fewer modes tried. That cuts the GPU cost by about 40% and loses
+under 1 dB on random blocks. It is not a hard cap: a burst of new textures
+still encodes in the frames that load them, only cheaper. Those textures
+keep the fast encode for their life. The budget goes into debt for the fast
+cost, at most four bursts deep, so it refills within 0.64 s of a burst. `MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off and skips the
 startup measurement.
 
 The session log shows the measured speed once:
 
 ```text
-[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale 4x; encode budget on
+[vulkan] BC encode speed: transcode 10.0 ns/block (fast 4.9), upscale 8.9 ns/block; small texture upscale 4x; encode budget on
 ```
 
 It also shows, every 5 seconds while textures are created, how many landed at
-each factor, how many stayed decoded, and the estimated GPU time:
+each factor, how many used the fast encoder, and the estimated GPU time:
 
 ```text
-[vulkan] BC encodes over 5.0 s: 1x 390, kept decoded 22; est 38.1 ms GPU
+[vulkan] BC encodes over 5.0 s: 1x 390, fast 22; est 38.1 ms GPU
 ```
 
 At the first texture and then every 5 seconds while textures are created, it
