@@ -712,7 +712,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {},
             false,
             "The sky in games. A new pick shows the next time Nightcap "
-            "starts. Right-click or long-press a sky to remove it."},
+            "starts. Right-click a sky to remove it."},
            {"Custom files",
             {
                 {"assets.overlay",

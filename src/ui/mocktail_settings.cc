@@ -249,13 +249,17 @@ constexpr int kSkyTileSize = 112;
 // Twice the tile size, for 2x displays.
 constexpr int kSkyPreviewSize = 224;
 
-GtkWidget* NewSkyTile(const std::string& label, const char* icon,
-                      const std::filesystem::path& preview, bool selected) {
-  GtkWidget* image;
+bool HasPreview(const std::filesystem::path& preview) {
   std::error_code error;
+  return !preview.empty() && std::filesystem::exists(preview, error);
+}
+
+GtkWidget* NewSkyTileImage(const char* icon,
+                           const std::filesystem::path& preview) {
+  GtkWidget* image;
   // GtkImage, unlike GtkPicture, asks only for its pixel size, so tiles stay
   // small and more fit on a line.
-  if (!preview.empty() && std::filesystem::exists(preview, error)) {
+  if (HasPreview(preview)) {
     image = gtk_image_new_from_file(preview.c_str());
     gtk_image_set_pixel_size(GTK_IMAGE(image), kSkyTileSize);
   } else {
@@ -271,28 +275,48 @@ GtkWidget* NewSkyTile(const std::string& label, const char* icon,
   gtk_widget_set_halign(image, GTK_ALIGN_CENTER);
   gtk_widget_add_css_class(image, "card");
   gtk_widget_set_overflow(image, GTK_OVERFLOW_HIDDEN);
-  GtkWidget* overlay = gtk_overlay_new();
-  gtk_overlay_set_child(GTK_OVERLAY(overlay), image);
+  return image;
+}
+
+// Shows or hides the tile's check mark and bold name.
+void MarkSkyTile(GtkWidget* tile, bool selected) {
+  gtk_widget_set_visible(
+      GTK_WIDGET(g_object_get_data(G_OBJECT(tile), "check")), selected);
+  GtkWidget* text = GTK_WIDGET(g_object_get_data(G_OBJECT(tile), "text"));
   if (selected) {
-    GtkWidget* check = gtk_image_new_from_icon_name("object-select-symbolic");
-    gtk_widget_add_css_class(check, "osd");
-    gtk_widget_add_css_class(check, "circular");
-    gtk_widget_set_halign(check, GTK_ALIGN_END);
-    gtk_widget_set_valign(check, GTK_ALIGN_START);
-    gtk_widget_set_margin_top(check, 6);
-    gtk_widget_set_margin_end(check, 6);
-    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), check);
+    gtk_widget_add_css_class(text, "heading");
+  } else {
+    gtk_widget_remove_css_class(text, "heading");
   }
+}
+
+GtkWidget* NewSkyTile(const std::string& label, const char* icon,
+                      const std::filesystem::path& preview, bool selected) {
+  GtkWidget* overlay = gtk_overlay_new();
+  gtk_overlay_set_child(GTK_OVERLAY(overlay), NewSkyTileImage(icon, preview));
+  GtkWidget* check = gtk_image_new_from_icon_name("object-select-symbolic");
+  gtk_widget_add_css_class(check, "osd");
+  gtk_widget_add_css_class(check, "circular");
+  gtk_widget_set_halign(check, GTK_ALIGN_END);
+  gtk_widget_set_valign(check, GTK_ALIGN_START);
+  gtk_widget_set_margin_top(check, 6);
+  gtk_widget_set_margin_end(check, 6);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), check);
   GtkWidget* text = gtk_label_new(label.c_str());
   gtk_label_set_ellipsize(GTK_LABEL(text), PANGO_ELLIPSIZE_END);
   gtk_label_set_max_width_chars(GTK_LABEL(text), 1);
   gtk_widget_set_size_request(text, kSkyTileSize, -1);
   gtk_widget_add_css_class(text, "caption");
-  if (selected) gtk_widget_add_css_class(text, "heading");
   GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
   gtk_box_append(GTK_BOX(box), overlay);
   gtk_box_append(GTK_BOX(box), text);
   gtk_widget_set_tooltip_text(box, label.c_str());
+  g_object_set_data(G_OBJECT(box), "overlay", overlay);
+  g_object_set_data(G_OBJECT(box), "check", check);
+  g_object_set_data(G_OBJECT(box), "text", text);
+  g_object_set_data(G_OBJECT(box), "has-preview",
+                    GINT_TO_POINTER(HasPreview(preview)));
+  MarkSkyTile(box, selected);
   return box;
 }
 
@@ -346,6 +370,7 @@ gboolean OnSkyGridKey(GtkEventControllerKey*, guint key, guint,
 }
 
 void StartSkyPreviews(Row* row);
+void AppendImportTile(SettingsWindow* window);
 
 void RefreshSkyRow(Row* row) {
   SettingsWindow* window = row->window;
@@ -357,14 +382,56 @@ void RefreshSkyRow(Row* row) {
   for (std::string& name : mocktail::ui::ListSkyLibrary(window->sky_library)) {
     choices.push_back({name, name});
   }
-  row->devices = std::move(choices);
-
   GtkFlowBox* grid = GTK_FLOW_BOX(window->sky_grid);
-  while (GtkFlowBoxChild* child = gtk_flow_box_get_child_at_index(grid, 0)) {
-    gtk_flow_box_remove(grid, GTK_WIDGET(child));
+  // Rebuilding the grid empties it for a moment, which scrolls the page to
+  // the top, so a new pick only updates the tiles in place.
+  bool same = gtk_flow_box_get_child_at_index(
+                  grid, static_cast<int>(choices.size())) != nullptr &&
+              gtk_flow_box_get_child_at_index(
+                  grid, static_cast<int>(choices.size()) + 1) == nullptr &&
+              choices.size() == row->devices.size();
+  for (std::size_t index = 0; same && index < choices.size(); ++index) {
+    same = choices[index].value == row->devices[index].value;
   }
+  row->devices = std::move(choices);
   bool previews_missing = false;
-  for (const DeviceChoice& choice : row->devices) {
+  if (same) {
+    for (std::size_t index = 0; index < row->devices.size(); ++index) {
+      const DeviceChoice& choice = row->devices[index];
+      const bool selected = choice.value == chosen;
+      GtkWidget* child = GTK_WIDGET(
+          gtk_flow_box_get_child_at_index(grid, static_cast<int>(index)));
+      GtkWidget* tile = gtk_flow_box_child_get_child(GTK_FLOW_BOX_CHILD(child));
+      MarkSkyTile(tile, selected);
+      const bool library = !choice.value.empty() && choice.value != kOtherSky;
+      if (library && !g_object_get_data(G_OBJECT(tile), "has-preview")) {
+        const std::filesystem::path preview =
+            PreviewFile(window, choice.value);
+        if (HasPreview(preview)) {
+          gtk_overlay_set_child(
+              GTK_OVERLAY(g_object_get_data(G_OBJECT(tile), "overlay")),
+              NewSkyTileImage("weather-overcast-symbolic", preview));
+          g_object_set_data(G_OBJECT(tile), "has-preview",
+                            GINT_TO_POINTER(TRUE));
+        } else if (!HasPreview(NoPreviewFile(window, choice.value))) {
+          previews_missing = true;
+        }
+      }
+      if (selected) {
+        gtk_flow_box_select_child(grid, GTK_FLOW_BOX_CHILD(child));
+        if (window->sky_refocus && !window->sky_busy) {
+          window->sky_refocus = false;
+          gtk_widget_grab_focus(child);
+        }
+      }
+    }
+  } else {
+    while (GtkFlowBoxChild* child = gtk_flow_box_get_child_at_index(grid, 0)) {
+      gtk_flow_box_remove(grid, GTK_WIDGET(child));
+    }
+  }
+  for (std::size_t index = 0; !same && index < row->devices.size(); ++index) {
+    const DeviceChoice& choice = row->devices[index];
     const bool selected = choice.value == chosen;
     const bool library = !choice.value.empty() && choice.value != kOtherSky;
     std::filesystem::path preview;
@@ -405,6 +472,24 @@ void RefreshSkyRow(Row* row) {
     }
   }
 
+  if (!same) AppendImportTile(window);
+
+  if (previews_missing && !window->sky_previews_running && !window->sky_busy) {
+    StartSkyPreviews(row);
+  }
+  // An import could replace a pack whose preview is being made.
+  gtk_widget_set_sensitive(window->sky_import, !window->sky_busy &&
+                                                   !window->sky_previews_running);
+  gtk_widget_set_tooltip_text(
+      window->sky_import,
+      window->sky_previews_running
+          ? "Making previews. Import is back in a moment."
+          : "Add sky packs from a zip or folder. Each pack has six images "
+            "named like sky_bk … sky_up: PNGs, or Roblox .tex files.");
+}
+
+void AppendImportTile(SettingsWindow* window) {
+  GtkFlowBox* grid = GTK_FLOW_BOX(window->sky_grid);
   GtkWidget* plus = gtk_image_new_from_icon_name("list-add-symbolic");
   gtk_image_set_pixel_size(GTK_IMAGE(plus), 32);
   GtkWidget* plus_label = gtk_label_new("Import");
@@ -423,22 +508,7 @@ void RefreshSkyRow(Row* row) {
   gtk_widget_set_size_request(window->sky_import, kSkyTileSize, kSkyTileSize);
   gtk_widget_set_valign(window->sky_import, GTK_ALIGN_START);
   gtk_widget_set_halign(window->sky_import, GTK_ALIGN_CENTER);
-  gtk_widget_set_tooltip_text(
-      window->sky_import,
-      "Add sky packs from a zip or folder. Each pack has six images named "
-      "like sky_bk … sky_up: PNGs, or Roblox .tex files.");
   gtk_flow_box_append(grid, window->sky_import);
-
-  if (previews_missing && !window->sky_previews_running && !window->sky_busy) {
-    StartSkyPreviews(row);
-  }
-  // An import could replace a pack whose preview is being made.
-  gtk_widget_set_sensitive(window->sky_import, !window->sky_busy &&
-                                                   !window->sky_previews_running);
-  if (window->sky_previews_running) {
-    gtk_widget_set_tooltip_text(window->sky_import,
-                                "Making previews. Import is back in a moment.");
-  }
 }
 
 // Shows the file's value in `row`. With `keep_edit`, text typed into the row
