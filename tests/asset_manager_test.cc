@@ -103,7 +103,12 @@ class AssetManagerTest : public ::testing::Test {
 
   void WriteBinaryAsset(const std::string& name,
                          const std::vector<unsigned char>& data) {
-    const std::filesystem::path path = std::filesystem::path(root_) / name;
+    WriteBinaryAssetAt(root_, name, data);
+  }
+
+  void WriteBinaryAssetAt(const std::string& root, const std::string& name,
+                          const std::vector<unsigned char>& data) {
+    const std::filesystem::path path = std::filesystem::path(root) / name;
     std::filesystem::create_directories(path.parent_path());
     std::ofstream file(path, std::ios::binary);
     file.write(reinterpret_cast<const char*>(data.data()), data.size());
@@ -232,6 +237,27 @@ TEST_F(AssetManagerTest, TranscodedSkyCannotBypassConversionThroughDescriptor) {
   std::ifstream file(root_ + "/" + name, std::ios::binary);
   file.read(reinterpret_cast<char*>(on_disk.data()), on_disk.size());
   EXPECT_EQ(on_disk, original);
+}
+
+TEST_F(AssetManagerTest, OverlaySkyIsTranscodedForVulkan) {
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteBinaryAssetAt(overlay_root,
+                     "content/android/textures/sky/sky512_bk.tex",
+                     MakeEtc1SkyTexture());
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan", 1), 0);
+
+  AAsset* asset =
+      AAssetManager_open(AAssetManager_fromJava(nullptr, nullptr),
+                         "android/textures/sky/sky512_bk.tex", 0);
+  ASSERT_NE(asset, nullptr);
+  const auto* buffer = static_cast<const unsigned char*>(AAsset_getBuffer(asset));
+  ASSERT_NE(buffer, nullptr);
+  // BC1 format in the KTX header.
+  EXPECT_EQ(buffer[28], 0xf0);
+  EXPECT_EQ(buffer[29], 0x83);
+  AAsset_close(asset);
 }
 
 TEST_F(AssetManagerTest, OpenGlSkyKeepsOriginalFileDescriptor) {

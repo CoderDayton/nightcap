@@ -45,6 +45,9 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- A custom sky in the asset overlay folder now shows on Vulkan. Put Android-format `sky512_*.tex` files in
+  `content/android/textures/sky/`. Nightcap converts the stock sky so Vulkan can draw it, but skipped
+  overlay files.
 - With texture compression off, small textures such as crosshairs no longer turn blurry when the game
   copies them in while it streams textures. With it on, such a texture no longer shows an old picture
   after the game moves it between textures, or turns black on slower GPUs.
