@@ -290,6 +290,7 @@ unsigned DecodeWorkerCount() {
 struct EncodeStats {
   std::uint64_t by_scale[9] = {};
   std::uint64_t held_back = 0;
+  std::uint64_t over_budget = 0;
   double estimated_ns = 0;
   std::uint64_t since_ns = 0;
 };
@@ -329,8 +330,11 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
       line += part;
     }
   }
-  std::snprintf(part, sizeof(part), " kept decoded %llu; est %.1f ms GPU\n",
+  std::snprintf(part, sizeof(part),
+                " kept decoded %llu, compressed over budget %llu; est %.1f ms "
+                "GPU\n",
                 static_cast<unsigned long long>(stats->held_back),
+                static_cast<unsigned long long>(stats->over_budget),
                 stats->estimated_ns / 1e6);
   line += part;
   *stats = {};
@@ -445,6 +449,7 @@ struct ImageRecord {
   bool transcoded = false;
   // Encode budget taken at creation and not yet spent by an upload.
   double prepaid_ns = 0;
+  VkDeviceSize held_back_bytes = 0;
   // An override file names this image's size, so its uploads decode on the
   // CPU where they can be hashed and replaced.
   bool may_override = false;
@@ -1395,6 +1400,8 @@ struct VulkanEtc2Emulation::State {
   // texture budget for the textures it sent, not for upscaled ones.
   VkDeviceSize upscaled_bytes = 0;
   VkDeviceSize upscale_budget = 0;
+  // Held-back images stay decoded until destroyed.
+  VkDeviceSize held_back_bytes = 0;
   // Live free video memory from VK_EXT_memory_budget, refreshed at most
   // every kVideoFreeRefreshNs. Upscales reserved since then are subtracted,
   // as the driver has not seen them yet, and KeepFree() stays free for
@@ -1823,7 +1830,12 @@ struct VulkanEtc2Emulation::State {
     }
     return "  [vulkan] ETC2 textures: " + FormatBytes(texture_bytes.decoded) +
            " on the GPU, " + FormatBytes(upscaled_bytes) + " of it upscaled" +
-           budget + "; " + FormatBytes(kept) + " of blocks kept on the CPU\n";
+           budget + "; " +
+           (held_back_bytes == 0
+                ? std::string()
+                : FormatBytes(held_back_bytes) +
+                      " extra kept decoded by the encode budget; ") +
+           FormatBytes(kept) + " of blocks kept on the CPU\n";
   }
 
   void RefreshVideoFree() {
@@ -1921,11 +1933,21 @@ struct VulkanEtc2Emulation::State {
     return pick;
   }
 
+  // Held-back textures take at most a sixteenth of video memory.
+  bool HeldBackFitsLocked(VkDeviceSize extra) const {
+    if (video_memory != 0 && held_back_bytes + extra > video_memory / 16) {
+      return false;
+    }
+    return !video_free_known ||
+           video_free >= reserved_since_free + extra + KeepFree() * 2;
+  }
+
   // Prepays an image's first full upload at `scale`, probe-measured ns per
   // block times the host chain's blocks. Returns the prepaid ns; zero leaves
-  // the image decoded.
+  // the image decoded; past HeldBackFitsLocked() it encodes in debt.
   double BudgetEncode(const HostDevice& dev, const VkImageCreateInfo& info,
-                      std::uint32_t scale) {
+                      std::uint32_t scale, VkDeviceSize extra,
+                      VkDeviceSize* held) {
     std::string line;
     double prepaid = 0;
     {
@@ -1945,8 +1967,15 @@ struct VulkanEtc2Emulation::State {
       if (dev.budget.Take(cost, now)) {
         ++dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
         prepaid = cost;
-      } else {
+      } else if (HeldBackFitsLocked(extra)) {
         ++dev.stats.held_back;
+        held_back_bytes += extra;
+        *held = extra;
+      } else {
+        dev.budget.Charge(cost, now);
+        ++dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+        ++dev.stats.over_budget;
+        prepaid = cost;
       }
       line = TakeEncodeLog(&dev.stats, now);
     }
@@ -3890,6 +3919,7 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
         if (it->second.scale > 1) {
           state_->upscaled_bytes -= it->second.bytes.decoded;
         }
+        state_->held_back_bytes -= it->second.held_back_bytes;
         if (it->second.top != 0) {
           destroyed.push_back(it->first);
         }
@@ -4037,8 +4067,12 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   };
   bool transcoded = bc_eligible(scale);
   double prepaid = 0;
+  VkDeviceSize held = 0;
   if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
-    prepaid = state_->BudgetEncode(*dev, *create_info, scale);
+    const VkDeviceSize extra =
+        HostTextureBytes(format.etc_format, *create_info, scale, false) -
+        HostTextureBytes(format.etc_format, *create_info, scale, true);
+    prepaid = state_->BudgetEncode(*dev, *create_info, scale, extra, &held);
     transcoded = prepaid > 0;
     if (!transcoded) {
       reserve_decoded();
@@ -4103,6 +4137,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.bytes = bytes;
       record.transcoded = transcoded;
       record.prepaid_ns = prepaid;
+      record.held_back_bytes = held;
       record.may_override = may_override;
       record.asked_scale = asked_scale;
       state_->texture_bytes.compressed += bytes.compressed;
@@ -4139,8 +4174,14 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
                    static_cast<int>(create_info->format),
                    static_cast<int>(format.host_format), top);
     }
-  } else if (reserved != 0) {
-    state_->ReleaseUpscale(reserved);
+  } else {
+    if (reserved != 0) {
+      state_->ReleaseUpscale(reserved);
+    }
+    if (held != 0) {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      state_->held_back_bytes -= held;
+    }
   }
   return result;
 }
@@ -4174,6 +4215,7 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
           retired[image] = it->second.ticket;
         }
         dev->budget.Refund(it->second.prepaid_ns);
+        state_->held_back_bytes -= it->second.held_back_bytes;
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
         if (it->second.scale > 1) {

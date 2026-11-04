@@ -131,8 +131,10 @@ Release notes on GitHub are taken from the matching section here.
   Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
   instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while
   textures load it keeps new ones uncompressed once encoding would take more than a tenth of the GPU's
-  time, so slower cards no longer stutter with Compress textures on. The log shows the
-  measured speed and what was held back. Upscaling adds sharper levels above a texture's own and leaves
+  time, so slower cards no longer stutter with Compress textures on. Textures kept uncompressed this
+  way take at most a sixteenth of video memory; past that, new ones are compressed anyway, so video
+  memory no longer climbs during long sessions. The log shows the measured speed and what was held
+  back. Upscaling adds sharper levels above a texture's own and leaves
   Roblox's smaller levels as they are, so streamed textures keep their detail at a distance.
 
 ## [0.4.0] - 2026-10-18

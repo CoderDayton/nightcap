@@ -2292,6 +2292,50 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsAHeldBackSmallTextureAtTheSetFactor) {
   CloseTestDevices(&devices);
 }
 
+// Textures the encode budget leaves decoded stay that way for their whole
+// life, so the extra they take is capped at a sixteenth of video memory:
+// 1 MiB on a 16 MiB card. A 256 px RGBA texture takes 256 KiB decoded and
+// 64 KiB as BC7, so at most five are held back and the rest are compressed
+// while the budget is in debt.
+TEST(VulkanEtc2GpuEmulationTest, CapsTheMemoryTexturesKeptDecodedTake) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  const ScopedEncodeBudget budget;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    EXPECT_EQ(setenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB", "16", 1), 0);
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"), 0);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    std::vector<VkImage> images;
+    CreatedBytes(emulation, vk.device, Etc2ImageInfo(8192, 14), &images);
+    constexpr VkDeviceSize kBc = VkDeviceSize{64} << 10;
+    constexpr VkDeviceSize kDecoded = VkDeviceSize{256} << 10;
+    VkDeviceSize extra = 0;
+    for (int index = 0; index < 12; ++index) {
+      const VkDeviceSize bytes = CreatedBytes(
+          emulation, vk.device, Etc2ImageInfo(256, 1), &images);
+      ASSERT_TRUE(bytes == kBc || bytes == kDecoded) << bytes;
+      extra += bytes - kBc;
+    }
+    EXPECT_GT(extra, 0u);
+    EXPECT_LE(extra, VkDeviceSize{1} << 20);
+    for (VkImage image : images) {
+      emulation.DestroyImage(vk.device, image, nullptr);
+    }
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
 // Only BC encodes are budgeted, so without them there is nothing to time.
 TEST(VulkanEtc2GpuEmulationTest, SkipsTheSpeedProbeWithoutCompression) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
