@@ -33,6 +33,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Read-only asset access
@@ -153,6 +154,20 @@ ResolvedAsset CacheResolvedAsset(const std::string& cache_key,
   }
   cached.insert_or_assign(cache_key, resolved);
   return resolved;
+}
+
+// Once per file, as Roblox opens some of them every frame.
+void LogOverlayServed(const char* filename, const std::string& path) {
+  static std::mutex mutex;
+  static std::unordered_set<std::string> logged;
+  {
+    std::scoped_lock lock(mutex);
+    if (!logged.insert(path).second) {
+      return;
+    }
+  }
+  std::fprintf(stderr, "  [asset] overlay served %s from %s\n", filename,
+               path.c_str());
 }
 
 ResolvedAsset ResolveAssetPath(const char* filename) {
@@ -400,6 +415,9 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   if (!LoadFile(resolved.path, &asset->data)) {
     delete asset;
     return nullptr;
+  }
+  if (resolved.is_overlay) {
+    LogOverlayServed(filename, resolved.path);
   }
   if (MocktailUsesDirectVulkan()) {
     asset->transcoded =

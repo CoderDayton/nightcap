@@ -326,6 +326,34 @@ TEST_F(AssetManagerTest, CacheSeparatesRuntimeAssetRootChanges) {
   AAsset_close(second);
 }
 
+// A reporter's session log shows which overlay files Roblox used, once each
+// however often it opens them.
+TEST_F(AssetManagerTest, LogsAnOverlayFileOnceWhenServed) {
+  WriteAsset("content/android/textures/sky/sky512_up.tex", "stock-sky");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/android/textures/sky/sky512_up.tex",
+               "custom-sky");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  ::testing::internal::CaptureStderr();
+  for (int open = 0; open < 2; ++open) {
+    AAsset* asset =
+        AAssetManager_open(manager, "android/textures/sky/sky512_up.tex", 0);
+    ASSERT_NE(asset, nullptr);
+    AAsset_close(asset);
+  }
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  const std::string line = "  [asset] overlay served "
+                           "android/textures/sky/sky512_up.tex from " +
+                           overlay_root +
+                           "/content/android/textures/sky/sky512_up.tex\n";
+  const std::size_t first = log.find(line);
+  ASSERT_NE(first, std::string::npos) << log;
+  EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
+}
+
 TEST_F(AssetManagerTest, OverlayAssetTakesPrecedenceOverRootAsset) {
   WriteAsset("content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
              "stock-arrow");
