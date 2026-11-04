@@ -20,8 +20,9 @@ std::filesystem::path SkyFolder(const std::filesystem::path& overlay_dir);
 
 bool HasCustomSky(const std::filesystem::path& overlay_dir);
 
-// Searches `source` a few folders deep for one PNG or KTX image per face,
-// named *_bk, *_dn, *_ft, *_lf, *_rt and *_up (.tex, .png or .ktx). Where a
+// Searches `source` a few folders deep for one PNG, JPEG, WebP, DDS or KTX
+// image per face, named *_bk, *_dn, *_ft, *_lf, *_rt and *_up (.tex, .png,
+// .jpg, .jpeg, .webp, .dds or .ktx). Where a
 // face has several, sky512_* wins. Nothing is copied unless all six are found.
 bool InstallSky(const std::filesystem::path& source,
                 const std::filesystem::path& overlay_dir, std::string* error);

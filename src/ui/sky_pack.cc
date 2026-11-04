@@ -68,7 +68,9 @@ std::string Lower(std::string text) {
 // Index into kFaces and the name before the face, or kFaces.size().
 std::pair<std::size_t, std::string> FaceOf(const Path& path) {
   const std::string extension = Lower(path.extension().string());
-  if (extension != ".tex" && extension != ".png" && extension != ".ktx") {
+  if (extension != ".tex" && extension != ".png" && extension != ".ktx" &&
+      extension != ".jpg" && extension != ".jpeg" && extension != ".dds" &&
+      extension != ".webp") {
     return {kFaces.size(), {}};
   }
   const std::string stem = Lower(path.stem().string());
@@ -98,8 +100,63 @@ std::uint32_t ReadU32(std::string_view bytes, std::size_t at,
   return value;
 }
 
-// Empty for a PNG, or a KTX 1 (the only container Roblox reads a .tex sky
-// from), of at most kMaxFacePixels a side; otherwise why not.
+// Reads the size from a JPEG's frame header, which follows any APPn data.
+bool JpegSize(std::ifstream& in, std::uint32_t* width,
+              std::uint32_t* height) {
+  in.clear();
+  in.seekg(2);
+  for (int segment = 0; segment < 256; ++segment) {
+    std::array<unsigned char, 4> marker{};
+    if (!in.read(reinterpret_cast<char*>(marker.data()), marker.size()) ||
+        marker[0] != 0xff) {
+      return false;
+    }
+    const int type = marker[1];
+    const std::streamoff length = (marker[2] << 8) | marker[3];
+    if (length < 2 || type == 0xda || type == 0xd9) return false;
+    // SOF0 to SOF15; C4, C8 and CC are other segments.
+    if (type >= 0xc0 && type <= 0xcf && type != 0xc4 && type != 0xc8 &&
+        type != 0xcc) {
+      std::array<unsigned char, 5> frame{};
+      if (!in.read(reinterpret_cast<char*>(frame.data()), frame.size())) {
+        return false;
+      }
+      *height = (frame[1] << 8) | frame[2];
+      *width = (frame[3] << 8) | frame[4];
+      return true;
+    }
+    in.seekg(length - 2, std::ios::cur);
+  }
+  return false;
+}
+
+// Reads the size from the first chunk of a WebP: extended, lossy or lossless.
+bool WebpSize(std::string_view bytes, std::uint32_t* width,
+              std::uint32_t* height) {
+  if (bytes.size() < 25) return false;
+  const auto at = [&](std::size_t index) -> std::uint32_t {
+    return static_cast<unsigned char>(bytes[index]);
+  };
+  const std::string_view chunk = bytes.substr(12, 4);
+  if (chunk == "VP8X" && bytes.size() >= 30) {
+    *width = 1 + (at(24) | at(25) << 8 | at(26) << 16);
+    *height = 1 + (at(27) | at(28) << 8 | at(29) << 16);
+  } else if (chunk == "VP8 " && bytes.size() >= 30 &&
+             bytes.substr(23, 3) == "\x9d\x01\x2a") {
+    *width = (at(26) | at(27) << 8) & 0x3fff;
+    *height = (at(28) | at(29) << 8) & 0x3fff;
+  } else if (chunk == "VP8L" && at(20) == 0x2f) {
+    const std::uint32_t bits = ReadU32(bytes, 21, false);
+    *width = 1 + (bits & 0x3fff);
+    *height = 1 + ((bits >> 14) & 0x3fff);
+  } else {
+    return false;
+  }
+  return true;
+}
+
+// Empty for a PNG, JPEG, WebP, DDS or KTX 1 face (the containers Roblox reads
+// a .tex sky from) of at most kMaxFacePixels a side; otherwise why not.
 std::string CheckFace(const Path& path) {
   const std::string name = path.filename().string();
   std::error_code error;
@@ -113,6 +170,8 @@ std::string CheckFace(const Path& path) {
                                static_cast<std::size_t>(in.gcount()));
   constexpr std::string_view kPng("\x89PNG\r\n\x1a\n", 8);
   constexpr std::string_view kKtx1("\xabKTX 11\xbb\r\n\x1a\n", 12);
+  const std::string unknown =
+      name + " is not a PNG, JPEG, WebP, DDS or KTX image.";
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   if (bytes.size() >= 24 && bytes.substr(0, 8) == kPng &&
@@ -122,12 +181,20 @@ std::string CheckFace(const Path& path) {
   } else if (bytes.size() >= 44 && bytes.substr(0, 12) == kKtx1) {
     const bool big_endian = ReadU32(bytes, 12, true) == 0x04030201;
     if (!big_endian && ReadU32(bytes, 12, false) != 0x04030201) {
-      return name + " is not a PNG or KTX 1 image.";
+      return unknown;
     }
     width = ReadU32(bytes, 36, big_endian);
     height = ReadU32(bytes, 40, big_endian);
+  } else if (bytes.size() >= 12 && bytes.substr(0, 4) == "RIFF" &&
+             bytes.substr(8, 4) == "WEBP") {
+    if (!WebpSize(bytes, &width, &height)) return name + " is a damaged WebP.";
+  } else if (bytes.size() >= 20 && bytes.substr(0, 4) == "DDS ") {
+    height = ReadU32(bytes, 12, false);
+    width = ReadU32(bytes, 16, false);
+  } else if (bytes.size() >= 3 && bytes.substr(0, 3) == "\xff\xd8\xff") {
+    if (!JpegSize(in, &width, &height)) return name + " is a damaged JPEG.";
   } else {
-    return name + " is not a PNG or KTX 1 image.";
+    return unknown;
   }
   if (width == 0 || height == 0) return name + " has no pixels.";
   if (width > kMaxFacePixels || height > kMaxFacePixels) {
@@ -323,7 +390,8 @@ std::string PackName(const Path& root, const Path& set_folder,
 }
 
 Path LibraryFace(const Path& pack, std::string_view face) {
-  for (const char* extension : {".tex", ".png", ".ktx"}) {
+  for (const char* extension :
+       {".tex", ".png", ".ktx", ".jpg", ".jpeg", ".dds", ".webp"}) {
     const Path path = pack / ("sky512_" + std::string(face) + extension);
     std::error_code error;
     if (std::filesystem::is_regular_file(path, error)) return path;

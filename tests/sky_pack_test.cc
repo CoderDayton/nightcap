@@ -71,6 +71,39 @@ std::string KtxOf(std::uint32_t width, std::uint32_t height) {
          LittleEndian(0x04030201) + std::string(20, '\0') +
          LittleEndian(width) + LittleEndian(height) + "blocks";
 }
+// A JPEG whose size sits after a long APP1 segment, as with EXIF data.
+std::string JpegOf(std::uint32_t width, std::uint32_t height) {
+  const std::string app1 = std::string("\xff\xe1\x03\xea", 4) +
+                           std::string(1000, 'x');
+  const std::string sof =
+      std::string("\xff\xc2\x00\x11\x08", 5) +
+      BigEndian(height).substr(2) + BigEndian(width).substr(2) +
+      std::string(10, '\0');
+  return std::string("\xff\xd8", 2) + app1 + sof + "scan";
+}
+std::string Riff(const std::string& chunk) {
+  return "RIFF" + LittleEndian(static_cast<std::uint32_t>(chunk.size() + 4)) +
+         "WEBP" + chunk;
+}
+std::string Le24(std::uint32_t value) { return LittleEndian(value).substr(0, 3); }
+// Extended WebP, which stores the size minus one in 24 bits.
+std::string WebpOf(std::uint32_t width, std::uint32_t height) {
+  return Riff("VP8X" + LittleEndian(10) + std::string("\x10\0\0\0", 4) +
+              Le24(width - 1) + Le24(height - 1));
+}
+std::string LossyWebpOf(std::uint32_t width, std::uint32_t height) {
+  return Riff("VP8 " + LittleEndian(10) + std::string("\0\0\0\x9d\x01\x2a", 6) +
+              LittleEndian(width).substr(0, 2) +
+              LittleEndian(height).substr(0, 2));
+}
+std::string LosslessWebpOf(std::uint32_t width, std::uint32_t height) {
+  return Riff("VP8L" + LittleEndian(5) + "\x2f" +
+              LittleEndian((width - 1) | ((height - 1) << 14)));
+}
+std::string DdsOf(std::uint32_t width, std::uint32_t height) {
+  return "DDS " + LittleEndian(124) + LittleEndian(0x1007) +
+         LittleEndian(height) + LittleEndian(width) + "blocks";
+}
 const std::string kPng = PngOf(512, 512);
 const std::string kKtx = KtxOf(512, 512);
 
@@ -649,6 +682,63 @@ TEST_F(SkyPackTest, FacesLargerThan2048PxAreRefused) {
   }
   EXPECT_FALSE(InstallSky(source_, overlay_, &error));
   EXPECT_NE(error.find("4096"), std::string::npos) << error;
+}
+
+TEST_F(SkyPackTest, InstallsJpegAndDdsFaces) {
+  std::string error;
+  WritePack(source_, "sky_", ".tex", JpegOf(256, 256));
+  EXPECT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+  WritePack(source_, "sky_", ".tex", DdsOf(512, 512));
+  EXPECT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+
+  const std::filesystem::path jpg = root_ / "jpg";
+  const std::filesystem::path dds = root_ / "dds";
+  std::filesystem::create_directories(jpg);
+  std::filesystem::create_directories(dds);
+  WritePack(jpg, "sky_", ".jpg", JpegOf(1024, 1024));
+  WritePack(dds, "sky_", ".dds", DdsOf(1024, 1024));
+  EXPECT_TRUE(InstallSky(jpg, overlay_, &error)) << error;
+  EXPECT_TRUE(InstallSky(dds, overlay_, &error)) << error;
+}
+
+TEST_F(SkyPackTest, JpegAndDdsFacesLargerThan2048PxAreRefused) {
+  std::string error;
+  WritePack(source_, "sky_", ".tex", JpegOf(4096, 4096));
+  EXPECT_FALSE(InstallSky(source_, overlay_, &error));
+  EXPECT_NE(error.find("4096"), std::string::npos) << error;
+  WritePack(source_, "sky_", ".tex", DdsOf(512, 4096));
+  EXPECT_FALSE(InstallSky(source_, overlay_, &error));
+  EXPECT_NE(error.find("4096"), std::string::npos) << error;
+}
+
+TEST_F(SkyPackTest, InstallsWebpFaces) {
+  std::string error;
+  for (const std::string& face :
+       {WebpOf(432, 432), LossyWebpOf(512, 512), LosslessWebpOf(1024, 1024)}) {
+    WritePack(source_, "sky_", ".tex", face);
+    EXPECT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+  }
+  const std::filesystem::path webp = root_ / "webp";
+  std::filesystem::create_directories(webp);
+  WritePack(webp, "sky_", ".webp", WebpOf(256, 256));
+  EXPECT_TRUE(InstallSky(webp, overlay_, &error)) << error;
+}
+
+TEST_F(SkyPackTest, WebpFacesLargerThan2048PxAreRefused) {
+  std::string error;
+  for (const std::string& face : {WebpOf(4096, 4096), LossyWebpOf(512, 4096),
+                                  LosslessWebpOf(4096, 512)}) {
+    WritePack(source_, "sky_", ".tex", face);
+    EXPECT_FALSE(InstallSky(source_, overlay_, &error));
+    EXPECT_NE(error.find("4096"), std::string::npos) << error;
+  }
+}
+
+TEST_F(SkyPackTest, AJpegWithoutItsSizeIsRefused) {
+  WritePack(source_, "sky_", ".tex",
+            std::string("\xff\xd8\xff\xe0\x00\x10", 6) + "JFIF");
+  std::string error;
+  EXPECT_FALSE(InstallSky(source_, overlay_, &error));
 }
 
 TEST_F(SkyPackTest, APngWithoutItsHeaderIsRefused) {

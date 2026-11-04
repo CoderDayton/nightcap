@@ -9,9 +9,9 @@ Release notes on GitHub are taken from the matching section here.
 
 - A Customization page in Settings. Sky shows a grid of previews: Roblox's own and every sky in the library
   (`~/.local/share/mocktail/skies`). Import adds sky packs from a folder or a .zip, including a zip of
-  pack zips: six images up to 2048 px named like `sky_bk` … `sky_up`, PNGs or Roblox .tex files. An
-  import can be cancelled. A sky already in the asset
-  folder is kept in the library as "Custom sky" before another replaces it. Switches turn the asset folder
+  pack zips: six images up to 2048 px named like `sky_bk` … `sky_up`, as PNG, JPEG, WebP, DDS or Roblox
+  .tex files. An import can be cancelled. A sky already in the asset folder is kept in the library as
+  "Custom sky" before another replaces it. Switches turn the asset folder
   (`assets.overlay`) and texture overrides (`assets.texture_overrides`) off without deleting files,
   and rows open the sky library, asset folder and textures folder.
 - From upstream: the Roblox sign-in can be kept in the desktop keyring through libsecret, such as
