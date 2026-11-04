@@ -869,6 +869,9 @@ struct CommandRecord {
   std::vector<DecodeCommands> decode_commands;
   std::vector<Staging> staging;
   std::vector<VkCommandBuffer> secondaries;
+  // Where each of `secondaries` replays among this record's orders; its
+  // uploads and block copies take that many orders from next_order.
+  std::vector<std::uint64_t> secondary_orders;
   // Highest decode ticket dispatched for this command buffer. Its staging
   // must not be released before that ticket completes.
   std::uint64_t last_ticket = 0;
@@ -1381,6 +1384,10 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkPhysicalDevice, bool> physical_devices;
   std::vector<std::unique_ptr<HostDevice>> devices;
   std::unordered_map<VkImage, ImageRecord> images;
+  // Destroyed images a queued batch may still look up, by that batch's
+  // ticket. A new image that reuses the handle waits for it first, so it
+  // never takes the old image's kept blocks or override.
+  std::unordered_map<VkImage, std::uint64_t> retired_images;
   // Sum over `images`; guarded by `mutex`.
   EmulatedTextureBytes texture_bytes;
   // GPU bytes of upscaled images, and the most a small texture's upscale may
@@ -2004,9 +2011,7 @@ struct VulkanEtc2Emulation::State {
     }
     std::shared_ptr<const RgbaImage> replacement;
     if (upload.mip_level == 0) {
-      const std::uint64_t hash = HashBytes(compressed, upload.compressed);
-      overrides.Dump(hash, upload.width, upload.height, decoded);
-      replacement = overrides.Lookup(hash);
+      replacement = LookupOverride(upload, compressed, decoded);
       std::lock_guard<std::mutex> lock(mutex);
       const auto record = images.find(upload.image);
       if (record != images.end()) {
@@ -2020,6 +2025,14 @@ struct VulkanEtc2Emulation::State {
       }
     }
     return replacement;
+  }
+
+  std::shared_ptr<const RgbaImage> LookupOverride(
+      const PendingUpload& upload, const std::uint8_t* compressed,
+      const std::uint8_t* decoded) {
+    const std::uint64_t hash = HashBytes(compressed, upload.compressed);
+    overrides.Dump(hash, upload.width, upload.height, decoded);
+    return overrides.Lookup(hash);
   }
 
   // `picked` is level 0's override when DecodeAndEmit chose it already.
@@ -2222,6 +2235,55 @@ struct VulkanEtc2Emulation::State {
     }
     EmitPass(std::move(level_zero), worker_count);
     EmitPass(std::move(rest), worker_count);
+  }
+
+  // Hashing level 0 is the cost, so lookups run across the decode workers.
+  // The images then take their matches in order, so the last level 0 of an
+  // image wins, as when they were picked one at a time.
+  void PickOverrides(std::vector<EmitJob>* jobs) {
+    struct Picks {
+      State* state = nullptr;
+      std::vector<EmitJob*> jobs;
+      std::atomic<std::size_t> next{0};
+    } picks;
+    picks.state = this;
+    for (EmitJob& job : *jobs) {
+      const PendingUpload& upload = *job.upload;
+      if (upload.mip_level == 0 && !upload.keep_only &&
+          upload.scale_row_blocks == 0) {
+        job.picked = true;
+        if (upload.layers == 1 && IsColorFormat(upload.format)) {
+          picks.jobs.push_back(&job);
+        }
+      }
+    }
+    if (picks.jobs.empty()) {
+      return;
+    }
+    const auto threads = static_cast<unsigned>(std::min<std::size_t>(
+        std::max(DecodeWorkerCount(), 1U), picks.jobs.size()));
+    RunOnDecodeWorkers(
+        [](void* context) {
+          auto* picks = static_cast<Picks*>(context);
+          for (;;) {
+            const std::size_t index =
+                picks->next.fetch_add(1, std::memory_order_relaxed);
+            if (index >= picks->jobs.size()) {
+              return;
+            }
+            EmitJob& job = *picks->jobs[index];
+            job.replacement = picks->state->LookupOverride(
+                *job.upload, job.compressed, job.decoded);
+          }
+        },
+        &picks, threads);
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const EmitJob* job : picks.jobs) {
+      const auto record = images.find(job->upload->image);
+      if (record != images.end()) {
+        record->second.override = job->replacement;
+      }
+    }
   }
 
   void EmitPass(std::vector<EmitJob> jobs, unsigned worker_count) {
@@ -3239,14 +3301,7 @@ struct VulkanEtc2Emulation::State {
     // so every level 0 of the submit picks first, as when one batch emitted
     // them all ahead of the rest; runs could otherwise reorder them.
     if (overrides.enabled()) {
-      for (EmitJob& job : emit_jobs) {
-        const PendingUpload& upload = *job.upload;
-        if (upload.mip_level == 0 && !upload.keep_only &&
-            upload.scale_row_blocks == 0) {
-          job.replacement = FindOverride(upload, job.compressed, job.decoded);
-          job.picked = true;
-        }
-      }
+      PickOverrides(&emit_jobs);
     }
     std::vector<const BlockCopy*> copies;
     copies.reserve(block_copies.size());
@@ -3974,6 +4029,16 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
     result = dev->create_image(device, &host_info, allocator, image);
   }
   if (result == VK_SUCCESS && image != nullptr) {
+    std::uint64_t retired_ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      const auto retired = state_->retired_images.find(*image);
+      if (retired != state_->retired_images.end()) {
+        retired_ticket = retired->second;
+        state_->retired_images.erase(retired);
+      }
+    }
+    state_->WaitForTicket(retired_ticket);
     EmulatedTextureBytes bytes;
     if (!Etc2ImageByteCounts(format.etc_format, create_info->extent,
                              create_info->mipLevels, create_info->arrayLayers,
@@ -4005,13 +4070,16 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       state_->texture_bytes.compressed += bytes.compressed;
       state_->texture_bytes.decoded += bytes.decoded;
       // A failed encode prepay leaves the image decoded, larger than the
-      // BC size reserved, so both counts take the real size.
-      state_->upscaled_bytes -= reserved;
-      state_->reserved_since_free -=
-          std::min(state_->reserved_since_free, reserved);
-      if (scale > 1) {
-        state_->upscaled_bytes += bytes.decoded;
-        state_->reserved_since_free += bytes.decoded;
+      // BC size reserved, so both counts take the real size. Only the
+      // difference moves reserved_since_free: a refresh since the
+      // reservation may already have taken it out.
+      const VkDeviceSize settled = scale > 1 ? bytes.decoded : 0;
+      state_->upscaled_bytes = state_->upscaled_bytes - reserved + settled;
+      if (settled >= reserved) {
+        state_->reserved_since_free += settled - reserved;
+      } else {
+        state_->reserved_since_free -=
+            std::min(state_->reserved_since_free, reserved - settled);
       }
       totals = state_->texture_bytes;
       now = TraceClockNanos();
@@ -4049,25 +4117,27 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
     return;
   }
   if (dev->emulated) {
-    // A batch the GPU does not wait for may still keep this image's blocks;
-    // it finishes first, so it never writes into a new image that reuses the
-    // handle, and that image does not inherit its ticket.
-    std::uint64_t ticket = 0;
-    {
-      std::lock_guard<std::mutex> lock(state_->mutex);
-      const auto it = state_->images.find(image);
-      if (it != state_->images.end()) {
-        ticket = it->second.ticket;
-      }
-    }
-    state_->WaitForTicket(ticket);
+    // A batch the GPU does not wait for may still keep this image's blocks.
+    // It finds no record and drops them; CreateImage waits for it only when
+    // the driver reuses the handle, so destroying never blocks on it.
+    const std::uint64_t completed = state_->CompletedTicket();
     EmulatedTextureBytes totals;
     std::uint64_t now = 0;
     bool changed = false;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
+      auto& retired = state_->retired_images;
+      if (retired.size() >= 64) {
+        for (auto entry = retired.begin(); entry != retired.end();) {
+          entry = entry->second <= completed ? retired.erase(entry)
+                                             : std::next(entry);
+        }
+      }
       const auto it = state_->images.find(image);
       if (it != state_->images.end()) {
+        if (it->second.ticket > completed) {
+          retired[image] = it->second.ticket;
+        }
         dev->budget.Refund(it->second.prepaid_ns);
         state_->texture_bytes.compressed -= it->second.bytes.compressed;
         state_->texture_bytes.decoded -= it->second.bytes.decoded;
@@ -5472,9 +5542,13 @@ void VulkanEtc2Emulation::CmdExecuteCommands(
       state_->has_commands.load(std::memory_order_acquire)) {
     std::lock_guard<std::mutex> lock(state_->mutex);
     for (std::uint32_t index = 0; index < count; ++index) {
-      if (state_->commands.count(secondaries[index]) != 0) {
-        state_->commands[command_buffer].secondaries.push_back(
-            secondaries[index]);
+      const auto secondary = state_->commands.find(secondaries[index]);
+      if (secondary != state_->commands.end()) {
+        const std::uint64_t span = secondary->second.next_order;
+        CommandRecord& primary = state_->commands[command_buffer];
+        primary.secondaries.push_back(secondaries[index]);
+        primary.secondary_orders.push_back(primary.next_order);
+        primary.next_order += span;
       }
     }
   }
@@ -5577,14 +5651,13 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   std::uint64_t submit_order = 0;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    auto collect = [this, &work, &block_copies,
-                    &submit_order](VkCommandBuffer command_buffer) {
+    // A secondary's orders sit where vkCmdExecuteCommands recorded it.
+    auto collect = [this, &work, &block_copies](VkCommandBuffer command_buffer,
+                                                std::uint64_t base) {
       const auto record = state_->commands.find(command_buffer);
       if (record == state_->commands.end()) {
         return;
       }
-      const std::uint64_t base = submit_order;
-      submit_order += record->second.next_order;
       for (const BlockCopy& copy : record->second.block_copies) {
         block_copies.push_back(copy);
         block_copies.back().order += base;
@@ -5631,12 +5704,18 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       }
     };
     for (std::uint32_t index = 0; index < count; ++index) {
-      collect(command_buffers[index]);
       const auto record = state_->commands.find(command_buffers[index]);
-      if (record != state_->commands.end()) {
-        for (VkCommandBuffer secondary : record->second.secondaries) {
-          collect(secondary);
-        }
+      if (record == state_->commands.end()) {
+        continue;
+      }
+      const std::uint64_t base = submit_order;
+      submit_order += record->second.next_order;
+      collect(command_buffers[index], base);
+      const CommandRecord& primary = record->second;
+      for (std::size_t inner = 0; inner < primary.secondaries.size();
+           ++inner) {
+        collect(primary.secondaries[inner],
+                base + primary.secondary_orders[inner]);
       }
     }
   }

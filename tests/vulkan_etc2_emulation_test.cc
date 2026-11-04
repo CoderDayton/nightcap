@@ -13,11 +13,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 namespace mocktail::graphics {
 namespace {
@@ -947,6 +951,49 @@ TEST(VulkanEtc2EmulationTest, UpscalesLevelZeroIntoTheTopLevel) {
   EXPECT_EQ(own->imageExtent.height, 4u);
   ExpectStaged(*own, level0);
   emulation->ReleaseCommandBuffer(command_buffer);
+}
+
+// Level 0 uploads of one submit look up their overrides across the decode
+// workers, and each distinct texture is dumped once.
+TEST(VulkanEtc2EmulationTest, DumpsEveryLevelZeroOfASubmit) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1d);
+  const VkBuffer source = FakeHandle<VkBuffer>(0x20d);
+  const VkCommandBuffer command_buffer = FakeHandle<VkCommandBuffer>(0x70d);
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() /
+      ("mocktail_dump_test_" + std::to_string(getpid()));
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  ASSERT_EQ(setenv("MOCKTAIL_TEXTURE_DUMP_DIR", dir.c_str(), 1), 0);
+  auto emulation =
+      UpscalingEmulation("1", device, FakeHandle<VkPhysicalDevice>(0x2d));
+  ASSERT_EQ(unsetenv("MOCKTAIL_TEXTURE_DUMP_DIR"), 0);
+  MapSource(*emulation, device, source);
+  g_source.fill(0);
+  // As many 8-byte blocks as the mapped source holds.
+  constexpr std::uint32_t kImages = 8;
+  for (std::uint32_t index = 0; index < kImages; ++index) {
+    const VkImage image = CreateEtc2Image(*emulation, device, 4, 1);
+    const auto block = GreyBlock(static_cast<std::uint8_t>(index * 7));
+    std::memcpy(g_source.data() + index * block.size(), block.data(),
+                block.size());
+    VkBufferImageCopy region{};
+    region.bufferOffset = index * block.size();
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {4, 4, 1};
+    emulation->CmdCopyBufferToImage(device, command_buffer, source, image,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                    &region);
+  }
+  emulation->PrepareSubmit(&command_buffer, 1);
+  emulation->ReleaseCommandBuffer(command_buffer);
+
+  std::size_t dumped = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    dumped += entry.path().extension() == ".png";
+  }
+  EXPECT_EQ(dumped, kImages);
+  std::filesystem::remove_all(dir);
 }
 
 // The memory upscaling costs reaches the session log: a 32 px texture at
