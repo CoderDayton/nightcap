@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <thread>
 #include <unordered_map>
@@ -409,6 +410,9 @@ struct ImageRecord {
   // Compressed blocks of each full-mip upload to a scaled or decoded image,
   // by mip. Copies into a BC image are transcoded from them.
   std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> blocks;
+  // The last queued batch that reads or writes `blocks`, so a copy waits
+  // only for the batches it depends on.
+  std::uint64_t ticket = 0;
 };
 
 // The application's levels of an image, planned unscaled and recorded
@@ -1863,8 +1867,10 @@ struct VulkanEtc2Emulation::State {
     return replacement;
   }
 
+  // `picked` is level 0's override when DecodeAndEmit chose it already.
   void EmitUpload(const PendingUpload& upload, const std::uint8_t* compressed,
-                  const std::uint8_t* decoded) {
+                  const std::uint8_t* decoded,
+                  const std::shared_ptr<const RgbaImage>* picked = nullptr) {
     if (upload.keep_only) {
       StoreScaledUpload(upload, compressed);
       return;
@@ -1874,7 +1880,7 @@ struct VulkanEtc2Emulation::State {
       return;
     }
     const std::shared_ptr<const RgbaImage> replacement =
-        FindOverride(upload, compressed, decoded);
+        picked != nullptr ? *picked : FindOverride(upload, compressed, decoded);
     if (replacement != nullptr) {
       ResampleRgba(*replacement, upload.target_width, upload.target_height,
                    upload.target);
@@ -2022,6 +2028,8 @@ struct VulkanEtc2Emulation::State {
     const PendingUpload* upload = nullptr;
     const std::uint8_t* compressed = nullptr;
     const std::uint8_t* decoded = nullptr;
+    bool picked = false;
+    std::shared_ptr<const RgbaImage> replacement;
   };
 
   struct EmitQueue {
@@ -2036,7 +2044,8 @@ struct VulkanEtc2Emulation::State {
           return;
         }
         const EmitJob& job = jobs[index];
-        state->EmitUpload(*job.upload, job.compressed, job.decoded);
+        state->EmitUpload(*job.upload, job.compressed, job.decoded,
+                          job.picked ? &job.replacement : nullptr);
       }
     }
   };
@@ -2049,23 +2058,12 @@ struct VulkanEtc2Emulation::State {
     if (jobs.empty()) {
       return;
     }
+    // DecodeAndEmit keeps uploads that share kept blocks in separate
+    // batches, so a batch needs no order of its own.
     std::vector<EmitJob> level_zero;
     std::vector<EmitJob> rest;
-    // A widened upload reads the kept blocks that other uploads of its mip
-    // write, so a batch with such a pair runs in recorded order.
-    std::map<std::pair<VkImage, std::uint32_t>, std::pair<unsigned, bool>>
-        mips;
-    bool ordered = false;
     for (const EmitJob& job : jobs) {
       (job.upload->mip_level == 0 ? level_zero : rest).push_back(job);
-      auto& [uploads, widened] =
-          mips[{job.upload->image, job.upload->mip_level}];
-      ++uploads;
-      widened = widened || job.upload->widened;
-      ordered = ordered || (widened && uploads > 1);
-    }
-    if (ordered) {
-      worker_count = 1;
     }
     EmitPass(std::move(level_zero), worker_count);
     EmitPass(std::move(rest), worker_count);
@@ -3063,14 +3061,17 @@ struct VulkanEtc2Emulation::State {
     std::vector<EmitJob> emit_jobs;
     emit_jobs.reserve(uploads.size());
     for (const PendingUpload& upload : uploads) {
-      emit_jobs.push_back({&upload, source_base + compressed_offset,
-                           decoded_base + decoded_offset});
+      EmitJob job;
+      job.upload = &upload;
+      job.compressed = source_base + compressed_offset;
+      job.decoded = decoded_base + decoded_offset;
+      emit_jobs.push_back(std::move(job));
       compressed_offset += upload.compressed;
       decoded_offset += upload.decoded;
     }
-    // A run of uploads between two block copies emits across the workers; a
-    // block copy waits for the uploads recorded before it and runs before
-    // the ones after, since each may read kept blocks another writes.
+    // Uploads emit across the workers in runs. A run never holds two writers
+    // of one mip's kept blocks, or a writer and a reader, and a copy that
+    // touches a mip the run writes waits for it.
     const auto by_order = [](const auto& a, const auto& b) {
       return a.order < b.order;
     };
@@ -3078,6 +3079,19 @@ struct VulkanEtc2Emulation::State {
                      [&](const EmitJob& a, const EmitJob& b) {
                        return by_order(*a.upload, *b.upload);
                      });
+    // Level 0 picks the override its image's other mips are resampled from,
+    // so every level 0 of the submit picks first, as when one batch emitted
+    // them all ahead of the rest; runs could otherwise reorder them.
+    if (overrides.enabled()) {
+      for (EmitJob& job : emit_jobs) {
+        const PendingUpload& upload = *job.upload;
+        if (upload.mip_level == 0 && !upload.keep_only &&
+            upload.scale_row_blocks == 0) {
+          job.replacement = FindOverride(upload, job.compressed, job.decoded);
+          job.picked = true;
+        }
+      }
+    }
     std::vector<const BlockCopy*> copies;
     copies.reserve(block_copies.size());
     for (const BlockCopy& copy : block_copies) {
@@ -3087,22 +3101,54 @@ struct VulkanEtc2Emulation::State {
                      [&](const BlockCopy* a, const BlockCopy* b) {
                        return by_order(*a, *b);
                      });
-    std::size_t next = 0;
+    using MipKey = std::pair<VkImage, std::uint32_t>;
     std::vector<EmitJob> run;
+    std::set<MipKey> run_writes;
+    std::set<MipKey> run_reads;
+    const auto flush = [&]() {
+      EmitBatch(std::move(run), DecodeWorkerCount());
+      run.clear();
+      run_writes.clear();
+      run_reads.clear();
+    };
+    // Every upload but a top level's stores or patches kept blocks; a
+    // widened one also reads them.
+    const auto add = [&](const EmitJob& job) {
+      const PendingUpload& upload = *job.upload;
+      const MipKey key{upload.image, upload.mip_level};
+      const bool writes = !upload.top_level;
+      const bool reads = upload.widened;
+      if ((writes && (run_writes.count(key) != 0 ||
+                      run_reads.count(key) != 0)) ||
+          (reads && run_writes.count(key) != 0)) {
+        flush();
+      }
+      if (writes) {
+        run_writes.insert(key);
+      }
+      if (reads) {
+        run_reads.insert(key);
+      }
+      run.push_back(job);
+    };
+    std::size_t next = 0;
     for (const BlockCopy* copy : copies) {
       while (next < emit_jobs.size() &&
              emit_jobs[next].upload->order < copy->order) {
-        run.push_back(emit_jobs[next++]);
+        add(emit_jobs[next++]);
       }
-      if (!run.empty()) {
-        EmitBatch(std::move(run), DecodeWorkerCount());
-        run.clear();
+      const MipKey read{copy->image, copy->mip};
+      const MipKey write{copy->keep, copy->keep_mip};
+      if (run_writes.count(read) != 0 || run_writes.count(write) != 0 ||
+          run_reads.count(write) != 0) {
+        flush();
       }
       FillBlockCopy(*copy);
     }
-    run.assign(emit_jobs.begin() + static_cast<std::ptrdiff_t>(next),
-               emit_jobs.end());
-    EmitBatch(std::move(run), DecodeWorkerCount());
+    while (next < emit_jobs.size()) {
+      add(emit_jobs[next++]);
+    }
+    flush();
   }
 
   // Writes `region` (copy.wide x copy.high blocks, or null when unknown) into
@@ -3240,6 +3286,37 @@ struct VulkanEtc2Emulation::State {
   std::uint64_t IssuedTicket() {
     std::lock_guard<std::mutex> lock(queue_mutex);
     return issued_ticket;
+  }
+
+  std::uint64_t CompletedTicket() {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    return completed_ticket;
+  }
+
+  // The last queued batch that touches an image `copies` read or write.
+  std::uint64_t TicketTouching(const std::vector<BlockCopy>& copies) {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::uint64_t ticket = 0;
+    for (const BlockCopy& copy : copies) {
+      for (const VkImage image : {copy.image, copy.keep}) {
+        const auto found = images.find(image);
+        if (found != images.end()) {
+          ticket = std::max(ticket, found->second.ticket);
+        }
+      }
+    }
+    return ticket;
+  }
+
+  // Called with `mutex` held, after `ticket` is queued.
+  void RememberTickets(const std::vector<VkImage>& touched,
+                       std::uint64_t ticket) {
+    for (const VkImage image : touched) {
+      const auto found = images.find(image);
+      if (found != images.end()) {
+        found->second.ticket = ticket;
+      }
+    }
   }
 
   // Blocks until every batch up to `ticket` has been decoded and emitted.
@@ -3725,6 +3802,18 @@ void VulkanEtc2Emulation::DestroyImage(VkDevice device, VkImage image,
     return;
   }
   if (dev->emulated) {
+    // A batch the GPU does not wait for may still keep this image's blocks;
+    // it finishes first, so it never writes into a new image that reuses the
+    // handle, and that image does not inherit its ticket.
+    std::uint64_t ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      const auto it = state_->images.find(image);
+      if (it != state_->images.end()) {
+        ticket = it->second.ticket;
+      }
+    }
+    state_->WaitForTicket(ticket);
     EmulatedTextureBytes totals;
     std::uint64_t now = 0;
     bool changed = false;
@@ -5300,7 +5389,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   }
   if (work.empty()) {
     if (!block_copies.empty()) {
-      state_->WaitForTicket(state_->IssuedTicket());
+      state_->WaitForTicket(state_->TicketTouching(block_copies));
       state_->FillBlockCopies(block_copies);
     }
     return result;
@@ -5319,6 +5408,28 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   const bool async = allow_async && single_device && batch_dev != nullptr &&
                      batch_dev->timeline != VK_NULL_HANDLE &&
                      batch_dev->signal_semaphore != nullptr;
+  // Copies that touch no mip this batch keeps blocks of run now, as they do
+  // in a submit without uploads, so kept blocks alone never hold the GPU.
+  if (async && !block_copies.empty() &&
+      std::all_of(work.begin(), work.end(),
+                  [](const Work& item) { return item.upload.keep_only; })) {
+    std::set<std::pair<VkImage, std::uint32_t>> kept;
+    for (const Work& item : work) {
+      kept.emplace(item.upload.image, item.upload.mip_level);
+    }
+    const bool apart = std::none_of(
+        block_copies.begin(), block_copies.end(), [&](const BlockCopy& copy) {
+          return kept.count({copy.image, copy.mip}) != 0 ||
+                 kept.count({copy.keep, copy.keep_mip}) != 0;
+        });
+    // A copy that depends on a batch still running leaves the GPU to wait
+    // instead of blocking this thread.
+    if (apart && state_->TicketTouching(block_copies) <=
+                     state_->CompletedTicket()) {
+      state_->FillBlockCopies(block_copies);
+      block_copies.clear();
+    }
+  }
   // Kept blocks feed only later copies, which run after them in ticket
   // order, so a batch that only keeps blocks writes nothing the GPU reads.
   // Its bytes are gathered now, so the GPU need not wait for it.
@@ -5326,6 +5437,21 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       !block_copies.empty() ||
       std::any_of(work.begin(), work.end(),
                   [](const Work& item) { return !item.upload.keep_only; });
+  // Uploads of one image's mips arrive together, so neighbours repeat.
+  std::vector<VkImage> touched;
+  const auto touch = [&touched](VkImage image) {
+    if (image != VK_NULL_HANDLE &&
+        (touched.empty() || touched.back() != image)) {
+      touched.push_back(image);
+    }
+  };
+  for (const Work& item : work) {
+    touch(item.upload.image);
+  }
+  for (const BlockCopy& copy : block_copies) {
+    touch(copy.image);
+    touch(copy.keep);
+  }
 
   TraceScope trace_scope(ActiveProfileTrace(),
                          async ? "etc2 gather" : "etc2 decode", "texture");
@@ -5448,6 +5574,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     ticket = state_->Enqueue(std::move(batch));
+    state_->RememberTickets(touched, ticket);
     if (!gpu_waits) {
       return result;
     }
