@@ -145,11 +145,12 @@ its own size, so it stays as sharp as memory allows:
 
 - Textures of 32px or less, such as crosshairs and cursors, cost a quarter
   of a 64px one or less, and keep 4× until the budget is full. Larger ones
-  take 2× once half of it is used, unless the driver reports more than a
-  fifth of video memory free.
+  take 2× once half of it is used, unless the driver reports twice the
+  share below free.
 - Where the driver reports free video memory (`VK_EXT_memory_budget`, read
   at most every 250 ms), an upscale must also leave a tenth of video memory
-  free, which counts what Roblox and other programs use.
+  free, and at least 96 MiB, which counts what Roblox and other programs
+  use. 96 MiB covers what a loading burst adds between two reads.
 - Destroyed textures give their share back, so later ones get 4× again.
 - The upscale an override file asks for is not limited, but counts toward
   the budget.

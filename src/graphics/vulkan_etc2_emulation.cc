@@ -1390,8 +1390,8 @@ struct VulkanEtc2Emulation::State {
   VkDeviceSize upscale_budget = 0;
   // Live free video memory from VK_EXT_memory_budget, refreshed at most
   // every kVideoFreeRefreshNs. Upscales reserved since then are subtracted,
-  // as the driver has not seen them yet, and a tenth of video memory stays
-  // free for Roblox.
+  // as the driver has not seen them yet, and KeepFree() stays free for
+  // Roblox.
   VulkanEtc2Emulation::MemoryBudgetQuery budget_query;
   VkDevice budget_device = VK_NULL_HANDLE;
   std::uint32_t video_heap = VK_MAX_MEMORY_HEAPS;
@@ -1848,15 +1848,22 @@ struct VulkanEtc2Emulation::State {
     reserved_since_free -= std::min(reserved_since_free, reserved_before);
   }
 
+  // Video memory upscaling leaves free: a tenth, and at least what one
+  // 250 ms refresh of a loading burst can take (about 17 decoded 1024 px
+  // textures with mips in a 2-core reporter's log, ~90 MiB).
+  VkDeviceSize KeepFree() const {
+    return std::max<VkDeviceSize>(video_memory / 10, VkDeviceSize{96} << 20);
+  }
+
   struct UpscaleRung {
     std::uint32_t scale = 1;
     VkDeviceSize cost = 0;
   };
 
   // Reserves the first rung that fits and returns its index, or
-  // rungs.size() when none does. Unless the driver reports a fifth of video
-  // memory free, textures above kSharpestMaxExtent take 4x only in the first
-  // half of the budget, so the cheaper ones keep it longest.
+  // rungs.size() when none does. Unless the driver reports twice KeepFree()
+  // free, textures above kSharpestMaxExtent take 4x only in the first half
+  // of the budget, so the cheaper ones keep it longest.
   std::size_t ReserveUpscale(const std::vector<UpscaleRung>& rungs,
                              bool larger, std::string* log) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -1867,13 +1874,13 @@ struct VulkanEtc2Emulation::State {
         return video_free_known &&
                video_free >= reserved_since_free + rung.cost + keep_free;
       };
-      const bool tight = !free_after(video_memory / 5);
+      const bool tight = !free_after(KeepFree() * 2);
       const VkDeviceSize limit = larger && rung.scale >= 4 && tight
                                      ? upscale_budget / 2
                                      : upscale_budget;
       const bool in_budget =
           upscale_budget == 0 || upscaled_bytes + rung.cost <= limit;
-      const bool in_free = !video_free_known || free_after(video_memory / 10);
+      const bool in_free = !video_free_known || free_after(KeepFree());
       if (in_budget && in_free) {
         upscaled_bytes += rung.cost;
         reserved_since_free += rung.cost;

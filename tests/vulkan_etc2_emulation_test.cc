@@ -1039,14 +1039,14 @@ TEST(VulkanEtc2EmulationTest, LargerSmallTexturesStepDownFirst) {
   EXPECT_EQ(g_created_extent.width, 128u);
 }
 
-// With more than a fifth of video memory free by the driver's count, larger
-// small textures keep 4x past half the budget.
+// With more than twice the kept-free share of video memory free by the
+// driver's count, larger small textures keep 4x past half the budget.
 TEST(VulkanEtc2EmulationTest, LargerSmallTexturesKeep4xWithPlentyFree) {
   const VkDevice device = FakeHandle<VkDevice>(0x1b);
   auto emulation = EmulationWithVideoMemory(device, 8);
   emulation->SetMemoryBudgetQuery(
       device, [](VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
-        budget->heapBudget[1] = VkDeviceSize{8} << 20;
+        budget->heapBudget[1] = VkDeviceSize{1} << 30;
         budget->heapUsage[1] = 0;
         return true;
       });
@@ -1054,6 +1054,26 @@ TEST(VulkanEtc2EmulationTest, LargerSmallTexturesKeep4xWithPlentyFree) {
   EXPECT_EQ(g_created_extent.width, 256u);
   CreateEtc2Image(*emulation, device, 64, 1);
   EXPECT_EQ(g_created_extent.width, 256u);
+}
+
+// On a small card a tenth of video memory is less than one loading burst of
+// Roblox's own textures, so at least 96 MiB stays free: on a 512 MiB card
+// with 96 MiB plus 100 KiB free, one 32 px texture fits at 4x (84 KiB) and
+// the next fits at neither 4x nor 2x.
+TEST(VulkanEtc2EmulationTest, KeepsAFixedFloorFreeOnASmallCard) {
+  const VkDevice device = FakeHandle<VkDevice>(0x1c);
+  auto emulation = EmulationWithVideoMemory(device, 512);
+  emulation->SetMemoryBudgetQuery(
+      device, [](VkPhysicalDeviceMemoryBudgetPropertiesEXT* budget) {
+        budget->heapBudget[1] = VkDeviceSize{512} << 20;
+        budget->heapUsage[1] =
+            budget->heapBudget[1] - (VkDeviceSize{96} << 20) - 100 * 1024;
+        return true;
+      });
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 128u);
+  CreateEtc2Image(*emulation, device, 32, 1);
+  EXPECT_EQ(g_created_extent.width, 32u);
 }
 
 // The driver's free video memory gates upscaling too, keeping a tenth of
