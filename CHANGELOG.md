@@ -138,7 +138,9 @@ Release notes on GitHub are taken from the matching section here.
   textures load it switches new ones to a fast encoder at 40% less GPU cost once encoding would take
   more than a tenth of the GPU's time, so slower cards stutter less with Compress textures on. Every
   texture stays compressed, so video memory no longer climbs during long sessions. The log shows the
-  measured speed and how many used the fast encoder. Upscaling adds sharper levels above a texture's
+  measured speed and how many used the fast encoder. The Smooth Texture Loading setting
+  (`graphics.smooth_texture_loading`) turns this off, so every texture gets the full encoder right away;
+  try it if textures turn black on a low-memory GPU. Upscaling adds sharper levels above a texture's
   own and leaves Roblox's smaller levels as they are, so streamed textures keep their detail at a distance.
 
 ## [0.4.0] - 2026-10-18

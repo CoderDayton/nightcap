@@ -393,6 +393,8 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   config.vsync_mode_ = environment.GetOr("MOCKTAIL_VSYNC", "auto");
   config.texture_compression_ =
       environment.GetOr("MOCKTAIL_ETC2_BC_TRANSCODE", "1") != "0";
+  config.smooth_texture_loading_ =
+      environment.GetOr("MOCKTAIL_ETC2_ENCODE_BUDGET", "1") != "0";
   config.asset_overlay_ =
       environment.GetOr("MOCKTAIL_ASSET_OVERLAY", "1") != "0";
   config.texture_overrides_ =

@@ -174,6 +174,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.frame_rate_limit",
       "graphics.vsync",
       "graphics.texture_compression",
+      "graphics.smooth_texture_loading",
       "assets.overlay",
       "assets.texture_overrides",
       // Retired: still accepted so old configs load, and ignored.
@@ -410,7 +411,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
   }
   for (const auto& [key, variable] :
-       {std::pair{"assets.overlay", "MOCKTAIL_ASSET_OVERLAY"},
+       {std::pair{"graphics.smooth_texture_loading",
+                  "MOCKTAIL_ETC2_ENCODE_BUDGET"},
+        std::pair{"assets.overlay", "MOCKTAIL_ASSET_OVERLAY"},
         std::pair{"assets.texture_overrides", "MOCKTAIL_TEXTURE_OVERRIDES"}}) {
     if (const auto setting = value(key); setting.has_value()) {
       bool parsed = false;
@@ -1091,6 +1094,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue("MOCKTAIL_ETC2_BC_TRANSCODE",
                           config.texture_compression() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_ETC2_ENCODE_BUDGET",
+                          config.smooth_texture_loading() ? "1" : "0",
+                          error) &&
       SetEnvironmentValue("MOCKTAIL_ASSET_OVERLAY",
                           config.asset_overlay() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_TEXTURE_OVERRIDES",

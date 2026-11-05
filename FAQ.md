@@ -104,6 +104,13 @@ a VPN or another network and launch Nightcap once to download Roblox. After
 that, Nightcap starts without it and keeps your installed Roblox until the next
 update.
 
+## Some textures are black
+
+Open Settings (`mocktail --settings`), turn off **Smooth Texture Loading**
+under Graphics, and restart Nightcap. New textures may stutter briefly while
+they load. If textures are still black, turn off **Compress Textures** too;
+that uses more video memory.
+
 ## Can I run multiple Roblox instances?
 
 No. Nightcap won't add multi-instance launching. It would mean working around

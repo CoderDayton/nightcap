@@ -5687,6 +5687,8 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
                    "are not budgeted\n",
                    error.c_str());
     }
+  } else if (dev->bc_textures && !state_->encode_budget) {
+    std::fprintf(stderr, "  [vulkan] BC encode budget off\n");
   }
   dev->gpu = std::move(decoder);
   return true;

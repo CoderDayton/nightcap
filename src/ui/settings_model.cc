@@ -530,6 +530,16 @@ const std::vector<SettingsPage>& SettingsPages() {
                   "You gain:\n"
                   "• May fix broken or black textures\n\n"
                   "Requires a restart to take effect."),
+                {"graphics.smooth_texture_loading",
+                 "Smooth Texture Loading",
+                 "If textures turn black on a low-memory GPU, turn this off. "
+                 "Uses a faster encoder while many textures load, to avoid "
+                 "stutter. Only applies with Compress Textures on. "
+                 "Requires a restart.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
             }},
            {"Display",
             {

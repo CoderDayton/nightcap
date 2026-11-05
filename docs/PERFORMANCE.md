@@ -186,8 +186,10 @@ mode and fewer modes tried. That cuts the GPU cost by about 40% and loses
 under 1 dB on random blocks. It is not a hard cap: a burst of new textures
 still encodes in the frames that load them, only cheaper. Those textures
 keep the fast encode for their life. The budget goes into debt for the fast
-cost, at most four bursts deep, so it refills within 0.64 s of a burst. `MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off and skips the
-startup measurement.
+cost, at most four bursts deep, so it refills within 0.64 s of a burst.
+`MOCKTAIL_ETC2_ENCODE_BUDGET=0`, or `graphics.smooth_texture_loading: false`
+(Smooth Texture Loading in Settings), turns the budget off and skips the
+startup measurement; the log then says `[vulkan] BC encode budget off`.
 
 The session log shows the measured speed once:
 

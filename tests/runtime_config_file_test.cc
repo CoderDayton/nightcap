@@ -1394,6 +1394,46 @@ TEST(RuntimeConfigFileTest, ExportsTextureCompressionPolicy) {
   unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
 }
 
+TEST(RuntimeConfigFileTest, LoadsAndExportsSmoothTextureLoading) {
+  unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET");
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
+      << error;
+  ASSERT_NE(getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), "1");
+
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  smooth_texture_loading: false
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.smooth_texture_loading());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), "0");
+  unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET");
+}
+
+TEST(RuntimeConfigFileTest, RejectsNonBooleanSmoothTextureLoading) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  smooth_texture_loading: maybe
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("graphics.smooth_texture_loading"),
+            std::string::npos);
+}
+
 // The setting is retired: an old config still loads, and the upscale stays
 // at the engine's default.
 TEST(RuntimeConfigFileTest, IgnoresTheRetiredSmallTextureUpscale) {
