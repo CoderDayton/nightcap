@@ -5,6 +5,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- A sky picked in Settings now shows in every game, not only where a game has no sky of its own. It also
+  replaces the start screen's sky. Skies picked before this update need picking again.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added
