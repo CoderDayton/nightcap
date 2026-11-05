@@ -1127,6 +1127,7 @@ add_executable(bionic_host_libc_runtime_test
 )
 target_link_libraries(bionic_host_libc_runtime_test PRIVATE
   Mocktail::Compat
+  Mocktail::BionicStdio
   libc_shim
   GTest::gtest_main
   Threads::Threads

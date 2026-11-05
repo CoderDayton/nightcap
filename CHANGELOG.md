@@ -5,6 +5,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Settings with decimals, such as camera sensitivity, no longer lose their decimals after a restart on
+  systems that write numbers with a comma (0.2 became 0.001, 2.3 became 2).
+
 ## [0.5.0] - 2026-11-05
 
 ### Added
