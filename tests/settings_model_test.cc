@@ -160,6 +160,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
            "graphics.vsync", "graphics.texture_compression",
+           "graphics.smooth_texture_loading",
            "assets.overlay", "assets.texture_overrides",
            "performance.multithreaded_rendering",
            "performance.physics_worker_mode", "performance.memory_limit_mb",

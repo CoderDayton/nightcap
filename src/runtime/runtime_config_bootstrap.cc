@@ -77,6 +77,10 @@ graphics:
   # Boolean (default: true): keep ETC2/EAC textures compressed as BC7/BC4/BC5
   # on the GPU to use less video memory. Set false if textures look wrong.
   # texture_compression: true
+  # Boolean (default: true): use a faster texture encoder while many textures
+  # load, to avoid stutter. Only applies with texture_compression on. Set false
+  # if textures turn black on a low-memory GPU.
+  # smooth_texture_loading: true
 
 assets:
   # Boolean (default: true): use asset_overlay's cursors, fonts and sky.
