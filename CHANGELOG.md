@@ -9,6 +9,8 @@ Release notes on GitHub are taken from the matching section here.
 
 - Runs Roblox 2.746.1266, and new installs start on it. Before, the updater rejected it and stayed on
   2.742.1059. The audio output-device menu also works on it.
+- Drops the profiles for Roblox 2.736.1408 and older on x86_64. Roblox no longer lets those versions join
+  games. arm64 keeps 2.736.1408 for now.
 
 ## [0.5.0] - 2026-11-05
 

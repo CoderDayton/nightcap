@@ -1047,9 +1047,11 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
           }
           // Built-in profiles supersede stale probation receipts and never
-          // use external overrides.
-          use_external_profile = mocktail::compat::FindHostAbiProfile(
-                                     active_build_id.build_id) == nullptr;
+          // use external overrides. A retired build gets neither.
+          use_external_profile =
+              mocktail::compat::FindHostAbiProfile(active_build_id.build_id) ==
+                  nullptr &&
+              !mocktail::compat::IsRetiredRobloxBuild(active_build_id.build_id);
         }
         if (use_external_profile) {
           if (setenv("MOCKTAIL_COMPATIBILITY_MANIFEST",

@@ -1879,9 +1879,8 @@ std::optional<std::vector<Instruction>> JniSingletonPublication(
         store.operands[0].size != 8 ||
         !IsRegisterOperand(store.operands[1], "rax") || object.size() != 1 ||
         slot.size() != 1 || stored.size() != 1 || object[0] != stored[0] ||
-        object[0] == slot[0] ||
-        (object[0] > slot[0] ? object[0] - slot[0] : slot[0] - object[0]) >
-            0x100) {
+        // Known layouts: object 8 bytes after the slot, or 0x38 before (2.746).
+        (object[0] != slot[0] + 8 && object[0] + 0x38 != slot[0])) {
       continue;
     }
     return std::vector<Instruction>(std::next(decoded->begin(), frame),
@@ -2063,18 +2062,17 @@ std::optional<LeadingConstructors> MatchLeadingConstructors(
 }
 
 // Direct call targets of the function at `entry`, up to its first return. A
-// constructor that is one jump to its body is scanned from the body. Code
-// that does not decode yields no targets.
-std::vector<std::uint64_t> DirectCallsBeforeReturn(
+// constructor that is one jump to its body is scanned from the body.
+std::optional<std::vector<std::uint64_t>> DirectCallsBeforeReturn(
     const ElfImage& image, const Disassembler& disassembler,
-    std::uint64_t entry) {
+    std::uint64_t entry, std::string* error) {
   constexpr std::size_t kMaximumInstructions = 64;
   std::vector<std::uint64_t> targets;
   std::uint64_t address = entry;
   for (std::size_t count = 0; count < kMaximumInstructions; ++count) {
     std::string ignored;
-    const auto decoded = disassembler.Decode(image, address, 1, 16, &ignored);
-    if (!decoded.has_value()) return {};
+    const auto decoded = disassembler.Decode(image, address, 1, 16, error);
+    if (!decoded.has_value()) return std::nullopt;
     const Instruction& instruction = decoded->front();
     if (instruction.returns) break;
     if (count == 0) {
@@ -2118,14 +2116,35 @@ std::optional<SignatureMatch> FindLeadingConstructorCallee(
     const Disassembler& disassembler, const SignatureSpec& spec,
     const std::vector<std::uint64_t>& reference_init,
     const LeadingConstructors& leading, std::string* error) {
+  // A constructor that does not decode may be the caller, so its error
+  // explains a miss better than "not called".
+  std::string scan_error;
   for (std::size_t offset = 0; offset < kLeadingConstructorCount; ++offset) {
-    const auto reference_calls = DirectCallsBeforeReturn(
-        reference, disassembler, reference_init[leading.reference_index[offset]]);
+    const std::size_t index = leading.reference_index[offset];
+    std::string reference_error;
+    const auto reference_scan = DirectCallsBeforeReturn(
+        reference, disassembler, reference_init[index], &reference_error);
+    if (!reference_scan.has_value()) {
+      if (scan_error.empty()) {
+        scan_error = "reference constructor " + std::to_string(index) +
+                     " does not decode: " + reference_error;
+      }
+      continue;
+    }
+    const auto& reference_calls = *reference_scan;
     const auto called = std::find(reference_calls.begin(),
                                   reference_calls.end(), spec.reference_rva);
     if (called == reference_calls.end()) continue;
-    const auto candidate_calls = DirectCallsBeforeReturn(
-        candidate, disassembler, leading.candidate_entry[offset]);
+    std::string candidate_error;
+    const auto candidate_scan = DirectCallsBeforeReturn(
+        candidate, disassembler, leading.candidate_entry[offset],
+        &candidate_error);
+    if (!candidate_scan.has_value()) {
+      *error = "signature " + spec.name + " caller does not decode in the " +
+               "candidate: " + candidate_error;
+      return std::nullopt;
+    }
+    const auto& candidate_calls = *candidate_scan;
     if (candidate_calls.size() != reference_calls.size()) {
       *error = "signature " + spec.name +
                " caller made a different number of calls";
@@ -2161,6 +2180,7 @@ std::optional<SignatureMatch> FindLeadingConstructorCallee(
     return SignatureMatch{rva, *reference_code, *candidate_code};
   }
   *error = "signature " + spec.name + " is not called by a leading constructor";
+  if (!scan_error.empty()) *error += " (" + scan_error + ")";
   return std::nullopt;
 }
 
@@ -2514,17 +2534,14 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
       return FindSignatureMatch(reference, candidate, disassembler, spec,
                                 error);
     }();
-    // Only a wrapper with no match falls back; an ambiguous one still fails.
+    // Only a wrapper with no candidate match falls back. Ambiguous matches
+    // and reference-side failures still fail.
     if (!match.has_value() &&
-        (spec.name == "small-allocate" || spec.name == "free")) {
-      std::string count_error;
-      if (!FindSignatureMatches(reference, candidate, disassembler, spec, true,
-                                &count_error)
-               .has_value()) {
-        error->clear();
-        called_by_leading.push_back(spec);
-        continue;
-      }
+        (spec.name == "small-allocate" || spec.name == "free") &&
+        *error == "signature " + spec.name + " matched 0 candidate locations") {
+      error->clear();
+      called_by_leading.push_back(spec);
+      continue;
     }
     if (!match.has_value()) return std::nullopt;
     matches.emplace(spec.name, std::move(*match));

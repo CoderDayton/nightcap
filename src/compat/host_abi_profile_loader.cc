@@ -1257,6 +1257,10 @@ ExternalHostAbiProfileResult LoadExternalHostAbiProfile(
   profile->payload_sha256 = payload_digest;
   profile->profile_sha256 = profile_sha256;
 
+  if (IsRetiredRobloxBuild(profile->build_id)) {
+    return Failure("Roblox no longer lets Build ID " + profile->build_id +
+                   " join games; update Roblox");
+  }
   if (FindHostAbiProfile(profile->build_id) != nullptr) {
     const OwnedHostAbiProfile* loaded = FindLoadedProfile(profile->build_id);
     if (loaded == nullptr) {
@@ -1329,6 +1333,16 @@ ExternalHostAbiProfileResult InitializeHostAbiProfileFromEnvironment(
 
 void SetHostAbiProfileHashingFaultForTesting(bool enabled) noexcept {
   g_hashing_fault_for_testing.store(enabled, std::memory_order_release);
+}
+
+void ResetLoadedExternalHostAbiProfilesForTesting() noexcept {
+  // Unregistered profiles stay allocated so pointers a test kept stay valid.
+  static std::vector<std::unique_ptr<OwnedHostAbiProfile>> unregistered;
+  std::lock_guard<std::mutex> lock(g_external_profiles_mutex);
+  for (auto& profile : g_external_profiles) {
+    unregistered.push_back(std::move(profile));
+  }
+  g_external_profiles.clear();
 }
 
 }  // namespace mocktail::compat
