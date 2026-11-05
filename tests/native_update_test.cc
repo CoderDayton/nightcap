@@ -1153,9 +1153,6 @@ TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) 
   ASSERT_TRUE(catalog) << catalog.error;
   const auto preferred = PreferredSupportedProfile(catalog.profiles);
   ASSERT_TRUE(preferred.has_value());
-  EXPECT_EQ(preferred->version_name, "2.736.1408");
-  EXPECT_EQ(preferred->version_code, 2998U);
-
   const auto payload = nlohmann::json::parse(
       ReadFile(root / "config/roblox_payload.json"));
   if (payload.at("abi").get_ref<const std::string&>() != compat::kGuestAbi) {
@@ -1200,6 +1197,8 @@ TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) 
             builtin->init_array_count);
   EXPECT_EQ(builtin->default_allocator_strategy,
             compat::HostAllocatorStrategy::kNativeMimalloc);
+  EXPECT_EQ(builtin->native_mimalloc_thread_initializer_after_constructor,
+            profile.at("native_mimalloc_thread_initializer_after_constructor"));
 }
 
 std::string ActivationManifestFixture(const std::string& payload_id) {

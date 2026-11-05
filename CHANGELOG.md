@@ -114,6 +114,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Changed
 
+- From upstream: Roblox 2.742.1059 runs with a profile tested for that exact build instead of as an
+  experimental build, and new installs start on it.
 - In Settings > Input, System cursor theme is now called System cursor, and Hardware cursor is now
   Desktop-drawn game cursor, under More, with a description of what it is for.
 - Roblox updates now download in the background while Nightcap runs and install on the next launch.
