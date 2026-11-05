@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -168,6 +169,39 @@ void LogOverlayServed(const char* filename, const std::string& path) {
   }
   std::fprintf(stderr, "  [asset] overlay served %s from %s\n", filename,
                path.c_str());
+}
+
+const char* SkyFormat(const std::vector<unsigned char>& data) {
+  const auto starts = [&data](std::string_view magic, std::size_t at = 0) {
+    return data.size() >= at + magic.size() &&
+           std::memcmp(data.data() + at, magic.data(), magic.size()) == 0;
+  };
+  if (starts("\x89PNG")) return "PNG";
+  if (starts("\xff\xd8\xff")) return "JPEG";
+  if (starts("DDS ")) return "DDS";
+  if (starts("\xabKTX 11")) return "KTX";
+  if (starts("RIFF") && starts("WEBP", 8)) return "WebP";
+  return "unknown format";
+}
+
+// Every open, unlike other overlay files, so a log shows whether a game
+// reloads the sky. Capped in case a game reopens it every frame.
+void LogSkyOpen(const char* filename, bool is_overlay,
+                const std::vector<unsigned char>& data) {
+  if (std::strstr(filename, "textures/sky/") == nullptr) return;
+  static std::atomic<int> logged{0};
+  if (logged.fetch_add(1) >= 240) return;
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+  const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now.time_since_epoch()).count() % 1000;
+  std::tm utc{};
+  gmtime_r(&seconds, &utc);
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &utc);
+  std::fprintf(stderr, "  [asset] sky open %s: %s %s %zu bytes at %s.%03lldZ\n",
+               filename, is_overlay ? "overlay" : "stock", SkyFormat(data),
+               data.size(), stamp, static_cast<long long>(millis));
 }
 
 ResolvedAsset ResolveAssetPath(const char* filename) {
@@ -423,6 +457,7 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   if (resolved.is_overlay) {
     LogOverlayServed(filename, resolved.path);
   }
+  LogSkyOpen(filename, resolved.is_overlay, asset->data);
   if (MocktailUsesDirectVulkan()) {
     asset->transcoded =
         libc_shim::TranscodeEtc1SkyTextureForVulkan(resolved.path.c_str(),

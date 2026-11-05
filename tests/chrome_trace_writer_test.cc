@@ -316,10 +316,13 @@ TEST(ChromeTraceWriterTest, CpuClocksAdvanceWithWork) {
   // The process window encloses the thread window.
   const std::uint64_t process_before = TraceProcessCpuNanos();
   const std::uint64_t thread_before = TraceThreadCpuNanos();
+  // Spin on CPU time, not wall time: a busy CI runner can deschedule the
+  // thread for most of a fixed wall window.
   volatile std::uint64_t sink = 0;
-  const auto until =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
-  while (std::chrono::steady_clock::now() < until) {
+  const auto give_up =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (TraceThreadCpuNanos() - thread_before < 10'000'000U &&
+         std::chrono::steady_clock::now() < give_up) {
     sink = sink + 1;
   }
   const std::uint64_t thread_used = TraceThreadCpuNanos() - thread_before;

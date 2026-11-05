@@ -355,6 +355,32 @@ TEST_F(AssetManagerTest, LogsAnOverlayFileOnceWhenServed) {
   EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
 }
 
+// Every sky open is logged, so a log shows whether a game reloads the sky.
+TEST_F(AssetManagerTest, LogsEverySkyOpenWithItsSourceAndFormat) {
+  WriteAsset("content/android/textures/sky/sky512_bk.tex", "stock-sky");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/android/textures/sky/sky512_bk.tex",
+               "\x89PNG\r\n\x1a\npixels");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  ::testing::internal::CaptureStderr();
+  for (int open = 0; open < 2; ++open) {
+    AAsset* asset =
+        AAssetManager_open(manager, "android/textures/sky/sky512_bk.tex", 0);
+    ASSERT_NE(asset, nullptr);
+    AAsset_close(asset);
+  }
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  const std::string line =
+      "  [asset] sky open android/textures/sky/sky512_bk.tex: overlay PNG "
+      "14 bytes at ";
+  const std::size_t first = log.find(line);
+  ASSERT_NE(first, std::string::npos) << log;
+  EXPECT_NE(log.find(line, first + 1), std::string::npos) << log;
+}
+
 TEST_F(AssetManagerTest, CustomAssetsOffServesTheStockFile) {
   WriteAsset("content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
              "stock-arrow");
