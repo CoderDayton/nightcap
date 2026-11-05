@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "runtime/environment.h"
@@ -26,6 +27,10 @@ struct PayloadUpdatePreflightResult {
 PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     const Environment& environment, const RuntimePaths& paths,
     bool force_run_latest = false);
+
+// Turns the updater's failure into dialog text: its FAQ hint as a sentence
+// first, then the underlying error without the updater's internal prefixes.
+std::string DescribeUpdateFailure(std::string_view details);
 
 class BackgroundPayloadUpdate final {
  public:

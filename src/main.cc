@@ -575,16 +575,16 @@ int main(int argc, char* argv[]) {
                   << forward_status.message() << '\n';
         (void)mocktail::runtime::ShowFailureDialog(
             environment,
-            "Mocktail is already running, but the requested experience "
+            "Nightcap is already running, but the requested experience "
             "could not be sent to it.");
       } else if (instance_lock->already_running()) {
         std::cerr << "[FATAL] Mocktail is already running for this user\n";
         (void)mocktail::runtime::ShowFailureDialog(
-            environment, "An instance of Mocktail is already running.");
+            environment, "An instance of Nightcap is already running.");
       } else {
         std::cerr << "[FATAL] " << instance_lock->error() << '\n';
         (void)mocktail::runtime::ShowFailureDialog(
-            environment, "Mocktail could not acquire its launch lock.");
+            environment, "Nightcap could not acquire its launch lock.");
       }
       return EXIT_FAILURE;
     }
@@ -638,7 +638,7 @@ int main(int argc, char* argv[]) {
               << config_bootstrap.error << '\n';
     if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
       (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not prepare its configuration.");
+          environment, "Nightcap could not prepare its configuration.");
     }
     return EXIT_FAILURE;
   }
@@ -649,7 +649,7 @@ int main(int argc, char* argv[]) {
               << runtime_config.error << '\n';
     if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
       (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not load its configuration.");
+          environment, "Nightcap could not load its configuration.");
     }
     return EXIT_FAILURE;
   }
@@ -698,7 +698,7 @@ int main(int argc, char* argv[]) {
                  "execution.\n";
     (void)mocktail::runtime::ShowFailureDialog(
         environment,
-        "Mocktail cannot start with unsupported legacy thread "
+        "Nightcap cannot start with unsupported legacy thread "
         "overrides enabled.");
     return EXIT_FAILURE;
   }
@@ -907,12 +907,13 @@ int main(int argc, char* argv[]) {
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog = mocktail::runtime::FailureDialogMonitor::Start(
         environment,
-        "Mocktail could not start Roblox because of an internal error.");
+        "Nightcap could not start Roblox because of an internal error.");
+    failure_dialog.SetLogFolder(paths.logs_root() / "sessions");
   }
   if (use_memory_limit) {
     if (!memory_limit_watchdog.Start(memory_limit_bytes, &command_line_error)) {
       failure_dialog.SetMessage(
-          "Mocktail could not start its memory safety monitor.");
+          "Nightcap could not start its memory safety monitor.");
       std::cerr << "[FATAL] " << command_line_error << '\n';
       return EXIT_FAILURE;
     }
@@ -943,7 +944,7 @@ int main(int argc, char* argv[]) {
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
     failure_dialog.SetMessage(
-        "Mocktail could not update or verify the Roblox installation.");
+        "Nightcap could not update or verify the Roblox installation.");
     const mocktail::runtime::PayloadUpdatePreflightResult update_preflight =
         mocktail::runtime::RunPayloadUpdatePreflight(environment, paths);
     if (!update_preflight) {
@@ -954,15 +955,15 @@ int main(int argc, char* argv[]) {
         // signature, and a full disk.
         std::cerr << ": " << update_preflight.details;
         failure_dialog.SetMessage(
-            "Mocktail could not update or verify the Roblox installation.\n\n" +
-            update_preflight.details + "\n\nSession log: " +
-            (paths.logs_root() / "sessions").string());
+            "Nightcap could not update or verify the Roblox installation.\n\n" +
+            mocktail::runtime::DescribeUpdateFailure(
+                update_preflight.details));
       }
       std::cerr << '\n';
       return EXIT_FAILURE;
     }
     failure_dialog.SetMessage(
-        "Mocktail could not finish starting Roblox because of an internal "
+        "Nightcap could not finish starting Roblox because of an internal "
         "error.");
     background_update.Start(environment, paths);
   }

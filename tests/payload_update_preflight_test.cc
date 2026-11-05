@@ -1,5 +1,6 @@
 #include "runtime/payload_update_preflight.h"
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
@@ -372,6 +373,62 @@ TEST(PayloadUpdatePreflightTest, ReportsUpdaterFailureDetails) {
   EXPECT_EQ(result.details,
             "latest Roblox failed probation (api.pureapk.com request returned "
             "status 503)");
+}
+
+// With the lowest free descriptor at 8, the relay's write end lands on the
+// progress descriptor (10), as it does in the launcher.
+TEST(PayloadUpdatePreflightTest, ReportsUpdaterFailureDetailsWhileProgressIsShown) {
+  TemporaryDirectory temporary;
+  ScopedVariable capture_variable("MOCKTAIL_TEST_PROGRESS_CAPTURE",
+                                  (temporary.root() / "progress").string());
+  ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "1");
+  ScopedVariable stderr_variable(
+      "MOCKTAIL_TEST_UPDATE_STDERR",
+      "[native-updater] Failed to connect to api.pureapk.com");
+  const MapEnvironment environment = NativeEnvironment({
+      {"MOCKTAIL_UPDATE_PROGRESS_HELPER", MOCKTAIL_TEST_PROGRESS_HELPER},
+      {"DISPLAY", ":test"},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+
+  std::vector<int> fillers;
+  int next = -1;
+  while ((next = open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0 && next < 8) {
+    fillers.push_back(next);
+  }
+  if (next >= 0) close(next);
+  const bool laid_out = next == 8 && fcntl(9, F_GETFD) < 0 &&
+                        fcntl(10, F_GETFD) < 0;
+  std::optional<mocktail::runtime::PayloadUpdatePreflightResult> result;
+  if (laid_out) result = RunPayloadUpdatePreflight(environment, paths);
+  for (const int filler : fillers) close(filler);
+  if (!laid_out) GTEST_SKIP() << "descriptors 8 to 10 are not free";
+
+  EXPECT_FALSE(*result);
+  EXPECT_EQ(result->details, "Failed to connect to api.pureapk.com");
+}
+
+TEST(PayloadUpdatePreflightTest, DescribesAFailureWithItsFaqHintFirst) {
+  EXPECT_EQ(
+      DescribeUpdateFailure(
+          "no Roblox payload could be installed; Roblox 2.736.1408 (2998) "
+          "could not be prepared: apk-pure: Failed to connect to "
+          "api.pureapk.com:443 after 5001 ms: Could not connect to server; "
+          "your internet provider or network may be blocking the Roblox APK "
+          "download, see \"The update cannot reach the download server\" in "
+          "the FAQ"),
+      "Your internet provider or network may be blocking the Roblox APK "
+      "download, see \"The update cannot reach the download server\" in the "
+      "FAQ.\n\nDetails: Failed to connect to api.pureapk.com:443 after 5001 "
+      "ms: Could not connect to server");
+}
+
+TEST(PayloadUpdatePreflightTest, DescribesAFailureWithoutAHintAsIs) {
+  EXPECT_EQ(DescribeUpdateFailure("apk-pure: APKPure returned no versions"),
+            "APKPure returned no versions");
+  EXPECT_EQ(DescribeUpdateFailure("latest Roblox failed probation"),
+            "Latest Roblox failed probation");
+  EXPECT_EQ(DescribeUpdateFailure(""), "");
 }
 
 TEST(PayloadUpdatePreflightTest, ReportsSignalWhenUpdaterIsKilled) {
