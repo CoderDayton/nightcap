@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-05
+
 ### Added
 
 - A Customization page in Settings. Sky shows a grid of previews: Roblox's own and every sky in the library
@@ -112,6 +114,11 @@ Release notes on GitHub are taken from the matching section here.
   The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
 - Large `fflags.json` files load, and the settings window opens them. Both used to refuse a file over
   64 KiB.
+- From upstream: a changed `window.width` or `window.height` now applies instead of the size Nightcap
+  remembered from the last session. Thanks to @justacalico.
+- From upstream: typed text with spaces at the end of a wrapped line no longer puts the text cursor in
+  the wrong place, such as in the chat box.
+- From upstream: a crash when Roblox passed an invalid Java string is fixed. Thanks to @justacalico.
 
 ### Changed
 
@@ -483,7 +490,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.4.0
 [0.3.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.4
 [0.3.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.3
