@@ -29,6 +29,11 @@ SessionBuildInformation CurrentSessionBuildInformation();
 // the build could not learn, and marks an uncommitted tree as modified.
 std::string FormatBuildVersion(const SessionBuildInformation& build);
 
+// Reads latest.log, the most recent session, for the Settings "Copy log"
+// button. On failure, *error says why in words for the user.
+bool ReadLatestSessionLog(const std::filesystem::path& logs_root,
+                          std::string* text, std::string* error);
+
 class SessionLog final {
  public:
   SessionLog() = default;

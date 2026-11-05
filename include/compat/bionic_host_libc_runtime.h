@@ -6,7 +6,11 @@
 #include <sys/uio.h>
 #include <sys/utsname.h>
 
+#include <locale.h>
+
+#include <cstdarg>
 #include <cstddef>
+#include <ctime>
 #include <cstdint>
 
 namespace mocktail::compat {
@@ -111,6 +115,32 @@ long long mocktail_bionic_strtoll_l(const char* text, char** end, int base,
 unsigned long long mocktail_bionic_strtoull_l(
     const char* text, char** end, int base,
     mocktail::compat::BionicLocale locale);
+// Bionic reads decimals with a dot whatever the host locale.
+double mocktail_bionic_strtod(const char* text, char** end);
+float mocktail_bionic_strtof(const char* text, char** end);
+double mocktail_bionic_atof(const char* text);
+int mocktail_bionic_sscanf(const char* text, const char* format, ...);
+int mocktail_bionic_vsscanf(const char* text, const char* format,
+                            va_list arguments);
+int mocktail_bionic_snprintf(char* buffer, size_t size, const char* format,
+                             ...);
+int mocktail_bionic_vsnprintf(char* buffer, size_t size, const char* format,
+                              va_list arguments);
+int mocktail_bionic___vsnprintf_chk(char* buffer, size_t size, int flags,
+                                    size_t buffer_size, const char* format,
+                                    va_list arguments);
+int mocktail_bionic___vsprintf_chk(char* buffer, int flags, size_t buffer_size,
+                                   const char* format, va_list arguments);
+int mocktail_bionic_vasprintf(char** result, const char* format,
+                              va_list arguments);
+int mocktail_bionic_printf(const char* format, ...);
+size_t mocktail_bionic_strftime(char* buffer, size_t size, const char* format,
+                                const struct tm* time);
+size_t mocktail_bionic_strftime_l(char* buffer, size_t size, const char* format,
+                                  const struct tm* time, locale_t locale);
+struct lconv* mocktail_bionic_localeconv();
+locale_t mocktail_bionic_newlocale(int category_mask, const char* name,
+                                   locale_t base);
 
 }  // extern "C"
 

@@ -61,13 +61,18 @@ chmod +x Nightcap-x86_64.AppImage
 
 ## Install on Arch Linux from the AUR
 
+[`nightcap-bin`](https://aur.archlinux.org/packages/nightcap-bin) installs the
+prebuilt latest release, with nothing to compile.
 [`nightcap-git`](https://aur.archlinux.org/packages/nightcap-git) builds the
-current `main` branch. It is maintained by
+current `main` branch. Both are maintained by
 [@dim-ghub](https://github.com/dim-ghub):
 
 ```bash
-paru -S nightcap-git    # or: yay -S nightcap-git
+paru -S nightcap-bin    # or: yay -S nightcap-bin
+paru -S nightcap-git    # latest main, built from source
 ```
+
+Install one or the other; they replace each other.
 
 ## Install with Flatpak
 

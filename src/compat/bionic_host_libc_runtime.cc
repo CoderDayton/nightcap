@@ -1,5 +1,7 @@
 #include "compat/bionic_host_libc_runtime.h"
 
+#include "compat/bionic_c_locale.h"
+
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
@@ -13,7 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <limits>
+#include <string_view>
 #include <type_traits>
 
 #if defined(__GLIBC__)
@@ -123,31 +127,10 @@ void FillFromUrandom(unsigned char* output, size_t size) noexcept {
   }
 }
 
-locale_t HostCLocale() noexcept {
-  static locale_t locale = ::newlocale(LC_ALL_MASK, "C", nullptr);
-  return locale;
-}
-
 template <typename Result, typename Parser>
 Result ParseInHostCLocale(Parser parser) noexcept {
-  const int entry_errno = errno;
-  const locale_t c_locale = HostCLocale();
-  if (c_locale == nullptr) {
-    errno = entry_errno;
-    return parser();
-  }
-
-  const locale_t previous = ::uselocale(c_locale);
-  if (previous == static_cast<locale_t>(0)) {
-    errno = entry_errno;
-    return parser();
-  }
-  errno = entry_errno;
-  const Result result = parser();
-  const int parser_errno = errno;
-  static_cast<void>(::uselocale(previous));
-  errno = parser_errno;
-  return result;
+  const mocktail::compat::ScopedBionicCLocale c_locale;
+  return parser();
 }
 
 // Highest errno in Bionic's message table (EHWPOISON). Numbers 41 and 58 are
@@ -428,4 +411,156 @@ extern "C" unsigned long long mocktail_bionic_strtoull_l(
     mocktail::compat::BionicLocale locale) {
   return mocktail::compat::BionicStrToUnsignedLongLongLocale(text, end, base,
                                                              locale);
+}
+
+extern "C" double mocktail_bionic_strtod(const char* text, char** end) {
+  return ParseInHostCLocale<double>(
+      [text, end]() { return std::strtod(text, end); });
+}
+
+extern "C" float mocktail_bionic_strtof(const char* text, char** end) {
+  return ParseInHostCLocale<float>(
+      [text, end]() { return std::strtof(text, end); });
+}
+
+extern "C" double mocktail_bionic_atof(const char* text) {
+  return ParseInHostCLocale<double>([text]() { return std::atof(text); });
+}
+
+extern "C" int mocktail_bionic_vsscanf(const char* text, const char* format,
+                                       va_list arguments) {
+  return ParseInHostCLocale<int>(
+      [&]() { return std::vsscanf(text, format, arguments); });
+}
+
+extern "C" int mocktail_bionic_sscanf(const char* text, const char* format,
+                                      ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  const int result = mocktail_bionic_vsscanf(text, format, arguments);
+  va_end(arguments);
+  return result;
+}
+
+extern "C" int mocktail_bionic_vsnprintf(char* buffer, size_t size,
+                                         const char* format,
+                                         va_list arguments) {
+  const mocktail::compat::ScopedBionicCLocale c_locale;
+  return std::vsnprintf(buffer, size, format, arguments);
+}
+
+extern "C" int mocktail_bionic_snprintf(char* buffer, size_t size,
+                                        const char* format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  const int result = mocktail_bionic_vsnprintf(buffer, size, format, arguments);
+  va_end(arguments);
+  return result;
+}
+
+// Bionic's fortified forms: the compiler's buffer size must cover the size
+// passed in, and a vsprintf must fit.
+extern "C" int mocktail_bionic___vsnprintf_chk(char* buffer, size_t size,
+                                               int flags, size_t buffer_size,
+                                               const char* format,
+                                               va_list arguments) {
+  static_cast<void>(flags);
+  if (size > buffer_size) {
+    std::fputs("FORTIFY: vsnprintf: prevented write past end of buffer\n",
+               stderr);
+    std::abort();
+  }
+  return mocktail_bionic_vsnprintf(buffer, size, format, arguments);
+}
+
+extern "C" int mocktail_bionic___vsprintf_chk(char* buffer, int flags,
+                                              size_t buffer_size,
+                                              const char* format,
+                                              va_list arguments) {
+  static_cast<void>(flags);
+  // SIZE_MAX means the compiler doesn't know the size.
+  const int result = mocktail_bionic_vsnprintf(
+      buffer, buffer_size == SIZE_MAX ? SSIZE_MAX : buffer_size, format,
+      arguments);
+  if (buffer_size != SIZE_MAX && result >= 0 &&
+      static_cast<size_t>(result) >= buffer_size) {
+    std::fputs("FORTIFY: vsprintf: prevented write past end of buffer\n",
+               stderr);
+    std::abort();
+  }
+  return result;
+}
+
+extern "C" int mocktail_bionic_vasprintf(char** result, const char* format,
+                                         va_list arguments) {
+  const mocktail::compat::ScopedBionicCLocale c_locale;
+  return ::vasprintf(result, format, arguments);
+}
+
+extern "C" int mocktail_bionic_printf(const char* format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  int result;
+  {
+    const mocktail::compat::ScopedBionicCLocale c_locale;
+    result = std::vprintf(format, arguments);
+  }
+  va_end(arguments);
+  return result;
+}
+
+extern "C" size_t mocktail_bionic_strftime(char* buffer, size_t size,
+                                           const char* format,
+                                           const struct tm* time) {
+  const mocktail::compat::ScopedBionicCLocale c_locale;
+  return std::strftime(buffer, size, format, time);
+}
+
+// Bionic returns one fixed C lconv. glibc refills a shared struct on every
+// call, so a later host call in another locale would change the guest's.
+extern "C" struct lconv* mocktail_bionic_localeconv() {
+  static struct lconv c_lconv = [] {
+    const mocktail::compat::ScopedBionicCLocale c_locale;
+    return *::localeconv();
+  }();
+  return &c_lconv;
+}
+
+// Bionic accepts only these names and always gives the C locale, UTF-8
+// unless the name is C or POSIX. It ignores `base`, so the guest may still
+// free it.
+extern "C" locale_t mocktail_bionic_newlocale(int category_mask,
+                                              const char* name,
+                                              locale_t base) {
+  static_cast<void>(base);
+  constexpr int kBionicLcAllMask = 0x1fbf;
+  if ((category_mask & ~kBionicLcAllMask) != 0 || name == nullptr) {
+    errno = EINVAL;
+    return static_cast<locale_t>(0);
+  }
+  const std::string_view requested(name);
+  const bool utf8 = requested.empty() ||
+                    requested.find("UTF-8") != std::string_view::npos;
+  if (!requested.empty() && requested != "C" && requested != "POSIX" &&
+      requested != "C.UTF-8" && requested != "en_US.UTF-8") {
+    errno = ENOENT;
+    return static_cast<locale_t>(0);
+  }
+  if (utf8) {
+    const int saved = errno;
+    if (const locale_t locale = ::newlocale(LC_ALL_MASK, "C.UTF-8", nullptr)) {
+      return locale;
+    }
+    errno = saved;
+  }
+  return ::newlocale(LC_ALL_MASK, "C", nullptr);
+}
+
+// Bionic ignores the locale argument; glibc would use it.
+extern "C" size_t mocktail_bionic_strftime_l(char* buffer, size_t size,
+                                             const char* format,
+                                             const struct tm* time,
+                                             locale_t locale) {
+  static_cast<void>(locale);
+  return mocktail_bionic_strftime(buffer, size, format, time);
 }

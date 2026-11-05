@@ -115,6 +115,18 @@ int BionicDlcloseBoundary(void* handle) {
 char* BionicDlerrorBoundary() { return ::linker::dlerror(); }
 #endif
 
+// Numbers and dates Android always formats in the C locale.
+bool IsBionicCLocaleSymbol(std::string_view symbol) {
+  static constexpr std::string_view kSymbols[] = {
+      "__vsnprintf_chk", "__vsprintf_chk", "atof",     "localeconv",
+      "newlocale",       "printf",         "snprintf", "sscanf",
+      "strftime",        "strtod",         "strtof",   "vasprintf",
+      "strftime_l",      "vsnprintf",      "vsscanf",
+  };
+  return std::find(std::begin(kSymbols), std::end(kSymbols), symbol) !=
+         std::end(kSymbols);
+}
+
 // Host-incompatible Bionic APIs belong only to synthetic libc.so. Exporting
 // them from an earlier dependency could bind the guest to glibc instead.
 bool IsBionicLibcOnlySymbol(std::string_view symbol) {
@@ -140,6 +152,7 @@ bool IsBionicLibcOnlySymbol(std::string_view symbol) {
          symbol == "mallinfo" || symbol == "pread64" || symbol == "pwrite64" ||
          symbol == "sigaction" || symbol == "strerror_r" ||
          symbol == "strtoll_l" || symbol == "strtoull_l" ||
+         IsBionicCLocaleSymbol(symbol) ||
          symbol == "sysconf" || symbol == "sysinfo" || symbol == "uname" ||
          HasPrefix(symbol, "pthread_") ||
          HasPrefix(symbol, "__pthread_") || HasPrefix(symbol, "sem_");
@@ -413,6 +426,39 @@ void RegisterBionicHostLibcRuntimeForLibc() {
                           reinterpret_cast<void*>(mocktail_bionic_strtoll_l));
   RegisterSyntheticSymbol("libc.so", "strtoull_l",
                           reinterpret_cast<void*>(mocktail_bionic_strtoull_l));
+  // glibc reads decimals in the host locale; Bionic always uses a dot.
+  RegisterSyntheticSymbol("libc.so", "strtod",
+                          reinterpret_cast<void*>(mocktail_bionic_strtod));
+  RegisterSyntheticSymbol("libc.so", "strtof",
+                          reinterpret_cast<void*>(mocktail_bionic_strtof));
+  RegisterSyntheticSymbol("libc.so", "atof",
+                          reinterpret_cast<void*>(mocktail_bionic_atof));
+  RegisterSyntheticSymbol("libc.so", "sscanf",
+                          reinterpret_cast<void*>(mocktail_bionic_sscanf));
+  RegisterSyntheticSymbol("libc.so", "vsscanf",
+                          reinterpret_cast<void*>(mocktail_bionic_vsscanf));
+  RegisterSyntheticSymbol("libc.so", "snprintf",
+                          reinterpret_cast<void*>(mocktail_bionic_snprintf));
+  RegisterSyntheticSymbol("libc.so", "vsnprintf",
+                          reinterpret_cast<void*>(mocktail_bionic_vsnprintf));
+  RegisterSyntheticSymbol(
+      "libc.so", "__vsnprintf_chk",
+      reinterpret_cast<void*>(mocktail_bionic___vsnprintf_chk));
+  RegisterSyntheticSymbol(
+      "libc.so", "__vsprintf_chk",
+      reinterpret_cast<void*>(mocktail_bionic___vsprintf_chk));
+  RegisterSyntheticSymbol("libc.so", "vasprintf",
+                          reinterpret_cast<void*>(mocktail_bionic_vasprintf));
+  RegisterSyntheticSymbol("libc.so", "printf",
+                          reinterpret_cast<void*>(mocktail_bionic_printf));
+  RegisterSyntheticSymbol("libc.so", "strftime",
+                          reinterpret_cast<void*>(mocktail_bionic_strftime));
+  RegisterSyntheticSymbol("libc.so", "strftime_l",
+                          reinterpret_cast<void*>(mocktail_bionic_strftime_l));
+  RegisterSyntheticSymbol("libc.so", "localeconv",
+                          reinterpret_cast<void*>(mocktail_bionic_localeconv));
+  RegisterSyntheticSymbol("libc.so", "newlocale",
+                          reinterpret_cast<void*>(mocktail_bionic_newlocale));
 }
 
 void RegisterBionicSysconfRuntimeForLibc() {

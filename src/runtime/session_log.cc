@@ -760,5 +760,25 @@ void SessionLog::Stop() {
   active_ = false;
 }
 
+bool ReadLatestSessionLog(const std::filesystem::path& logs_root,
+                          std::string* text, std::string* error) {
+  const std::filesystem::path latest = logs_root / "latest.log";
+  std::ifstream input(latest, std::ios::binary);
+  if (!input) {
+    *error = errno == ENOENT ? "No log yet. Start Nightcap once, then copy it."
+                             : "Cannot read " + latest.string() + ": " +
+                                   std::strerror(errno);
+    return false;
+  }
+  std::ostringstream contents;
+  contents << input.rdbuf();
+  if (input.bad()) {
+    *error = "Cannot read " + latest.string();
+    return false;
+  }
+  *text = std::move(contents).str();
+  return true;
+}
+
 }  // namespace runtime
 }  // namespace mocktail

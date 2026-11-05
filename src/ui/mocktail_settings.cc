@@ -115,6 +115,7 @@ struct SettingsWindow {
   // Both empty when the window was not started by `mocktail --settings`.
   std::filesystem::path instance_lock;
   std::filesystem::path restart_program;
+  std::filesystem::path logs_root;
   // The restart question is asked once per window.
   bool asked_restart = false;
   bool restarting = false;
@@ -2228,6 +2229,24 @@ void OnCopyVersion(GtkButton* button, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->toasts, toast);
 }
 
+void OnCopyLog(GtkButton* button, gpointer user_data) {
+  SettingsWindow* window = static_cast<SettingsWindow*>(user_data);
+  std::string text;
+  std::string error;
+  if (!mocktail::runtime::ReadLatestSessionLog(window->logs_root, &text,
+                                               &error)) {
+    ShowError(window, error);
+    return;
+  }
+  gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(button)),
+                         text.c_str());
+  // GNOME has no clipboard manager, so the copy dies with this window.
+  AdwToast* toast =
+      adw_toast_new("Copied the log. Paste it before closing Settings.");
+  adw_toast_set_timeout(toast, 3);
+  adw_toast_overlay_add_toast(window->toasts, toast);
+}
+
 GtkWidget* BuildAboutGroup(SettingsWindow* window) {
   GtkWidget* group = adw_preferences_group_new();
   adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "About");
@@ -2242,6 +2261,17 @@ GtkWidget* BuildAboutGroup(SettingsWindow* window) {
   g_signal_connect(copy, "clicked", G_CALLBACK(OnCopyVersion), window);
   adw_action_row_add_suffix(ADW_ACTION_ROW(row), copy);
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+  GtkWidget* log_row = adw_action_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(log_row), "Log");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(log_row),
+                              "The log from the last time Nightcap ran");
+  GtkWidget* copy_log = gtk_button_new_with_label("Copy Log");
+  gtk_widget_set_valign(copy_log, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text(copy_log, "Copy for a bug report");
+  g_signal_connect(copy_log, "clicked", G_CALLBACK(OnCopyLog), window);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(log_row), copy_log);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), log_row);
   return group;
 }
 
@@ -2503,6 +2533,7 @@ int main(int argc, char* argv[]) {
   window.asset_overlay_dir = paths.asset_overlay_dir();
   window.textures_dir = paths.texture_override_dir();
   window.sky_library = paths.sky_library_dir();
+  window.logs_root = paths.logs_root();
   window.roblox_data_lock = mocktail::runtime::RobloxDataLockPath(paths);
   window.restart_program =
       absolute_path(mocktail::runtime::kRestartProgramVariable);

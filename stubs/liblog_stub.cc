@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <mutex>
 
+#include "compat/bionic_c_locale.h"
 #include "mocktail/platform/android_log_observer.h"
 
 // Android log priorities
@@ -82,16 +83,20 @@ void mocktail_android_log_remove_observer(MocktailAndroidLogObserver observer) {
 int __android_log_print(int prio, const char* tag, const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);
-  va_list observer_args;
-  va_copy(observer_args, args);
   char message[4096] = {};
-  if (fmt != nullptr) {
-    (void)vsnprintf(message, sizeof(message), fmt, observer_args);
+  int ret = 0;
+  {
+    const mocktail::compat::ScopedBionicCLocale c_locale;
+    va_list observer_args;
+    va_copy(observer_args, args);
+    if (fmt != nullptr) {
+      (void)vsnprintf(message, sizeof(message), fmt, observer_args);
+    }
+    va_end(observer_args);
+    fprintf(stderr, "[%s/%s] ", PriorityChar(prio), tag ? tag : "?");
+    ret = fmt != nullptr ? vfprintf(stderr, fmt, args) : 0;
+    fprintf(stderr, "\n");
   }
-  va_end(observer_args);
-  fprintf(stderr, "[%s/%s] ", PriorityChar(prio), tag ? tag : "?");
-  int ret = fmt != nullptr ? vfprintf(stderr, fmt, args) : 0;
-  fprintf(stderr, "\n");
   va_end(args);
   NotifyObserver(prio, tag, message);
   return ret;
@@ -109,6 +114,7 @@ void __android_log_assert(const char* cond, const char* tag,
   fprintf(stderr, "[F/%s] Assert failed: %s\n", tag ? tag : "?",
           cond ? cond : "");
   if (fmt) {
+    const mocktail::compat::ScopedBionicCLocale c_locale;
     va_list args;
     va_start(args, fmt);
     vfprintf(stderr, fmt, args);
