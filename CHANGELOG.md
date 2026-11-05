@@ -9,6 +9,11 @@ Release notes on GitHub are taken from the matching section here.
 
 - Copy Log in Settings → About copies the log from the last time Nightcap ran, ready to paste in a bug report.
 
+### Changed
+
+- A sky picked in Settings now shows in every game, not only where a game has no sky of its own. It also
+  replaces the start screen's sky. Skies picked before this update need picking again.
+
 ### Fixed
 
 - Settings with decimals, such as camera sensitivity, no longer lose their decimals after a restart on

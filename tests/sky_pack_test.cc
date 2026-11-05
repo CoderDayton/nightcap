@@ -148,9 +148,14 @@ class SkyPackTest : public testing::Test {
     return SkyFolder(overlay_) / ("sky512_" + std::string(face) + ".tex");
   }
 
+  std::filesystem::path Indoor(std::string_view face) const {
+    return SkyFolder(overlay_) / ("indoor512_" + std::string(face) + ".tex");
+  }
+
   void ExpectOnlyTheSky(const std::string& bytes) const {
     for (const std::string_view face : kFaces) {
       EXPECT_EQ(Read(Installed(face)), bytes + std::string(face)) << face;
+      EXPECT_EQ(Read(Indoor(face)), bytes + std::string(face)) << face;
     }
     int files = 0;
     for (const auto& entry :
@@ -158,7 +163,7 @@ class SkyPackTest : public testing::Test {
       EXPECT_EQ(entry.path().extension(), ".tex") << entry.path();
       ++files;
     }
-    EXPECT_EQ(files, 6);
+    EXPECT_EQ(files, 12);
   }
 
   std::filesystem::path root_;
@@ -178,6 +183,44 @@ TEST_F(SkyPackTest, InstallsSixPngFacesAsSky512Tex) {
     EXPECT_EQ(Read(Installed(face)), kPng + std::string(face)) << face;
   }
   EXPECT_TRUE(HasCustomSky(overlay_));
+}
+
+// The gray-sky flag and the start screen draw indoor512, so it gets the sky
+// too, and goes with it.
+TEST_F(SkyPackTest, TheSkyAlsoReplacesTheIndoorSky) {
+  WritePack(source_, "Aurora_", ".png", kPng);
+  std::string error;
+  ASSERT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+  ExpectOnlyTheSky(kPng);
+  ASSERT_TRUE(RemoveCustomSky(overlay_, &error)) << error;
+  EXPECT_TRUE(std::filesystem::is_empty(SkyFolder(overlay_)));
+}
+
+TEST_F(SkyPackTest, AHandMadeIndoorFaceIsKept) {
+  Write(Indoor("up"), kKtx + "hand");
+  WritePack(source_, "Aurora_", ".png", kPng);
+  std::string error;
+  ASSERT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+  EXPECT_EQ(Read(Indoor("up")), kKtx + "hand");
+  EXPECT_FALSE(std::filesystem::exists(Indoor("bk")));
+  ASSERT_TRUE(RemoveCustomSky(overlay_, &error)) << error;
+  EXPECT_EQ(Read(Indoor("up")), kKtx + "hand");
+}
+
+// A sky installed before indoor512 was part of it needs installing again.
+TEST_F(SkyPackTest, ASkyWithoutItsIndoorFacesIsIncomplete) {
+  EXPECT_FALSE(IndoorSkyMissing(overlay_));
+  WritePack(source_, "Aurora_", ".png", kPng);
+  std::string error;
+  ASSERT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+  EXPECT_FALSE(IndoorSkyMissing(overlay_));
+  std::filesystem::remove(Indoor("up"));
+  EXPECT_TRUE(IndoorSkyMissing(overlay_));
+  ASSERT_TRUE(InstallSky(source_, overlay_, &error)) << error;
+  EXPECT_FALSE(IndoorSkyMissing(overlay_));
+  std::filesystem::remove(Indoor("up"));
+  Write(Indoor("up"), kKtx + "hand");
+  EXPECT_FALSE(IndoorSkyMissing(overlay_));
 }
 
 TEST_F(SkyPackTest, FindsFacesInAPacksSubfolder) {
@@ -237,7 +280,7 @@ TEST_F(SkyPackTest, ReplacesAnInstalledSky) {
     EXPECT_EQ(entry.path().extension(), ".tex") << entry.path();
     ++files;
   }
-  EXPECT_EQ(files, 6);
+  EXPECT_EQ(files, 12);
 }
 
 // The fourth face of six fails, so three are already done when it does.

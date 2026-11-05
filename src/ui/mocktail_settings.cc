@@ -1636,7 +1636,8 @@ void OnSkyTileActivated(GtkFlowBox*, GtkFlowBoxChild* child,
   if (row->devices[selected].value == kOtherSky) return;
   const std::string value = row->devices[selected].value;
   if (mocktail::ui::InstalledSky(window->asset_overlay_dir,
-                                 window->sky_library) == value) {
+                                 window->sky_library) == value &&
+      !mocktail::ui::IndoorSkyMissing(window->asset_overlay_dir)) {
     return;
   }
   StartSkyJob(row, {}, value);
