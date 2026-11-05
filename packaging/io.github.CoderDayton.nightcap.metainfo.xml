@@ -53,6 +53,21 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.5.0" date="2026-11-05">
+      <description>
+        <ul>
+          <li>Runs Roblox 2.742.1059 with a profile tested for that build, and new installs start on it.</li>
+          <li>A Customization page in Settings with a sky library, and sky packs can be imported.</li>
+          <li>In-game video plays, such as livestream screens in events.</li>
+          <li>Optional overlays for the server location, frame rate and ping.</li>
+          <li>Roblox's account switcher works, and Buy Robux opens the website.</li>
+          <li>Roblox updates download in the background and install on the next launch.</li>
+          <li>Textures decode on the graphics card and stay compressed to save video memory.</li>
+          <li>Cursor, shift lock, camera and Switch Server fixes.</li>
+          <li>Clearer errors when a network blocks the Roblox download.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-18">
       <description>
         <ul>
