@@ -5,6 +5,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Copy Log in Settings → About copies the log from the last time Nightcap ran, ready to paste in a bug report.
+
 ### Fixed
 
 - Settings with decimals, such as camera sensitivity, no longer lose their decimals after a restart on
