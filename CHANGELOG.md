@@ -5,6 +5,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- Runs Roblox 2.746.1266, and new installs start on it. Before, the updater rejected it and stayed on
+  2.742.1059. The audio output-device menu also works on it.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added

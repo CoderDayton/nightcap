@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -1348,14 +1349,18 @@ bool HasFmodStringConstructorContract(const ElfImage& image,
 
 bool HasFmodDeviceListsSelectContract(const ElfImage& image,
                                       std::uint64_t rva) {
-  constexpr std::size_t kSize = compat::kFmodDeviceListsSelectContractSize;
-  std::string local_error;
-  if (!image.RequireCode(rva, kSize, &local_error)) return false;
-  const auto offset = image.OffsetForRva(rva, kSize, &local_error);
-  return offset.has_value() &&
-         compat::HasFmodDeviceListsSelectContract(
-             image.Bytes(*offset, kSize, &local_error)) &&
-         local_error.empty();
+  // A selector near the end of code may be shorter than the longer contract.
+  for (const std::size_t size : {compat::kFmodDeviceListsSelectContractMaxSize,
+                                 compat::kFmodDeviceListsSelectContractSize}) {
+    std::string local_error;
+    if (!image.RequireCode(rva, size, &local_error)) continue;
+    const auto offset = image.OffsetForRva(rva, size, &local_error);
+    return offset.has_value() &&
+           compat::HasFmodDeviceListsSelectContract(
+               image.Bytes(*offset, size, &local_error)) &&
+           local_error.empty();
+  }
+  return false;
 }
 
 std::optional<Json> DeriveRuntimeCompatibility(
@@ -1416,9 +1421,12 @@ std::optional<Json> DeriveRuntimeCompatibility(
         reference, candidate, disassembler,
         {"fmod-string-constructor", old.string_constructor, 32, false, 3},
         &fmod_error);
+    // 2.746's info method fails this signature, so a miss falls back to its
+    // vtable slot, found through the count, current and select methods.
+    std::string info_error;
     const auto info_method = FindUniqueSemanticSignatureMatch(
         reference, candidate, disassembler,
-        {"fmod-output-info", old.info_method, 18, false, 3}, &fmod_error);
+        {"fmod-output-info", old.info_method, 18, false, 3}, &info_error);
     // A missing legacy selector is expected at the device-list ABI
     // transition. The new layout is accepted only with its own complete
     // selector contract.
@@ -1427,9 +1435,7 @@ std::optional<Json> DeriveRuntimeCompatibility(
         reference, candidate, disassembler,
         {"fmod-output-select", old.select_method, 18, false, 3},
         &select_error);
-    if (!string_constructor.has_value() || !info_method.has_value()) {
-      return std::nullopt;
-    }
+    if (!string_constructor.has_value()) return std::nullopt;
     const auto count_matches = FindSignatureMatches(
         reference, candidate, disassembler,
         {"fmod-output-count", old.count_method, 24, false, 3}, true,
@@ -1455,8 +1461,21 @@ std::optional<Json> DeriveRuntimeCompatibility(
     if (!relocations.has_value()) return std::nullopt;
     std::vector<FmodRuntimeAnchors> candidates;
     for (const auto& [offset, addend] : *relocations) {
-      if (addend != info_method->rva || offset < kInfoIndex * 8) continue;
-      const std::uint64_t vtable = offset - kInfoIndex * 8;
+      std::uint64_t vtable = 0;
+      if (info_method.has_value()) {
+        if (addend != info_method->rva || offset < kInfoIndex * 8) continue;
+        vtable = offset - kInfoIndex * 8;
+      } else {
+        if (count_candidates.count(addend) == 0 || offset < kCountIndex * 8)
+          continue;
+        vtable = offset - kCountIndex * 8;
+      }
+      const auto info = relocations->find(vtable + kInfoIndex * 8);
+      std::string code_error;
+      if (info == relocations->end() ||
+          !candidate.RequireCode(info->second, 1, &code_error)) {
+        continue;
+      }
       const auto count = relocations->find(vtable + kCountIndex * 8);
       for (const int layout : {1, 2}) {
         FmodRuntimeAnchors derived;
@@ -1485,13 +1504,14 @@ std::optional<Json> DeriveRuntimeCompatibility(
           continue;
         }
         candidates.push_back({vtable, string_constructor->rva, count->second,
-                              info_method->rva, current->second,
-                              select->second, layout});
+                              info->second, current->second, select->second,
+                              layout});
       }
     }
     if (candidates.size() != 1U) {
       fmod_error = "FMOD output vtable matched " +
                    std::to_string(candidates.size()) + " candidate locations";
+      if (!info_method.has_value()) fmod_error += " (" + info_error + ")";
       return std::nullopt;
     }
     const FmodRuntimeAnchors& derived = candidates.front();
@@ -1823,7 +1843,8 @@ bool IsRegisterOperand(const Operand& operand, std::string_view name) {
 //    xchg qword ptr [rip + SLOT], rax
 //    mov qword ptr [rip + OBJECT], rax
 //
-// OBJECT is the eight bytes after SLOT.
+// OBJECT sits next to SLOT: 8 bytes after it up to 2.742, 0x38 bytes before
+// it from 2.746.
 std::optional<std::vector<Instruction>> JniSingletonPublication(
     const ElfImage& image, const Disassembler& disassembler,
     std::uint64_t entry, std::string* error) {
@@ -1858,7 +1879,9 @@ std::optional<std::vector<Instruction>> JniSingletonPublication(
         store.operands[0].size != 8 ||
         !IsRegisterOperand(store.operands[1], "rax") || object.size() != 1 ||
         slot.size() != 1 || stored.size() != 1 || object[0] != stored[0] ||
-        object[0] != slot[0] + 8) {
+        object[0] == slot[0] ||
+        (object[0] > slot[0] ? object[0] - slot[0] : slot[0] - object[0]) >
+            0x100) {
       continue;
     }
     return std::vector<Instruction>(std::next(decoded->begin(), frame),
@@ -1908,11 +1931,20 @@ constexpr std::size_t kLeadingConstructorBegin = 2;
 // The process-load constructor, the JNI singleton initializer and two wiring
 // entries. A release may put them in any order.
 constexpr std::size_t kLeadingConstructorCount = 4;
+// A release may also add constructors among them, such as 2.746's allocator
+// tracking keys. Those run like any later constructor.
+constexpr std::size_t kLeadingConstructorWindow = kLeadingConstructorCount + 2;
 
 struct LeadingConstructors {
+  // Ascending. From a 2.746 reference these are 2, 3, 4 and 6: the added
+  // constructor at 5 is not one of them.
+  std::array<std::size_t, kLeadingConstructorCount> reference_index{};
+  std::size_t reference_end = kLeadingConstructorBegin + kLeadingConstructorCount;
   // For each reference leading constructor, the candidate init-array index
   // of the same constructor. Both count from kLeadingConstructorBegin.
   std::array<std::size_t, kLeadingConstructorCount> candidate_offset{};
+  std::array<std::uint64_t, kLeadingConstructorCount> candidate_entry{};
+  std::size_t window = kLeadingConstructorCount;
   SignatureMatch jni_singleton;
 };
 
@@ -1932,14 +1964,51 @@ std::optional<LeadingConstructors> MatchLeadingConstructors(
     *error = "init-array shape is not derivable";
     return std::nullopt;
   }
+  // Leave at least one later constructor outside the window.
+  const std::size_t window =
+      std::min(kLeadingConstructorWindow,
+               candidate_init.size() - kLeadingConstructorBegin - 1);
+  if (window < kLeadingConstructorCount) {
+    *error = "init-array shape is not derivable";
+    return std::nullopt;
+  }
   const std::vector<std::uint64_t> candidate_entries(
       std::next(candidate_init.begin(), kLeadingConstructorBegin),
-      std::next(candidate_init.begin(), end));
+      std::next(candidate_init.begin(), kLeadingConstructorBegin + window));
   LeadingConstructors result;
-  std::array<bool, kLeadingConstructorCount> taken{};
+  result.window = window;
+  // Anchors are keyed by reference init-array index.
+  std::set<std::size_t> anchor_indexes;
+  if (!constructor_anchors.is_object() ||
+      constructor_anchors.size() != kLeadingConstructorCount) {
+    *error = "constructor anchors are invalid";
+    return std::nullopt;
+  }
+  for (const auto& item : constructor_anchors.items()) {
+    std::size_t index = 0;
+    const auto parsed = std::from_chars(
+        item.key().data(), item.key().data() + item.key().size(), index);
+    if (parsed.ec != std::errc() ||
+        parsed.ptr != item.key().data() + item.key().size() ||
+        index < kLeadingConstructorBegin ||
+        index >= kLeadingConstructorBegin + kLeadingConstructorWindow ||
+        index >= reference_init.size()) {
+      *error = kMoved;
+      return std::nullopt;
+    }
+    anchor_indexes.insert(index);
+  }
+  std::copy(anchor_indexes.begin(), anchor_indexes.end(),
+            result.reference_index.begin());
+  result.reference_end = result.reference_index.back() + 1;
+  if (reference_init.size() <= result.reference_end) {
+    *error = "init-array shape is not derivable";
+    return std::nullopt;
+  }
+  std::vector<bool> taken(window, false);
   bool found_jni = false;
   for (std::size_t offset = 0; offset < kLeadingConstructorCount; ++offset) {
-    const std::size_t index = kLeadingConstructorBegin + offset;
+    const std::size_t index = result.reference_index[offset];
     const std::uint64_t reference_entry = reference_init[index];
     const std::string name = "constructor-" + std::to_string(index);
     const auto anchor = ParseRva(
@@ -1984,12 +2053,115 @@ std::optional<LeadingConstructors> MatchLeadingConstructors(
     }
     taken[candidate_offset] = true;
     result.candidate_offset[offset] = candidate_offset;
+    result.candidate_entry[offset] = match->rva;
   }
   if (!found_jni) {
     *error = "JNI singleton initializer is not a leading constructor";
     return std::nullopt;
   }
   return result;
+}
+
+// Direct call targets of the function at `entry`, up to its first return. A
+// constructor that is one jump to its body is scanned from the body. Code
+// that does not decode yields no targets.
+std::vector<std::uint64_t> DirectCallsBeforeReturn(
+    const ElfImage& image, const Disassembler& disassembler,
+    std::uint64_t entry) {
+  constexpr std::size_t kMaximumInstructions = 64;
+  std::vector<std::uint64_t> targets;
+  std::uint64_t address = entry;
+  for (std::size_t count = 0; count < kMaximumInstructions; ++count) {
+    std::string ignored;
+    const auto decoded = disassembler.Decode(image, address, 1, 16, &ignored);
+    if (!decoded.has_value()) return {};
+    const Instruction& instruction = decoded->front();
+    if (instruction.returns) break;
+    if (count == 0) {
+      if (const auto body = DirectJumpTarget(instruction, "", &ignored)) {
+        address = *body;
+        continue;
+      }
+    }
+    if (const auto target = DirectCallTarget(instruction, "", &ignored)) {
+      targets.push_back(*target);
+    }
+    address += instruction.size;
+  }
+  return targets;
+}
+
+// Compare, mask and shift instructions with an immediate operand, such as a
+// size-class limit or page-map shift.
+std::multiset<std::pair<std::string, std::int64_t>> ConstantOperations(
+    const std::vector<Instruction>& instructions) {
+  std::multiset<std::pair<std::string, std::int64_t>> operations;
+  for (const Instruction& instruction : instructions) {
+    if (instruction.mnemonic != "cmp" && instruction.mnemonic != "and" &&
+        instruction.mnemonic != "shr" && instruction.mnemonic != "shl" &&
+        instruction.mnemonic != "sar") {
+      continue;
+    }
+    if (instruction.operands.size() == 2 &&
+        instruction.operands[1].type == Operand::Type::kImmediate) {
+      operations.emplace(instruction.mnemonic, instruction.operands[1].value);
+    }
+  }
+  return operations;
+}
+
+// Finds a function whose code a release changed through the leading
+// constructor that calls it, in the same call order. From 2.746 the
+// small-allocate and free wrappers also call an allocation tracker.
+std::optional<SignatureMatch> FindLeadingConstructorCallee(
+    const ElfImage& reference, const ElfImage& candidate,
+    const Disassembler& disassembler, const SignatureSpec& spec,
+    const std::vector<std::uint64_t>& reference_init,
+    const LeadingConstructors& leading, std::string* error) {
+  for (std::size_t offset = 0; offset < kLeadingConstructorCount; ++offset) {
+    const auto reference_calls = DirectCallsBeforeReturn(
+        reference, disassembler, reference_init[leading.reference_index[offset]]);
+    const auto called = std::find(reference_calls.begin(),
+                                  reference_calls.end(), spec.reference_rva);
+    if (called == reference_calls.end()) continue;
+    const auto candidate_calls = DirectCallsBeforeReturn(
+        candidate, disassembler, leading.candidate_entry[offset]);
+    if (candidate_calls.size() != reference_calls.size()) {
+      *error = "signature " + spec.name +
+               " caller made a different number of calls";
+      return std::nullopt;
+    }
+    const std::uint64_t rva =
+        candidate_calls[static_cast<std::size_t>(called -
+                                                 reference_calls.begin())];
+    const auto reference_code = disassembler.Decode(
+        reference, spec.reference_rva, spec.instruction_count, 4096, error);
+    const auto candidate_code = disassembler.Decode(
+        candidate, rva, spec.instruction_count, 4096, error);
+    if (!reference_code.has_value() || !candidate_code.has_value()) {
+      return std::nullopt;
+    }
+    // The call order alone could pick a neighbouring function. The added
+    // tracking calls shift the wrapper's code by under 16 instructions, so
+    // its masks and size limits must all appear within that reach.
+    const auto candidate_reach = disassembler.Decode(
+        candidate, rva, spec.instruction_count + 16, 4096, error);
+    if (!candidate_reach.has_value()) return std::nullopt;
+    std::multiset<std::pair<std::string, std::int64_t>> missing =
+        ConstantOperations(*reference_code);
+    for (const auto& operation : ConstantOperations(*candidate_reach)) {
+      const auto found = missing.find(operation);
+      if (found != missing.end()) missing.erase(found);
+    }
+    if (ConstantOperations(*reference_code).empty() || !missing.empty()) {
+      *error = "signature " + spec.name +
+               " caller's call does not keep the wrapper's constants";
+      return std::nullopt;
+    }
+    return SignatureMatch{rva, *reference_code, *candidate_code};
+  }
+  *error = "signature " + spec.name + " is not called by a leading constructor";
+  return std::nullopt;
 }
 
 std::optional<std::uint64_t> MappedRipTarget(const SignatureMatch& match,
@@ -2080,9 +2252,14 @@ std::optional<Json> RemapConstructorRanges(
     *error = "constructor ranges are missing";
     return std::nullopt;
   }
-  const std::size_t leading_end =
-      kLeadingConstructorBegin + kLeadingConstructorCount;
-  std::array<bool, kLeadingConstructorCount> runs{};
+  const std::size_t leading_end = leading.reference_end;
+  const std::size_t candidate_leading_end =
+      kLeadingConstructorBegin + leading.window;
+  // A constructor the reference lacks runs, like any later constructor.
+  std::vector<bool> runs(leading.window, true);
+  for (const std::size_t offset : leading.candidate_offset) {
+    runs[offset] = false;
+  }
   std::size_t previous_end = 0;
   std::size_t tail_begin = SIZE_MAX;
   std::size_t tail_end = 0;
@@ -2101,22 +2278,25 @@ std::optional<Json> RemapConstructorRanges(
       *error = "constructor range cannot fit candidate init-array";
       return std::nullopt;
     }
-    for (std::size_t index = begin; index < std::min(end, leading_end);
-         ++index) {
-      runs[leading.candidate_offset[index - kLeadingConstructorBegin]] = true;
+    for (std::size_t offset = 0; offset < kLeadingConstructorCount; ++offset) {
+      const std::size_t index = leading.reference_index[offset];
+      if (index >= begin && index < end) {
+        runs[leading.candidate_offset[offset]] = true;
+      }
     }
     previous_end = end;
     tail_begin = begin;
     tail_end = end;
   }
   if (tail_begin > leading_end || tail_end != reference_count ||
-      reference_count <= leading_end || candidate_count <= leading_end) {
+      reference_count <= leading_end ||
+      candidate_count <= candidate_leading_end) {
     *error = "constructor range cannot fit candidate init-array";
     return std::nullopt;
   }
   Json result = Json::array();
   std::size_t run_begin = SIZE_MAX;
-  for (std::size_t offset = 0; offset < kLeadingConstructorCount; ++offset) {
+  for (std::size_t offset = 0; offset < leading.window; ++offset) {
     const std::size_t index = kLeadingConstructorBegin + offset;
     if (runs[offset]) {
       if (run_begin == SIZE_MAX) run_begin = index;
@@ -2126,7 +2306,7 @@ std::optional<Json> RemapConstructorRanges(
     }
   }
   result.push_back(
-      {{"begin", run_begin == SIZE_MAX ? leading_end : run_begin},
+      {{"begin", run_begin == SIZE_MAX ? candidate_leading_end : run_begin},
        {"end_exclusive", candidate_count}});
   return result;
 }
@@ -2307,6 +2487,7 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
   }
   std::map<std::string, SignatureMatch> matches;
   std::vector<SignatureMatch> allocate_matches;
+  std::vector<SignatureSpec> called_by_leading;
   std::optional<LeadingConstructors> leading;
   for (const SignatureSpec& spec : *specs) {
     if (spec.name == "jni-singleton-initializer") {
@@ -2333,6 +2514,25 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
       return FindSignatureMatch(reference, candidate, disassembler, spec,
                                 error);
     }();
+    // Only a wrapper with no match falls back; an ambiguous one still fails.
+    if (!match.has_value() &&
+        (spec.name == "small-allocate" || spec.name == "free")) {
+      std::string count_error;
+      if (!FindSignatureMatches(reference, candidate, disassembler, spec, true,
+                                &count_error)
+               .has_value()) {
+        error->clear();
+        called_by_leading.push_back(spec);
+        continue;
+      }
+    }
+    if (!match.has_value()) return std::nullopt;
+    matches.emplace(spec.name, std::move(*match));
+  }
+  for (const SignatureSpec& spec : called_by_leading) {
+    auto match = FindLeadingConstructorCallee(reference, candidate,
+                                              disassembler, spec,
+                                              *reference_init, *leading, error);
     if (!match.has_value()) return std::nullopt;
     matches.emplace(spec.name, std::move(*match));
   }
@@ -2455,9 +2655,10 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
   }
   const std::size_t reference_thread_boundary = reference_profile.value(
       "native_mimalloc_thread_initializer_after_constructor", SIZE_MAX);
-  if (reference_thread_boundary < kLeadingConstructorBegin ||
-      reference_thread_boundary >=
-          kLeadingConstructorBegin + kLeadingConstructorCount) {
+  const auto boundary_anchor =
+      std::find(leading->reference_index.begin(),
+                leading->reference_index.end(), reference_thread_boundary);
+  if (boundary_anchor == leading->reference_index.end()) {
     *error = "native allocator TLS boundary is no longer verified";
     return std::nullopt;
   }
@@ -2465,8 +2666,8 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
   // candidate index.
   const std::size_t thread_boundary =
       kLeadingConstructorBegin +
-      leading->candidate_offset[reference_thread_boundary -
-                                kLeadingConstructorBegin];
+      leading->candidate_offset[static_cast<std::size_t>(
+          boundary_anchor - leading->reference_index.begin())];
   const auto singleton_bytes =
       PositiveSize(seeds["jni_singleton_bytes"], "JNI singleton size", error);
   const auto arena_slots = PositiveSize(seeds["arena_table_slot_count"],
@@ -2514,12 +2715,15 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
       {"empty_string_initializer_rva",
        FormatRva(matches["empty-string-initializer"].rva)},
       {"jni_singleton_initializer_rva", FormatRva(singleton.rva)},
-      {"constructor_rvas",
-       {{"2", FormatRva((*candidate_init)[2])},
-        {"3", FormatRva((*candidate_init)[3])},
-        {"4", FormatRva((*candidate_init)[4])},
-        {"5", FormatRva((*candidate_init)[5])}}},
   };
+  // The four verified leading constructors, keyed by init-array index.
+  Json constructor_anchors = Json::object();
+  for (std::size_t offset = 0; offset < kLeadingConstructorCount; ++offset) {
+    constructor_anchors[std::to_string(kLeadingConstructorBegin +
+                                       leading->candidate_offset[offset])] =
+        FormatRva(leading->candidate_entry[offset]);
+  }
+  anchors["constructor_rvas"] = std::move(constructor_anchors);
   const std::uint64_t version_code =
       metadata["version_code"].get<std::uint64_t>();
   const std::string payload_id =

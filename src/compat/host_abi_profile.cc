@@ -2,12 +2,39 @@
 
 #include "compat/host_abi_profile_loader.h"
 
+#include <algorithm>
+
 namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
-    // Roblox 2.742.1059, the shipped reference. Verified with native mimalloc
-    // only; host allocator bridges are not supported for this build.
+    // Roblox 2.746.1266, the shipped reference. Verified with native mimalloc
+    // only; host allocator bridges are not supported for this build. Index 5
+    // is an added allocator-tracking constructor, so process-load moved to 6.
+    {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+     {{{0x1a90aca, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1a93ca3, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x1e88acc, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1a9082a, HostBridgeKind::kAllocate, "allocate"},
+       {0x1aaa425, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1a9432b, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0x6f61750, 0x7597500, 0x7655e00, 0x400, 0x1a90e83, 0x1b0cb48,
+      0x7ee9a30, 0x7ee9ac0, 0x400000},
+     {0x1a9082a, 0x1a9432b},
+     0x6e60720,
+     2500,
+     {{{3, 4}, {5, 2500}}},
+     2,
+     {{{2, 2500}}},
+     1,
+     6,
+     {0x1e89f68, 0x75997f8},
+     HostAllocatorStrategy::kNativeMimalloc,
+     false},
+    // Roblox 2.742.1059. Verified with native mimalloc only; host allocator
+    // bridges are not supported for this build.
     {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
      {{{0x1e154a2, HostBridgeKind::kAllocate, "small-allocate"},
        {0x1e18647, HostBridgeKind::kUsableSize, "usable-size"},
@@ -297,7 +324,10 @@ bool HostAbiProfile::ShouldInitializeNativeMimallocThreadAfterConstructor(
 
 bool HostAbiProfile::HasVerifiedConstructorPolicy(
     size_t jni_singleton_constructor) const noexcept {
+  // Four verified leading constructors, plus up to two a release added among
+  // them (2.746 added one). The added ones must run.
   constexpr size_t kLeadingConstructors = 4;
+  constexpr size_t kLeadingConstructorWindow = kLeadingConstructors + 2;
   constexpr size_t kWiringConstructors = 2;
   if (!HasValidConstructorRanges() ||
       !HasValidNativeMimallocConstructorRanges() ||
@@ -309,21 +339,22 @@ bool HostAbiProfile::HasVerifiedConstructorPolicy(
       native_mimalloc_thread_initializer_after_constructor;
   const ConstructorRange &tail =
       constructor_run_ranges[constructor_run_range_count - 1];
-  if (init_array_count < begin + kLeadingConstructors ||
-      native_mimalloc_constructor_run_ranges[0].end_exclusive !=
+  if (init_array_count < begin + kLeadingConstructors) return false;
+  const size_t leading_end =
+      std::min(begin + kLeadingConstructorWindow, init_array_count);
+  if (native_mimalloc_constructor_run_ranges[0].end_exclusive !=
           init_array_count ||
-      checkpoint < begin || checkpoint >= begin + kLeadingConstructors ||
+      checkpoint < begin || checkpoint >= leading_end ||
       !AllowsConstructor(checkpoint) || jni_singleton_constructor < begin ||
-      jni_singleton_constructor >= begin + kLeadingConstructors ||
+      jni_singleton_constructor >= leading_end ||
       jni_singleton_constructor == checkpoint ||
       !AllowsConstructor(jni_singleton_constructor) ||
-      ConstructorRangeBegin() < begin ||
-      tail.begin > begin + kLeadingConstructors ||
+      ConstructorRangeBegin() < begin || tail.begin > leading_end ||
       tail.end_exclusive != init_array_count) {
     return false;
   }
   size_t excluded = 0;
-  for (size_t index = begin; index < begin + kLeadingConstructors; ++index) {
+  for (size_t index = begin; index < leading_end; ++index) {
     if (!AllowsConstructor(index)) {
       ++excluded;
     }

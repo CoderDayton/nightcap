@@ -112,6 +112,24 @@ TEST(RobloxOutputDeviceBridgeTest, DeviceListSelectorKeepsArgumentsAndCountSlotE
   EXPECT_FALSE(compat::HasFmodDeviceListsSelectContract(relocated));
 }
 
+TEST(RobloxOutputDeviceBridgeTest, DeviceListSelectorAcceptsTwoFlagDispatch) {
+  std::string relocated(compat::kFmodDeviceListsSelectTwoFlagContract,
+                        compat::kFmodDeviceListsSelectTwoFlagContractSize);
+  for (const std::size_t start : {24, 39, 48, 66, 89, 107, 127}) {
+    relocated.replace(start, 4, 4, '\x17');
+  }
+  EXPECT_TRUE(compat::HasFmodDeviceListsSelectContract(relocated));
+  // Device index register, flag OR, branch into legacy path, count slot,
+  // system offset.
+  for (const std::size_t index : {17, 52, 55, 101, 123}) {
+    auto changed = relocated;
+    changed[index] ^= 1;
+    EXPECT_FALSE(compat::HasFmodDeviceListsSelectContract(changed));
+  }
+  relocated.pop_back();
+  EXPECT_FALSE(compat::HasFmodDeviceListsSelectContract(relocated));
+}
+
 TEST(RobloxOutputDeviceBridgeTest, ValidatesInputSlotsForBothLayouts) {
   constexpr std::uintptr_t base = 0x10000000;
   for (int layout : {1, 2}) {

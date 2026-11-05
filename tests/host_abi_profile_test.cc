@@ -180,6 +180,12 @@ TEST(HostAbiProfileTest, ConstructorPolicyAcceptsProcessLoadConstructorLast) {
                   .HasVerifiedConstructorPolicy(3));
 }
 
+TEST(HostAbiProfileTest, ConstructorPolicyAcceptsAddedLeadingConstructor) {
+  // The 2.746 order: a tracking constructor at 5 moves process-load to 6.
+  EXPECT_TRUE(ConstructorPolicyProfile(6, {{3, 4}, {5, 100}})
+                  .HasVerifiedConstructorPolicy(3));
+}
+
 TEST(HostAbiProfileTest, ConstructorPolicyRequiresJniSingletonConstructor) {
   // Host bridges run a wiring constructor and skip the JNI singleton.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 4}, {6, 100}})
@@ -189,14 +195,17 @@ TEST(HostAbiProfileTest, ConstructorPolicyRequiresJniSingletonConstructor) {
   // The JNI singleton constructor is the checkpoint constructor.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
                    .HasVerifiedConstructorPolicy(2));
-  // The JNI singleton constructor is outside the four leading constructors.
+  // The JNI singleton constructor is outside the leading window.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
-                   .HasVerifiedConstructorPolicy(6));
+                   .HasVerifiedConstructorPolicy(8));
 }
 
 TEST(HostAbiProfileTest, ConstructorPolicyRejectsOtherShapes) {
-  // The checkpoint is outside the four leading constructors.
-  EXPECT_FALSE(ConstructorPolicyProfile(6, {{2, 3}, {5, 100}})
+  // The checkpoint is outside the leading window.
+  EXPECT_FALSE(ConstructorPolicyProfile(8, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // A third constructor in the leading window is excluded.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 7}, {8, 100}})
                    .HasVerifiedConstructorPolicy(5));
   // The checkpoint constructor does not run under host bridges.
   EXPECT_FALSE(ConstructorPolicyProfile(3, {{2, 3}, {5, 100}})
@@ -204,8 +213,8 @@ TEST(HostAbiProfileTest, ConstructorPolicyRejectsOtherShapes) {
   // Only one wiring constructor is excluded.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 4}, {5, 100}})
                    .HasVerifiedConstructorPolicy(5));
-  // A constructor after the leading four is excluded.
-  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 6}, {7, 100}})
+  // A constructor after the leading window is excluded.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 8}, {9, 100}})
                    .HasVerifiedConstructorPolicy(5));
   // Host bridges run a constructor the native replay skips.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{1, 3}, {5, 100}})
@@ -239,6 +248,17 @@ TEST(HostAbiProfileTest, UnknownBuildHasNoNativeOffsets) {
 
 class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
  protected:
+  // Leading constructor anchors keyed by init-array index.
+  static nlohmann::json DefaultConstructorAnchors() {
+    return {{"2", Hex(SymbolRva("MocktailFixtureConstructorTwo"))},
+            {"3", Hex(SymbolRva("MocktailFixtureConstructorThree"))},
+            {"4", Hex(SymbolRva("MocktailFixtureConstructorFour"))},
+            {"5", Hex(SymbolRva("MocktailFixtureConstructorFive"))}};
+  }
+  // A derived suite swaps this before calling SetUpTestSuite.
+  inline static nlohmann::json (*constructor_anchors_)() =
+      DefaultConstructorAnchors;
+
   static std::string Hex(uintptr_t value) {
     std::ostringstream output;
     output << "0x" << std::hex << value;
@@ -507,11 +527,7 @@ class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
            Hex(SymbolRva("MocktailFixtureThreadInitialize"))},
           {"jni_singleton_initializer_rva",
            Hex(SymbolRva("MocktailFixtureConstructorFive"))},
-          {"constructor_rvas",
-           {{"2", Hex(SymbolRva("MocktailFixtureConstructorTwo"))},
-            {"3", Hex(SymbolRva("MocktailFixtureConstructorThree"))},
-            {"4", Hex(SymbolRva("MocktailFixtureConstructorFour"))},
-            {"5", Hex(SymbolRva("MocktailFixtureConstructorFive"))}}}}},
+          {"constructor_rvas", constructor_anchors_()}}},
     };
     ASSERT_TRUE(std::filesystem::create_directories(
         temporary_root_ / "host_abi_profiles", code));
@@ -765,6 +781,66 @@ TEST_F(ExternalHostAbiProfileLoaderTest, AcceptsExactRepeatedTierCReceipt) {
 
   ASSERT_TRUE(result) << result.error;
   EXPECT_EQ(result.profile, FindHostAbiProfile(build_id_));
+}
+
+// The 2.746 layout: an added constructor at 5 moves an anchor to 6.
+class ExternalHostAbiProfileAddedConstructorTest
+    : public ExternalHostAbiProfileLoaderTest {
+ protected:
+  static nlohmann::json Anchors() {
+    nlohmann::json anchors = DefaultConstructorAnchors();
+    anchors["6"] = anchors["5"];
+    anchors.erase("5");
+    return anchors;
+  }
+  static void SetUpTestSuite() {
+    constructor_anchors_ = Anchors;
+    ExternalHostAbiProfileLoaderTest::SetUpTestSuite();
+  }
+  static void TearDownTestSuite() {
+    ExternalHostAbiProfileLoaderTest::TearDownTestSuite();
+    constructor_anchors_ = DefaultConstructorAnchors;
+  }
+};
+
+TEST_F(ExternalHostAbiProfileAddedConstructorTest, AcceptsAnchorAfterAddedConstructor) {
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.approval_receipt_path = receipt_path_.string();
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  ASSERT_TRUE(result) << result.error;
+}
+
+class ExternalHostAbiProfileExtraAnchorTest
+    : public ExternalHostAbiProfileLoaderTest {
+ protected:
+  static nlohmann::json Anchors() {
+    nlohmann::json anchors = DefaultConstructorAnchors();
+    anchors["6"] = anchors["5"];
+    return anchors;
+  }
+  static void SetUpTestSuite() {
+    constructor_anchors_ = Anchors;
+    ExternalHostAbiProfileLoaderTest::SetUpTestSuite();
+  }
+  static void TearDownTestSuite() {
+    ExternalHostAbiProfileLoaderTest::TearDownTestSuite();
+    constructor_anchors_ = DefaultConstructorAnchors;
+  }
+};
+
+TEST_F(ExternalHostAbiProfileExtraAnchorTest, RejectsFiveConstructorAnchors) {
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.approval_receipt_path = receipt_path_.string();
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  ASSERT_FALSE(result);
+  EXPECT_NE(result.error.find("constructor anchor"), std::string::npos)
+      << result.error;
 }
 
 TEST_F(ExternalHostAbiProfileLoaderTest, RecordsPayloadDigestForNextLaunch) {

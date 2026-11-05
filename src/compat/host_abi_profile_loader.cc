@@ -118,6 +118,8 @@ struct OwnedHostAbiProfile {
   std::string reference_build_id;
   std::string reference_payload_sha256;
   std::vector<uintptr_t> derivation_code_rvas;
+  // The init-array index of each constructor anchor, ascending.
+  std::vector<size_t> constructor_anchor_indexes;
 
   void BindViews() {
     profile.elf_build_id = build_id;
@@ -440,13 +442,27 @@ std::unique_ptr<OwnedHostAbiProfile> ParseProfile(const Json& root,
     *error = "external host ABI profile has invalid constructor anchors";
     return nullptr;
   }
-  for (const char* index : {"2", "3", "4", "5"}) {
+  // Four anchors keyed by init-array index, among the first six leading
+  // entries (2..7). Up to 2.742 they are 2..5; 2.746 has 2, 3, 4 and 6.
+  constexpr size_t kAnchorCount = 4;
+  constexpr size_t kFirstAnchorIndex = 2;
+  constexpr size_t kAnchorWindow = 6;
+  for (size_t index = kFirstAnchorIndex;
+       index < kFirstAnchorIndex + kAnchorWindow; ++index) {
+    const std::string key = std::to_string(index);
+    if (!constructor_anchors->contains(key)) continue;
     uintptr_t rva = 0;
-    if (!ReadRva(*constructor_anchors, index, &rva)) {
+    if (!ReadRva(*constructor_anchors, key.c_str(), &rva)) {
       *error = "external host ABI profile is missing a constructor anchor";
       return nullptr;
     }
     owned->derivation_code_rvas.push_back(rva);
+    owned->constructor_anchor_indexes.push_back(index);
+  }
+  if (owned->constructor_anchor_indexes.size() != kAnchorCount ||
+      constructor_anchors->size() != kAnchorCount) {
+    *error = "external host ABI profile is missing a constructor anchor";
+    return nullptr;
   }
 
   const Json* bridge_entries = RequiredField(*profile_json, "bridge_entries");
@@ -626,7 +642,8 @@ std::unique_ptr<OwnedHostAbiProfile> ParseProfile(const Json& root,
     if (owned->derivation_code_rvas[kFirstConstructorAnchor + anchor] ==
         owned->derivation_code_rvas[kJniSingletonAnchor]) {
       jni_singleton_constructor =
-          owned->profile.NativeMimallocConstructorRangeBegin() + anchor;
+          owned->profile.NativeMimallocConstructorRangeBegin() +
+          owned->constructor_anchor_indexes[anchor] - kFirstAnchorIndex;
       break;
     }
   }
