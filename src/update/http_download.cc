@@ -660,6 +660,22 @@ std::string DescribeCurlFailure(int curl_code, std::string_view message) {
         "; the server that answered is not HTTPS, which usually means your "
         "DNS sent this host to the wrong server, see \"The update says it "
         "could not resolve a host\" in the FAQ";
+  } else if (curl_code == CURLE_COULDNT_CONNECT ||
+             // The low-speed limit also times out; slow is not blocked.
+             (curl_code == CURLE_OPERATION_TIMEDOUT &&
+              message.find("too slow") == std::string_view::npos) ||
+             curl_code == CURLE_RECV_ERROR || curl_code == CURLE_GOT_NOTHING ||
+             // Block pages send another host's or a self-signed certificate.
+             (curl_code == CURLE_PEER_FAILED_VERIFICATION &&
+              (message.find("subject name") != std::string_view::npos ||
+               message.find("self") != std::string_view::npos)) ||
+             (curl_code == CURLE_SSL_CONNECT_ERROR &&
+              (message.find("reset") != std::string_view::npos ||
+               message.find("unexpected eof") != std::string_view::npos))) {
+    failure +=
+        "; your internet provider or network may be blocking the Roblox APK "
+        "download, see \"The update cannot reach the download server\" "
+        "in the FAQ";
   }
   return failure;
 }

@@ -100,6 +100,11 @@ Release notes on GitHub are taken from the matching section here.
 - When the Roblox updater crashes or quits without saying why, the session log and error dialog now
   give its exit status or signal instead of only "Roblox update preflight failed". When DNS cannot find
   a download server, the error points to a new FAQ entry with the commands to switch DNS servers.
+  When the server cannot be reached or the connection is cut, the error says your network may be
+  blocking it and points to a FAQ entry on using a VPN or another network. The dialog also shows the
+  updater's reason when the download progress window was open, instead of "without reporting a reason".
+  Error dialogs are titled "Nightcap" instead of "Crash", and an update failure leads with what to do,
+  with the network error below it.
 - A Roblox update is no longer rejected when the NVIDIA driver crashes as the test launch shuts down,
   after the update has already drawn frames.
 - PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.

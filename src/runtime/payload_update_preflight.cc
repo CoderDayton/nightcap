@@ -372,7 +372,38 @@ std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
   return child_environment;
 }
 
+bool StripPrefix(std::string_view* text, std::string_view prefix) {
+  if (text->substr(0, prefix.size()) != prefix) return false;
+  text->remove_prefix(prefix.size());
+  return true;
+}
+
+std::string Sentence(std::string text) {
+  if (!text.empty() && text[0] >= 'a' && text[0] <= 'z') {
+    text[0] = static_cast<char>(text[0] - 'a' + 'A');
+  }
+  return text;
+}
+
 }  // namespace
+
+std::string DescribeUpdateFailure(std::string_view details) {
+  constexpr std::string_view kNotPrepared = " could not be prepared: ";
+  constexpr std::string_view kFaq = " in the FAQ";
+  StripPrefix(&details, "no Roblox payload could be installed; ");
+  const std::size_t prepared = details.find(kNotPrepared);
+  if (details.substr(0, 7) == "Roblox " && prepared != std::string_view::npos) {
+    details.remove_prefix(prepared + kNotPrepared.size());
+  }
+  StripPrefix(&details, "apk-pure: ");
+  const std::size_t hint = details.rfind("; ");
+  if (hint == std::string_view::npos || details.size() < kFaq.size() ||
+      details.substr(details.size() - kFaq.size()) != kFaq) {
+    return Sentence(std::string(details));
+  }
+  return Sentence(std::string(details.substr(hint + 2))) +
+         ".\n\nDetails: " + std::string(details.substr(0, hint));
+}
 
 PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     const Environment& environment, const RuntimePaths& paths,
@@ -418,13 +449,14 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     action_status = posix_spawn_file_actions_init(&actions);
     actions_initialized = action_status == 0;
   }
-  if (action_status == 0 && progress.active()) {
-    action_status = posix_spawn_file_actions_adddup2(
-        &actions, progress.socket(), kUpdaterProgressDescriptor);
-  }
+  // Stderr first: the relay's write end can be the progress descriptor.
   if (action_status == 0 && stderr_relay.active()) {
     action_status = posix_spawn_file_actions_adddup2(
         &actions, stderr_relay.write_descriptor(), STDERR_FILENO);
+  }
+  if (action_status == 0 && progress.active()) {
+    action_status = posix_spawn_file_actions_adddup2(
+        &actions, progress.socket(), kUpdaterProgressDescriptor);
   }
   if (action_status != 0) {
     if (actions_initialized) {
