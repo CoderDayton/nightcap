@@ -1,6 +1,9 @@
 #include "runtime/asset_overlay_names.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <system_error>
 
@@ -61,6 +64,42 @@ std::size_t DisableAssetNameMappings(std::uint8_t* data, std::size_t size,
     }
   }
   return changed;
+}
+
+bool OverlayHasCustomSky(const std::filesystem::path& overlay_dir) {
+  if (overlay_dir.empty()) return false;
+  const std::filesystem::path sky =
+      overlay_dir / "content" / "android" / "textures" / "sky";
+  for (const char* prefix : {"sky512_", "indoor512_"}) {
+    for (const char* face : {"bk", "dn", "ft", "lf", "rt", "up"}) {
+      std::error_code error;
+      if (!std::filesystem::is_regular_file(
+              sky / (std::string(prefix) + face + ".tex"), error)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool MergeCustomSkyClientSettingsOverrides(std::string_view base_json,
+                                           std::string* merged_json,
+                                           bool* gray_sky, std::string* error) {
+  nlohmann::json overrides = nlohmann::json::parse(
+      base_json.empty() ? std::string_view("{}") : base_json, nullptr, false,
+      true);
+  if (overrides.is_discarded() || !overrides.is_object()) {
+    *error = "client-settings overrides must be a JSON object";
+    return false;
+  }
+  const auto flag = overrides.emplace("FFlagDebugSkyGray", "True").first;
+  std::string value = flag->is_string() ? flag->get<std::string>()
+                                        : flag->dump();
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  *gray_sky = value == "true";
+  *merged_json = overrides.dump();
+  return true;
 }
 
 }  // namespace runtime

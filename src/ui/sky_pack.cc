@@ -251,6 +251,38 @@ Path FacePath(const Path& overlay_dir, std::string_view face) {
   return SkyFolder(overlay_dir) / ("sky512_" + std::string(face) + ".tex");
 }
 
+// The start screen and the gray-sky flag draw indoor512.
+Path IndoorPath(const Path& overlay_dir, std::string_view face) {
+  return SkyFolder(overlay_dir) / ("indoor512_" + std::string(face) + ".tex");
+}
+
+struct SkyFile {
+  Path path;
+  std::size_t face;
+};
+
+// The files the installed sky owns: its sky512 faces, and the indoor512 faces
+// when each is missing or matches it. If any was put there by hand, all six
+// stay, so the indoor sky never mixes two skies.
+std::vector<SkyFile> SkyFiles(const Path& overlay_dir) {
+  std::vector<SkyFile> files;
+  for (std::size_t face = 0; face < kFaces.size(); ++face) {
+    files.push_back({FacePath(overlay_dir, kFaces[face]), face});
+  }
+  for (std::size_t face = 0; face < kFaces.size(); ++face) {
+    const Path indoor = IndoorPath(overlay_dir, kFaces[face]);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(indoor, error);
+    if (error ||
+        (exists && !SameBytes(indoor, FacePath(overlay_dir, kFaces[face])))) {
+      files.resize(kFaces.size());
+      return files;
+    }
+    files.push_back({indoor, face});
+  }
+  return files;
+}
+
 Path WithSuffix(Path path, const char* suffix) {
   path += suffix;
   return path;
@@ -325,21 +357,24 @@ bool FindFaceSets(const Path& source, Sets* sets, std::string* error,
 // before any new face goes in) and <face>.new. Puts the old sky back.
 void FinishInterruptedSwap(const Path& overlay_dir) {
   for (const std::string_view face : kFaces) {
-    const Path installed = FacePath(overlay_dir, face);
-    RemoveQuietly(WithSuffix(installed, ".new"));
-    std::error_code error;
-    if (std::filesystem::exists(WithSuffix(installed, ".old"), error)) {
-      std::filesystem::rename(WithSuffix(installed, ".old"), installed, error);
+    for (const Path& installed :
+         {FacePath(overlay_dir, face), IndoorPath(overlay_dir, face)}) {
+      RemoveQuietly(WithSuffix(installed, ".new"));
+      std::error_code error;
+      if (std::filesystem::exists(WithSuffix(installed, ".old"), error)) {
+        std::filesystem::rename(WithSuffix(installed, ".old"), installed,
+                                error);
+      }
     }
   }
 }
 
-// Moves the installed faces aside as <face>.old. On failure, puts back the
+// Moves the installed files aside as <file>.old. On failure, puts back the
 // ones already moved.
-bool MoveFacesAside(const Path& overlay_dir, std::vector<Path>* moved,
-                    std::error_code* error) {
-  for (const std::string_view face : kFaces) {
-    const Path installed = FacePath(overlay_dir, face);
+bool MoveFacesAside(const std::vector<SkyFile>& files,
+                    std::vector<Path>* moved, std::error_code* error) {
+  for (const SkyFile& file : files) {
+    const Path& installed = file.path;
     if (!std::filesystem::exists(installed, *error)) {
       if (*error) break;
       continue;
@@ -611,6 +646,16 @@ bool HasCustomSky(const Path& overlay_dir) {
   });
 }
 
+bool IndoorSkyMissing(const Path& overlay_dir) {
+  if (!HasCustomSky(overlay_dir)) return false;
+  const std::vector<SkyFile> files = SkyFiles(overlay_dir);
+  return std::any_of(files.begin() + kFaces.size(), files.end(),
+                     [](const SkyFile& file) {
+                       std::error_code error;
+                       return !std::filesystem::exists(file.path, error);
+                     });
+}
+
 bool InstallSky(const Path& source, const Path& overlay_dir,
                 std::string* error) {
   std::error_code fs_error;
@@ -661,6 +706,7 @@ bool InstallSky(const Path& source, const Path& overlay_dir,
   if (*error = BadImage(chosen); !error->empty()) return false;
 
   FinishInterruptedSwap(overlay_dir);
+  const std::vector<SkyFile> files = SkyFiles(overlay_dir);
   const Path folder = SkyFolder(overlay_dir);
   std::filesystem::create_directories(folder, fs_error);
   if (fs_error) {
@@ -671,31 +717,31 @@ bool InstallSky(const Path& source, const Path& overlay_dir,
   const auto discard = [&copies] {
     for (const Path& copy : copies) RemoveQuietly(copy);
   };
-  for (std::size_t face = 0; face < kFaces.size(); ++face) {
-    copies.push_back(WithSuffix(FacePath(overlay_dir, kFaces[face]), ".new"));
+  for (const SkyFile& file : files) {
+    const Path& source = chosen.faces[file.face].front();
+    copies.push_back(WithSuffix(file.path, ".new"));
     if (!std::filesystem::copy_file(
-            chosen.faces[face].front(), copies.back(),
+            source, copies.back(),
             std::filesystem::copy_options::overwrite_existing, fs_error)) {
       discard();
-      *error = "Cannot copy " + chosen.faces[face].front().filename().string() +
-               ": " + fs_error.message();
+      *error = "Cannot copy " + source.filename().string() + ": " +
+               fs_error.message();
       return false;
     }
   }
-  // The old faces stay as .old until all six new ones are in, so a failure
+  // The old files stay as .old until all the new ones are in, so a failure
   // puts the old sky back whole.
   std::vector<Path> moved;
-  if (!MoveFacesAside(overlay_dir, &moved, &fs_error)) {
+  if (!MoveFacesAside(files, &moved, &fs_error)) {
     discard();
     *error = "Cannot install the sky: " + fs_error.message();
     return false;
   }
-  for (std::size_t face = 0; face < kFaces.size(); ++face) {
-    std::filesystem::rename(copies[face], FacePath(overlay_dir, kFaces[face]),
-                            fs_error);
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    std::filesystem::rename(copies[index], files[index].path, fs_error);
     if (fs_error) {
-      for (std::size_t done = 0; done < face; ++done) {
-        RemoveQuietly(FacePath(overlay_dir, kFaces[done]));
+      for (std::size_t done = 0; done < index; ++done) {
+        RemoveQuietly(files[done].path);
       }
       for (const Path& installed : moved) {
         std::error_code ignored;
@@ -717,7 +763,7 @@ bool RemoveCustomSky(const Path& overlay_dir, std::string* error) {
   FinishInterruptedSwap(overlay_dir);
   std::vector<Path> moved;
   std::error_code fs_error;
-  if (!MoveFacesAside(overlay_dir, &moved, &fs_error)) {
+  if (!MoveFacesAside(SkyFiles(overlay_dir), &moved, &fs_error)) {
     *error = "Cannot remove the custom sky: " + fs_error.message();
     return false;
   }
