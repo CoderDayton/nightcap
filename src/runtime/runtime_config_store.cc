@@ -196,12 +196,13 @@ RuntimeConfigText ReadRuntimeConfigText(
 RuntimeConfigSaveResult SaveRuntimeConfigText(
     const std::filesystem::path& config_file, std::string_view original,
     std::string_view text) {
-  // Keys the file already had that this build leaves out, such as ones a
-  // nightly build wrote, may stay. A save that adds one is refused.
-  std::vector<std::string> already_ignored;
+  // Settings the file already had that this build leaves out, such as ones a
+  // nightly build wrote, may stay as they are. A save that adds or changes
+  // one is refused. Save() refuses unless the file still holds `original`.
+  std::vector<std::pair<std::string, std::string>> already_ignored;
   for (const IgnoredConfigKey& ignored :
-       LoadRuntimeConfig(NoEnvironment(), config_file).ignored) {
-    already_ignored.push_back(ignored.key);
+       LoadRuntimeConfigText(NoEnvironment(), original).ignored) {
+    already_ignored.emplace_back(ignored.key, ignored.value);
   }
   return Save(config_file, original, text, false,
               [&already_ignored](const std::filesystem::path& candidate) {
@@ -210,7 +211,8 @@ RuntimeConfigSaveResult SaveRuntimeConfigText(
                 if (!loaded) return loaded.error;
                 for (const IgnoredConfigKey& ignored : loaded.ignored) {
                   if (std::find(already_ignored.begin(), already_ignored.end(),
-                                ignored.key) == already_ignored.end()) {
+                                std::pair(ignored.key, ignored.value)) ==
+                      already_ignored.end()) {
                     return ignored.reason;
                   }
                 }

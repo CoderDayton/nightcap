@@ -748,6 +748,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   return true;
 }
 
+bool ParseYaml(std::string_view contents, const std::string& source,
+               ValueMap* values, bool* loaded, std::string* error);
+
 bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
               std::string* error) {
   const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -799,7 +802,11 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
     *error = "cannot close runtime configuration: " + path.string();
     return false;
   }
+  return ParseYaml(contents, path.string(), values, loaded, error);
+}
 
+bool ParseYaml(std::string_view contents, const std::string& source,
+               ValueMap* values, bool* loaded, std::string* error) {
   yaml_parser_t parser;
   if (!yaml_parser_initialize(&parser)) {
     *error = "cannot initialize YAML parser";
@@ -811,7 +818,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
       contents.size());
   const bool parsed = yaml_parser_load(&parser, &document) != 0;
   if (!parsed) {
-    *error = "invalid YAML in " + path.string();
+    *error = "invalid YAML in " + source;
     yaml_parser_delete(&parser);
     return false;
   }
@@ -903,33 +910,24 @@ bool UnsetEnvironmentValue(const char* name, std::string* error) {
   return false;
 }
 
-}  // namespace
-
-RuntimeConfigLoadResult LoadRuntimeConfig(
-    const Environment& environment, const std::filesystem::path& config_file) {
-  RuntimeConfigLoadResult result;
-  ValueMap yaml;
-  if (!LoadYaml(config_file, &yaml, &result.file_loaded, &result.error)) {
-    return result;
-  }
+RuntimeConfigLoadResult Resolve(const Environment& environment, ValueMap yaml,
+                                RuntimeConfigLoadResult result) {
   ValueMap fallback;
   std::string error;
   while (result.file_loaded && !ValidateAndMap(yaml, &fallback, &error)) {
-    // The key to leave out is the one whose removal changes the error. The
-    // version is never left out: a newer file format must not half-load.
+    // Leave out only the key the error names: an unknown key, or a value this
+    // build rejects. An error naming no single key, such as a bad proxy, still
+    // fails, so a setting is never dropped to satisfy a rule between keys.
+    // The version is never left out: a newer file format must not half-load.
     // device.__mapping is the loader's own marker, not a key in the file.
-    std::vector<std::string> keys;
-    for (const auto& [key, ignored] : yaml) {
-      if (key != "version" && key != "device.__mapping") keys.push_back(key);
-    }
-    std::sort(keys.begin(), keys.end());
     std::optional<std::string> culprit;
-    for (const std::string& key : keys) {
-      ValueMap without = yaml;
-      without.erase(key);
-      ValueMap scratch;
-      std::string other;
-      if (ValidateAndMap(without, &scratch, &other) || other != error) {
+    for (const auto& [key, ignored] : yaml) {
+      if (key == "version" || key == "device.__mapping") continue;
+      const std::string unknown = ": " + key;
+      if (error.rfind(key + " ", 0) == 0 ||
+          (error.size() > unknown.size() &&
+           error.compare(error.size() - unknown.size(), unknown.size(),
+                         unknown) == 0)) {
         culprit = key;
         break;
       }
@@ -938,7 +936,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
       result.error = error;
       return result;
     }
-    result.ignored.push_back({*culprit, error});
+    result.ignored.push_back(
+        {*culprit, error,
+         error.rfind("unknown runtime configuration key: ", 0) == 0,
+         yaml.at(*culprit)});
     yaml.erase(*culprit);
     fallback.clear();
     error.clear();
@@ -987,6 +988,29 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "Discord Rich Presence configuration is invalid";
   }
   return result;
+}
+
+}  // namespace
+
+RuntimeConfigLoadResult LoadRuntimeConfig(
+    const Environment& environment, const std::filesystem::path& config_file) {
+  RuntimeConfigLoadResult result;
+  ValueMap yaml;
+  if (!LoadYaml(config_file, &yaml, &result.file_loaded, &result.error)) {
+    return result;
+  }
+  return Resolve(environment, std::move(yaml), std::move(result));
+}
+
+RuntimeConfigLoadResult LoadRuntimeConfigText(const Environment& environment,
+                                              std::string_view text) {
+  RuntimeConfigLoadResult result;
+  ValueMap yaml;
+  if (!ParseYaml(text, "runtime configuration text", &yaml,
+                 &result.file_loaded, &result.error)) {
+    return result;
+  }
+  return Resolve(environment, std::move(yaml), std::move(result));
 }
 
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,

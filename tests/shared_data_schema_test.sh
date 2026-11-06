@@ -10,9 +10,9 @@ set -Eeuo pipefail
 readonly ROOT="${1:?source root is required}"
 
 found="$(
-  grep -rEn \
+  grep -rEon \
     -e '\{"schema_version", *[0-9]+\}' \
-    -e 'SchemaVersion *= *[0-9]+' \
+    -e 'SchemaVersion *(= *|\{ *)[0-9]+' \
     -e '\["schema_version"\] *= *[0-9]+' \
     "${ROOT}/src" || true
 )"
@@ -22,8 +22,8 @@ found="$(
   exit 1
 }
 
-bumped="$(grep -Ev '(\{"schema_version", *1\}|SchemaVersion *= *1\b|\["schema_version"\] *= *1\b)' \
-  <<<"${found}" || true)"
+# One line per match, so each version is checked on its own.
+bumped="$(grep -Ev '[^0-9]1\}?$' <<<"${found}" || true)"
 if [[ -n "${bumped}" ]]; then
   printf 'A shared data file schema changed; the released build cannot read it:\n%s\n' \
     "${bumped}" >&2

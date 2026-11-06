@@ -290,9 +290,9 @@ std::optional<OverlayConfig> OverlayConfigReloader::Read(std::string* error) {
     return std::nullopt;
   }
   // A bad overlay value, often half typed, keeps the overlay as it is rather
-  // than resetting it. Other keys a newer build wrote do not matter here.
+  // than resetting it. Keys a newer build wrote do not matter here.
   for (const IgnoredConfigKey& ignored : loaded.ignored) {
-    if (ignored.key.rfind("overlay.", 0) == 0) {
+    if (!ignored.unknown_key && ignored.key.rfind("overlay.", 0) == 0) {
       if (error != nullptr) *error = ignored.reason;
       return std::nullopt;
     }

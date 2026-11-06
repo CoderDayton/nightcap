@@ -1257,6 +1257,24 @@ graphics:
   EXPECT_NE(loaded.error.find("version"), std::string::npos);
 }
 
+// A bad proxy must stop the load, not drop the proxy and connect directly.
+TEST(RuntimeConfigFileTest, ABadProxyIsNeverLeftOut) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+network:
+  proxy_host: proxy.example
+  proxy_port: 65536
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_TRUE(loaded.ignored.empty());
+  EXPECT_NE(loaded.error.find("1 to 65535"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, RejectsUnknownOrContradictoryDevicePreset) {
   TemporaryDirectory temporary;
   const std::filesystem::path unknown = temporary.Write(R"yaml(
