@@ -120,10 +120,23 @@ std::vector<std::string> EmojiFontFiles(
   return files;
 }
 
+std::optional<std::filesystem::path> OverlaidFont(
+    const std::vector<std::string>& overlay_dirs, const std::string& name) {
+  for (const std::string& dir : overlay_dirs) {
+    const std::filesystem::path candidate =
+        std::filesystem::path(dir) / "content" / "fonts" / name;
+    if (!dir.empty() && IsRegularFile(candidate)) {
+      return candidate;
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 RobloxTextFontSelection ResolveRobloxTextFont(
-    int32_t font, const std::string& asset_content_root) {
+    int32_t font, const std::string& asset_content_root,
+    const std::vector<std::string>& overlay_dirs) {
   RobloxTextFontSelection selection;
   if (asset_content_root.empty()) {
     return selection;
@@ -133,7 +146,9 @@ RobloxTextFontSelection ResolveRobloxTextFont(
   selection.emoji_files = EmojiFontFiles(content);
   const std::optional<FontMapping> mapped = MappingFor(font, content);
   if (mapped.has_value()) {
-    const std::filesystem::path candidate = content / "fonts" / mapped->file;
+    const std::filesystem::path candidate =
+        OverlaidFont(overlay_dirs, mapped->file)
+            .value_or(content / "fonts" / mapped->file);
     if (IsRegularFile(candidate)) {
       selection.primary_file = candidate.lexically_normal().string();
       selection.size_scale = mapped->size_scale;
@@ -143,7 +158,8 @@ RobloxTextFontSelection ResolveRobloxTextFont(
   }
 
   const std::filesystem::path legacy =
-      content.parent_path() / "fonts" / LegacyFontName(font);
+      OverlaidFont(overlay_dirs, LegacyFontName(font))
+          .value_or(content.parent_path() / "fonts" / LegacyFontName(font));
   if (IsRegularFile(legacy)) {
     selection.primary_file = legacy.lexically_normal().string();
   }
@@ -152,8 +168,18 @@ RobloxTextFontSelection ResolveRobloxTextFont(
 
 RobloxTextFontSelection ResolveRobloxTextFont(int32_t font) {
   const char* content = std::getenv("MOCKTAIL_ASSET_PATH");
+  std::vector<std::string> overlays;
+  const char* overlay_switch = std::getenv("MOCKTAIL_ASSET_OVERLAY");
+  if (overlay_switch == nullptr || std::string_view(overlay_switch) != "0") {
+    for (const char* name :
+         {"MOCKTAIL_ASSET_OVERLAY_DIR", "MOCKTAIL_FONT_OVERLAY_DIR"}) {
+      const char* dir = std::getenv(name);
+      if (dir != nullptr && dir[0] != '\0') overlays.emplace_back(dir);
+    }
+  }
   return ResolveRobloxTextFont(
-      font, content != nullptr && content[0] != '\0' ? content : "");
+      font, content != nullptr && content[0] != '\0' ? content : "",
+      overlays);
 }
 
 }  // namespace runtime

@@ -8,6 +8,8 @@ Release notes on GitHub are taken from the matching section here.
 ### Added
 
 - Copy Log in Settings → About copies the log from the last time Nightcap ran, ready to paste in a bug report.
+- Settings → Appearance picks one .ttf or .otf font for Roblox's menus and games, with a preview.
+  Emoji and other scripts keep Roblox's fonts. Sky moved to Appearance too.
 
 ### Changed
 

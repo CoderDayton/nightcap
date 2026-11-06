@@ -77,6 +77,14 @@ class RuntimePaths {
   }
   // Sky packs imported in Settings, one folder each.
   std::filesystem::path sky_library_dir() const { return data_root_ / "skies"; }
+  // The font picked in Settings, the only file in the folder.
+  std::filesystem::path custom_font_dir() const {
+    return data_root_ / "custom_font";
+  }
+  // Rebuilt at each start from custom_font_dir() and Roblox's fonts.
+  std::filesystem::path custom_font_overlay_dir() const {
+    return data_root_ / "custom_font_overlay";
+  }
   bool use_real_sober_paths() const { return use_real_sober_paths_; }
 
   std::filesystem::path DefaultAssetPath() const;

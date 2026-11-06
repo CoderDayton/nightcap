@@ -56,6 +56,7 @@ class AssetManagerTest : public ::testing::Test {
     ASSERT_FALSE(root_.empty());
     setenv("MOCKTAIL_ASSET_ROOT", root_.c_str(), 1);
     unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
+    unsetenv("MOCKTAIL_FONT_OVERLAY_DIR");
     const char* backend = std::getenv("MOCKTAIL_GRAPHICS_BACKEND");
     had_backend_ = backend != nullptr;
     previous_backend_ = backend != nullptr ? backend : "";
@@ -65,6 +66,7 @@ class AssetManagerTest : public ::testing::Test {
   void TearDown() override {
     unsetenv("MOCKTAIL_ASSET_ROOT");
     unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
+    unsetenv("MOCKTAIL_FONT_OVERLAY_DIR");
     unsetenv("MOCKTAIL_ASSET_OVERLAY");
     if (had_backend_) {
       setenv("MOCKTAIL_GRAPHICS_BACKEND", previous_backend_.c_str(), 1);
@@ -122,6 +124,38 @@ class AssetManagerTest : public ::testing::Test {
   bool had_backend_ = false;
   std::string previous_backend_;
 };
+
+std::string ReadWhole(const char* name) {
+  AAsset* asset =
+      AAssetManager_open(AAssetManager_fromJava(nullptr, nullptr), name, 0);
+  if (asset == nullptr) {
+    return {};
+  }
+  const auto* data = static_cast<const char*>(AAsset_getBuffer(asset));
+  std::string text(data, data + AAsset_getLength(asset));
+  AAsset_close(asset);
+  return text;
+}
+
+// The font picked in Settings stands in for Roblox's, but a font the user put
+// in the overlay by hand still wins, and both go with custom assets.
+TEST_F(AssetManagerTest, ServesThePickedFontUnderTheUsersOwn) {
+  WriteAsset("content/fonts/Arimo-Regular.ttf", "stock arimo");
+  WriteAsset("content/fonts/Oswald-Bold.ttf", "stock oswald");
+  const std::string overlay = MakeTempRoot();
+  const std::string fonts = MakeTempRoot();
+  WriteAssetAt(overlay, "content/fonts/Oswald-Bold.ttf", "own oswald");
+  WriteAssetAt(fonts, "content/fonts/Arimo-Regular.ttf", "picked");
+  WriteAssetAt(fonts, "content/fonts/Oswald-Bold.ttf", "picked");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay.c_str(), 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_FONT_OVERLAY_DIR", fonts.c_str(), 1), 0);
+
+  EXPECT_EQ(ReadWhole("rbxasset://fonts/Arimo-Regular.ttf"), "picked");
+  EXPECT_EQ(ReadWhole("rbxasset://fonts/Oswald-Bold.ttf"), "own oswald");
+
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY", "0", 1), 0);
+  EXPECT_EQ(ReadWhole("rbxasset://fonts/Arimo-Regular.ttf"), "stock arimo");
+}
 
 TEST_F(AssetManagerTest, FromJavaReturnsSingletonManager) {
   EXPECT_NE(AAssetManager_fromJava(nullptr, nullptr), nullptr);

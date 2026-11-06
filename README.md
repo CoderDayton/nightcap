@@ -39,7 +39,8 @@ side by side.
 - **Performance.** Less idle CPU use and faster texture loading.
 - **Custom assets.** Cursors, fonts and skies go in
   `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Settings >
-  Customization imports sky packs, zips included, and switches between them. Fleasion works too.
+  Appearance imports sky packs, zips included, switches between them, and
+  swaps Roblox's fonts for one of yours. Fleasion works too.
 - **Overlays.** FPS, ping, and the server's location when you join.
 - **Discord.** Shows the game you're playing.
 - **Settings window.** Every option in one place.

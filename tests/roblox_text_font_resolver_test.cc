@@ -114,6 +114,43 @@ TEST(RobloxTextFontResolverTest, AddsBundledEmojiFontsAsFallbacks) {
             (assets.content() / "fonts/RobloxEmoji.ttf").string());
 }
 
+// Text Nightcap draws matches Roblox's: a font in the asset folder first,
+// then the font picked in Settings, then Roblox's own.
+TEST(RobloxTextFontResolverTest, TakesFontsFromTheOverlaysFirst) {
+  TemporaryFontAssets assets;
+  ASSERT_FALSE(assets.root().empty());
+  ASSERT_TRUE(assets.CreateFile(
+      "assets/android/fonts/font-mappings.json",
+      R"([{"enum":13,"font":"PressStart2P-Regular.ttf","fromRbxFontRatio":0.9},
+          {"enum":14,"font":"Oswald-Bold.ttf","fromRbxFontRatio":0.9}])"));
+  ASSERT_TRUE(
+      assets.CreateFile("assets/content/fonts/PressStart2P-Regular.ttf"));
+  ASSERT_TRUE(assets.CreateFile("assets/content/fonts/Oswald-Bold.ttf"));
+  ASSERT_TRUE(assets.CreateFile("assets/fonts/SourceSansPro-Bold.ttf"));
+  ASSERT_TRUE(assets.CreateFile("own/content/fonts/Oswald-Bold.ttf"));
+  ASSERT_TRUE(assets.CreateFile("picked/content/fonts/Oswald-Bold.ttf"));
+  ASSERT_TRUE(
+      assets.CreateFile("picked/content/fonts/PressStart2P-Regular.ttf"));
+  ASSERT_TRUE(assets.CreateFile("picked/content/fonts/SourceSansPro-Bold.ttf"));
+  const std::vector<std::string> overlays = {
+      (assets.root() / "own").string(), (assets.root() / "picked").string()};
+
+  EXPECT_EQ(ResolveRobloxTextFont(14, assets.content().string(), overlays)
+                .primary_file,
+            (assets.root() / "own/content/fonts/Oswald-Bold.ttf").string());
+  const RobloxTextFontSelection mapped =
+      ResolveRobloxTextFont(13, assets.content().string(), overlays);
+  EXPECT_TRUE(mapped.exact_mapping);
+  EXPECT_EQ(
+      mapped.primary_file,
+      (assets.root() / "picked/content/fonts/PressStart2P-Regular.ttf")
+          .string());
+  EXPECT_EQ(ResolveRobloxTextFont(4, assets.content().string(), overlays)
+                .primary_file,
+            (assets.root() / "picked/content/fonts/SourceSansPro-Bold.ttf")
+                .string());
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

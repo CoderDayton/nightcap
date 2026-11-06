@@ -696,11 +696,27 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {}, "true", {}},
             }},
        }},
-      {"customization",
-       "Customization",
+      {"appearance",
+       "Appearance",
        "applications-graphics-symbolic",
-       "Display & input",
+       "Customize",
        {
+           {"Font",
+            {
+                {"font",
+                 "Font",
+                 "",
+                 SettingKind::kFont,
+                 {},
+                 "",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            "One font for Roblox's menus and games. Emoji and other scripts "
+            "keep Roblox's fonts. A new pick shows the next time Nightcap "
+            "starts."},
            {"Sky",
             {
                 {"sky",
@@ -723,6 +739,12 @@ const std::vector<SettingsPage>& SettingsPages() {
             false,
             "The sky in games. A new pick shows the next time Nightcap "
             "starts. Right-click a sky to remove it."},
+       }},
+      {"files",
+       "Files",
+       "folder-symbolic",
+       "Customize",
+       {
            {"Custom files",
             {
                 {"assets.overlay",
@@ -1374,7 +1396,7 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
-  if (key == "sky" && !IsSwitchedOn("assets.overlay")) {
+  if ((key == "sky" || key == "font") && !IsSwitchedOn("assets.overlay")) {
     return false;
   }
   if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
@@ -1430,6 +1452,7 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
     case SettingKind::kFolder:
     case SettingKind::kCache:
     case SettingKind::kSky:
+    case SettingKind::kFont:
       return false;
   }
   return false;
