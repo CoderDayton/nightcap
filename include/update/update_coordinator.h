@@ -22,6 +22,7 @@ struct UpdatePaths {
   std::filesystem::path compatibility_manifest;
   std::filesystem::path signing_trust_manifest;
   std::filesystem::path download_sources_manifest;
+  // One HostAbi sidecar, or a directory holding one per supported build.
   std::filesystem::path host_abi_reference_profile;
   std::filesystem::path runtime_binary;
   // Optional packaging wrapper; runtime_binary identifies the actual ELF.
@@ -44,6 +45,7 @@ struct UpdateRequest {
 
 struct UpdateResult {
   bool changed = false;
+  // A newer Roblox is published; Roblox's servers reject the active client.
   bool stale = false;
   std::string payload_id;
   std::string message;
@@ -53,9 +55,12 @@ struct UpdateResult {
   explicit operator bool() const { return error.empty(); }
 };
 
+// Best first. The installed payload is never a plan: it is the fallback, so a
+// rejected candidate cannot pin the user to a version the catalog moved past.
 struct UpdateCandidatePlan {
   ExpectedPayloadIdentity identity;
   bool exact_supported = false;
+  // Approved profile already stored: re-run canaries, skip the download.
   bool reuse_installed = false;
   std::string origin;
 };

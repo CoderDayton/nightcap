@@ -3,13 +3,17 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <cstdio>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -32,6 +36,12 @@ namespace runtime {
 namespace {
 
 constexpr char kProgressFinishedPacket = 'S';
+constexpr std::chrono::milliseconds kFirstBackgroundUpdateDelay =
+    std::chrono::minutes(2);
+constexpr int kBackgroundUpdateNice = 10;
+// ioprio_set(2) values; glibc ships no header for them.
+constexpr int kIoprioWhoProcess = 1;
+constexpr int kIoprioLowestBestEffort = (2 << 13) | 7;
 
 bool Enabled(const Environment& environment, std::string_view name) {
   const auto value = environment.Get(name);
@@ -168,14 +178,11 @@ class UpdateProgressMonitor final {
       return {};
     }
     int action_status = 0;
-    if (sockets[0] == STDIN_FILENO) {
-      action_status = posix_spawn_file_actions_addclose(&actions, sockets[0]);
-    }
-    if (action_status == 0 && sockets[1] != STDIN_FILENO) {
+    if (sockets[1] != STDIN_FILENO) {
       action_status =
           posix_spawn_file_actions_adddup2(&actions, sockets[1], STDIN_FILENO);
     }
-    if (action_status == 0 && sockets[0] != STDIN_FILENO) {
+    if (action_status == 0) {
       action_status = posix_spawn_file_actions_addclose(&actions, sockets[0]);
     }
     if (action_status == 0 && sockets[1] != STDIN_FILENO) {
@@ -565,8 +572,20 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
           posix_spawnattr_setflags(&attributes,
                                    POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
         }
+        // A thread's nice value and I/O priority pass to the children it
+        // spawns, so the download never competes with the game it started in.
+        const auto thread = static_cast<int>(syscall(SYS_gettid));
+        errno = 0;
+        const int nice = getpriority(PRIO_PROCESS, thread);
+        if (errno == 0) {
+          (void)setpriority(PRIO_PROCESS, thread,
+                            std::min(nice + kBackgroundUpdateNice, 19));
+        }
+        (void)syscall(SYS_ioprio_set, kIoprioWhoProcess, thread,
+                      kIoprioLowestBestEffort);
         std::unique_lock<std::mutex> lock(mutex_);
-        auto delay = std::min(interval, std::chrono::milliseconds(5000));
+        // Past most game joins, so a release found then is ready next launch.
+        auto delay = std::min(interval, kFirstBackgroundUpdateDelay);
         while (!wake_.wait_for(lock, delay, [this] { return stopped_; })) {
           delay = interval;
           pid_t process = -1;
@@ -576,9 +595,30 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
               environment_pointers.data());
           if (status != 0) continue;
           child_ = process;
+          const auto started = std::chrono::steady_clock::now();
           while (child_ > 0) {
-            const pid_t exited = waitpid(child_, nullptr, WNOHANG);
-            if (exited == child_ || (exited < 0 && errno == ECHILD)) {
+            int child_status = 0;
+            rusage usage{};
+            const pid_t exited = wait4(child_, &child_status, WNOHANG, &usage);
+            if (exited == child_) {
+              const double seconds =
+                  std::chrono::duration<double>(
+                      std::chrono::steady_clock::now() - started)
+                      .count();
+              const double cpu =
+                  static_cast<double>(usage.ru_utime.tv_sec +
+                                      usage.ru_stime.tv_sec) +
+                  static_cast<double>(usage.ru_utime.tv_usec +
+                                      usage.ru_stime.tv_usec) /
+                      1e6;
+              std::fprintf(stderr,
+                           "  [update] background check took %.1f s, %.1f s "
+                           "CPU, peak %ld MiB, status %d\n",
+                           seconds, cpu, usage.ru_maxrss / 1024,
+                           WIFEXITED(child_status) ? WEXITSTATUS(child_status)
+                                                   : -1);
+              child_ = -1;
+            } else if (exited < 0 && errno == ECHILD) {
               child_ = -1;
             } else {
               wake_.wait_for(lock, std::chrono::milliseconds(50));

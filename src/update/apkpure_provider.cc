@@ -262,6 +262,8 @@ ProviderDownloadResult ApkPureProvider::DownloadVerified(
     result.error = parse_error;
     return result;
   }
+  // A rejected archive explains the failure better than a later transfer error.
+  std::string rejection;
   for (std::size_t index = 0; index < urls.size(); ++index) {
     const bool xapk = urls[index].find(".xapk") != std::string::npos;
     const std::filesystem::path destination =
@@ -271,12 +273,16 @@ ProviderDownloadResult ApkPureProvider::DownloadVerified(
     request.url = urls[index];
     request.allowed_hosts = kDownloadHosts;
     request.maximum_bytes = kMaximumArchiveBytes;
+    // Several hundred MiB over a slow link is not a failed transfer; the
+    // quarter-hour cap failed those users outright. Stalls are caught by the
+    // low-speed guard instead.
     request.transfer_timeout_ms = 0;
     const auto accept = [&]() {
       result.archives = {destination};
       result.error.clear();
       if (validate) result.error = validate(result);
       if (result) return true;
+      rejection = result.error;
       result.archives.clear();
       std::filesystem::remove(destination, filesystem_error);
       return false;
@@ -290,8 +296,8 @@ ProviderDownloadResult ApkPureProvider::DownloadVerified(
       continue;
     }
     if (accept()) return result;
-    std::filesystem::remove(destination, filesystem_error);
   }
+  if (!rejection.empty()) result.error = rejection;
   if (result.error.empty()) result.error = "APKPure returned no usable APK";
   return result;
 }

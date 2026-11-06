@@ -247,6 +247,36 @@ TEST(ApkPureProviderTest, RepairsCachedArchivesBeforeTryingAnotherSource) {
   EXPECT_EQ(ReadFile(destination), good);
 }
 
+TEST(ApkPureProviderTest, KeepsTheRejectionWhenALaterDownloadFails) {
+  TemporaryDirectory temporary;
+  int downloads = 0;
+  ApkPureProvider provider(
+      [](std::string_view) {
+        HttpBytesResult result;
+        result.bytes =
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/one.apk") +
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/two.apk");
+        return result;
+      },
+      [&](const HttpTransferRequest&, const auto& path, int) {
+        HttpDownloadResult result;
+        if (++downloads == 1) {
+          Write(path, std::string("PK\003\004") + "rejected");
+        } else {
+          result.error = "transfer timed out";
+        }
+        return result;
+      });
+  const auto result = provider.DownloadVerified(
+      {"2.742.1059", 3222, {}}, temporary.root(), -1,
+      [](const ProviderDownloadResult&) { return "bad signature"; });
+  EXPECT_FALSE(result);
+  EXPECT_EQ(downloads, 2);
+  EXPECT_EQ(result.error, "bad signature");
+}
+
 TEST(ApkPureProviderTest, VerifiesAlternativeApksIndividually) {
   TemporaryDirectory temporary;
   int downloads = 0;
@@ -889,6 +919,23 @@ TEST_F(UpdateCoordinatorDownloadTest,
   EXPECT_EQ(provider.requested_versions, std::vector<std::uint64_t>{200});
   EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["metadata_status"],
             "deferred");
+}
+
+// Startup never learns the latest version; old payloads still go.
+TEST_F(UpdateCoordinatorDownloadTest, UpToDateStartupCollectsSupersededPayloads) {
+  PayloadStore store(paths.data_root, paths.compatibility_manifest);
+  ASSERT_TRUE(store.Promote("200-" + std::string(40, 'b')));
+  const auto superseded =
+      paths.data_root / "payloads" / ("50-" + std::string(40, 'c'));
+  Write(superseded / "libroblox.so", "payload bytes");
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(provider.checks, 0);
+  EXPECT_FALSE(std::filesystem::exists(superseded));
+  EXPECT_TRUE(std::filesystem::exists(paths.data_root / "payloads" /
+                                      ("100-" + std::string(40, 'a'))));
 }
 
 TEST_F(UpdateCoordinatorDownloadTest, RunnableStartupDoesNotDependOnTheNetwork) {

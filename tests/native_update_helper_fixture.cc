@@ -1,6 +1,9 @@
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <charconv>
 #include <csignal>
 #include <cstdio>
@@ -56,6 +59,15 @@ int main(int argc, char** argv) {
     std::ofstream output(parent_capture);
     output << Environment("MOCKTAIL_UPDATE_PARENT_PID") << '\n';
     if (!output) return 68;
+  }
+  const char* nice_capture = Environment("MOCKTAIL_TEST_UPDATE_NICE_CAPTURE");
+  if (nice_capture[0] != '\0') {
+    errno = 0;
+    const int nice = getpriority(PRIO_PROCESS, 0);
+    std::ofstream output(nice_capture);
+    output << nice << ' '
+           << syscall(SYS_ioprio_get, 1, 0) << '\n';
+    if (!output || errno != 0) return 70;
   }
   const char* diagnostics = Environment("MOCKTAIL_TEST_UPDATE_STDERR");
   const char* backend_capture = Environment("MOCKTAIL_TEST_UPDATE_BACKEND_CAPTURE");

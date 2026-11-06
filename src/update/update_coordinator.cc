@@ -953,8 +953,12 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
     result.message = "cannot discover a newer Roblox release";
     return finish();
   }
-  if (current && latest_version &&
-      current.version_code >= latest_version->version_code &&
+  // Startup skips discovery, so with nothing newer downloaded it only needs
+  // the preferred supported version.
+  const bool nothing_newer =
+      latest_version ? current.version_code >= latest_version->version_code
+                     : request.startup_preflight;
+  if (current && nothing_newer &&
       current.version_code >= preferred->version_code) {
     result.payload_id = current.payload_id;
     result.message = "Roblox " + current.version_name + " is installed";

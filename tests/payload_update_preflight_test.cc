@@ -4,8 +4,11 @@
 #include <gtest/gtest.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -182,6 +185,32 @@ TEST(BackgroundPayloadUpdateTest, TellsTheUpdaterWhichProcessStartedIt) {
   update.Stop();
   EXPECT_EQ(ReadLines(capture),
             std::vector<std::string>{std::to_string(getpid())});
+}
+
+TEST(BackgroundPayloadUpdateTest, RunsTheUpdaterAtLowCpuAndDiskPriority) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "priority";
+  ScopedVariable captured("MOCKTAIL_TEST_UPDATE_NICE_CAPTURE",
+                          capture.string());
+  errno = 0;
+  const int own_nice = getpriority(PRIO_PROCESS, 0);
+  ASSERT_EQ(errno, 0);
+  const auto environment = NativeEnvironment();
+  BackgroundPayloadUpdate update;
+  update.Start(environment, RuntimePaths::FromEnvironment(environment),
+               std::chrono::milliseconds(10));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (ReadLines(capture).empty() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  update.Stop();
+  EXPECT_EQ(ReadLines(capture),
+            std::vector<std::string>{std::to_string(std::min(own_nice + 10, 19)) +
+                                     " " + std::to_string((2 << 13) | 7)});
+  errno = 0;
+  EXPECT_EQ(getpriority(PRIO_PROCESS, 0), own_nice);
 }
 
 TEST(BackgroundPayloadUpdateTest, CancelsTheScheduledCheckImmediately) {

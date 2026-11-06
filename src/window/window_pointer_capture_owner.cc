@@ -289,7 +289,7 @@ bool WindowPointerCaptureOwner::Shutdown() {
   native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
-  return Apply(false, CursorShape::kArrow, nullptr, false, false);
+  return Apply(false, CursorShape::kArrow);
 }
 
 bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
