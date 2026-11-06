@@ -125,6 +125,7 @@ stdenv.mkDerivation (finalAttrs: {
     "-DCMAKE_INSTALL_LIBDIR=lib"
     "-DMOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=${placeholder "out"}/share/mocktail/metadata/roblox_compatibility.json"
     "-DMOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST=${placeholder "out"}/share/mocktail/metadata/roblox_signing_certificates.json"
+    "-DMOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST=${placeholder "out"}/share/mocktail/metadata/roblox_download_sources.json"
     "-DBUILD_TESTING=OFF"
   ];
 

@@ -3,21 +3,29 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <cstdio>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "runtime/helper_environment.h"
+#include "runtime/https_json.h"
 
 extern char** environ;
 
@@ -29,8 +37,13 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-constexpr int kUpdaterProgressDescriptor = 10;
 constexpr char kProgressFinishedPacket = 'S';
+constexpr std::chrono::milliseconds kFirstBackgroundUpdateDelay =
+    std::chrono::minutes(2);
+constexpr int kBackgroundUpdateNice = 10;
+// ioprio_set(2) values; glibc ships no header for them.
+constexpr int kIoprioWhoProcess = 1;
+constexpr int kIoprioLowestBestEffort = (2 << 13) | 7;
 
 bool Enabled(const Environment& environment, std::string_view name) {
   const auto value = environment.Get(name);
@@ -150,6 +163,16 @@ class UpdateProgressMonitor final {
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) != 0) {
       return {};
     }
+    if (sockets[0] <= STDERR_FILENO) {
+      const int descriptor =
+          fcntl(sockets[0], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+      close(sockets[0]);
+      if (descriptor < 0) {
+        close(sockets[1]);
+        return {};
+      }
+      sockets[0] = descriptor;
+    }
     posix_spawn_file_actions_t actions;
     if (posix_spawn_file_actions_init(&actions) != 0) {
       close(sockets[0]);
@@ -157,14 +180,11 @@ class UpdateProgressMonitor final {
       return {};
     }
     int action_status = 0;
-    if (sockets[0] == STDIN_FILENO) {
-      action_status = posix_spawn_file_actions_addclose(&actions, sockets[0]);
-    }
-    if (action_status == 0 && sockets[1] != STDIN_FILENO) {
+    if (sockets[1] != STDIN_FILENO) {
       action_status =
           posix_spawn_file_actions_adddup2(&actions, sockets[1], STDIN_FILENO);
     }
-    if (action_status == 0 && sockets[0] != STDIN_FILENO) {
+    if (action_status == 0) {
       action_status = posix_spawn_file_actions_addclose(&actions, sockets[0]);
     }
     if (action_status == 0 && sockets[1] != STDIN_FILENO) {
@@ -346,7 +366,7 @@ class UpdaterStderrRelay final {
 };
 
 std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
-                                          bool progress_enabled) {
+                                          int progress_descriptor = -1) {
   const std::vector<std::pair<std::string_view, std::filesystem::path>>
       overrides = {
           {"MOCKTAIL_CONFIG_FILE", paths.config_file()},
@@ -365,9 +385,9 @@ std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
   for (const auto& [name, value] : overrides) {
     child_environment.emplace_back(std::string(name) + "=" + value.string());
   }
-  if (progress_enabled) {
+  if (progress_descriptor >= 0) {
     child_environment.emplace_back("MOCKTAIL_UPDATE_PROGRESS_FD=" +
-                                   std::to_string(kUpdaterProgressDescriptor));
+                                   std::to_string(progress_descriptor));
   }
   return child_environment;
 }
@@ -434,7 +454,7 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
                        nullptr};
   UpdateProgressMonitor progress = UpdateProgressMonitor::Start(environment);
   std::vector<std::string> child_environment =
-      ChildEnvironment(paths, progress.active());
+      ChildEnvironment(paths, progress.socket());
   std::vector<char*> child_environment_pointers;
   child_environment_pointers.reserve(child_environment.size() + 1);
   for (std::string& entry : child_environment) {
@@ -449,14 +469,14 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     action_status = posix_spawn_file_actions_init(&actions);
     actions_initialized = action_status == 0;
   }
-  // Stderr first: the relay's write end can be the progress descriptor.
+  if (action_status == 0 && progress.active()) {
+    // Same-descriptor spawn dup2 clears FD_CLOEXEC in the child.
+    action_status = posix_spawn_file_actions_adddup2(
+        &actions, progress.socket(), progress.socket());
+  }
   if (action_status == 0 && stderr_relay.active()) {
     action_status = posix_spawn_file_actions_adddup2(
         &actions, stderr_relay.write_descriptor(), STDERR_FILENO);
-  }
-  if (action_status == 0 && progress.active()) {
-    action_status = posix_spawn_file_actions_adddup2(
-        &actions, progress.socket(), kUpdaterProgressDescriptor);
   }
   if (action_status != 0) {
     if (actions_initialized) {
@@ -496,12 +516,15 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     result.error = force_run_latest ? "forced latest Roblox run failed"
                                      : "Roblox update preflight failed";
     result.details = stderr_relay.failure();
-    if (result.details.empty() && WIFSIGNALED(child_status)) {
+    if (WIFSIGNALED(child_status)) {
       const int signal_number = WTERMSIG(child_status);
-      result.details = "the updater was killed by signal " +
-                       std::to_string(signal_number) + " (" +
-                       strsignal(signal_number) +
-                       ") before it reported a reason";
+      const std::string killed = "the updater was killed by signal " +
+                                 std::to_string(signal_number) + " (" +
+                                 strsignal(signal_number) + ")";
+      // A last progress message is not the reason it died.
+      result.details = result.details.empty()
+                           ? killed + " before it reported a reason"
+                           : result.details + "; then " + killed;
     } else if (result.details.empty()) {
       result.details = "the updater exited with status " +
                        std::to_string(WEXITSTATUS(child_status)) +
@@ -511,11 +534,48 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
   return result;
 }
 
+std::string ReadRobloxUpgradeAction(const nlohmann::json& reply) {
+  if (!reply.is_object()) return {};
+  const auto data = reply.find("data");
+  if (data == reply.end() || !data->is_object()) return {};
+  const auto action = data->find("UpgradeAction");
+  if (action == data->end() || !action->is_string()) return {};
+  return action->get<std::string>();
+}
+
+std::string QueryRobloxUpgradeAction(const std::string& version_name,
+                                     const std::atomic<bool>* cancel) {
+  if (version_name.empty() ||
+      version_name.find_first_not_of("0123456789.") != std::string::npos)
+    return {};
+  const auto reply = GetHttpsJson(
+      "https://clientsettings.roblox.com/v1/mobile-client-version"
+      "?appVersion=AppAndroidV" +
+          version_name,
+      cancel);
+  return reply ? ReadRobloxUpgradeAction(*reply) : std::string();
+}
+
+namespace {
+
+std::string ActiveVersionName(const RuntimePaths& paths) {
+  std::ifstream input(paths.active_payload_manifest());
+  const auto manifest = nlohmann::json::parse(input, nullptr, false);
+  if (!manifest.is_object()) return {};
+  const auto version = manifest.find("version_name");
+  return version != manifest.end() && version->is_string()
+             ? version->get<std::string>()
+             : std::string();
+}
+
+}  // namespace
+
 BackgroundPayloadUpdate::~BackgroundPayloadUpdate() { Stop(); }
 
 void BackgroundPayloadUpdate::Start(const Environment& environment,
                                     const RuntimePaths& paths,
-                                    std::chrono::milliseconds interval) {
+                                    std::chrono::milliseconds interval,
+                                    UpgradeActionQuery ask_roblox) {
   if (worker_.joinable() || interval.count() <= 0 ||
       Enabled(environment, "MOCKTAIL_SKIP_UPDATE_CHECK") ||
       Enabled(environment, "MOCKTAIL_ISOLATED_CANARY") ||
@@ -523,12 +583,16 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
     return;
   const auto helper = UpdateHelper(environment);
   if (helper.empty()) return;
-  auto child_environment = ChildEnvironment(paths, false);
+  auto child_environment = ChildEnvironment(paths);
   child_environment.emplace_back("MOCKTAIL_UPDATE_PARENT_PID=" +
                                  std::to_string(getpid()));
+  const std::string version_name =
+      ask_roblox ? ActiveVersionName(paths) : std::string();
   stopped_ = false;
+  cancel_ = false;
   worker_ =
-      std::thread([this, helper, interval,
+      std::thread([this, helper, interval, version_name,
+                   ask_roblox = std::move(ask_roblox),
                    child_environment = std::move(child_environment)]() mutable {
         std::vector<char*> environment_pointers;
         for (auto& entry : child_environment)
@@ -551,8 +615,42 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
           posix_spawnattr_setflags(&attributes,
                                    POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
         }
+        // A thread's nice value and I/O priority pass to the children it
+        // spawns, so the download never competes with the game it started in.
+        const auto thread = static_cast<int>(syscall(SYS_gettid));
+        errno = 0;
+        const int nice = getpriority(PRIO_PROCESS, thread);
+        if (errno == 0) {
+          (void)setpriority(PRIO_PROCESS, thread,
+                            std::min(nice + kBackgroundUpdateNice, 19));
+        }
+        (void)syscall(SYS_ioprio_set, kIoprioWhoProcess, thread,
+                      kIoprioLowestBestEffort);
+        // Past most game joins, so a release found then is ready next launch.
+        auto delay = std::min(interval, kFirstBackgroundUpdateDelay);
+        if (!version_name.empty()) {
+          const std::string action = ask_roblox(version_name, &cancel_);
+          if (action == "Required" || action == "Recommended") {
+            delay = std::chrono::milliseconds(0);
+            std::fprintf(stderr,
+                         "  [update] Roblox marks %s as %s; checking for an "
+                         "update now\n",
+                         version_name.c_str(), action.c_str());
+          } else {
+            std::fprintf(stderr,
+                         "  [update] Roblox marks %s as %s; first check in "
+                         "%lld s\n",
+                         version_name.c_str(),
+                         action.empty() ? "unknown" : action.c_str(),
+                         static_cast<long long>(
+                             std::chrono::duration_cast<std::chrono::seconds>(
+                                 delay)
+                                 .count()));
+          }
+        }
         std::unique_lock<std::mutex> lock(mutex_);
-        while (!wake_.wait_for(lock, interval, [this] { return stopped_; })) {
+        while (!wake_.wait_for(lock, delay, [this] { return stopped_; })) {
+          delay = interval;
           pid_t process = -1;
           const int status = posix_spawn(
               &process, executable.c_str(), nullptr,
@@ -560,9 +658,30 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
               environment_pointers.data());
           if (status != 0) continue;
           child_ = process;
+          const auto started = std::chrono::steady_clock::now();
           while (child_ > 0) {
-            const pid_t exited = waitpid(child_, nullptr, WNOHANG);
-            if (exited == child_ || (exited < 0 && errno == ECHILD)) {
+            int child_status = 0;
+            rusage usage{};
+            const pid_t exited = wait4(child_, &child_status, WNOHANG, &usage);
+            if (exited == child_) {
+              const double seconds =
+                  std::chrono::duration<double>(
+                      std::chrono::steady_clock::now() - started)
+                      .count();
+              const double cpu =
+                  static_cast<double>(usage.ru_utime.tv_sec +
+                                      usage.ru_stime.tv_sec) +
+                  static_cast<double>(usage.ru_utime.tv_usec +
+                                      usage.ru_stime.tv_usec) /
+                      1e6;
+              std::fprintf(stderr,
+                           "  [update] background check took %.1f s, %.1f s "
+                           "CPU, peak %ld MiB, status %d\n",
+                           seconds, cpu, usage.ru_maxrss / 1024,
+                           WIFEXITED(child_status) ? WEXITSTATUS(child_status)
+                                                   : -1);
+              child_ = -1;
+            } else if (exited < 0 && errno == ECHILD) {
               child_ = -1;
             } else {
               wake_.wait_for(lock, std::chrono::milliseconds(50));
@@ -577,6 +696,7 @@ void BackgroundPayloadUpdate::Stop() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stopped_ = true;
+    cancel_ = true;
     if (child_ > 0) kill(child_, SIGTERM);
   }
   wake_.notify_all();

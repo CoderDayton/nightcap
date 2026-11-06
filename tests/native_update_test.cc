@@ -33,6 +33,7 @@
 #include "update/http_download.h"
 #include "update/payload_integrity.h"
 #include "update/payload_store.h"
+#include "update/pinned_apk_provider.h"
 #include "update/readiness_canary.h"
 #include "update/state_file.h"
 #include "update/unsafe_latest_runner.h"
@@ -213,6 +214,98 @@ TEST(ApkPureProviderTest, ExactDownloadDistinguishesVersionCodes) {
   ASSERT_TRUE(error.empty()) << error;
   ASSERT_EQ(urls.size(), 1U);
   EXPECT_EQ(urls.front(), "https://download.pureapk.com/right.apk");
+}
+
+TEST(ApkPureProviderTest, RepairsCachedArchivesBeforeTryingAnotherSource) {
+  TemporaryDirectory temporary;
+  const std::string good = std::string("PK\003\004") + "verified";
+  const auto destination = temporary.root() / "candidate-1.apk";
+  Write(destination, std::string("PK\003\004") + "corrupt");
+  int downloads = 0;
+  int validations = 0;
+  ApkPureProvider provider(
+      [](std::string_view) {
+        HttpBytesResult result;
+        result.bytes = MetadataRecord("2.742.1059", 3222, "APKJ",
+                                       "https://download.pureapk.com/one.apk");
+        return result;
+      },
+      [&](const HttpTransferRequest&, const auto& path, int) {
+        ++downloads;
+        Write(path, good);
+        return HttpDownloadResult{};
+      });
+  const auto result = provider.DownloadVerified(
+      {"2.742.1059", 3222, {}}, temporary.root(), -1,
+      [&](const ProviderDownloadResult& archive) {
+        ++validations;
+        return ReadFile(archive.archives.front()) == good ? "" : "bad signature";
+      });
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(downloads, 1);
+  EXPECT_EQ(validations, 2);
+  EXPECT_EQ(ReadFile(destination), good);
+}
+
+TEST(ApkPureProviderTest, KeepsTheRejectionWhenALaterDownloadFails) {
+  TemporaryDirectory temporary;
+  int downloads = 0;
+  ApkPureProvider provider(
+      [](std::string_view) {
+        HttpBytesResult result;
+        result.bytes =
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/one.apk") +
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/two.apk");
+        return result;
+      },
+      [&](const HttpTransferRequest&, const auto& path, int) {
+        HttpDownloadResult result;
+        if (++downloads == 1) {
+          Write(path, std::string("PK\003\004") + "rejected");
+        } else {
+          result.error = "transfer timed out";
+        }
+        return result;
+      });
+  const auto result = provider.DownloadVerified(
+      {"2.742.1059", 3222, {}}, temporary.root(), -1,
+      [](const ProviderDownloadResult&) { return "bad signature"; });
+  EXPECT_FALSE(result);
+  EXPECT_EQ(downloads, 2);
+  EXPECT_EQ(result.error, "bad signature");
+}
+
+TEST(ApkPureProviderTest, VerifiesAlternativeApksIndividually) {
+  TemporaryDirectory temporary;
+  int downloads = 0;
+  ApkPureProvider provider(
+      [](std::string_view) {
+        HttpBytesResult result;
+        result.bytes =
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/one.apk") +
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/two.apk");
+        return result;
+      },
+      [&](const HttpTransferRequest&, const auto& path, int) {
+        ++downloads;
+        Write(path, std::string("PK\003\004") + std::to_string(downloads));
+        return HttpDownloadResult{};
+      });
+  const auto result = provider.DownloadVerified(
+      {"2.742.1059", 3222, {}}, temporary.root(), -1,
+      [](const ProviderDownloadResult& archive) {
+        EXPECT_EQ(archive.archives.size(), 1U);
+        return archive.archives.front().filename() == "candidate-2.apk"
+                   ? "" : "wrong architecture";
+      });
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(downloads, 2);
+  EXPECT_FALSE(std::filesystem::exists(temporary.root() / "candidate-1.apk"));
+  EXPECT_EQ(result.archives.front().filename(), "candidate-2.apk");
 }
 
 TEST(UpdateStateFileTest, ReplacesStateAndRejectsMalformedOrIndirectFiles) {
@@ -683,12 +776,18 @@ class CoordinatorProvider final : public ApkProvider {
  public:
   ProviderVersion latest{"2.200.0", 200, {}};
   mutable int downloads = 0;
+  mutable int checks = 0;
+  mutable std::vector<std::uint64_t> requested_versions;
   std::string_view name() const override { return "fixture"; }
-  ProviderVersion CheckLatest() const override { return latest; }
-  ProviderDownloadResult DownloadExact(const ProviderVersion&,
+  ProviderVersion CheckLatest() const override {
+    ++checks;
+    return latest;
+  }
+  ProviderDownloadResult DownloadExact(const ProviderVersion& version,
                                        const std::filesystem::path&,
                                        int) const override {
     ++downloads;
+    requested_versions.push_back(version.version_code);
     return {{}, "fixture", "network unavailable"};
   }
 };
@@ -765,6 +864,30 @@ TEST_F(UpdateCoordinatorDownloadTest,
   EXPECT_EQ(state["active"]["version_code"], 100);
 }
 
+// A staged update whose canary failed stays skipped on later launches, and
+// startup never asks the provider for the latest version.
+TEST_F(UpdateCoordinatorDownloadTest,
+       StartupTriesAStagedUpdateOnceWithoutRemoteDiscovery) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  const auto attempts = temporary.root() / "attempts";
+  paths.runtime_binary = std::filesystem::read_symlink("/proc/self/exe");
+  paths.runtime_launcher = temporary.root() / "canary.sh";
+  Write(paths.runtime_launcher,
+        "#!/bin/sh\nprintf x >> '" + attempts.string() + "'\nexit 1\n");
+  ASSERT_EQ(chmod(paths.runtime_launcher.c_str(), 0700), 0);
+  UpdateRequest request;
+  request.startup_preflight = true;
+  for (int launch = 1; launch <= 2; ++launch) {
+    const auto result = RunUpdate(paths, request, &provider);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_TRUE(result.stale);
+    EXPECT_EQ(provider.checks, 0);
+    EXPECT_EQ(ReadFile(attempts), "x");
+    EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  }
+  EXPECT_FALSE(std::filesystem::is_empty(paths.data_root / "rejections"));
+}
+
 TEST_F(UpdateCoordinatorDownloadTest,
        ActivatesDownloadedReleaseWhenMetadataIsUnavailable) {
   UpdateRequest request;
@@ -782,6 +905,51 @@ TEST_F(UpdateCoordinatorDownloadTest,
   EXPECT_EQ(state["metadata_status"], "unavailable");
   EXPECT_EQ(state["active"]["version_code"], 200);
   EXPECT_TRUE(std::filesystem::exists(paths.data_root / "previous_good.json"));
+}
+
+TEST_F(UpdateCoordinatorDownloadTest,
+       FreshStartupDownloadsTheSupportedVersionFirst) {
+  paths.data_root = temporary.root() / "fresh-store";
+  provider.latest = {"2.999.0", 999, {}};
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(provider.checks, 0);
+  EXPECT_EQ(provider.requested_versions, std::vector<std::uint64_t>{200});
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["metadata_status"],
+            "deferred");
+}
+
+// Startup never learns the latest version; old payloads still go.
+TEST_F(UpdateCoordinatorDownloadTest, UpToDateStartupCollectsSupersededPayloads) {
+  PayloadStore store(paths.data_root, paths.compatibility_manifest);
+  ASSERT_TRUE(store.Promote("200-" + std::string(40, 'b')));
+  const auto superseded =
+      paths.data_root / "payloads" / ("50-" + std::string(40, 'c'));
+  Write(superseded / "libroblox.so", "payload bytes");
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(provider.checks, 0);
+  EXPECT_FALSE(std::filesystem::exists(superseded));
+  EXPECT_TRUE(std::filesystem::exists(paths.data_root / "payloads" /
+                                      ("100-" + std::string(40, 'a'))));
+}
+
+TEST_F(UpdateCoordinatorDownloadTest, RunnableStartupDoesNotDependOnTheNetwork) {
+  PayloadStore store(paths.data_root, paths.compatibility_manifest);
+  ASSERT_TRUE(store.Promote("200-" + std::string(40, 'b')));
+  provider.latest = {{}, 0, "offline"};
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_FALSE(result.changed);
+  EXPECT_EQ(provider.checks, 0);
+  EXPECT_EQ(provider.downloads, 0);
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"], "current");
 }
 
 TEST_F(UpdateCoordinatorDownloadTest,
@@ -1197,7 +1365,57 @@ TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
   ASSERT_TRUE(runtime.profile.has_value());
   EXPECT_TRUE(
       runtime.profile->user_game_settings_fullscreen_setter_rva.has_value());
-  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+  ASSERT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge->has_input_devices());
+}
+
+TEST(ShippedMetadataTest, EveryArchitectureCanUpgradeToThePinnedRelease) {
+  const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
+  const auto catalog = nlohmann::json::parse(
+      ReadFile(root / "config/roblox_compatibility.json"));
+  const auto default_payload = nlohmann::json::parse(
+      ReadFile(root / "config/roblox_payload.json"));
+  for (const char* filename : {"roblox_payload.json",
+                               "roblox_payload.arm64-v8a.json"}) {
+    SCOPED_TRACE(filename);
+    const auto payload =
+        nlohmann::json::parse(ReadFile(root / "config" / filename));
+    std::vector<SupportedPayloadProfile> profiles;
+    for (const auto& entry : catalog.at("profiles")) {
+      if (entry.value("abi", "x86_64") == payload.at("abi") &&
+          entry.value("status", "") == "supported" &&
+          entry.value("default_allowed", false) &&
+          !entry.value("allow_legacy_binary_patches", true)) {
+        profiles.push_back({entry.at("version_name").get<std::string>(),
+                            entry.at("version_code").get<std::uint64_t>(),
+                            entry.at("elf_build_id").get<std::string>()});
+      }
+    }
+    const auto preferred = PreferredSupportedProfile(profiles);
+    ASSERT_TRUE(preferred.has_value());
+    EXPECT_EQ(preferred->version_name, payload.at("version_name"));
+    EXPECT_EQ(preferred->version_code, payload.at("version_code"));
+    EXPECT_EQ(preferred->elf_build_id, payload.at("elf_build_id"));
+    EXPECT_EQ(payload.at("version_name"), default_payload.at("version_name"));
+    const auto pinned = LoadPinnedApkSource(
+        root / "config/roblox_download_sources.json",
+        {preferred->version_name, preferred->version_code, {}},
+        payload.at("abi").get<std::string>());
+    ASSERT_TRUE(pinned) << pinned.error;
+    EXPECT_EQ(pinned.build_id, preferred->elf_build_id);
+    const auto* builtin = compat::FindHostAbiProfile(preferred->elf_build_id);
+    ASSERT_NE(builtin, nullptr);
+    EXPECT_TRUE(builtin->HasValidNativeMimallocConstructorRanges());
+    EXPECT_TRUE(builtin->HasValidNativePreJniBootstrap());
+
+    const auto installed = InstalledFixture("2.736.1408", 2998);
+    const auto plans = PlanUpdateCandidates(profiles, *preferred, nullptr,
+                                            installed, installed);
+    ASSERT_EQ(plans.size(), 1U);
+    EXPECT_TRUE(plans.front().exact_supported);
+    EXPECT_EQ(plans.front().identity.version_name, payload.at("version_name"));
+    EXPECT_EQ(plans.front().identity.exact_build_id, payload.at("elf_build_id"));
+  }
 }
 
 TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) {

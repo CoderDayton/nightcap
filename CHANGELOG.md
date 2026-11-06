@@ -7,26 +7,25 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
-- Copy Log in Settings → About copies the log from the last time Nightcap ran, ready to paste in a bug report.
-- Settings → Appearance picks one .ttf or .otf font for Roblox's menus and games, with a preview.
-  Emoji and other scripts keep Roblox's fonts. Sky moved to Appearance too.
-- A nightly Flatpak built from `main`, from `nightcap-nightly.flatpakref` on the Pages site. It installs
-  beside the regular one and updates with `flatpak update`.
+- Copy Log button in Settings → About, for bug reports.
+- Custom font for Roblox's menus and games, in Settings → Appearance. Sky moved there too.
+- Nightly Flatpak from `nightcap-nightly.flatpakref` on the Pages site. It installs next to the regular one.
 
 ### Changed
 
-- A setting or value in `config.yaml` that this version does not know, such as one a newer build wrote,
-  is now skipped with a note in the log. Nightcap used to refuse to start.
-- With automatic Roblox updates off, a Roblox version this build can't run, such as one a newer build
-  installed, now falls back to the version before it. A Roblox version that failed its check stays skipped
-  when another build switches back to it.
-- A sky picked in Settings now shows in every game, not only where a game has no sky of its own. It also
-  replaces the start screen's sky. Skies picked before this update need picking again.
+- Unknown settings in `config.yaml` are skipped instead of stopping Nightcap from starting.
+- With automatic updates off, a Roblox version this build can't run falls back to the one before it.
+- Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
+- Roblox downloads from GitHub first, with APKPure as a backup.
+- Startup no longer waits on an update check. It runs in the background two minutes after launch,
+  at low priority so it doesn't slow the game. If Roblox says your version needs an update, it
+  starts right away.
 
 ### Fixed
 
-- Settings with decimals, such as camera sensitivity, no longer lose their decimals after a restart on
-  systems that write numbers with a comma (0.2 became 0.001, 2.3 became 2).
+- Decimal settings like camera sensitivity keep their value after a restart on comma-decimal systems.
+- Alt-tabbing during a right-click drag no longer pulls the mouse back into the game.
+- After a fast right-click drag, the mouse goes back to where you clicked.
 
 ## [0.5.0] - 2026-11-05
 

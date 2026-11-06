@@ -111,6 +111,10 @@ assert (
     "-DMOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST="
     "/app/share/mocktail/metadata/roblox_signing_certificates.json"
 ) in mocktail_options
+assert (
+    "-DMOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST="
+    "/app/share/mocktail/metadata/roblox_download_sources.json"
+) in mocktail_options
 
 for module in manifest["modules"]:
     for source in module.get("sources", []):

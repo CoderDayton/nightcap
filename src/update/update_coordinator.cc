@@ -32,6 +32,7 @@
 #include "update/host_abi_deriver.h"
 #include "update/payload_integrity.h"
 #include "update/payload_store.h"
+#include "update/pinned_apk_provider.h"
 #include "update/readiness_canary.h"
 #include "update/state_file.h"
 #include "update/unsafe_latest_runner.h"
@@ -314,8 +315,10 @@ void RecordRejection(const UpdatePaths& paths, const Candidate& candidate,
   close(descriptor);
 }
 
-ProviderChain BuildProviderChain() {
+ProviderChain BuildProviderChain(const UpdatePaths& paths) {
   ProviderChain chain;
+  if (!paths.download_sources_manifest.empty())
+    chain.Add(std::make_unique<PinnedApkProvider>(paths.download_sources_manifest));
   chain.Add(std::make_unique<ApkPureProvider>());
   return chain;
 }
@@ -329,7 +332,7 @@ Candidate DownloadCandidate(const ApkProvider* provider, PayloadStore* store,
   result.identity = identity;
   result.exact_supported = exact_supported;
   Progress(progress_fd, "Downloading Roblox...");
-  StageTimer download_timer("download");
+  StageTimer download_timer("download-and-verify");
   const std::filesystem::path archives =
       paths.cache_root / "downloads/native-updater/archives";
   const std::filesystem::path download_directory =
@@ -345,26 +348,24 @@ Candidate DownloadCandidate(const ApkProvider* provider, PayloadStore* store,
     }
     for (const auto& entry : stale) std::filesystem::remove_all(entry, ignored);
   }
-  const ProviderDownloadResult downloaded = provider->DownloadExact(
+  PreparedPayload prepared;
+  std::size_t preparation = 0;
+  const ProviderDownloadResult downloaded = provider->DownloadVerified(
       ProviderVersion{identity.version_name, identity.version_code, {}},
-      download_directory, progress_fd);
+      download_directory, progress_fd,
+      [&](const ProviderDownloadResult& archives) {
+        Progress(progress_fd, "Verifying Roblox...");
+        prepared = PreparePayloadFromArchives(
+            archives.archives, identity, paths.signing_trust_manifest,
+            workspace / ("prepare-" + std::to_string(++preparation)),
+            archives.source + "-native");
+        return prepared.error;
+      });
   if (!downloaded) {
     result.error = downloaded.error;
     return result;
   }
   download_timer.Report();
-  Progress(progress_fd, "Verifying Roblox...");
-  StageTimer prepare_timer("prepare");
-  const PreparedPayload prepared = PreparePayloadFromArchives(
-      downloaded.archives, identity, paths.signing_trust_manifest,
-      workspace / "prepare", downloaded.source + "-native");
-  if (!prepared) {
-    std::error_code ignored;
-    std::filesystem::remove_all(download_directory, ignored);
-    result.error = prepared.error;
-    return result;
-  }
-  prepare_timer.Report();
   StageTimer stage_timer("stage");
   result.staged = store->Stage(prepared.directory);
   if (!result.staged) result.error = result.staged.error;
@@ -507,7 +508,8 @@ ReferenceProfile ResolveReference(
 UpdateResult RunUnsafeLatest(
     const UpdatePaths& paths, const UpdateRequest& request,
     const std::vector<SupportedPayloadProfile>& profiles,
-    const PayloadStoreResult& installed, PayloadStore* store) {
+    const PayloadStoreResult& installed, PayloadStore* store,
+    const ApkProvider& provider) {
   UpdateResult result;
   if (request.startup_preflight || !request.check_latest) {
     result.error =
@@ -515,7 +517,6 @@ UpdateResult RunUnsafeLatest(
     return result;
   }
 
-  const ProviderChain provider = BuildProviderChain();
   Progress(request.progress_fd, "Checking latest Roblox...");
   const ProviderVersion latest = [&] {
     StageTimer timer("check-latest");
@@ -795,6 +796,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
   if (!state.is_object()) state = nlohmann::json::object();
   state["schema_version"] = 1;
   state["metadata_status"] = "unchecked";
+  std::uint64_t supported_version_code = 0;
   const auto save_phase = [&](std::string_view phase) {
     state["phase"] = phase;
     state["updated_at"] = std::time(nullptr);
@@ -811,7 +813,8 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
                : nlohmann::json(nullptr);
     result.stale =
         active &&
-        active.version_code < StoredVersion(state["latest_seen"]).version_code;
+        active.version_code < std::max(
+            supported_version_code, StoredVersion(state["latest_seen"]).version_code);
     state["message"] = result.message;
     state["error"] = result.error;
     state["stale"] = result.stale;
@@ -851,6 +854,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
     result.error = "no preferred supported Roblox profile is available";
     return finish();
   }
+  supported_version_code = preferred->version_code;
 
   PayloadStore store(paths.data_root, paths.compatibility_manifest,
                      paths.runtime_binary);
@@ -872,9 +876,12 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
   } else if (!current) {
     installed = store.InspectCurrent();
   }
+  const ProviderChain providers = BuildProviderChain(paths);
+  const ApkProvider& provider = source != nullptr ? *source : providers;
   if (request.force_run_latest) {
     UpdateResult unsafe =
-        RunUnsafeLatest(paths, request, catalog.profiles, installed, &store);
+        RunUnsafeLatest(paths, request, catalog.profiles, installed, &store,
+                        provider);
     unsafe.warnings = std::move(result.warnings);
     result = std::move(unsafe);
     return finish();
@@ -907,10 +914,9 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
         "no runnable payload is installed and automatic updates are disabled";
     return finish();
   }
-  const ProviderChain providers = BuildProviderChain();
-  const ApkProvider& provider = source != nullptr ? *source : providers;
   std::optional<ProviderVersion> latest_version;
-  if (request.check_latest) {
+  if (request.startup_preflight) state["metadata_status"] = "deferred";
+  if (request.check_latest && !request.startup_preflight) {
     Progress(request.progress_fd, "Checking Roblox...");
     const ProviderVersion latest = [&] {
       StageTimer timer("check-latest");
@@ -933,7 +939,10 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
   }
   const ProviderVersion downloaded = StoredVersion(state["latest_downloaded"]);
   if (downloaded && (!latest_version ||
-                     downloaded.version_code > latest_version->version_code)) {
+                     downloaded.version_code > latest_version->version_code) &&
+      (!request.startup_preflight || current ||
+       FindSupportedProfile(catalog.profiles, downloaded.version_name,
+                             downloaded.version_code))) {
     const ExpectedPayloadIdentity identity{
         downloaded.version_name, downloaded.version_code, {}};
     if (FindStagedCandidate(paths, identity, false, false))
@@ -944,8 +953,12 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
     result.message = "cannot discover a newer Roblox release";
     return finish();
   }
-  if (current && latest_version &&
-      current.version_code >= latest_version->version_code &&
+  // Startup skips discovery, so with nothing newer downloaded it only needs
+  // the preferred supported version.
+  const bool nothing_newer =
+      latest_version ? current.version_code >= latest_version->version_code
+                     : request.startup_preflight;
+  if (current && nothing_newer &&
       current.version_code >= preferred->version_code) {
     result.payload_id = current.payload_id;
     result.message = "Roblox " + current.version_name + " is installed";
