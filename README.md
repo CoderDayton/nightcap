@@ -46,7 +46,7 @@ side by side.
 - **Settings window.** Every option in one place.
 
 More: [custom textures](textures/README.md) ·
-[performance](docs/PERFORMANCE.md) · [FAQ](FAQ.md) ·
+[performance](docs/PERFORMANCE.md) · [FFlags](docs/FFLAGS.md) · [FAQ](FAQ.md) ·
 [changelog](CHANGELOG.md) · [roadmap](docs/ROADMAP.md)
 
 ## Install with AppImage
@@ -143,6 +143,8 @@ removing the marker.
 
 Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
 `~/.config/mocktail/fflags.json`). Nightcap applies it on the next launch.
+[docs/FFLAGS.md](docs/FFLAGS.md) lists recommended flags, ones to avoid, and
+which flags Nightcap sets itself.
 The Advanced page of the [settings window](#settings) edits this file and
 does not save text that Nightcap could not load.
 
