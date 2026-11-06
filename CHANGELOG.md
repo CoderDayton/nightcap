@@ -22,6 +22,9 @@ Release notes on GitHub are taken from the matching section here.
   when another build switches back to it.
 - A sky picked in Settings now shows in every game, not only where a game has no sky of its own. It also
   replaces the start screen's sky. Skies picked before this update need picking again.
+- Roblox now downloads from a pinned copy on GitHub first, checked against a known SHA-256, and falls
+  back to APKPure. Starting Nightcap no longer waits on APKPure: newer versions are looked for in the
+  background a few seconds after launch.
 
 ### Fixed
 

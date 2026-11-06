@@ -17,8 +17,6 @@ namespace runtime {
 struct PayloadUpdatePreflightResult {
   bool attempted = false;
   std::string error;
-  // Last failure the updater reported on its own stderr. Empty when the
-  // updater never ran or never explained itself.
   std::string details;
 
   explicit operator bool() const { return error.empty(); }

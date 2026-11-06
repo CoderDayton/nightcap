@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "runtime/helper_environment.h"
@@ -29,7 +31,6 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-constexpr int kUpdaterProgressDescriptor = 10;
 constexpr char kProgressFinishedPacket = 'S';
 
 bool Enabled(const Environment& environment, std::string_view name) {
@@ -149,6 +150,16 @@ class UpdateProgressMonitor final {
     int sockets[2] = {-1, -1};
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) != 0) {
       return {};
+    }
+    if (sockets[0] <= STDERR_FILENO) {
+      const int descriptor =
+          fcntl(sockets[0], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+      close(sockets[0]);
+      if (descriptor < 0) {
+        close(sockets[1]);
+        return {};
+      }
+      sockets[0] = descriptor;
     }
     posix_spawn_file_actions_t actions;
     if (posix_spawn_file_actions_init(&actions) != 0) {
@@ -346,7 +357,7 @@ class UpdaterStderrRelay final {
 };
 
 std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
-                                          bool progress_enabled) {
+                                          int progress_descriptor = -1) {
   const std::vector<std::pair<std::string_view, std::filesystem::path>>
       overrides = {
           {"MOCKTAIL_CONFIG_FILE", paths.config_file()},
@@ -365,9 +376,9 @@ std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
   for (const auto& [name, value] : overrides) {
     child_environment.emplace_back(std::string(name) + "=" + value.string());
   }
-  if (progress_enabled) {
+  if (progress_descriptor >= 0) {
     child_environment.emplace_back("MOCKTAIL_UPDATE_PROGRESS_FD=" +
-                                   std::to_string(kUpdaterProgressDescriptor));
+                                   std::to_string(progress_descriptor));
   }
   return child_environment;
 }
@@ -434,7 +445,7 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
                        nullptr};
   UpdateProgressMonitor progress = UpdateProgressMonitor::Start(environment);
   std::vector<std::string> child_environment =
-      ChildEnvironment(paths, progress.active());
+      ChildEnvironment(paths, progress.socket());
   std::vector<char*> child_environment_pointers;
   child_environment_pointers.reserve(child_environment.size() + 1);
   for (std::string& entry : child_environment) {
@@ -449,14 +460,14 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     action_status = posix_spawn_file_actions_init(&actions);
     actions_initialized = action_status == 0;
   }
-  // Stderr first: the relay's write end can be the progress descriptor.
+  if (action_status == 0 && progress.active()) {
+    // Same-descriptor spawn dup2 clears FD_CLOEXEC in the child.
+    action_status = posix_spawn_file_actions_adddup2(
+        &actions, progress.socket(), progress.socket());
+  }
   if (action_status == 0 && stderr_relay.active()) {
     action_status = posix_spawn_file_actions_adddup2(
         &actions, stderr_relay.write_descriptor(), STDERR_FILENO);
-  }
-  if (action_status == 0 && progress.active()) {
-    action_status = posix_spawn_file_actions_adddup2(
-        &actions, progress.socket(), kUpdaterProgressDescriptor);
   }
   if (action_status != 0) {
     if (actions_initialized) {
@@ -496,12 +507,15 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     result.error = force_run_latest ? "forced latest Roblox run failed"
                                      : "Roblox update preflight failed";
     result.details = stderr_relay.failure();
-    if (result.details.empty() && WIFSIGNALED(child_status)) {
+    if (WIFSIGNALED(child_status)) {
       const int signal_number = WTERMSIG(child_status);
-      result.details = "the updater was killed by signal " +
-                       std::to_string(signal_number) + " (" +
-                       strsignal(signal_number) +
-                       ") before it reported a reason";
+      const std::string killed = "the updater was killed by signal " +
+                                 std::to_string(signal_number) + " (" +
+                                 strsignal(signal_number) + ")";
+      // A last progress message is not the reason it died.
+      result.details = result.details.empty()
+                           ? killed + " before it reported a reason"
+                           : result.details + "; then " + killed;
     } else if (result.details.empty()) {
       result.details = "the updater exited with status " +
                        std::to_string(WEXITSTATUS(child_status)) +
@@ -523,7 +537,7 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
     return;
   const auto helper = UpdateHelper(environment);
   if (helper.empty()) return;
-  auto child_environment = ChildEnvironment(paths, false);
+  auto child_environment = ChildEnvironment(paths);
   child_environment.emplace_back("MOCKTAIL_UPDATE_PARENT_PID=" +
                                  std::to_string(getpid()));
   stopped_ = false;
@@ -552,7 +566,9 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
                                    POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
         }
         std::unique_lock<std::mutex> lock(mutex_);
-        while (!wake_.wait_for(lock, interval, [this] { return stopped_; })) {
+        auto delay = std::min(interval, std::chrono::milliseconds(5000));
+        while (!wake_.wait_for(lock, delay, [this] { return stopped_; })) {
+          delay = interval;
           pid_t process = -1;
           const int status = posix_spawn(
               &process, executable.c_str(), nullptr,
