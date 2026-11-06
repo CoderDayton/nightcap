@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@
 #include <vector>
 
 #include "runtime/helper_environment.h"
+#include "runtime/https_json.h"
 
 extern char** environ;
 
@@ -532,11 +534,48 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
   return result;
 }
 
+std::string ReadRobloxUpgradeAction(const nlohmann::json& reply) {
+  if (!reply.is_object()) return {};
+  const auto data = reply.find("data");
+  if (data == reply.end() || !data->is_object()) return {};
+  const auto action = data->find("UpgradeAction");
+  if (action == data->end() || !action->is_string()) return {};
+  return action->get<std::string>();
+}
+
+std::string QueryRobloxUpgradeAction(const std::string& version_name,
+                                     const std::atomic<bool>* cancel) {
+  if (version_name.empty() ||
+      version_name.find_first_not_of("0123456789.") != std::string::npos)
+    return {};
+  const auto reply = GetHttpsJson(
+      "https://clientsettings.roblox.com/v1/mobile-client-version"
+      "?appVersion=AppAndroidV" +
+          version_name,
+      cancel);
+  return reply ? ReadRobloxUpgradeAction(*reply) : std::string();
+}
+
+namespace {
+
+std::string ActiveVersionName(const RuntimePaths& paths) {
+  std::ifstream input(paths.active_payload_manifest());
+  const auto manifest = nlohmann::json::parse(input, nullptr, false);
+  if (!manifest.is_object()) return {};
+  const auto version = manifest.find("version_name");
+  return version != manifest.end() && version->is_string()
+             ? version->get<std::string>()
+             : std::string();
+}
+
+}  // namespace
+
 BackgroundPayloadUpdate::~BackgroundPayloadUpdate() { Stop(); }
 
 void BackgroundPayloadUpdate::Start(const Environment& environment,
                                     const RuntimePaths& paths,
-                                    std::chrono::milliseconds interval) {
+                                    std::chrono::milliseconds interval,
+                                    UpgradeActionQuery ask_roblox) {
   if (worker_.joinable() || interval.count() <= 0 ||
       Enabled(environment, "MOCKTAIL_SKIP_UPDATE_CHECK") ||
       Enabled(environment, "MOCKTAIL_ISOLATED_CANARY") ||
@@ -547,9 +586,13 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
   auto child_environment = ChildEnvironment(paths);
   child_environment.emplace_back("MOCKTAIL_UPDATE_PARENT_PID=" +
                                  std::to_string(getpid()));
+  const std::string version_name =
+      ask_roblox ? ActiveVersionName(paths) : std::string();
   stopped_ = false;
+  cancel_ = false;
   worker_ =
-      std::thread([this, helper, interval,
+      std::thread([this, helper, interval, version_name,
+                   ask_roblox = std::move(ask_roblox),
                    child_environment = std::move(child_environment)]() mutable {
         std::vector<char*> environment_pointers;
         for (auto& entry : child_environment)
@@ -583,9 +626,29 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
         }
         (void)syscall(SYS_ioprio_set, kIoprioWhoProcess, thread,
                       kIoprioLowestBestEffort);
-        std::unique_lock<std::mutex> lock(mutex_);
         // Past most game joins, so a release found then is ready next launch.
         auto delay = std::min(interval, kFirstBackgroundUpdateDelay);
+        if (!version_name.empty()) {
+          const std::string action = ask_roblox(version_name, &cancel_);
+          if (action == "Required" || action == "Recommended") {
+            delay = std::chrono::milliseconds(0);
+            std::fprintf(stderr,
+                         "  [update] Roblox marks %s as %s; checking for an "
+                         "update now\n",
+                         version_name.c_str(), action.c_str());
+          } else {
+            std::fprintf(stderr,
+                         "  [update] Roblox marks %s as %s; first check in "
+                         "%lld s\n",
+                         version_name.c_str(),
+                         action.empty() ? "unknown" : action.c_str(),
+                         static_cast<long long>(
+                             std::chrono::duration_cast<std::chrono::seconds>(
+                                 delay)
+                                 .count()));
+          }
+        }
+        std::unique_lock<std::mutex> lock(mutex_);
         while (!wake_.wait_for(lock, delay, [this] { return stopped_; })) {
           delay = interval;
           pid_t process = -1;
@@ -633,6 +696,7 @@ void BackgroundPayloadUpdate::Stop() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stopped_ = true;
+    cancel_ = true;
     if (child_ > 0) kill(child_, SIGTERM);
   }
   wake_.notify_all();

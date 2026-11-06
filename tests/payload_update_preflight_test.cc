@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
@@ -211,6 +212,112 @@ TEST(BackgroundPayloadUpdateTest, RunsTheUpdaterAtLowCpuAndDiskPriority) {
                                      " " + std::to_string((2 << 13) | 7)});
   errno = 0;
   EXPECT_EQ(getpriority(PRIO_PROCESS, 0), own_nice);
+}
+
+void WriteActivePayload(const std::filesystem::path& data_home,
+                        const std::string& version_name) {
+  const auto root = data_home / "mocktail";
+  std::filesystem::create_directories(root);
+  std::ofstream(root / "current.json")
+      << R"({"schema_version":1,"version_name":")" << version_name << R"("})";
+}
+
+TEST(RobloxUpgradeActionTest, ReadsTheActionFromTheVersionEndpoint) {
+  EXPECT_EQ(ReadRobloxUpgradeAction(nlohmann::json::parse(
+                R"({"activeVersion":"x","data":{"UpgradeAction":"Required"}})")),
+            "Required");
+  EXPECT_EQ(ReadRobloxUpgradeAction(nlohmann::json::parse(R"({"data":{}})")), "");
+  EXPECT_EQ(ReadRobloxUpgradeAction(
+                nlohmann::json::parse(R"({"data":{"UpgradeAction":3}})")),
+            "");
+  EXPECT_EQ(ReadRobloxUpgradeAction(nlohmann::json::parse("[1]")), "");
+}
+
+TEST(BackgroundPayloadUpdateTest, ChecksRightAwayWhenRobloxAsksForAnUpdate) {
+  for (const std::string answer : {"Required", "Recommended"}) {
+    TemporaryDirectory temporary;
+    WriteActivePayload(temporary.root(), "2.742.1059");
+    const auto capture = temporary.root() / "argument";
+    ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                            capture.string());
+    const auto environment =
+        NativeEnvironment({{"XDG_DATA_HOME", temporary.root().string()}});
+    std::string asked;
+    BackgroundPayloadUpdate update;
+    update.Start(environment, RuntimePaths::FromEnvironment(environment),
+                 std::chrono::minutes(30),
+                 [&asked, answer](const std::string& version,
+                                  const std::atomic<bool>*) {
+                   asked = version;
+                   return answer;
+                 });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (ReadLines(capture).empty() &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    update.Stop();
+    EXPECT_EQ(asked, "2.742.1059") << answer;
+    EXPECT_EQ(ReadLines(capture), std::vector<std::string>{"--download-only"})
+        << answer;
+  }
+}
+
+TEST(BackgroundPayloadUpdateTest, KeepsTheTimerWhenRobloxHasNoUpdate) {
+  for (const std::string answer : {"None", ""}) {
+    TemporaryDirectory temporary;
+    WriteActivePayload(temporary.root(), "2.742.1059");
+    const auto capture = temporary.root() / "argument";
+    ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                            capture.string());
+    const auto environment =
+        NativeEnvironment({{"XDG_DATA_HOME", temporary.root().string()}});
+    std::atomic<bool> asked{false};
+    BackgroundPayloadUpdate update;
+    update.Start(environment, RuntimePaths::FromEnvironment(environment),
+                 std::chrono::minutes(30),
+                 [&asked, answer](const std::string&, const std::atomic<bool>*) {
+                   asked = true;
+                   return answer;
+                 });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const auto before = std::chrono::steady_clock::now();
+    update.Stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds(1));
+    EXPECT_TRUE(asked) << answer;
+    EXPECT_FALSE(std::filesystem::exists(capture)) << answer;
+  }
+}
+
+TEST(BackgroundPayloadUpdateTest, StopInterruptsASlowUpgradeQuestion) {
+  TemporaryDirectory temporary;
+  WriteActivePayload(temporary.root(), "2.742.1059");
+  const auto capture = temporary.root() / "argument";
+  ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                          capture.string());
+  const auto environment =
+      NativeEnvironment({{"XDG_DATA_HOME", temporary.root().string()}});
+  std::atomic<bool> asking{false};
+  BackgroundPayloadUpdate update;
+  update.Start(environment, RuntimePaths::FromEnvironment(environment),
+               std::chrono::minutes(30),
+               [&asking](const std::string&, const std::atomic<bool>* cancel) {
+                 asking = true;
+                 while (!cancel->load()) {
+                   std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                 }
+                 return std::string("Required");
+               });
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!asking && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  const auto before = std::chrono::steady_clock::now();
+  update.Stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds(1));
+  EXPECT_FALSE(std::filesystem::exists(capture));
 }
 
 TEST(BackgroundPayloadUpdateTest, CancelsTheScheduledCheckImmediately) {

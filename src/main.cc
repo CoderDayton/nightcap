@@ -973,7 +973,8 @@ int main(int argc, char* argv[]) {
     failure_dialog.SetMessage(
         "Nightcap could not finish starting Roblox because of an internal "
         "error.");
-    background_update.Start(environment, paths);
+    background_update.Start(environment, paths, std::chrono::minutes(30),
+                            mocktail::runtime::QueryRobloxUpgradeAction);
   }
   if (!mocktail::runtime::ExportRuntimePathEnvironment(paths,
                                                        &command_line_error)) {
