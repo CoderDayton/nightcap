@@ -54,11 +54,12 @@ Icon=${BASE_URL}/nightcap.svg
 GPGKey=${GPG_KEY}
 EOF
 
-cat >"${OUTPUT}/nightcap.flatpakref" <<EOF
+WriteFlatpakRef() {
+  cat >"$1" <<EOF
 [Flatpak Ref]
-Title=Nightcap
+Title=$2
 Name=${APP_ID}
-Branch=stable
+Branch=$3
 Url=${BASE_URL}/repo/
 RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
 Homepage=https://github.com/CoderDayton/nightcap
@@ -67,6 +68,10 @@ Icon=${BASE_URL}/nightcap.svg
 GPGKey=${GPG_KEY}
 IsRuntime=false
 EOF
+}
+
+WriteFlatpakRef "${OUTPUT}/nightcap.flatpakref" "Nightcap" stable
+WriteFlatpakRef "${OUTPUT}/nightcap-nightly.flatpakref" "Nightcap Nightly" nightly
 
 install -m 0644 -- "${PROJECT_DIR}/site/index.html" "${OUTPUT}/index.html"
 install -m 0644 -- "${PROJECT_DIR}/site/styles.css" "${OUTPUT}/styles.css"

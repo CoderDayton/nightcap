@@ -10,9 +10,16 @@ Release notes on GitHub are taken from the matching section here.
 - Copy Log in Settings → About copies the log from the last time Nightcap ran, ready to paste in a bug report.
 - Settings → Appearance picks one .ttf or .otf font for Roblox's menus and games, with a preview.
   Emoji and other scripts keep Roblox's fonts. Sky moved to Appearance too.
+- A nightly Flatpak built from `main`, from `nightcap-nightly.flatpakref` on the Pages site. It installs
+  beside the regular one and updates with `flatpak update`.
 
 ### Changed
 
+- A setting or value in `config.yaml` that this version does not know, such as one a newer build wrote,
+  is now skipped with a note in the log. Nightcap used to refuse to start.
+- With automatic Roblox updates off, a Roblox version this build can't run, such as one a newer build
+  installed, now falls back to the version before it. A Roblox version that failed its check stays skipped
+  when another build switches back to it.
 - A sky picked in Settings now shows in every game, not only where a game has no sky of its own. It also
   replaces the start screen's sky. Skies picked before this update need picking again.
 

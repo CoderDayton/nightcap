@@ -226,6 +226,14 @@ TEST(ServerInfoTest, ReloadAppliesOnlyTheOverlaySettingsTheFileChanged) {
       reloader.Reload(*same_second, &error);
   ASSERT_TRUE(lowered.has_value());
   EXPECT_EQ(lowered->location_offset, 30);
+
+  // An overlay key only a newer build knows does not stop reloading.
+  file.Write("  fps: false\n  position: top_center\n  location_offset: 30\n"
+             "  future_widget: true\n");
+  const std::optional<OverlayConfig> newer =
+      reloader.Reload(*lowered, &error);
+  ASSERT_TRUE(newer.has_value()) << error;
+  EXPECT_FALSE(newer->fps);
 }
 
 TEST(ServerInfoTest, DropsThePopupWhenTheCombinedImageIsTooLarge) {

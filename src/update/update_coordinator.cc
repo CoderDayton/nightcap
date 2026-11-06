@@ -13,6 +13,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -232,8 +233,21 @@ std::filesystem::path RejectionMarker(
   const compat::BuildIdResult runtime =
       compat::ReadElfBuildId(paths.runtime_binary.string());
   if (!runtime) return {};
-  std::string fingerprint = HashRegularFile(paths.compatibility_manifest) +
-                            HashRegularFile(paths.data_root / "current.json");
+  // The manifest without its activation time, which changes each time another
+  // build sharing this data re-activates the same payload.
+  std::string active;
+  {
+    std::ifstream input(paths.data_root / "current.json");
+    nlohmann::json manifest = nlohmann::json::parse(input, nullptr, false);
+    if (manifest.is_object()) {
+      manifest.erase("activated_at_epoch");
+      active = HashText(manifest.dump());
+    } else {
+      active = HashRegularFile(paths.data_root / "current.json");
+    }
+  }
+  std::string fingerprint =
+      HashRegularFile(paths.compatibility_manifest) + active;
   std::error_code error;
   std::vector<std::filesystem::path> references;
   if (std::filesystem::is_directory(paths.host_abi_reference_profile, error)) {
@@ -872,6 +886,22 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
       result.payload_id = current.payload_id;
       result.message = "automatic Roblox updates are disabled";
       return finish();
+    }
+    // A newer build sharing this data, such as the nightly, can leave a
+    // Roblox version this build cannot run. Go back to the version before it.
+    if (const PayloadStoreResult previous = store.Rollback(); previous) {
+      const PayloadStoreResult verified = store.VerifyCurrent(
+          paths.cache_root.empty()
+              ? std::filesystem::path()
+              : paths.cache_root / compat::kFileDigestRecordDirectory);
+      if (verified) {
+        result.payload_id = verified.payload_id;
+        result.changed = true;
+        result.message =
+            "automatic Roblox updates are disabled; using the installed "
+            "Roblox " + verified.version_name + " this version supports";
+        return finish();
+      }
     }
     result.error =
         "no runnable payload is installed and automatic updates are disabled";

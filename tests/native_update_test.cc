@@ -797,6 +797,60 @@ TEST_F(UpdateCoordinatorDownloadTest,
             "disabled");
 }
 
+// A nightly sharing this data activated a Roblox version this build's catalog
+// lacks. With updates off, start the version it ran before instead of failing.
+TEST_F(UpdateCoordinatorDownloadTest,
+       DisabledUpdatesFallBackToThePreviousVersionThisBuildSupports) {
+  const std::string newer = "200-" + std::string(40, 'b');
+  const std::string older = "100-" + std::string(40, 'a');
+  {
+    PayloadStore store(paths.data_root, paths.compatibility_manifest);
+    ASSERT_TRUE(store.Promote(newer));
+  }
+  auto catalog = nlohmann::json::parse(ReadFile(paths.compatibility_manifest));
+  catalog["profiles"].erase(1);
+  Write(paths.compatibility_manifest, catalog.dump());
+  Write(paths.config_file, "updates:\n  automatic: false\n");
+
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.payload_id, older);
+  EXPECT_EQ(provider.downloads, 0);
+  EXPECT_EQ(
+      nlohmann::json::parse(ReadFile(paths.data_root / "current.json"))
+          ["payload_id"],
+      older);
+}
+
+TEST_F(UpdateCoordinatorDownloadTest,
+       DisabledUpdatesKeepTheCurrentVersionWhenThePreviousOneIsBroken) {
+  const std::string newer = "200-" + std::string(40, 'b');
+  const std::string older = "100-" + std::string(40, 'a');
+  {
+    PayloadStore store(paths.data_root, paths.compatibility_manifest);
+    ASSERT_TRUE(store.Promote(newer));
+  }
+  auto catalog = nlohmann::json::parse(ReadFile(paths.compatibility_manifest));
+  catalog["profiles"].erase(1);
+  Write(paths.compatibility_manifest, catalog.dump());
+  Write(paths.config_file, "updates:\n  automatic: false\n");
+  const auto library = paths.data_root / "payloads" / older / "libroblox.so";
+  std::filesystem::permissions(library, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add);
+  Write(library, "corrupt");
+  const auto original = ReadFile(paths.data_root / "current.json");
+
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+
+  EXPECT_FALSE(result);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+}
+
 TEST_F(UpdateCoordinatorDownloadTest, RedownloadsACorruptedStagedCandidate) {
   const auto original = ReadFile(paths.data_root / "current.json");
   const auto library = paths.data_root / "payloads" /
@@ -2128,6 +2182,22 @@ TEST_P(UpdateCoordinatorTest, RealRejectionIsFilteredOnNextStartup) {
   EXPECT_EQ(CurrentId(), active_id);
   EXPECT_EQ(spawns, 1);
   EXPECT_TRUE(std::filesystem::exists(Marker()));
+  EXPECT_NE(second.message.find("already failed"), std::string::npos);
+}
+
+// Another build sharing this data, such as the nightly, re-activates the same
+// Roblox version with a new timestamp. The rejection must still hold.
+TEST_P(UpdateCoordinatorTest, RejectionHoldsWhenTheSameVersionIsReactivated) {
+  RejectOnce();
+  auto manifest = nlohmann::json::parse(ReadFile(root / "current.json"));
+  ASSERT_TRUE(manifest.contains("activated_at_epoch"));
+  manifest["activated_at_epoch"] =
+      manifest["activated_at_epoch"].get<std::int64_t>() + 60;
+  Write(root / "current.json", manifest.dump(2) + "\n");
+  const auto second = RunUpdate(paths, request);
+  ASSERT_TRUE(second) << second.error;
+  EXPECT_EQ(CurrentId(), active_id);
+  EXPECT_EQ(spawns, 1);
   EXPECT_NE(second.message.find("already failed"), std::string::npos);
 }
 

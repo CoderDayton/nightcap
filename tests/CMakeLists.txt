@@ -1500,6 +1500,12 @@ add_test(
           ${CMAKE_SOURCE_DIR}/config/roblox_payload.json
 )
 
+add_test(
+  NAME SharedDataSchemaTest.ReleasedBuildCanReadNightlyData
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/shared_data_schema_test.sh
+          ${CMAKE_SOURCE_DIR}
+)
+
 find_program(MOCKTAIL_PATCHELF_EXECUTABLE patchelf)
 add_test(
   NAME StandaloneWebkitCacheTest.RelocatesAllLoaderNames
