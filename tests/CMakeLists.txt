@@ -310,6 +310,13 @@ target_link_libraries(runtime_paths_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(custom_font_test custom_font_test.cc)
+target_link_libraries(custom_font_test PRIVATE
+  Mocktail::Runtime
+  nlohmann_json::nlohmann_json
+  GTest::gtest_main
+)
+
 add_executable(asset_overlay_names_test asset_overlay_names_test.cc)
 target_link_libraries(asset_overlay_names_test PRIVATE
   Mocktail::Runtime
@@ -1325,6 +1332,7 @@ gtest_discover_tests(game_mode_link_namespace_test PROPERTIES
 gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(asset_overlay_names_test)
+gtest_discover_tests(custom_font_test)
 gtest_discover_tests(roblox_cursor_hook_test)
 gtest_discover_tests(roblox_mouse_behavior_query_test)
 gtest_discover_tests(cursor_picture_source_test)

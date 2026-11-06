@@ -116,7 +116,7 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
     }
   }
   EXPECT_EQ(titles, (std::vector<std::string_view>{
-                        "Graphics", "Input", "Customization",
+                        "Graphics", "Input", "Appearance", "Files",
                         "Performance", "Audio",
                         "Network", "Discord", "Fleasion", "Advanced"}));
 }
@@ -221,14 +221,15 @@ TEST_F(SettingsModelTest, TheAdvancedPageOpensTheConfigFolder) {
   EXPECT_EQ(&advanced.groups.back().settings.back(), &folder);
 }
 
-TEST_F(SettingsModelTest, TheCustomizationPageHoldsTheSkyAndCustomFiles) {
-  const SettingsPage* customization = nullptr;
+TEST_F(SettingsModelTest, TheCustomizeSectionHoldsAppearanceAndFiles) {
+  std::vector<std::string_view> customize;
   for (const SettingsPage& page : SettingsPages()) {
-    if (page.name == "customization") customization = &page;
+    if (page.section == "Customize") customize.push_back(page.name);
   }
-  ASSERT_NE(customization, nullptr);
-  EXPECT_EQ(customization->section, "Display & input");
+  EXPECT_EQ(customize,
+            (std::vector<std::string_view>{"appearance", "files"}));
   EXPECT_EQ(Find("sky").kind, SettingKind::kSky);
+  EXPECT_EQ(Find("font").kind, SettingKind::kFont);
   for (const std::string_view key :
        {"assets.overlay", "assets.texture_overrides"}) {
     EXPECT_EQ(Find(key).kind, SettingKind::kToggle) << key;
@@ -244,8 +245,10 @@ TEST_F(SettingsModelTest, TheSkyIsGreyedOutWhileCustomAssetsAreOff) {
   std::string error;
   ASSERT_TRUE(document.Load(&error)) << error;
   EXPECT_TRUE(document.IsActive("sky"));
+  EXPECT_TRUE(document.IsActive("font"));
   ASSERT_TRUE(document.Set("assets.overlay", "false", &error)) << error;
   EXPECT_FALSE(document.IsActive("sky"));
+  EXPECT_FALSE(document.IsActive("font"));
   const runtime::RuntimeConfigLoadResult loaded = LoadFile();
   ASSERT_TRUE(loaded) << loaded.error;
   EXPECT_FALSE(loaded.config.asset_overlay());
@@ -1286,6 +1289,7 @@ std::optional<std::string> ChangedSample(const Setting& setting) {
     case SettingKind::kFolder:
     case SettingKind::kCache:
     case SettingKind::kSky:
+    case SettingKind::kFont:
       return std::nullopt;
   }
   return std::nullopt;

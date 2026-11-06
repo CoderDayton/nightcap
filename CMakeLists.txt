@@ -327,6 +327,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/process_launch_policy.cc
   src/runtime/process_diagnostics.cc
   src/runtime/asset_overlay_names.cc
+  src/runtime/custom_font.cc
   src/runtime/roblox_cursor_hook.cc
   src/runtime/roblox_mouse_behavior_query.cc
   src/runtime/runtime_config.cc
@@ -428,6 +429,7 @@ target_include_directories(mocktail_settings PRIVATE
 target_link_libraries(mocktail_settings PRIVATE
   Mocktail::SettingsModel
   PkgConfig::LIBADWAITA
+  PkgConfig::FONTCONFIG
   SDL3::SDL3
 )
 mocktail_apply_compile_options(mocktail_settings)

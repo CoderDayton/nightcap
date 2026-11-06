@@ -19,8 +19,13 @@ struct RobloxTextFontSelection {
   bool exact_mapping = false;
 };
 
+// A face found under an overlay's content/fonts wins over Roblox's, in the
+// order given, as it does for Roblox's own asset lookup.
 RobloxTextFontSelection ResolveRobloxTextFont(
-    int32_t font, const std::string& asset_content_root);
+    int32_t font, const std::string& asset_content_root,
+    const std::vector<std::string>& overlay_dirs = {});
+// Uses the asset folder and the font picked in Settings while custom assets
+// are on.
 RobloxTextFontSelection ResolveRobloxTextFont(int32_t font);
 
 }  // namespace runtime
