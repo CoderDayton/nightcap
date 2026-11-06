@@ -107,6 +107,28 @@ TEST_F(RuntimeConfigStoreTest, AValueTheLoaderRejectsLeavesTheFileUntouched) {
   EXPECT_EQ(EntryCount(), 1u);
 }
 
+// A key a nightly build wrote must not block saving other settings, but a
+// bad value in the edit itself is still refused.
+TEST_F(RuntimeConfigStoreTest, AKeyFromANewerBuildDoesNotBlockSaving) {
+  const std::string before =
+      "graphics:\n  backend: direct-vulkan\n  future_upscaler: fsr4\n";
+  const std::string after =
+      "graphics:\n  backend: opengl\n  future_upscaler: fsr4\n";
+  Write(file_, before);
+  const RuntimeConfigSaveResult saved =
+      SaveRuntimeConfigText(file_, before, after);
+  ASSERT_TRUE(saved) << saved.error;
+  EXPECT_EQ(Read(file_), after);
+
+  const RuntimeConfigSaveResult refused = SaveRuntimeConfigText(
+      file_, after,
+      "graphics:\n  backend: no-such-backend\n  future_upscaler: fsr4\n");
+  EXPECT_FALSE(refused);
+  EXPECT_NE(refused.error.find("graphics.backend"), std::string::npos)
+      << refused.error;
+  EXPECT_EQ(Read(file_), after);
+}
+
 TEST_F(RuntimeConfigStoreTest, BrokenYamlLeavesTheFileUntouched) {
   Write(file_, kBefore);
   EXPECT_FALSE(SaveRuntimeConfigText(file_, kBefore, "graphics: [1, 2\n"));

@@ -61,8 +61,10 @@
         <dt>Flatpak</dt>
         <dd><pre><code>flatpak install --user https://coderdayton.github.io/nightcap/nightcap.flatpakref
 flatpak run io.github.CoderDayton.nightcap</code></pre></dd>
+        <dt>Arch Linux (AUR)</dt>
+        <dd><pre><code>paru -S nightcap-bin</code></pre></dd>
         <dt>DEB, RPM, pacman</dt>
-        <dd><pre><code>sudo apt install ./nightcap_&lt;version&gt;-1_amd64.deb
+        <dd><pre><code>sudo apt install ./nightcap_&lt;version&gt;_amd64.deb
 sudo dnf install ./nightcap-&lt;version&gt;-1.x86_64.rpm
 sudo pacman -U nightcap-&lt;version&gt;-1-x86_64.pkg.tar.zst</code></pre></dd>
         <dt>Source</dt>
@@ -72,34 +74,61 @@ cd nightcap &amp;&amp; make build
       </dl>
     </section>
 
+    <section class="row stacked">
+      <h2>Nightly</h2>
+      <div class="body">
+        <p>Builds of <code>main</code>, for trying fixes before a release. They share settings and sign-in with the regular build. The files are on the <a href="https://github.com/CoderDayton/nightcap/releases/tag/continuous">continuous release</a>. The nightly Flatpak installs beside the regular one and updates with <code>flatpak update</code>.</p>
+        <dl class="install">
+          <dt>AppImage</dt>
+          <dd><pre><code>chmod +x Nightcap-nightly-x86_64.AppImage
+./Nightcap-nightly-x86_64.AppImage</code></pre></dd>
+          <dt>Flatpak</dt>
+          <dd><pre><code>flatpak install --user https://coderdayton.github.io/nightcap/nightcap-nightly.flatpakref
+flatpak run --branch=nightly io.github.CoderDayton.nightcap</code></pre></dd>
+          <dt>Flatpak: open the regular build from the app menu again</dt>
+          <dd><pre><code>flatpak make-current --user io.github.CoderDayton.nightcap stable</code></pre></dd>
+          <dt>Arch Linux (AUR)</dt>
+          <dd><pre><code>paru -S nightcap-git</code></pre></dd>
+          <dt>DEB, RPM, pacman</dt>
+          <dd><pre><code>sudo apt install ./nightcap-nightly_amd64.deb
+sudo dnf install ./nightcap-nightly-x86_64.rpm
+sudo pacman -U nightcap-nightly-x86_64.pkg.tar.zst</code></pre></dd>
+        </dl>
+      </div>
+    </section>
+
     <section class="row">
       <h2>What's different</h2>
       <dl class="body facts">
         <dt>Roblox updates</dt>
-        <dd>New Roblox versions work soon after they come out.</dd>
+        <dd>New Roblox versions work soon after they come out. The last working one is kept if an update fails.</dd>
         <dt>More games</dt>
-        <dd>Answers a server check some experiences use, so you can play those too.</dd>
-        <dt>Voice chat</dt>
-        <dd>Your microphone still works after a Roblox update.</dd>
-        <dt>Login</dt>
-        <dd>Verification checks and captchas finish instead of hanging.</dd>
-        <dt>Look</dt>
-        <dd>The new home screen and side menu, like on Windows.</dd>
-        <dt>Your own assets</dt>
-        <dd>Drop in your own cursors, fonts and skies. The folder layout matches Sober's.</dd>
-        <dt>Mouse and CPU</dt>
-        <dd>Optional raw mouse input, and less CPU use while idle.</dd>
+        <dd>Answers a server check some experiences use, so you can join and stay.</dd>
+        <dt>Login and voice chat</dt>
+        <dd>Captchas finish, and your microphone survives Roblox updates.</dd>
+        <dt>Mouse and keyboard</dt>
+        <dd>The PC home screen and side menu, raw mouse input, and your own cursor theme.</dd>
+        <dt>Performance</dt>
+        <dd>Less CPU use while idle, and faster texture loading.</dd>
+        <dt>Your own look</dt>
+        <dd>Pick a font and import sky packs in Settings, or drop in cursors and other assets. The folder layout matches Sober's, and Fleasion works too.</dd>
+        <dt>Overlays</dt>
+        <dd>FPS, ping, and the server's location when you join.</dd>
+        <dt>Discord</dt>
+        <dd>Shows the game you're playing.</dd>
+        <dt>Settings window</dt>
+        <dd>Every option in one place. Run <code>flatpak run io.github.CoderDayton.nightcap --settings</code>, or right-click Nightcap in your app menu.</dd>
       </dl>
     </section>
 
     <section class="row">
-      <h2>Direct downloads</h2>
+      <h2>Downloads</h2>
       <div class="body">
         <p>Prebuilt builds for Linux x86_64.</p>
         <ul class="links">
-          <li><a href="https://github.com/CoderDayton/nightcap/releases/latest/download/Nightcap-x86_64.AppImage"><span class="name">AppImage</span><span class="file">Nightcap-x86_64.AppImage</span><span class="go" aria-hidden="true">↓</span></a></li>
+          <li><a href="https://github.com/CoderDayton/nightcap/releases/latest"><span class="name">Latest release</span><span class="file">Every file and the release notes</span><span class="go" aria-hidden="true">↗</span></a></li>
+          <li><a href="https://github.com/CoderDayton/nightcap/releases/tag/continuous"><span class="name">Nightly</span><span class="file">Builds of main</span><span class="go" aria-hidden="true">↗</span></a></li>
           <li><a href="Nightcap-x86_64.flatpak"><span class="name">Flatpak bundle</span><span class="file">Nightcap-x86_64.flatpak</span><span class="go" aria-hidden="true">↓</span></a></li>
-          <li><a href="https://github.com/CoderDayton/nightcap/releases/latest"><span class="name">DEB, RPM, pacman</span><span class="file">GitHub releases page</span><span class="go" aria-hidden="true">↗</span></a></li>
           <li><a href="nightcap-flatpak.gpg"><span class="name">Signing key</span><span class="file">nightcap-flatpak.gpg</span><span class="go" aria-hidden="true">↓</span></a></li>
         </ul>
       </div>

@@ -654,6 +654,11 @@ int main(int argc, char* argv[]) {
     }
     return EXIT_FAILURE;
   }
+  for (const mocktail::runtime::IgnoredConfigKey& ignored :
+       runtime_config.ignored) {
+    std::cerr << "  [config] ignoring " << ignored.key
+              << ", which this version cannot use: " << ignored.reason << '\n';
+  }
   if (runtime_config.config.use_system_proxy()) {
     const mocktail::runtime::SystemProxyResult system_proxy =
         mocktail::runtime::ResolveSystemProxy();

@@ -75,6 +75,7 @@ jobs:
           bash tests/flatpak_packaging_test.sh .
           bash tests/native_packaging_test.sh .
           bash tests/anylinux_dependencies_test.sh .
+          bash tests/shared_data_schema_test.sh .
 
   native-build:
     name: Native build (${{ matrix.arch }})

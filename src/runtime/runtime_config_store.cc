@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -195,9 +196,25 @@ RuntimeConfigText ReadRuntimeConfigText(
 RuntimeConfigSaveResult SaveRuntimeConfigText(
     const std::filesystem::path& config_file, std::string_view original,
     std::string_view text) {
+  // Keys the file already had that this build leaves out, such as ones a
+  // nightly build wrote, may stay. A save that adds one is refused.
+  std::vector<std::string> already_ignored;
+  for (const IgnoredConfigKey& ignored :
+       LoadRuntimeConfig(NoEnvironment(), config_file).ignored) {
+    already_ignored.push_back(ignored.key);
+  }
   return Save(config_file, original, text, false,
-              [](const std::filesystem::path& candidate) {
-                return LoadRuntimeConfig(NoEnvironment(), candidate).error;
+              [&already_ignored](const std::filesystem::path& candidate) {
+                const RuntimeConfigLoadResult loaded =
+                    LoadRuntimeConfig(NoEnvironment(), candidate);
+                if (!loaded) return loaded.error;
+                for (const IgnoredConfigKey& ignored : loaded.ignored) {
+                  if (std::find(already_ignored.begin(), already_ignored.end(),
+                                ignored.key) == already_ignored.end()) {
+                    return ignored.reason;
+                  }
+                }
+                return std::string();
               });
 }
 

@@ -84,6 +84,16 @@ flatpak run io.github.CoderDayton.nightcap
 
 Updates arrive through `flatpak update`. Nightcap is not on Flathub yet.
 
+A nightly build of `main` installs beside it and shares its settings:
+
+```bash
+flatpak install --user https://coderdayton.github.io/nightcap/nightcap-nightly.flatpakref
+flatpak run --branch=nightly io.github.CoderDayton.nightcap
+```
+
+`flatpak make-current --user io.github.CoderDayton.nightcap stable` points
+the app menu back at the regular build.
+
 ## Distribution packages
 
 Each release also carries a DEB, an RPM, and a pacman package, with a

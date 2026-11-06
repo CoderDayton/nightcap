@@ -20,31 +20,109 @@ on:
       - 'packaging/io.github.CoderDayton.nightcap.metainfo.xml'
       - 'packaging/io.github.CoderDayton.nightcap.svg'
       - 'scripts/assemble_flatpak_pages.sh'
+      - 'scripts/check_flatpak_repo.sh'
+      - 'scripts/mirror_flatpak_repo.sh'
       - 'site/**'
       - 'src/**'
       - 'stubs/**'
       - 'third_party/**'
+  schedule:
+    # 04:17 UTC daily: the nightly branch, skipped when main has not moved.
+    - cron: '17 4 * * *'
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Flatpak branch to publish from main
+        type: choice
+        options: [stable, nightly]
+        default: stable
 
 permissions:
   contents: read
 
+# Every publish rewrites the whole Pages site from the repository it mirrored,
+# so publishes queue behind each other instead of racing.
 concurrency:
-  group: flatpak-${{ github.ref }}
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'))) && 'flatpak-pages' || format('flatpak-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - name: Choose branch and publishing
+        id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -Eeuo pipefail
+          channel=stable
+          publish=false
+          # Forks have no signing key and no Pages site of ours.
+          if [[ "$REPOSITORY" == CoderDayton/nightcap ]]; then
+            if [[ "$REF" == refs/tags/v* ]]; then
+              publish=true
+            elif [[ "$REF" == refs/heads/main && "$EVENT" == schedule ]]; then
+              channel=nightly
+              publish=true
+            elif [[ "$REF" == refs/heads/main && "$EVENT" == workflow_dispatch ]]; then
+              channel="${INPUT_CHANNEL:-stable}"
+              publish=true
+            fi
+          fi
+          [[ "$channel" == stable || "$channel" == nightly ]]
+          printf 'channel=%s\npublish=%s\n' "$channel" "$publish" |
+            tee -a "$GITHUB_OUTPUT"
+
+      # A queued publish replaces an older queued one, so a tag pushed while
+      # another publish ran can be cancelled before it starts. Queue it again.
+      - name: Requeue a cancelled release
+        if: github.event_name == 'schedule' && github.repository == 'CoderDayton/nightcap'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          read -r id conclusion < <(
+            gh run list --workflow flatpak.yml --event push --limit 20 \
+              --json databaseId,headBranch,conclusion \
+              --jq '[.[] | select(.headBranch | startswith("v"))][0]
+                    | "\(.databaseId) \(.conclusion)"'
+          ) || exit 0
+          if [[ "$conclusion" == cancelled ]]; then
+            echo "::warning::Requeueing cancelled release run $id"
+            gh run rerun "$id" ||
+              echo "::warning::Could not requeue run $id; rerun it by hand"
+          fi
+
   flatpak:
     name: Flatpak build
+    needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     # The signing key lives in the release environment, which only main and
     # v* tags may use. Builds that do not publish run without it.
-    environment: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'release' || '' }}
+    environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
+    outputs:
+      deploy: ${{ steps.deploy.outputs.deploy }}
+      summary: ${{ steps.deploy.outputs.summary }}
     env:
-      # Publish on release tags and on manual runs from main. Pull requests
-      # only verify that the manifest still builds.
-      MOCKTAIL_PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      MOCKTAIL_PUBLISH: ${{ needs.plan.outputs.publish }}
+      PAGES_REPO_URL: https://coderdayton.github.io/nightcap/repo/
+      APP_REF_PREFIX: app/io.github.CoderDayton.nightcap/x86_64
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,92 +134,178 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes flatpak flatpak-builder gnupg
+          sudo apt-get install --yes flatpak flatpak-builder gnupg ostree
           flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
 
-      - name: Build Flatpak repository and bundle
+      - name: Import signing key
+        if: env.MOCKTAIL_PUBLISH == 'true'
         shell: bash
         env:
           FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
           FLATPAK_GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
         run: |
           set -Eeuo pipefail
+          [[ -n "$FLATPAK_GPG_PRIVATE_KEY" && -n "$FLATPAK_GPG_KEY_ID" ]]
+          install -d -m 0700 "$RUNNER_TEMP/nightcap-gnupg"
+          printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | \
+            gpg --batch --homedir "$RUNNER_TEMP/nightcap-gnupg" --import
+          gpg --batch --homedir "$RUNNER_TEMP/nightcap-gnupg" \
+            --export "$FLATPAK_GPG_KEY_ID" >nightcap-flatpak.gpg
+          echo "FLATPAK_GPG_KEY_ID=$FLATPAK_GPG_KEY_ID" >>"$GITHUB_ENV"
+
+      # A publish starts from every branch already served, so it adds or
+      # updates its own branch and keeps the others. The mirror only accepts
+      # a repository signed with this key.
+      - name: Mirror the published repository
+        if: env.MOCKTAIL_PUBLISH == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ./scripts/mirror_flatpak_repo.sh \
+            "$PAGES_REPO_URL" nightcap-flatpak.gpg repo published-refs
+
+      - name: Skip an unchanged nightly
+        id: changed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          changed=true
+          if [[ "$MOCKTAIL_PUBLISH" == true && "$CHANNEL" == nightly &&
+                "$GITHUB_EVENT_NAME" == schedule ]] &&
+             grep -Fxq "$APP_REF_PREFIX/nightly" published-refs &&
+             ostree --repo=repo log "$APP_REF_PREFIX/nightly" |
+               grep -Fq "Nightcap nightly $GITHUB_SHA"; then
+            echo "The nightly branch already holds $GITHUB_SHA"
+            changed=false
+          fi
+          echo "changed=$changed" >>"$GITHUB_OUTPUT"
+
+      - name: Build Flatpak repository
+        if: steps.changed.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           # The manifest builds the local checkout from refs/heads/main.
           git update-ref refs/heads/main "$GITHUB_SHA"
-          builder_signing=()
-          bundle_keys=()
+          signing=()
           if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
-            [[ -n "$FLATPAK_GPG_PRIVATE_KEY" && \
-               -n "$FLATPAK_GPG_KEY_ID" ]]
-            install -d -m 0700 "$RUNNER_TEMP/nightcap-gnupg"
-            printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | \
-              gpg --batch --homedir "$RUNNER_TEMP/nightcap-gnupg" --import
-            gpg --batch --homedir "$RUNNER_TEMP/nightcap-gnupg" \
-              --export "$FLATPAK_GPG_KEY_ID" >nightcap-flatpak.gpg
-            builder_signing=(
+            signing=(
               "--gpg-sign=$FLATPAK_GPG_KEY_ID"
               "--gpg-homedir=$RUNNER_TEMP/nightcap-gnupg"
             )
-            bundle_keys=(--gpg-keys=nightcap-flatpak.gpg)
           fi
-          flatpak-builder \
-            --arch=x86_64 \
-            --jobs=4 \
-            --user \
-            --install-deps-from=flathub \
-            --disable-rofiles-fuse \
-            --force-clean \
-            --default-branch=stable \
-            --repo=repo \
-            "${builder_signing[@]}" \
-            build-flatpak-ci \
-            packaging/flatpak/io.github.CoderDayton.nightcap.json
+          # Flathub downloads fail now and then; a retry starts clean.
+          for attempt in 1 2 3; do
+            if flatpak-builder \
+                --arch=x86_64 \
+                --jobs=4 \
+                --user \
+                --install-deps-from=flathub \
+                --disable-rofiles-fuse \
+                --force-clean \
+                --default-branch="$CHANNEL" \
+                --subject="Nightcap $CHANNEL $GITHUB_SHA" \
+                --repo=repo \
+                "${signing[@]}" \
+                build-flatpak-ci \
+                packaging/flatpak/io.github.CoderDayton.nightcap.json; then
+              break
+            fi
+            [[ "$attempt" -lt 3 ]]
+            sleep $((attempt * 30))
+          done
+
+      - name: Finish and check the repository
+        if: steps.changed.outputs.changed == 'true' && env.MOCKTAIL_PUBLISH == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          flatpak build-update-repo \
+            --generate-static-deltas \
+            --static-delta-jobs=2 \
+            --prune \
+            --prune-depth=2 \
+            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
+            --gpg-homedir="$RUNNER_TEMP/nightcap-gnupg" \
+            repo
+          # Every app and runtime branch served before, plus the new one.
+          mapfile -t expected < <(
+            { grep -E '^(app|runtime)/' published-refs
+              echo "$APP_REF_PREFIX/$CHANNEL"; } | LC_ALL=C sort -u
+          )
+          ./scripts/check_flatpak_repo.sh repo nightcap-flatpak.gpg \
+            "${expected[@]}"
+
+      - name: Build Flatpak bundle
+        if: steps.changed.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          keys=()
           if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
-            flatpak build-update-repo \
-              --generate-static-deltas \
-              --static-delta-jobs=2 \
-              --prune \
-              --gpg-sign="$FLATPAK_GPG_KEY_ID" \
-              --gpg-homedir="$RUNNER_TEMP/nightcap-gnupg" \
-              repo
+            keys=(--gpg-keys=nightcap-flatpak.gpg)
           fi
-          flatpak build-bundle \
-            --arch=x86_64 \
-            "${bundle_keys[@]}" \
-            repo \
-            Nightcap-x86_64.flatpak \
-            io.github.CoderDayton.nightcap \
-            stable
-          if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
-            ./scripts/assemble_flatpak_pages.sh \
-              repo Nightcap-x86_64.flatpak nightcap-flatpak.gpg public
+          bundle=Nightcap-x86_64.flatpak
+          [[ "$CHANNEL" == stable ]] || bundle=Nightcap-nightly-x86_64.flatpak
+          flatpak build-bundle --arch=x86_64 "${keys[@]}" repo "$bundle" \
+            io.github.CoderDayton.nightcap "$CHANNEL"
+          echo "BUNDLE=$bundle" >>"$GITHUB_ENV"
+
+      - name: Assemble the Pages site
+        if: steps.changed.outputs.changed == 'true' && env.MOCKTAIL_PUBLISH == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The site always offers the stable bundle, from the stable branch
+          # it serves, whichever branch this run built.
+          if [[ "$CHANNEL" != stable ]]; then
+            flatpak build-bundle --arch=x86_64 \
+              --gpg-keys=nightcap-flatpak.gpg repo Nightcap-x86_64.flatpak \
+              io.github.CoderDayton.nightcap stable
           fi
+          ./scripts/assemble_flatpak_pages.sh \
+            repo Nightcap-x86_64.flatpak nightcap-flatpak.gpg public
 
       - name: Upload Flatpak
+        if: steps.changed.outputs.changed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Nightcap-x86_64-flatpak
-          path: Nightcap-x86_64.flatpak
+          name: ${{ env.CHANNEL == 'stable' && 'Nightcap-x86_64-flatpak' || 'Nightcap-nightly-x86_64-flatpak' }}
+          path: ${{ env.BUNDLE }}
           if-no-files-found: error
           retention-days: 14
 
       - name: Configure GitHub Pages
-        if: env.MOCKTAIL_PUBLISH == 'true'
+        if: steps.changed.outputs.changed == 'true' && env.MOCKTAIL_PUBLISH == 'true'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload GitHub Pages repository
-        if: env.MOCKTAIL_PUBLISH == 'true'
+        if: steps.changed.outputs.changed == 'true' && env.MOCKTAIL_PUBLISH == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: public
 
+      - name: Decide deployment
+        id: deploy
+        shell: bash
+        env:
+          CHANGED: ${{ steps.changed.outputs.changed }}
+        run: |
+          deploy=false
+          [[ "$MOCKTAIL_PUBLISH" == true && "$CHANGED" == true ]] && deploy=true
+          echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
+          if [[ "$deploy" == true ]]; then
+            read -r summary _ < <(sha256sum public/repo/summary)
+            echo "summary=$summary" >>"$GITHUB_OUTPUT"
+          fi
+
   deploy-pages:
     name: Publish Flatpak repository
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: needs.flatpak.outputs.deploy == 'true'
     needs: flatpak
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
       pages: write
@@ -153,6 +317,28 @@ jobs:
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+
+      # The CDN keeps the old repository for up to ten minutes. The next
+      # publish mirrors what it serves, so hold the queue until it is current.
+      - name: Wait for the CDN to serve this repository
+        shell: bash
+        env:
+          SUMMARY: ${{ needs.flatpak.outputs.summary }}
+          URL: https://coderdayton.github.io/nightcap/repo/summary
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$SUMMARY" ]]
+          for _ in $(seq 60); do
+            served="$(curl -fsS -H 'Cache-Control: no-cache' "$URL" |
+              sha256sum | cut -d' ' -f1)" || served=
+            if [[ "$served" == "$SUMMARY" ]]; then
+              echo "The CDN serves the new repository"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::The CDN still serves an older repository after 20 minutes"
+          exit 1
 
   release:
     name: Attach bundle to GitHub release

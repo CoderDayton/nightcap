@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace mocktail {
 namespace runtime {
@@ -912,8 +913,35 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     return result;
   }
   ValueMap fallback;
-  if (result.file_loaded && !ValidateAndMap(yaml, &fallback, &result.error)) {
-    return result;
+  std::string error;
+  while (result.file_loaded && !ValidateAndMap(yaml, &fallback, &error)) {
+    // The key to leave out is the one whose removal changes the error. The
+    // version is never left out: a newer file format must not half-load.
+    // device.__mapping is the loader's own marker, not a key in the file.
+    std::vector<std::string> keys;
+    for (const auto& [key, ignored] : yaml) {
+      if (key != "version" && key != "device.__mapping") keys.push_back(key);
+    }
+    std::sort(keys.begin(), keys.end());
+    std::optional<std::string> culprit;
+    for (const std::string& key : keys) {
+      ValueMap without = yaml;
+      without.erase(key);
+      ValueMap scratch;
+      std::string other;
+      if (ValidateAndMap(without, &scratch, &other) || other != error) {
+        culprit = key;
+        break;
+      }
+    }
+    if (!culprit.has_value()) {
+      result.error = error;
+      return result;
+    }
+    result.ignored.push_back({*culprit, error});
+    yaml.erase(*culprit);
+    fallback.clear();
+    error.clear();
   }
   const LayeredEnvironment layered(environment, std::move(fallback));
   result.config = RuntimeConfig::FromEnvironment(layered);
