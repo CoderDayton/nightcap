@@ -105,7 +105,7 @@ jobs:
             libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsecret-1-dev
             libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev
             libplacebo-dev libavcodec-dev libpng-dev zlib1g-dev
-            xvfb xauth libgl1-mesa-dri jq patchelf ccache
+            xvfb xauth libgl1-mesa-dri libxtst-dev jq patchelf ccache
           )
           download() {
             sudo apt-get update &&

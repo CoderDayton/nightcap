@@ -27,6 +27,8 @@ Release notes on GitHub are taken from the matching section here.
 
 - Settings with decimals, such as camera sensitivity, no longer lose their decimals after a restart on
   systems that write numbers with a comma (0.2 became 0.001, 2.3 became 2).
+- Alt-tabbing during a right-click camera drag no longer pulls the pointer back into the game window.
+  After a fast drag, the pointer returns to where you pressed, not slightly past it.
 
 ## [0.5.0] - 2026-11-05
 

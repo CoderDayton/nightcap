@@ -98,7 +98,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_) {
     desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
-    return Apply(false, CursorShape::kArrow);
+    return Apply(false, CursorShape::kArrow, nullptr, false, false);
   }
   MouseLockQueryCallback callback = nullptr;
   void* context = nullptr;
@@ -233,13 +233,20 @@ WindowPointerCaptureOwner::CurrentRobloxCursor() {
   return {roblox_cursor_, roblox_cursor_image_};
 }
 
-bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
-                                              bool text_input_active) {
+bool WindowPointerCaptureOwner::OnRightButton(
+    bool pressed, bool text_input_active,
+    std::optional<PointerPosition> position) {
   if (pressed) {
     focused_ = true;
   }
+  // A capture that starts later in the hold anchors where the pointer is then.
+  const bool anchor =
+      pressed && backend_ != nullptr && !right_button_held_ && !captured_;
+  if (anchor) backend_->SetPressAnchor(position);
   right_button_held_ = pressed;
-  return Pump(text_input_active);
+  const bool applied = Pump(text_input_active);
+  if (anchor) backend_->SetPressAnchor(std::nullopt);
+  return applied;
 }
 
 void WindowPointerCaptureOwner::SetGameSessionActive(bool active) {
@@ -269,7 +276,8 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
   native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
-  return Apply(false, CursorShape::kArrow);
+  // The pointer now belongs to whichever window took focus.
+  return Apply(false, CursorShape::kArrow, nullptr, false, false);
 }
 
 bool WindowPointerCaptureOwner::Shutdown() {
@@ -281,12 +289,13 @@ bool WindowPointerCaptureOwner::Shutdown() {
   native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
-  return Apply(false, CursorShape::kArrow);
+  return Apply(false, CursorShape::kArrow, nullptr, false, false);
 }
 
 bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
                                       CursorImagePtr image,
-                                      bool center_pointer) {
+                                      bool center_pointer,
+                                      bool restore_pointer) {
   center_pointer = center_pointer && capture;
   if (capture == captured_ && cursor == cursor_ &&
       image.get() == cursor_image_.get() &&
@@ -301,7 +310,8 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
   }
   // Read before the backend warps, so the warp's event is not older.
   const std::uint64_t applied_ms = NowMs();
-  if (backend_->Apply(capture, cursor, image, center_pointer)) {
+  if (backend_->Apply(capture, cursor, image, center_pointer,
+                      restore_pointer)) {
     const bool capture_changed = capture != captured_;
     const bool visibility_changed =
         (cursor == CursorShape::kHidden) != (cursor_ == CursorShape::kHidden);
@@ -328,7 +338,7 @@ bool WindowPointerCaptureOwner::Apply(bool capture, CursorShape cursor,
     }
     return true;
   }
-  backend_->Apply(false, CursorShape::kArrow, nullptr, false);
+  backend_->Apply(false, CursorShape::kArrow, nullptr, false, restore_pointer);
   if (captured_) {
     capture_release_motion_pending_ = true;
     capture_release_ms_ = applied_ms;
@@ -397,7 +407,8 @@ void* SdlPointerCaptureBackend::CursorFor(CursorShape cursor,
 
 bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
                                      const CursorImagePtr& image,
-                                     bool center_pointer) {
+                                     bool center_pointer,
+                                     bool restore_pointer) {
   auto* window = static_cast<SDL_Window*>(window_);
   if (window == nullptr) {
     return false;
@@ -411,7 +422,14 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
   SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE,
               relative_mode && cursor != CursorShape::kHidden ? "1" : "0");
   if (relative_mode && !relative_mode_) {
-    SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
+    // The press point, not the current state: later motion in the same event
+    // batch has already moved SDL's pointer.
+    if (press_anchor_) {
+      capture_anchor_x_ = press_anchor_->x;
+      capture_anchor_y_ = press_anchor_->y;
+    } else {
+      SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
+    }
     capture_anchor_valid_ = true;
     anchor_centered_ = false;
     SDL_SetWindowMouseGrab(window, true);
@@ -445,10 +463,23 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
     }
   }
   pointer_centered_ = relative_mode && center_pointer;
-  if (!relative_mode && relative_mode_ && capture_anchor_valid_) {
+  const bool restore = restore_pointer && !relative_mode && relative_mode_ &&
+                       capture_anchor_valid_;
+  if (restore) {
     // SDL requires the warp before relative mode is disabled. This preserves
     // the desktop pointer position across Roblox's transient RMB camera drag.
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowSize(window, &width, &height) && width > 0 &&
+        height > 0) {
+      capture_anchor_x_ = std::clamp(capture_anchor_x_, 0.0f,
+                                     static_cast<float>(width - 1));
+      capture_anchor_y_ = std::clamp(capture_anchor_y_, 0.0f,
+                                     static_cast<float>(height - 1));
+    }
     SDL_WarpMouseInWindow(window, capture_anchor_x_, capture_anchor_y_);
+  }
+  if (!relative_mode && relative_mode_) {
     SDL_SetWindowMouseGrab(window, false);
   }
   if (relative_mode != relative_mode_ &&
@@ -459,8 +490,7 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
     }
     return false;
   }
-  if (!relative_mode && relative_mode_ && anchor_centered_ &&
-      capture_anchor_valid_) {
+  if (restore && anchor_centered_) {
     SDL_Event motion{};
     motion.type = SDL_EVENT_MOUSE_MOTION;
     motion.motion.windowID = SDL_GetWindowID(window);

@@ -2613,7 +2613,8 @@ bool PumpEvents() {
         g_pointer_capture_owner != nullptr &&
         !g_pointer_capture_owner->OnRightButton(
             event.button.down,
-            g_text_input_owner != nullptr && g_text_input_owner->active())) {
+            g_text_input_owner != nullptr && g_text_input_owner->active(),
+            window::PointerPosition{event.button.x, event.button.y})) {
       fprintf(stderr,
               "  [input] SDL right-button pointer capture update failed\n");
     }
