@@ -53,6 +53,19 @@ struct FmodOutputDeviceBridgeProfile {
   }
 };
 
+// Exact-build metadata for the experimental native VR bridge. The bridge
+// interposes DebugDeviceVR slots and a checked world-pointer trampoline.
+// All RVAs are validated against machine-code contracts before first use.
+struct VrDebugDeviceBridgeProfile {
+  std::uintptr_t vtable_rva = 0;
+  std::uintptr_t constructor_rva = 0;
+  std::uintptr_t state_getter_rva = 0;
+  std::uintptr_t eye_getter_rva = 0;
+  std::uintptr_t eye_initializer_rva = 0;
+  std::uintptr_t emulator_flag_storage_rva = 0;
+  std::uintptr_t device_create_framebuffer_vtable_offset = 0;
+};
+
 struct BuildProfile {
   std::string version_name;
   int version_code = 0;
@@ -70,6 +83,8 @@ struct BuildProfile {
   // output-device virtual slots and restores them during controlled teardown;
   // executable guest code is never modified.
   std::optional<FmodOutputDeviceBridgeProfile> fmod_output_device_bridge;
+  // Optional exact-build experimental VR capability; see the struct above.
+  std::optional<VrDebugDeviceBridgeProfile> vr_debug_device_bridge;
   std::string reason;
 };
 
