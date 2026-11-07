@@ -444,7 +444,7 @@ int Usage(const char* program) {
 int main(int argc, char** argv) {
   Workload workload = MenuWorkload();
   int frames = 0;
-  int minutes = 1;
+  int minutes = -1;  // -1 picks the profile's default.
   int fps_override = 0;
   int repeat = 5;
   const char* json_path = nullptr;
@@ -454,7 +454,6 @@ int main(int argc, char** argv) {
       const char* name = argv[++i];
       if (std::strcmp(name, "ingame") == 0) {
         workload = InGameWorkload();
-        minutes = 60;
       } else if (std::strcmp(name, "menu") != 0) {
         return Usage(argv[0]);
       }
@@ -473,6 +472,7 @@ int main(int argc, char** argv) {
     }
   }
   if (fps_override > 0) workload.fps = fps_override;
+  if (minutes < 0) minutes = std::strcmp(workload.name, "ingame") == 0 ? 60 : 1;
   if (frames == 0) frames = workload.fps * 60 * minutes;
   if (frames < 1 || repeat < 1 || workload.fps < 1) return Usage(argv[0]);
 

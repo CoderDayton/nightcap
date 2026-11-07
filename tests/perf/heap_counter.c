@@ -61,10 +61,13 @@ void* calloc(size_t count, size_t size) {
 }
 
 void* realloc(void* memory, size_t size) {
-  Untrack(memory);
+  const size_t old_size = memory != NULL ? malloc_usable_size(memory) : 0;
   void* moved = __libc_realloc(memory, size);
-  // A failed realloc leaves the old block live.
-  Track(moved != NULL || size == 0 ? moved : memory);
+  // A failed realloc leaves the old block live and allocates nothing.
+  if (moved == NULL && size != 0) return NULL;
+  atomic_fetch_sub_explicit(&g_live_bytes, (int64_t)old_size,
+                            memory_order_relaxed);
+  Track(moved);
   return moved;
 }
 

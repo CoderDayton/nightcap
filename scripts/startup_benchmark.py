@@ -13,23 +13,31 @@ a 120 FPS cap and vsync off. It still runs on the login screen.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import signal
 import statistics
 import subprocess
+import shutil
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = Path.home() / ".config" / "mocktail" / "config.yaml"
+
+
+def xdg_home(name, fallback):
+    value = os.environ.get(name, "")
+    return Path(value) if os.path.isabs(value) else Path.home() / fallback
+
+
+CONFIG = xdg_home("XDG_CONFIG_HOME", ".config") / "mocktail" / "config.yaml"
 # The runtime saves the window size here on exit.
-WINDOW_STATE = Path.home() / ".local" / "state" / "mocktail" / "window-state.json"
+WINDOW_STATE = xdg_home("XDG_STATE_HOME", ".local/state") / "mocktail" / "window-state.json"
+# Each run replaces the previous run's logs.
+LOG_DIR = xdg_home("XDG_CACHE_HOME", ".cache") / "mocktail-bench" / "last-startup"
 
 PROFILES = {
     "default": {},
@@ -48,11 +56,28 @@ RSS = re.compile(r"\[perf\] process rss_mib=(\d+)")
 STARTUP_RETURNED = re.compile(r"\[engine\] legacy startup call sequence returned")
 
 
-def config_digest():
+def read_config():
     try:
-        return hashlib.md5(CONFIG.read_bytes()).hexdigest()
+        return CONFIG.read_bytes()
     except OSError:
         return None
+
+
+def restore_config(original):
+    """Puts config.yaml back as it was before the runs, keeping it 0600."""
+    if read_config() == original:
+        return
+    print(f"warning: {CONFIG} changed during the benchmark; restoring it")
+    if original is None:
+        CONFIG.unlink(missing_ok=True)
+        return
+    temporary = CONFIG.with_name(f".{CONFIG.name}.bench-restore")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as file:
+        file.write(original)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary, CONFIG)
 
 
 def instance_running():
@@ -180,8 +205,10 @@ def command_run(args):
         sys.exit(f"missing binary {args.bin}; run `make build JOBS=16` first")
     if instance_running():
         sys.exit("another mocktail is running; close it first so this run starts fresh")
-    log_dir = Path(tempfile.mkdtemp(prefix="mocktail-bench-"))
-    before = config_digest()
+    shutil.rmtree(LOG_DIR, ignore_errors=True)
+    LOG_DIR.mkdir(parents=True)
+    log_dir = LOG_DIR
+    config = read_config()
     try:
         window_state = WINDOW_STATE.read_bytes()
     except OSError:
@@ -196,8 +223,10 @@ def command_run(args):
     finally:
         if window_state is not None:
             WINDOW_STATE.write_bytes(window_state)
-    if config_digest() != before:
-        print(f"warning: {CONFIG} changed during the benchmark")
+        else:
+            # The runs created it; leave no benchmark window size behind.
+            WINDOW_STATE.unlink(missing_ok=True)
+        restore_config(config)
     if not results:
         sys.exit(f"no successful runs; logs in {log_dir}")
 

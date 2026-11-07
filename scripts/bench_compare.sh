@@ -49,7 +49,10 @@ short="${sha:0:9}"
 tree="${CACHE}/src-${sha}"
 base_build="${CACHE}/build-${sha}"
 current_build="${CACHE}/build-working"
-out="$(mktemp -d "${TMPDIR:-/tmp}/mocktail-compare-XXXXXX")"
+# Each run replaces the previous run's results.
+out="${CACHE}/last-compare"
+rm -rf "${out}"
+mkdir -p "${out}"
 
 if [[ "${MODE}" != sim ]] &&
    ! git -C "${ROOT}" diff --quiet "${sha}" -- \
