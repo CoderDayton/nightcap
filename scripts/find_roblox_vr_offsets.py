@@ -991,7 +991,8 @@ def find_static_flag_storage(image: ElfImage, name_rva: int) -> int | None:
     """Storage of a flag defined in a static table, as 2.746 does.
 
     The live entry holds a relocated name pointer at storage+8 in writable
-    data; a read-only copy of the table sits in RELRO and is skipped.
+    data; a read-only copy of the table sits in RELRO and is skipped. Keep in
+    step with VrTargets._static_flag_storage in roblox_abi_vr.py.
     """
     found = set()
     for offset, addend in image.relative_relocations().items():
@@ -1430,19 +1431,17 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                                         f" 0x{registration_storage:x}"
                                         f" and 0x{storage:x}")
                 registration_storage = storage
-        static_storage = None
+        from_static = registration_storage is None
+        if from_static:
+            registration_storage = find_static_flag_storage(image, emulator_name_rva)
         if registration_storage is None:
-            static_storage = find_static_flag_storage(image, emulator_name_rva)
-        if registration_storage is None and static_storage is None:
             raise AnalyzerError(
                 "DebugEnableVREmulator registration contract was not found")
-        if static_storage is not None:
-            registration_storage = static_storage
         image.require_writable_rva(registration_storage, 1)
-        zeroing_seen = static_storage is None and any(
+        zeroing_seen = not from_static and any(
             find_flag_zeroing(disasm.function(start, end), registration_storage)
             for start, end in flag_functions.items())
-        if static_storage is not None:
+        if from_static:
             evidence.append(
                 "emulator flag: static table entry with name pointer at"
                 f" storage+8 -> 0x{registration_storage:x}")

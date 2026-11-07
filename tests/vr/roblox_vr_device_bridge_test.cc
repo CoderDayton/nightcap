@@ -1064,7 +1064,10 @@ TEST(VrSupportedBuilds, EveryBuildCarriesAllHapticFlags) {
         {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03", 0x7387118, 0x73f2268,
          0x73f24f0, 0x73f2ac0},
         {"a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x763fef8, 0x74cf1e0,
-         0x74cf458, 0x74cfa10}}) {
+         0x74cf458, 0x74cfa10},
+        // 2.746 dropped KeepHapticsOnMobileWhenGamepadConnected.
+        {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d", 0, 0x6ed0660, 0x6ed07c0,
+         0x6ed0a60}}) {
     const auto* contract = internal::FindVrBuildContract(id);
     ASSERT_NE(contract, nullptr) << id;
     EXPECT_EQ(contract->keep_haptics_flag_rva, keep) << id;
