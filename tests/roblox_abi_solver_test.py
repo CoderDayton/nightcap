@@ -38,7 +38,8 @@ from host_abi_regression import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Each pair solves the second build from the first.
 REGRESSION_PAIRS = (
-    ("2908", "2998"), ("2998", "3092"), ("3092", "3222"), ("3222", "3092")
+    ("2908", "2998"), ("2998", "3092"), ("3092", "3222"), ("3222", "3092"),
+    ("3222", "20836"),
 )
 
 
@@ -126,9 +127,16 @@ class FakeIndex:
         self.data_users = data_users or {}
         self._instructions = instructions or {}
         self.image = image
+        self.text = types.SimpleNamespace(address=0, size=1 << 32)
 
     def instructions(self, start):
         return self._instructions[start]
+
+    def shapes(self, start):
+        return list(self.functions[start].shape_hash)
+
+    def string_at(self, address):
+        return None
 
 
 def call(address: int, target: int):
@@ -175,6 +183,88 @@ class DataPatternTest(unittest.TestCase):
             refs, {0xA000: [0x4000, 0x4000, 0x4000], 0xA100: [0x5000], 0xA200: [0x5000]}
         )
         self.assertEqual(solver._pattern_candidates(0x100), {0x5000})
+
+
+class DataDecisionTest(unittest.TestCase):
+    REFS = (0x9000, 0x9100, 0x9200, 0x9300)
+
+    def solver(self, candidate_functions, refs=REFS):
+        candidate = FakeIndex(candidate_functions)
+        candidate.data_users = SOLVER.INDEX.link_functions(candidate_functions)[1]
+        solver = SOLVER.Solver.from_indexes(
+            FakeIndex({0x100: function(refs=refs)}), candidate
+        )
+        solver.data_map = {target: target + 0x1000 for target in refs}
+        return solver
+
+    def test_picks_the_only_function_that_uses_every_mapped_address(self) -> None:
+        mapped = tuple(target + 0x1000 for target in self.REFS)
+        solver = self.solver({
+            0x3000: function(refs=mapped),
+            0x4000: function(refs=mapped[:1]),
+        })
+        self.assertEqual(solver._chosen_by_data(0x100, {0x3000, 0x4000}), 0x3000)
+
+    def test_needs_enough_mapped_addresses(self) -> None:
+        refs = self.REFS[: SOLVER.DATA_DECIDES_MIN - 1]
+        mapped = tuple(target + 0x1000 for target in refs)
+        solver = self.solver({0x3000: function(refs=mapped)}, refs)
+        self.assertIsNone(solver._chosen_by_data(0x100, {0x3000}))
+
+    def test_two_functions_using_every_address_decide_nothing(self) -> None:
+        mapped = tuple(target + 0x1000 for target in self.REFS)
+        solver = self.solver({
+            0x3000: function(refs=mapped),
+            0x4000: function(refs=mapped),
+        })
+        self.assertIsNone(solver._chosen_by_data(0x100, {0x3000, 0x4000}))
+
+    def test_a_function_outside_the_candidates_still_counts(self) -> None:
+        # A size or contract check drops candidates; it must not make the
+        # remaining one look unique.
+        mapped = tuple(target + 0x1000 for target in self.REFS)
+        solver = self.solver({
+            0x3000: function(refs=mapped),
+            0x4000: function(refs=mapped),
+        })
+        self.assertIsNone(solver._chosen_by_data(0x100, {0x3000}))
+
+    def test_data_only_breaks_a_near_tie(self) -> None:
+        scored = [(0.54, 0x3000), (0.40, 0x4000), (0.30, 0x5000)]
+        self.assertTrue(SOLVER.near_best(scored, 0x3000))
+        self.assertTrue(SOLVER.near_best(scored, 0x4000))
+        self.assertFalse(SOLVER.near_best(scored, 0x5000))
+        self.assertFalse(SOLVER.near_best(scored, 0x6000))
+
+
+class VtableSlotDecisionTest(unittest.TestCase):
+    def solver(self):
+        return SOLVER.Solver.from_indexes(
+            FakeIndex({0x100: function(size=64, shape=b"AAAAAAAA")}),
+            FakeIndex({
+                0x3000: function(size=200, shape=b"ZZZZZZZZ"),
+                0x4000: function(size=200, shape=b"ZZZZZZZY"),
+            }),
+        )
+
+    def test_a_pinned_vtable_slot_decides_a_method_too_changed_to_score(self) -> None:
+        solver = self.solver()
+        self.assertEqual(
+            solver.match_function("method", 0x100, vtable_slot=0x3000, slot_decides=True),
+            0x3000,
+        )
+        self.assertEqual(solver.matches["method"].decided_by, "slot")
+
+    def test_an_unpinned_slot_still_only_breaks_ties(self) -> None:
+        with self.assertRaisesRegex(SOLVER.AnalyzerError, "no clear candidate"):
+            self.solver().match_function("method", 0x100, vtable_slot=0x3000)
+
+    def test_the_slot_must_pass_the_contract(self) -> None:
+        with self.assertRaisesRegex(SOLVER.AnalyzerError, "no clear candidate"):
+            self.solver().match_function(
+                "method", 0x100, lambda image, rva: rva != 0x3000,
+                vtable_slot=0x3000, slot_decides=True,
+            )
 
 
 class OneToOnePairTest(unittest.TestCase):
@@ -311,7 +401,7 @@ class FmodLayoutTieTest(unittest.TestCase):
             "fmod-string-constructor": 0x99,
         }
 
-        def match(name, start, contract=None, vtable_slot=None):
+        def match(name, start, contract=None, vtable_slot=None, slot_decides=False):
             if name in first_pass:
                 return first_pass[name]
             if vtable_slot is not None:
@@ -491,6 +581,7 @@ WEAKEST_SCORE_LEAD = {
     ("2998", "3092"): 0.22,
     ("3092", "3222"): 0.22,
     ("3222", "3092"): 0.21,
+    ("3222", "20836"): 0.22,
 }
 
 

@@ -28,130 +28,76 @@
 namespace mocktail::compat {
 namespace {
 
-TEST(HostAbiProfileTest, Supported2908HasExactDerivedBoundaries) {
-  const HostAbiProfile* profile =
-      FindHostAbiProfile("63c5109637b7d7b2bdb8ed8f858023ff5ef49326");
-
-  ASSERT_NE(profile, nullptr);
-  ASSERT_EQ(profile->bridge_entry_count, 6U);
-  EXPECT_EQ(profile->bridge_entries[0].rva, 0x1cf69e2U);
-  EXPECT_EQ(profile->bridge_entries[5].rva, 0x1cfa1d9U);
-  EXPECT_EQ(profile->data_seeds.allocator_object_slot, 0x7571570U);
-  EXPECT_EQ(profile->native_allocator.allocate, 0x1cf677eU);
-  EXPECT_EQ(profile->native_allocator.deallocate, 0x1cfa1d9U);
-  EXPECT_EQ(profile->init_array_offset, 0x6f78a18U);
-  EXPECT_EQ(profile->init_array_count, 3556U);
-  EXPECT_TRUE(profile->HasValidConstructorRanges());
-  EXPECT_EQ(profile->ConstructorRangeBegin(), 2U);
-  EXPECT_EQ(profile->ConstructorRangeEndExclusive(), 3556U);
-  EXPECT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
-  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_initializer,
-            0x21b1889U);
-  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_slot, 0x7a14898U);
-  EXPECT_EQ(profile->default_allocator_strategy,
-            HostAllocatorStrategy::kNativeMimalloc);
+TEST(HostAbiProfileTest, RetiredBuildsHaveNoProfile) {
+  for (const char* build_id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
+                               "50e1b0abd123350e794226062fe3a1ef360c5f0d"}) {
+    EXPECT_TRUE(IsRetiredRobloxBuild(build_id));
+    EXPECT_EQ(FindHostAbiProfile(build_id), nullptr);
+  }
+  EXPECT_FALSE(IsRetiredRobloxBuild("a67a91ef96c700c0730acd36a250c2f93cfafbc1"));
+  EXPECT_FALSE(IsRetiredRobloxBuild("ed2b035768b1513561d0e6ea7f9bbec35b0e60e5"));
 }
 
-TEST(HostAbiProfileTest, Supported2628HasExactResearchedBoundaries) {
+TEST(HostAbiProfileTest, CurrentPayloadHasDerivedBringupBoundaries) {
   const HostAbiProfile* profile =
-      FindHostAbiProfile("1686400865ae0e408cd7bd67de7a439625c6fd13");
+      FindHostAbiProfile("1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
 
   ASSERT_NE(profile, nullptr);
   ASSERT_EQ(profile->bridge_entry_count, 6U);
-  EXPECT_EQ(profile->bridge_entries[0].rva, 0x1c39ea2U);
-  EXPECT_EQ(profile->bridge_entries[1].rva, 0x1fe4c84U);
-  EXPECT_EQ(profile->bridge_entries[2].rva, 0x203daaeU);
-  EXPECT_EQ(profile->bridge_entries[3].rva, 0x1c39c3aU);
-  EXPECT_EQ(profile->bridge_entries[4].rva, 0x1c8dbf8U);
-  EXPECT_EQ(profile->bridge_entries[5].rva, 0x1c3eb72U);
-  EXPECT_EQ(profile->data_seeds.allocator_object_slot, 0x7030ae0U);
-  EXPECT_EQ(profile->data_seeds.empty_string_slot, 0x703a7e8U);
-  EXPECT_EQ(profile->data_seeds.jni_singleton_slot, 0x72a16d0U);
-  EXPECT_EQ(profile->data_seeds.jni_singleton_bytes, 0x400U);
-  EXPECT_EQ(profile->data_seeds.arena_initializer, 0x1c39f1dU);
-  EXPECT_EQ(profile->data_seeds.allocator_thread_initializer, 0x2040817U);
-  EXPECT_EQ(profile->data_seeds.arena_guard_slot, 0x71e92f0U);
-  EXPECT_EQ(profile->data_seeds.arena_table_slot, 0x71e9380U);
-  EXPECT_EQ(profile->native_allocator.allocate, 0x1c39c3aU);
-  EXPECT_EQ(profile->native_allocator.deallocate, 0x1c3eb72U);
-  EXPECT_EQ(profile->init_array_offset, 0x6c2c9b0U);
-  EXPECT_EQ(profile->init_array_count, 3481U);
-  EXPECT_TRUE(profile->HasValidConstructorRanges());
-  EXPECT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
-  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_initializer, 0x1fe72e5U);
-  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_slot, 0x71ed428U);
-  EXPECT_EQ(profile->default_allocator_strategy,
-            HostAllocatorStrategy::kNativeMimalloc);
-}
-
-TEST(HostAbiProfileTest, CurrentPayloadHasResearchedBringupBoundaries) {
-  const HostAbiProfile* profile =
-      FindHostAbiProfile("d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21");
-
-  ASSERT_NE(profile, nullptr);
-  ASSERT_EQ(profile->bridge_entry_count, 6U);
-  EXPECT_EQ(profile->bridge_entries[4].rva, 0x1c45f5bU);
+  EXPECT_EQ(profile->bridge_entries[0].rva, 0x1a90acaU);
   EXPECT_EQ(profile->bridge_entries[4].kind, HostBridgeKind::kAlignedAllocate);
-  EXPECT_EQ(profile->init_array_count, 3455U);
+  EXPECT_EQ(profile->bridge_entries[5].rva, 0x1a9432bU);
+  EXPECT_EQ(profile->init_array_offset, 0x6e60720U);
+  EXPECT_EQ(profile->init_array_count, 2500U);
 
+  // Wiring constructors 2 and 4 run only under the native replay.
   EXPECT_TRUE(profile->HasValidConstructorRanges());
-  EXPECT_EQ(profile->ConstructorRangeBegin(), 2U);
-  EXPECT_EQ(profile->ConstructorRangeEndExclusive(), 3455U);
-  EXPECT_TRUE(profile->AllowsConstructor(2U));
-  EXPECT_FALSE(profile->AllowsConstructor(3U));
+  EXPECT_FALSE(profile->AllowsConstructor(2U));
+  EXPECT_TRUE(profile->AllowsConstructor(3U));
   EXPECT_FALSE(profile->AllowsConstructor(4U));
   EXPECT_TRUE(profile->AllowsConstructor(5U));
-  EXPECT_TRUE(profile->AllowsConstructor(3442U));
-  EXPECT_TRUE(profile->AllowsConstructor(3443U));
-  EXPECT_TRUE(profile->AllowsConstructor(3454U));
-  EXPECT_FALSE(profile->AllowsConstructor(3455U));
+  EXPECT_TRUE(profile->AllowsConstructor(2499U));
+  EXPECT_FALSE(profile->AllowsConstructor(2500U));
 
   EXPECT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
   EXPECT_EQ(profile->NativeMimallocConstructorRangeBegin(), 2U);
-  EXPECT_EQ(profile->NativeMimallocConstructorRangeEndExclusive(), 3455U);
+  EXPECT_EQ(profile->NativeMimallocConstructorRangeEndExclusive(), 2500U);
   EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(1U));
-  for (size_t index = 2; index < 3455; ++index) {
-    EXPECT_TRUE(profile->AllowsNativeMimallocConstructor(index)) << index;
-  }
-  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(3455U));
+
+  // The process-load constructor follows 2.746's added constructor at 5.
+  EXPECT_TRUE(
+      profile->ShouldInitializeNativeMimallocThreadAfterConstructor(6U));
+  EXPECT_FALSE(
+      profile->ShouldInitializeNativeMimallocThreadAfterConstructor(5U));
+  EXPECT_TRUE(profile->HasVerifiedConstructorPolicy(3U));
 
   EXPECT_TRUE(profile->HasValidNativePreJniBootstrap());
-  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_initializer, 0x1f7b131U);
-  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_slot, 0x70c7868U);
-  EXPECT_TRUE(
-      profile->ShouldInitializeNativeMimallocThreadAfterConstructor(2U));
-  EXPECT_FALSE(
-      profile->ShouldInitializeNativeMimallocThreadAfterConstructor(3U));
-  EXPECT_EQ(profile->data_seeds.arena_initializer, 0x1bf2e5dU);
-  EXPECT_EQ(profile->data_seeds.allocator_thread_initializer, 0x1fd61f3U);
+  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_initializer, 0x1e89f68U);
+  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_slot, 0x75997f8U);
   EXPECT_TRUE(profile->native_allocator.IsValid());
-  EXPECT_EQ(profile->native_allocator.allocate, 0x1bf2b81U);
-  EXPECT_EQ(profile->native_allocator.deallocate, 0x1bf7abaU);
-  EXPECT_EQ(profile->bridge_entries[1].kind, HostBridgeKind::kUsableSize);
-  EXPECT_EQ(profile->bridge_entries[5].kind, HostBridgeKind::kFree);
+  EXPECT_EQ(profile->native_allocator.allocate, 0x1a9082aU);
+  EXPECT_EQ(profile->native_allocator.deallocate, 0x1a9432bU);
+  EXPECT_FALSE(profile->host_allocator_bridges_supported);
   EXPECT_EQ(profile->default_allocator_strategy,
             HostAllocatorStrategy::kNativeMimalloc);
   EXPECT_EQ(profile->ResolveAllocatorStrategy(false, false),
             HostAllocatorStrategy::kNativeMimalloc);
-  EXPECT_EQ(profile->ResolveAllocatorStrategy(false, true),
-            HostAllocatorStrategy::kNativeMimalloc);
-  EXPECT_EQ(profile->ResolveAllocatorStrategy(true, true),
-            HostAllocatorStrategy::kHostBridges);
   EXPECT_EQ(profile->ResolveAllocatorStrategy(true, false),
             HostAllocatorStrategy::kNativeMimalloc);
 }
 
-TEST(HostAbiProfileTest, ResearchedBaselineKeepsHostBridgeDefault) {
-  const HostAbiProfile* profile =
-      FindHostAbiProfile("50e1b0abd123350e794226062fe3a1ef360c5f0d");
-
-  ASSERT_NE(profile, nullptr);
-  EXPECT_EQ(profile->default_allocator_strategy,
+TEST(HostAbiProfileTest, AllocatorOverrideReplacesProfileDefault) {
+  HostAbiProfile profile;
+  profile.default_allocator_strategy = HostAllocatorStrategy::kHostBridges;
+  EXPECT_EQ(profile.ResolveAllocatorStrategy(false, false),
             HostAllocatorStrategy::kHostBridges);
-  EXPECT_EQ(profile->ResolveAllocatorStrategy(false, false),
-            HostAllocatorStrategy::kHostBridges);
-  EXPECT_EQ(profile->ResolveAllocatorStrategy(true, false),
+  EXPECT_EQ(profile.ResolveAllocatorStrategy(true, false),
             HostAllocatorStrategy::kNativeMimalloc);
+  profile.default_allocator_strategy = HostAllocatorStrategy::kNativeMimalloc;
+  EXPECT_EQ(profile.ResolveAllocatorStrategy(false, true),
+            HostAllocatorStrategy::kNativeMimalloc);
+  EXPECT_EQ(profile.ResolveAllocatorStrategy(true, true),
+            HostAllocatorStrategy::kHostBridges);
 }
 
 // A profile of 100 constructors whose native replay starts at index 2.
@@ -180,6 +126,12 @@ TEST(HostAbiProfileTest, ConstructorPolicyAcceptsProcessLoadConstructorLast) {
                   .HasVerifiedConstructorPolicy(3));
 }
 
+TEST(HostAbiProfileTest, ConstructorPolicyAcceptsAddedLeadingConstructor) {
+  // The 2.746 order: a tracking constructor at 5 moves process-load to 6.
+  EXPECT_TRUE(ConstructorPolicyProfile(6, {{3, 4}, {5, 100}})
+                  .HasVerifiedConstructorPolicy(3));
+}
+
 TEST(HostAbiProfileTest, ConstructorPolicyRequiresJniSingletonConstructor) {
   // Host bridges run a wiring constructor and skip the JNI singleton.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 4}, {6, 100}})
@@ -189,14 +141,17 @@ TEST(HostAbiProfileTest, ConstructorPolicyRequiresJniSingletonConstructor) {
   // The JNI singleton constructor is the checkpoint constructor.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
                    .HasVerifiedConstructorPolicy(2));
-  // The JNI singleton constructor is outside the four leading constructors.
+  // The JNI singleton constructor is outside the leading window.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 100}})
-                   .HasVerifiedConstructorPolicy(6));
+                   .HasVerifiedConstructorPolicy(8));
 }
 
 TEST(HostAbiProfileTest, ConstructorPolicyRejectsOtherShapes) {
-  // The checkpoint is outside the four leading constructors.
-  EXPECT_FALSE(ConstructorPolicyProfile(6, {{2, 3}, {5, 100}})
+  // The checkpoint is outside the leading window.
+  EXPECT_FALSE(ConstructorPolicyProfile(8, {{2, 3}, {5, 100}})
+                   .HasVerifiedConstructorPolicy(5));
+  // A third constructor in the leading window is excluded.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 7}, {8, 100}})
                    .HasVerifiedConstructorPolicy(5));
   // The checkpoint constructor does not run under host bridges.
   EXPECT_FALSE(ConstructorPolicyProfile(3, {{2, 3}, {5, 100}})
@@ -204,8 +159,8 @@ TEST(HostAbiProfileTest, ConstructorPolicyRejectsOtherShapes) {
   // Only one wiring constructor is excluded.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 4}, {5, 100}})
                    .HasVerifiedConstructorPolicy(5));
-  // A constructor after the leading four is excluded.
-  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 6}, {7, 100}})
+  // A constructor after the leading window is excluded.
+  EXPECT_FALSE(ConstructorPolicyProfile(2, {{2, 3}, {5, 8}, {9, 100}})
                    .HasVerifiedConstructorPolicy(5));
   // Host bridges run a constructor the native replay skips.
   EXPECT_FALSE(ConstructorPolicyProfile(2, {{1, 3}, {5, 100}})
@@ -260,6 +215,18 @@ TEST(HostAbiProfileTest, UnknownBuildHasNoNativeOffsets) {
 
 class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
  protected:
+  // Leading constructor anchors keyed by init-array index.
+  static nlohmann::json DefaultConstructorAnchors() {
+    return {{"2", Hex(SymbolRva("MocktailFixtureConstructorTwo"))},
+            {"3", Hex(SymbolRva("MocktailFixtureConstructorThree"))},
+            {"4", Hex(SymbolRva("MocktailFixtureConstructorFour"))},
+            {"5", Hex(SymbolRva("MocktailFixtureConstructorFive"))}};
+  }
+  // A derived suite swaps these before calling SetUpTestSuite.
+  inline static nlohmann::json (*constructor_anchors_)() =
+      DefaultConstructorAnchors;
+  inline static const char* fixture_path_ = MOCKTAIL_HOST_ABI_FIXTURE_PATH;
+
   static std::string Hex(uintptr_t value) {
     std::ostringstream output;
     output << "0x" << std::hex << value;
@@ -414,6 +381,9 @@ class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
   }
 
   static void SetUpTestSuite() {
+    // Suites share one payload Build ID, and the loader keeps one profile per
+    // Build ID for the life of the process.
+    ResetLoadedExternalHostAbiProfilesForTesting();
     ASSERT_NE(elf_version(EV_CURRENT), EV_NONE);
     std::array<char, 64> temporary_template{};
     std::string encoded_template = "/tmp/mocktail-host-abi-loader-XXXXXX";
@@ -425,7 +395,7 @@ class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
 
     std::error_code code;
     const std::filesystem::path fixture_source =
-        std::filesystem::canonical(MOCKTAIL_HOST_ABI_FIXTURE_PATH, code);
+        std::filesystem::canonical(fixture_path_, code);
     ASSERT_FALSE(code) << code.message();
     const BuildIdResult build_id = ReadElfBuildId(fixture_source.string());
     ASSERT_TRUE(build_id) << build_id.error;
@@ -528,11 +498,7 @@ class ExternalHostAbiProfileLoaderTest : public ::testing::Test {
            Hex(SymbolRva("MocktailFixtureThreadInitialize"))},
           {"jni_singleton_initializer_rva",
            Hex(SymbolRva("MocktailFixtureConstructorFive"))},
-          {"constructor_rvas",
-           {{"2", Hex(SymbolRva("MocktailFixtureConstructorTwo"))},
-            {"3", Hex(SymbolRva("MocktailFixtureConstructorThree"))},
-            {"4", Hex(SymbolRva("MocktailFixtureConstructorFour"))},
-            {"5", Hex(SymbolRva("MocktailFixtureConstructorFive"))}}}}},
+          {"constructor_rvas", constructor_anchors_()}}},
     };
     ASSERT_TRUE(std::filesystem::create_directories(
         temporary_root_ / "host_abi_profiles", code));
@@ -786,6 +752,93 @@ TEST_F(ExternalHostAbiProfileLoaderTest, AcceptsExactRepeatedTierCReceipt) {
 
   ASSERT_TRUE(result) << result.error;
   EXPECT_EQ(result.profile, FindHostAbiProfile(build_id_));
+}
+
+// The 2.746 layout: an added constructor at 5 moves an anchor to 6.
+class ExternalHostAbiProfileAddedConstructorTest
+    : public ExternalHostAbiProfileLoaderTest {
+ protected:
+  static nlohmann::json Anchors() {
+    nlohmann::json anchors = DefaultConstructorAnchors();
+    anchors["6"] = anchors["5"];
+    anchors.erase("5");
+    return anchors;
+  }
+  static void SetUpTestSuite() {
+    constructor_anchors_ = Anchors;
+    ExternalHostAbiProfileLoaderTest::SetUpTestSuite();
+  }
+  static void TearDownTestSuite() {
+    ExternalHostAbiProfileLoaderTest::TearDownTestSuite();
+    constructor_anchors_ = DefaultConstructorAnchors;
+  }
+};
+
+TEST_F(ExternalHostAbiProfileAddedConstructorTest, AcceptsAnchorAfterAddedConstructor) {
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.approval_receipt_path = receipt_path_.string();
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  ASSERT_TRUE(result) << result.error;
+}
+
+class ExternalHostAbiProfileExtraAnchorTest
+    : public ExternalHostAbiProfileLoaderTest {
+ protected:
+  static nlohmann::json Anchors() {
+    nlohmann::json anchors = DefaultConstructorAnchors();
+    anchors["6"] = anchors["5"];
+    return anchors;
+  }
+  static void SetUpTestSuite() {
+    constructor_anchors_ = Anchors;
+    ExternalHostAbiProfileLoaderTest::SetUpTestSuite();
+  }
+  static void TearDownTestSuite() {
+    ExternalHostAbiProfileLoaderTest::TearDownTestSuite();
+    constructor_anchors_ = DefaultConstructorAnchors;
+  }
+};
+
+class ExternalHostAbiProfileRetiredBuildTest
+    : public ExternalHostAbiProfileLoaderTest {
+ protected:
+  static void SetUpTestSuite() {
+    fixture_path_ = MOCKTAIL_HOST_ABI_RETIRED_FIXTURE_PATH;
+    ExternalHostAbiProfileLoaderTest::SetUpTestSuite();
+  }
+  static void TearDownTestSuite() {
+    ExternalHostAbiProfileLoaderTest::TearDownTestSuite();
+    fixture_path_ = MOCKTAIL_HOST_ABI_FIXTURE_PATH;
+  }
+};
+
+TEST_F(ExternalHostAbiProfileRetiredBuildTest, RejectsApprovedProfile) {
+  ASSERT_EQ(build_id_, "ade08266c67aee88ec9c1d00902150e1684dad3a");
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.approval_receipt_path = receipt_path_.string();
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  EXPECT_FALSE(result);
+  EXPECT_NE(result.error.find("no longer lets"), std::string::npos)
+      << result.error;
+  EXPECT_EQ(FindHostAbiProfile(build_id_), nullptr);
+}
+
+TEST_F(ExternalHostAbiProfileExtraAnchorTest, RejectsFiveConstructorAnchors) {
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.approval_receipt_path = receipt_path_.string();
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  ASSERT_FALSE(result);
+  EXPECT_NE(result.error.find("constructor anchor"), std::string::npos)
+      << result.error;
 }
 
 TEST_F(ExternalHostAbiProfileLoaderTest, RecordsPayloadDigestForNextLaunch) {

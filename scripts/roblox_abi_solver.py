@@ -73,9 +73,19 @@ FULL_SCORE_LIMIT = 64
 # A data address used by more functions than this is too common to narrow
 # the candidates by itself.
 XREF_FANOUT_LIMIT = 64
+# Mapped data addresses a function must all use before they alone can pick it.
+DATA_DECIDES_MIN = 4
 # Scores are float sums; a lead that equals ACCEPT_LEAD on paper may be
 # a few ulps short.
 _TOLERANCE = 1e-9
+
+
+def near_best(scored: Sequence[tuple[float, int]], rva: int) -> bool:
+    """Whether `rva` was scored within ACCEPT_LEAD of the best candidate."""
+    best = max((value for value, _ in scored), default=0.0)
+    return any(
+        other == rva and best - value < ACCEPT_LEAD - _TOLERANCE for value, other in scored
+    )
 
 
 def choose_candidate(
@@ -119,7 +129,9 @@ class Match:
     rva: int
     score: float
     lead: float
-    # "score" when the score alone decided, "vtable" when a slot broke a tie.
+    # "score" when the score alone decided, "vtable" when a slot broke a tie,
+    # "slot" when a pinned vtable slot decided, "data" when only it used
+    # every mapped data address.
     decided_by: str
 
 
@@ -312,12 +324,14 @@ class Solver(TARGETS.TargetDerivation):
         start: int,
         contract: Callable[[Any, int], bool] | None = None,
         vtable_slot: int | None = None,
+        slot_decides: bool = False,
     ) -> int:
         """Matches one reference function.
 
         A contract drops candidates outright. `vtable_slot` is the candidate
         that sits in the matching slot of an already located vtable; it only
-        breaks a tie between candidates that pass on their own evidence.
+        breaks a tie between candidates that pass on their own evidence,
+        unless `slot_decides` says other methods already pin that vtable.
         """
         if start not in self.reference.functions:
             raise AnalyzerError(f"reference {name} is not a function start")
@@ -348,18 +362,49 @@ class Solver(TARGETS.TargetDerivation):
         if chosen is None and vtable_slot is not None:
             chosen = choose_candidate(scored, tie_breaker=vtable_slot)
             decided_by = "vtable"
+        if chosen is None and slot_decides and vtable_slot in candidates:
+            chosen = vtable_slot
+            decided_by = "slot"
+        if chosen is None:
+            # A rewritten function can lose its shape and strings yet keep
+            # the data it touches. Data only breaks a near-tie; it never
+            # overrules a candidate that scores clearly better.
+            by_data = self._chosen_by_data(start, candidates)
+            if by_data is not None and near_best(scored, by_data):
+                chosen = by_data
+                decided_by = "data"
         if chosen is None:
             ranked = sorted(scored, reverse=True)[:2]
             raise AnalyzerError(
                 f"{name} has no clear candidate: "
                 + ", ".join(f"{format_rva(rva)}={value:.2f}" for value, rva in ranked)
             )
-        chosen_score = next(value for value, other in scored if other == chosen)
+        chosen_score = next((value for value, other in scored if other == chosen), None)
+        if chosen_score is None:
+            chosen_score = self._full_score(start, chosen, graph[chosen])
         runner_up = max((value for value, other in scored if other != chosen), default=0.0)
         self.matches[name] = Match(chosen, chosen_score, chosen_score - runner_up, decided_by)
         self._claimed[chosen] = start
         self._pair(start, chosen)
         return chosen
+
+    def _chosen_by_data(self, start: int, candidates: set[int]) -> int | None:
+        """The one function using every mapped data address, if it is a candidate."""
+        mapped = {
+            self.data_map[target]
+            for target in self.reference.functions[start].refs
+            if target in self.data_map
+        }
+        if len(mapped) < DATA_DECIDES_MIN:
+            return None
+        users = None
+        for address in mapped:
+            found = set(self.candidate.data_users.get(address, ()))
+            users = found if users is None else users & found
+        if users is None or len(users) != 1:
+            return None
+        (only,) = users
+        return only if only in candidates else None
 
     def _aligned(self, name: str, start: int) -> tuple[list[Instruction], list[Instruction], dict[int, int]]:
         other = self.match_function(name, start)

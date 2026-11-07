@@ -19,7 +19,7 @@ void InitializeTestThread() { ++g_thread_initializations; }
 
 TEST(HostAbiExperimentTest, NativeOnlyProfileRejectsHostActionsBeforeWriting) {
   HostAbiProfile profile =
-      *FindHostAbiProfile("d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21");
+      *FindHostAbiProfile("1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
   profile.host_allocator_bridges_supported = false;
   const HostAbiBridgeTargets targets;
   const auto rejected = InstallHostAbiExperiment(1, profile, targets, {});
@@ -49,7 +49,7 @@ TEST(HostAbiExperimentTest, InitializesThreadAtRelocatedAllocatorConstructor) {
 
 TEST(HostAbiExperimentTest, NativeMimallocModeDoesNotInstallHostTrampolines) {
   const HostAbiProfile *profile =
-      FindHostAbiProfile("d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21");
+      FindHostAbiProfile("1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
   ASSERT_NE(profile, nullptr);
 
   const HostAbiBridgeTargets no_host_targets;

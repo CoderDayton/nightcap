@@ -37,6 +37,12 @@ PayloadCompatibilityResult CheckPayloadCompatibility(
     result.error = "Cannot read Roblox compatibility profile: " + profile.error;
     return result;
   }
+  if (!profile.profile.has_value() && IsRetiredRobloxBuild(result.build_id)) {
+    result.error = "Roblox no longer lets Build ID " + result.build_id +
+                   " join games.\n  Update Roblox before starting native "
+                   "code.";
+    return result;
+  }
   if (!profile.profile.has_value()) {
     result.error = "Unsupported Roblox Build ID " + result.build_id +
                    ".\n  Add and validate a profile in " + manifest_path +

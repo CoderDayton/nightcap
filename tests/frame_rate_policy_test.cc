@@ -201,6 +201,24 @@ TEST(FrameRatePolicyTest, RejectsMalformedAndConflictingOverrides) {
       &merged, &error));
 }
 
+TEST(FrameRatePolicyTest, DescribesSavedGraphicsQuality) {
+  SettingsFile settings;
+  ASSERT_FALSE(settings.root().empty());
+  EXPECT_EQ(DescribeRobloxQualitySettings(settings.root()), "");
+
+  std::string text = kSettings;
+  const std::string anchor = "<int name=\"GraphicsQualityLevel\">0</int>\n";
+  text.replace(text.find(anchor), anchor.size(),
+               "<int name=\"GraphicsQualityLevel\">4</int>\n"
+               "\t\t\t<token name=\"SavedQualityLevel\">0</token>\n");
+  settings.Write(text);
+  EXPECT_EQ(DescribeRobloxQualitySettings(settings.root()),
+            "SavedQualityLevel=0 GraphicsQualityLevel=4");
+
+  settings.Write("<roblox><Properties></Properties></roblox>");
+  EXPECT_EQ(DescribeRobloxQualitySettings(settings.root()), "");
+}
+
 } // namespace
 } // namespace runtime
 } // namespace mocktail

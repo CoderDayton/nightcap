@@ -1139,6 +1139,11 @@ struct ANativeWindow {};
 void ANativeWindow_acquire(ANativeWindow*) {}
 void ANativeWindow_release(ANativeWindow*) {}
 
+// No hardware buffers are ever handed out, so there is nothing to count.
+struct AHardwareBuffer;
+void AHardwareBuffer_acquire(AHardwareBuffer*) {}
+void AHardwareBuffer_release(AHardwareBuffer*) {}
+
 ANativeWindow* ANativeWindow_fromSurface(void* env, void* surface) {
   void* native_window = MocktailNativeWindow();
   // The direct-Vulkan WSI adapter ignores the Android window

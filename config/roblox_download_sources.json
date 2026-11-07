@@ -3,6 +3,27 @@
   "sources": [
     {
       "package": "com.roblox.client",
+      "version_name": "2.746.1266",
+      "version_code": 20836,
+      "abi": "x86_64",
+      "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+      "archives": [
+        {
+          "filename": "base.apk",
+          "url": "https://github.com/Roblox-DeployHistory-Updates/android-runner/releases/download/20836/com.roblox.client-20836.apk",
+          "sha256": "665048d33dbf18d3d12bf0ce93fe86b86ff8c758b7c1f5678c732e7f7c0e6e69",
+          "size": 105328295
+        },
+        {
+          "filename": "split_config.x86_64.apk",
+          "url": "https://github.com/Roblox-DeployHistory-Updates/android-runner/releases/download/20836/com.roblox.client-config.x86_64-20836.apk",
+          "sha256": "08123d977dcf378a1059fd95f8f0137505bd221d42df31e8e05d03788b34be4c",
+          "size": 53912538
+        }
+      ]
+    },
+    {
+      "package": "com.roblox.client",
       "version_name": "2.742.1059",
       "version_code": 3222,
       "abi": "x86_64",

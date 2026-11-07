@@ -1,64 +1,64 @@
 {
   "schema_version": 1,
-  "elf_build_id": "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
-  "payload_sha256": "4892d8949918db453f72d3db64093bc985f3ed6dba870a6381d9f3be3b7a3338",
-  "payload_id": "3222-a67a91ef96c700c0730acd36a250c2f93cfafbc1",
-  "payload_path": "payloads/3222-a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+  "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+  "payload_sha256": "d29de17f28c5020741e5607cf690847297c911f564fc7f31a63610c6f5324075",
+  "payload_id": "20836-1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+  "payload_path": "payloads/20836-1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
   "reference": {
-    "elf_build_id": "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
-    "payload_sha256": "8f7079c8977b88c8d9b61be201f7156b5041d7623863357f9ad6c3b0062531e9"
+    "elf_build_id": "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+    "payload_sha256": "4892d8949918db453f72d3db64093bc985f3ed6dba870a6381d9f3be3b7a3338"
   },
   "profile": {
-    "elf_build_id": "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+    "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
     "bridge_entries": [
       {
-        "rva": "0x1e154a2",
+        "rva": "0x1a90aca",
         "kind": "allocate",
         "label": "small-allocate"
       },
       {
-        "rva": "0x1e18647",
+        "rva": "0x1a93ca3",
         "kind": "usable_size",
         "label": "usable-size"
       },
       {
-        "rva": "0x22446da",
+        "rva": "0x1e88acc",
         "kind": "reallocate",
         "label": "reallocate"
       },
       {
-        "rva": "0x1e15256",
+        "rva": "0x1a9082a",
         "kind": "allocate",
         "label": "allocate"
       },
       {
-        "rva": "0x1e2eae7",
+        "rva": "0x1aaa425",
         "kind": "aligned_allocate",
         "label": "aligned-allocate-direct"
       },
       {
-        "rva": "0x1e18c83",
+        "rva": "0x1a9432b",
         "kind": "free",
         "label": "free"
       }
     ],
     "data_seeds": {
-      "allocator_object_slot": "0x732dec8",
-      "empty_string_slot": "0x79a6130",
-      "jni_singleton_slot": "0x7a66658",
+      "allocator_object_slot": "0x6f61750",
+      "empty_string_slot": "0x7597500",
+      "jni_singleton_slot": "0x7655e00",
       "jni_singleton_bytes": 1024,
-      "arena_initializer": "0x1e15827",
-      "allocator_thread_initializer": "0x1e95df7",
-      "arena_guard_slot": "0x7a75430",
-      "arena_table_slot": "0x7a754c0",
+      "arena_initializer": "0x1a90e83",
+      "allocator_thread_initializer": "0x1b0cb48",
+      "arena_guard_slot": "0x7ee9a30",
+      "arena_table_slot": "0x7ee9ac0",
       "arena_table_slot_count": 4194304
     },
     "native_allocator": {
-      "allocate": "0x1e15256",
-      "deallocate": "0x1e18c83"
+      "allocate": "0x1a9082a",
+      "deallocate": "0x1a9432b"
     },
-    "init_array_offset": "0x72a74f0",
-    "init_array_count": 3678,
+    "init_array_offset": "0x6e60720",
+    "init_array_count": 2500,
     "constructor_run_ranges": [
       {
         "begin": 3,
@@ -66,32 +66,32 @@
       },
       {
         "begin": 5,
-        "end_exclusive": 3678
+        "end_exclusive": 2500
       }
     ],
     "native_mimalloc_constructor_run_ranges": [
       {
         "begin": 2,
-        "end_exclusive": 3678
+        "end_exclusive": 2500
       }
     ],
-    "native_mimalloc_thread_initializer_after_constructor": 5,
+    "native_mimalloc_thread_initializer_after_constructor": 6,
     "native_pre_jni_bootstrap": {
-      "registry_initializer": "0x2245a0c",
-      "registry_slot": "0x79a9478"
+      "registry_initializer": "0x1e89f68",
+      "registry_slot": "0x75997f8"
     },
     "default_allocator_strategy": "native_mimalloc"
   },
   "derivation_anchors": {
     "signature_version": 1,
-    "allocator_object_initializer_rva": "0x221bb6b",
-    "empty_string_initializer_rva": "0x2227e95",
-    "jni_singleton_initializer_rva": "0x1e14f8b",
+    "allocator_object_initializer_rva": "0x1e70b3c",
+    "empty_string_initializer_rva": "0x1e731f7",
+    "jni_singleton_initializer_rva": "0x1a905e4",
     "constructor_rvas": {
-      "2": "0x1e140f0",
-      "3": "0x1e14f8b",
-      "4": "0x1e13f80",
-      "5": "0x1e189db"
+      "2": "0x1a9044a",
+      "3": "0x1a905e4",
+      "4": "0x1a90445",
+      "6": "0x1a94083"
     }
   }
 }

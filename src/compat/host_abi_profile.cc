@@ -2,12 +2,39 @@
 
 #include "compat/host_abi_profile_loader.h"
 
+#include <algorithm>
+
 namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
-    // Roblox 2.742.1059, the shipped reference. Verified with native mimalloc
-    // only; host allocator bridges are not supported for this build.
+    // Roblox 2.746.1266, the shipped reference. Verified with native mimalloc
+    // only; host allocator bridges are not supported for this build. Index 5
+    // is an added allocator-tracking constructor, so process-load moved to 6.
+    {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+     {{{0x1a90aca, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1a93ca3, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x1e88acc, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1a9082a, HostBridgeKind::kAllocate, "allocate"},
+       {0x1aaa425, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1a9432b, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0x6f61750, 0x7597500, 0x7655e00, 0x400, 0x1a90e83, 0x1b0cb48,
+      0x7ee9a30, 0x7ee9ac0, 0x400000},
+     {0x1a9082a, 0x1a9432b},
+     0x6e60720,
+     2500,
+     {{{3, 4}, {5, 2500}}},
+     2,
+     {{{2, 2500}}},
+     1,
+     6,
+     {0x1e89f68, 0x75997f8},
+     HostAllocatorStrategy::kNativeMimalloc,
+     false},
+    // Roblox 2.742.1059. Verified with native mimalloc only; host allocator
+    // bridges are not supported for this build.
     {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
      {{{0x1e154a2, HostBridgeKind::kAllocate, "small-allocate"},
        {0x1e18647, HostBridgeKind::kUsableSize, "usable-size"},
@@ -54,9 +81,8 @@ constexpr HostAbiProfile kProfiles[] = {
      HostAllocatorStrategy::kNativeMimalloc,
      false},
     // Roblox 2.736.1408 arm64-v8a. Every RVA was derived from the AArch64
-    // payload of the same release as the 2.736.1408 x86-64 profile below,
-    // matched by allocator internals, init_array call graphs, and static
-    // state layout.
+    // payload of the same release as the 2.736.1408 x86-64 build, matched by
+    // allocator internals, init_array call graphs, and static state layout.
     // Constructor policy mirrors x86-64 by semantic role: the pre-init
     // entries 0..3 stay skipped, index 4 is mi_process_load (thread init
     // checkpoint), index 5 is allocator wiring and index 6 is the lazy clock
@@ -82,128 +108,22 @@ constexpr HostAbiProfile kProfiles[] = {
      4,
      {0x2132c5c, 0x71d6d30},
      HostAllocatorStrategy::kNativeMimalloc},
-    // Roblox 2.736.1408. Derived from the verified 2908 profile and validated
-    // by two isolated no-recovery Vulkan canaries and real game sessions.
-    {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-     {{{0x1d2c1e2, HostBridgeKind::kAllocate, "small-allocate"},
-       {0x1d2f43a, HostBridgeKind::kUsableSize, "usable-size"},
-       {0x21e68bf, HostBridgeKind::kReallocate, "reallocate"},
-       {0x1d2bf82, HostBridgeKind::kAllocate, "allocate"},
-       {0x1d47a63, HostBridgeKind::kAlignedAllocate,
-        "aligned-allocate-direct"},
-       {0x1d2f9d9, HostBridgeKind::kFree, "free"}}},
-     6,
-     {0x7652e70, 0x775fd28, 0x7bb4340, 0x400, 0x1d2c5f8, 0x1db7b57,
-      0x7af0430, 0x7af04c0, 0x400000},
-     {0x1d2bf82, 0x1d2f9d9},
-     0x7057818,
-     3570,
-     {{{2, 3}, {5, 3570}}},
-     2,
-     {{{2, 3570}}},
-     1,
-     2,
-     {0x21e8e09, 0x7af4598},
-     HostAllocatorStrategy::kNativeMimalloc},
-    // Roblox 2.734.917. This exact Build-ID profile was machine-derived from
-    // the verified reference and passed two isolated no-recovery Tier C Vulkan
-    // canaries with native constructors, JNI startup, presentation, and
-    // controlled lifecycle teardown.
-    {"63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
-     {{{0x1cf69e2, HostBridgeKind::kAllocate, "small-allocate"},
-       {0x1cf9c3a, HostBridgeKind::kUsableSize, "usable-size"},
-       {0x21af33f, HostBridgeKind::kReallocate, "reallocate"},
-       {0x1cf677e, HostBridgeKind::kAllocate, "allocate"},
-       {0x1d12197, HostBridgeKind::kAlignedAllocate,
-        "aligned-allocate-direct"},
-       {0x1cfa1d9, HostBridgeKind::kFree, "free"}}},
-     6,
-     {0x7571570, 0x767e428, 0x7ad47e8, 0x400, 0x1cf6df8, 0x1d82be7,
-      0x7a10730, 0x7a107c0, 0x400000},
-     {0x1cf677e, 0x1cfa1d9},
-     0x6f78a18,
-     3556,
-     {{{2, 3}, {5, 3556}}},
-     2,
-     {{{2, 3556}}},
-     1,
-     2,
-     {0x21b1889, 0x7a14898},
-     HostAllocatorStrategy::kNativeMimalloc},
-    // Roblox 2.727.1199. Every function and state slot below was matched
-    // independently against the previous supported payload by normalized
-    // instruction signatures and RIP-relative references. The payload keeps
-    // the same native mimalloc/bootstrap design, but its .init_array has 3481
-    // entries and all addresses are scoped to this exact ELF Build ID.
-    {"1686400865ae0e408cd7bd67de7a439625c6fd13",
-     {{{0x1c39ea2, HostBridgeKind::kAllocate, "small-allocate"},
-       {0x1fe4c84, HostBridgeKind::kUsableSize, "usable-size"},
-       {0x203daae, HostBridgeKind::kReallocate, "reallocate"},
-       {0x1c39c3a, HostBridgeKind::kAllocate, "allocate"},
-       {0x1c8dbf8, HostBridgeKind::kAlignedAllocate,
-        "aligned-allocate-direct"},
-       {0x1c3eb72, HostBridgeKind::kFree, "free"}}},
-     6,
-     {0x7030ae0, 0x703a7e8, 0x72a16d0, 0x400, 0x1c39f1d, 0x2040817,
-      0x71e92f0, 0x71e9380, 0x400000},
-     {0x1c39c3a, 0x1c3eb72},
-     0x6c2c9b0,
-     0x6cc8 / 8,
-     {{{2, 3}, {5, 3481}}},
-     2,
-     {{{2, 3481}}},
-     1,
-     2,
-     {0x1fe72e5, 0x71ed428},
-     HostAllocatorStrategy::kNativeMimalloc},
-    // Roblox 2.725.1142. The range comes from its relocated .init_array.
-    // Constructors 2..3454 have been replayed in original order with the
-    // payload's native mimalloc and completed cleanly in no-recovery Tier A
-    // and Tier C runs. Keeping the complete verified prefix is upstream-first:
-    // it preserves dependency-ordered guest initialization instead of growing
-    // a hand-maintained allowlist whenever another native singleton is used.
-    // Entries 0 and 1 remain excluded. The tail at 3443..3454 installs JNI
-    // registration and native runtime tables consumed by JNI_OnLoad; omitting
-    // it leaves later graphics/shader state only partially initialized.
-    // The secondary aligned allocator is called directly by LuaApp startup and
-    // therefore cannot be covered by the public wrapper entry alone.
-    {"d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21",
-     {{{0x1bf2de2, HostBridgeKind::kAllocate, "small-allocate"},
-       {0x1f78ad4, HostBridgeKind::kUsableSize, "usable-size"},
-       {0x1fd3261, HostBridgeKind::kReallocate, "reallocate"},
-       {0x1bf2b81, HostBridgeKind::kAllocate, "allocate"},
-       {0x1c45f5b, HostBridgeKind::kAlignedAllocate, "aligned-allocate-direct"},
-       {0x1bf7aba, HostBridgeKind::kFree, "free"}}},
-     6,
-     {0x6f0cec0, 0x6f15978, 0x717b680, 0x400, 0x1bf2e5d, 0x1fd61f3, 0x70c3730,
-      0x70c37c0, 0x400000},
-     {0x1bf2b81, 0x1bf7aba},
-     0x6b16c40,
-     0x6bf8 / 8,
-     {{{2, 3}, {5, 3455}}},
-     2,
-     {{{2, 3455}}},
-     1,
-     2,
-     {0x1f7b131, 0x70c7868},
-     HostAllocatorStrategy::kNativeMimalloc},
-    // Roblox 2.721.1108 researched baseline.
-    {"50e1b0abd123350e794226062fe3a1ef360c5f0d",
-     {{{0x1f24322, HostBridgeKind::kAllocate, "small-allocate"}}},
-     1,
-     {},
-     {},
-     0,
-     0,
-     {},
-     0,
-     {},
-     0,
-     0,
-     {}},
 };
 
 } // namespace
+
+bool IsRetiredRobloxBuild(std::string_view build_id) noexcept {
+  // x86_64 2.721.1108 through 2.736.1408.
+  constexpr std::string_view kRetired[] = {
+      "50e1b0abd123350e794226062fe3a1ef360c5f0d",
+      "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21",
+      "1686400865ae0e408cd7bd67de7a439625c6fd13",
+      "63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
+      "ade08266c67aee88ec9c1d00902150e1684dad3a",
+  };
+  return std::find(std::begin(kRetired), std::end(kRetired), build_id) !=
+         std::end(kRetired);
+}
 
 const HostAbiProfile *FindHostAbiProfile(std::string_view build_id) noexcept {
   for (const HostAbiProfile &profile : kProfiles) {
@@ -320,7 +240,10 @@ bool HostAbiProfile::ShouldInitializeNativeMimallocThreadAfterConstructor(
 
 bool HostAbiProfile::HasVerifiedConstructorPolicy(
     size_t jni_singleton_constructor) const noexcept {
+  // Four verified leading constructors, plus up to two a release added among
+  // them (2.746 added one). The added ones must run.
   constexpr size_t kLeadingConstructors = 4;
+  constexpr size_t kLeadingConstructorWindow = kLeadingConstructors + 2;
   constexpr size_t kWiringConstructors = 2;
   if (!HasValidConstructorRanges() ||
       !HasValidNativeMimallocConstructorRanges() ||
@@ -332,21 +255,22 @@ bool HostAbiProfile::HasVerifiedConstructorPolicy(
       native_mimalloc_thread_initializer_after_constructor;
   const ConstructorRange &tail =
       constructor_run_ranges[constructor_run_range_count - 1];
-  if (init_array_count < begin + kLeadingConstructors ||
-      native_mimalloc_constructor_run_ranges[0].end_exclusive !=
+  if (init_array_count < begin + kLeadingConstructors) return false;
+  const size_t leading_end =
+      std::min(begin + kLeadingConstructorWindow, init_array_count);
+  if (native_mimalloc_constructor_run_ranges[0].end_exclusive !=
           init_array_count ||
-      checkpoint < begin || checkpoint >= begin + kLeadingConstructors ||
+      checkpoint < begin || checkpoint >= leading_end ||
       !AllowsConstructor(checkpoint) || jni_singleton_constructor < begin ||
-      jni_singleton_constructor >= begin + kLeadingConstructors ||
+      jni_singleton_constructor >= leading_end ||
       jni_singleton_constructor == checkpoint ||
       !AllowsConstructor(jni_singleton_constructor) ||
-      ConstructorRangeBegin() < begin ||
-      tail.begin > begin + kLeadingConstructors ||
+      ConstructorRangeBegin() < begin || tail.begin > leading_end ||
       tail.end_exclusive != init_array_count) {
     return false;
   }
   size_t excluded = 0;
-  for (size_t index = begin; index < begin + kLeadingConstructors; ++index) {
+  for (size_t index = begin; index < leading_end; ++index) {
     if (!AllowsConstructor(index)) {
       ++excluded;
     }
