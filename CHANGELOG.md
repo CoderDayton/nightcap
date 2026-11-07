@@ -10,6 +10,7 @@ Release notes on GitHub are taken from the matching section here.
 - VR works on Roblox 2.746.1266 (build 20836). It no longer supports 2.736.1408 or 2.738.1397, which
   Roblox no longer lets join games.
 - Copy Log button in Settings → About, for bug reports.
+- Session logs show Roblox's saved graphics quality.
 - Custom font for Roblox's menus and games, in Settings → Appearance. Sky moved there too.
 - Nightly Flatpak from `nightcap-nightly.flatpakref` on the Pages site. It installs next to the regular one.
 
@@ -19,6 +20,8 @@ Release notes on GitHub are taken from the matching section here.
 - With automatic updates off, a Roblox version this build can't run falls back to the one before it.
 - Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
 - Roblox downloads from GitHub first, with APKPure as a backup.
+- The default "throughput" physics workers no longer lower shadow detail or texture sharpness. Nightcap
+  also stops setting Roblox flags that don't exist or that it named wrong, so Roblox ignored them.
 - Startup no longer waits on an update check. It runs in the background two minutes after launch,
   at low priority so it doesn't slow the game. If Roblox says your version needs an update, it
   starts right away.

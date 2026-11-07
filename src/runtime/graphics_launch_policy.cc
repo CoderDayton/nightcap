@@ -131,12 +131,6 @@ std::vector<HostGpu> DetectHostGpus() {
   return gpus;
 }
 
-bool HasVendor(const std::vector<HostGpu>& gpus, unsigned int vendor) {
-  return std::any_of(gpus.begin(), gpus.end(), [vendor](const HostGpu& gpu) {
-    return gpu.vendor == vendor;
-  });
-}
-
 const char* VendorName(unsigned int vendor) {
   switch (vendor) {
     case kPciVendorAmd:
@@ -365,14 +359,6 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
         // worker so the render thread is not stuck in i915 ioctl.
         !SetDefault("MESA_VK_ENABLE_SUBMIT_THREAD", "1", error) ||
         !ApplyVulkanIcdPolicy(gpus, error)) {
-      return false;
-    }
-    // Low FRM only on Intel-only machines. Hybrid NVIDIA/AMD laptops should
-    // keep the desktop quality default on the discrete GPU.
-    if (HasVendor(gpus, kPciVendorIntel) &&
-        !HasVendor(gpus, kPciVendorNvidia) &&
-        !HasVendor(gpus, kPciVendorAmd) &&
-        !SetDefault("MOCKTAIL_GRAPHICS_QUALITY", "1", error)) {
       return false;
     }
   }
