@@ -25,6 +25,7 @@
 #include "mocktail/platform/sdl_application_metadata.h"
 #include "mocktail/platform/sdl_event_converter.h"
 #include "mocktail/platform/sdl_window_icon.h"
+#include "runtime/memory_limit.h"
 #include "window/host_surface_commit_gate.h"
 #include "window/input_pump_pacer.h"
 #include "window/main_thread_command_gate.h"
@@ -1563,6 +1564,33 @@ std::uint64_t PresentedFrameCount() {
       g_real_swap_count.load(std::memory_order_relaxed));
 }
 
+namespace {
+
+// Once a minute, so a log from a long session shows what grows over hours.
+constexpr std::uint64_t kProcessSampleIntervalNs = 60'000'000'000ULL;
+std::atomic<std::uint64_t> g_next_process_sample_ns{0};
+
+void MaybeLogProcessSample(std::uint64_t now_ns) {
+  std::uint64_t due = g_next_process_sample_ns.load(std::memory_order_relaxed);
+  if (now_ns < due ||
+      !g_next_process_sample_ns.compare_exchange_strong(
+          due, now_ns + kProcessSampleIntervalNs, std::memory_order_relaxed)) {
+    return;
+  }
+  const runtime::ProcessMemoryUsage usage = runtime::ReadCurrentProcessMemory();
+  if (!usage.valid) {
+    return;
+  }
+  fprintf(stderr,
+          "  [perf] process rss_mib=%llu swap_mib=%llu threads=%llu fds=%d\n",
+          static_cast<unsigned long long>(usage.resident_bytes >> 20),
+          static_cast<unsigned long long>(usage.swap_bytes >> 20),
+          static_cast<unsigned long long>(usage.threads),
+          runtime::CountOpenFileDescriptors());
+}
+
+}  // namespace
+
 void RecordFirstPresentTime(int present_count) {
   if (present_count != 1) {
     return;
@@ -1891,6 +1919,7 @@ bool SwapBuffers() {
   if (swap_count == 1 || swap_count % 240 == 0) {
     fprintf(stderr, "  [perf] present_sample frame=%d monotonic_ns=%llu\n",
             swap_count, static_cast<unsigned long long>(now_ticks_ns));
+    MaybeLogProcessSample(now_ticks_ns);
   }
   if (WindowTraceEnabled() && (swap_count <= 20 || swap_count % 60 == 0)) {
     fprintf(stderr,
@@ -1944,6 +1973,7 @@ void NoteVulkanPresent() {
   if (present_count == 1 || present_count % 240 == 0) {
     fprintf(stderr, "  [perf] present_sample frame=%d monotonic_ns=%llu\n",
             present_count, static_cast<unsigned long long>(now_ticks_ns));
+    MaybeLogProcessSample(now_ticks_ns);
   }
   if (WindowTraceEnabled() &&
       (present_count <= 20 || present_count % 60 == 0)) {
@@ -2583,7 +2613,8 @@ bool PumpEvents() {
         g_pointer_capture_owner != nullptr &&
         !g_pointer_capture_owner->OnRightButton(
             event.button.down,
-            g_text_input_owner != nullptr && g_text_input_owner->active())) {
+            g_text_input_owner != nullptr && g_text_input_owner->active(),
+            window::PointerPosition{event.button.x, event.button.y})) {
       fprintf(stderr,
               "  [input] SDL right-button pointer capture update failed\n");
     }

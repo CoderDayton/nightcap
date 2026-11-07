@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -45,10 +46,16 @@ namespace {
 class FakeBackend final : public PointerCaptureBackend {
  public:
   bool Apply(bool relative_mode, CursorShape cursor,
-             const CursorImagePtr& image, bool center_pointer) override {
+             const CursorImagePtr& image, bool center_pointer,
+             bool restore_pointer) override {
     calls.push_back({relative_mode, cursor != CursorShape::kHidden, cursor,
-                     image, center_pointer});
+                     image, center_pointer, restore_pointer});
+    anchors.push_back(press_anchor);
     return succeeds;
+  }
+
+  void SetPressAnchor(std::optional<PointerPosition> anchor) override {
+    press_anchor = anchor;
   }
 
   bool ShowsCursorWhileCaptured() const override {
@@ -61,8 +68,12 @@ class FakeBackend final : public PointerCaptureBackend {
     CursorShape cursor;
     CursorImagePtr image;
     bool center_pointer;
+    bool restore_pointer;
   };
   std::vector<Call> calls;
+  // The press anchor each Apply saw.
+  std::vector<std::optional<PointerPosition>> anchors;
+  std::optional<PointerPosition> press_anchor;
   bool succeeds = true;
   bool shows_captured_cursor = false;
 };
@@ -482,6 +493,59 @@ TEST(WindowPointerCaptureOwnerTest, PanDuringTextInputDoesNotHoldCaptureAfter) {
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_FALSE(owner.captured());
   EXPECT_TRUE(owner.OnRightButton(false, false));
+}
+
+// The press point anchors only a capture the press itself starts. One that
+// starts later in the hold anchors where the pointer is by then.
+TEST(WindowPointerCaptureOwnerTest, LateCaptureDoesNotUseThePressAnchor) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, true, PointerPosition{10, 20}));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.captured());
+  EXPECT_FALSE(backend.anchors.back().has_value());
+  EXPECT_TRUE(owner.OnRightButton(false, false));
+}
+
+TEST(WindowPointerCaptureOwnerTest, PressAnchorsTheCaptureItStarts) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  EXPECT_TRUE(owner.OnRightButton(true, false, PointerPosition{10, 20}));
+  ASSERT_TRUE(owner.captured());
+  ASSERT_TRUE(backend.anchors.back().has_value());
+  EXPECT_FLOAT_EQ(backend.anchors.back()->x, 10);
+  EXPECT_FLOAT_EQ(backend.anchors.back()->y, 20);
+  EXPECT_FALSE(backend.press_anchor.has_value());
+}
+
+TEST(WindowPointerCaptureOwnerTest, OnlyFocusLossSkipsThePointerRestore) {
+  FakeBackend backend;
+  QueryState query;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  owner.SetGameSessionActive(true);
+  ASSERT_TRUE(owner.Pump(false));
+
+  ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{10, 20}));
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+  ASSERT_FALSE(backend.calls.back().relative_mode);
+  EXPECT_TRUE(backend.calls.back().restore_pointer);
+
+  ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{10, 20}));
+  ASSERT_TRUE(owner.OnFocusLost());
+  ASSERT_FALSE(backend.calls.back().relative_mode);
+  EXPECT_FALSE(backend.calls.back().restore_pointer);
 }
 
 TEST(WindowPointerCaptureOwnerTest, LockCurrentPositionAloneDoesNotCapture) {

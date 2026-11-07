@@ -29,6 +29,7 @@
 #include "mocktail/audio/fmod_jni_audio_bridge.h"
 #include "mocktail/audio/webrtc_jni_audio_bridge.h"
 #include "mocktail/audio/roblox_output_device_bridge.h"
+#include "runtime/asset_overlay_names.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
 #include "runtime/crash_report_policy.h"
@@ -653,6 +654,11 @@ int main(int argc, char* argv[]) {
     }
     return EXIT_FAILURE;
   }
+  for (const mocktail::runtime::IgnoredConfigKey& ignored :
+       runtime_config.ignored) {
+    std::cerr << "  [config] ignoring " << ignored.key
+              << ", which this version cannot use: " << ignored.reason << '\n';
+  }
   if (runtime_config.config.use_system_proxy()) {
     const mocktail::runtime::SystemProxyResult system_proxy =
         mocktail::runtime::ResolveSystemProxy();
@@ -943,6 +949,11 @@ int main(int argc, char* argv[]) {
   mocktail::runtime::BackgroundPayloadUpdate background_update;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
+    if (setenv("MOCKTAIL_GRAPHICS_BACKEND",
+               runtime_config.config.graphics_backend_name().c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot configure the Roblox update graphics backend\n";
+      return EXIT_FAILURE;
+    }
     failure_dialog.SetMessage(
         "Nightcap could not update or verify the Roblox installation.");
     const mocktail::runtime::PayloadUpdatePreflightResult update_preflight =
@@ -950,9 +961,6 @@ int main(int argc, char* argv[]) {
     if (!update_preflight) {
       std::cerr << "[FATAL] " << update_preflight.error;
       if (!update_preflight.details.empty()) {
-        // Without this the dialog only ever said "could not update or verify",
-        // which is indistinguishable between a provider outage, a rejected
-        // signature, and a full disk.
         std::cerr << ": " << update_preflight.details;
         failure_dialog.SetMessage(
             "Nightcap could not update or verify the Roblox installation.\n\n" +
@@ -965,7 +973,8 @@ int main(int argc, char* argv[]) {
     failure_dialog.SetMessage(
         "Nightcap could not finish starting Roblox because of an internal "
         "error.");
-    background_update.Start(environment, paths);
+    background_update.Start(environment, paths, std::chrono::minutes(30),
+                            mocktail::runtime::QueryRobloxUpgradeAction);
   }
   if (!mocktail::runtime::ExportRuntimePathEnvironment(paths,
                                                        &command_line_error)) {
@@ -1139,8 +1148,25 @@ int main(int argc, char* argv[]) {
                 << command_line_error << '\n';
       return EXIT_FAILURE;
     }
+    std::string sky_overrides = audio_capture_overrides;
+    if (runtime_config.config.asset_overlay() &&
+        mocktail::runtime::OverlayHasCustomSky(paths.asset_overlay_dir())) {
+      bool gray_sky = false;
+      if (!mocktail::runtime::MergeCustomSkyClientSettingsOverrides(
+              audio_capture_overrides, &sky_overrides, &gray_sky,
+              &command_line_error)) {
+        std::cerr << "[FATAL] Cannot apply the custom sky: "
+                  << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+      std::cout << (gray_sky
+                        ? "  [runtime] custom sky: FFlagDebugSkyGray on, so "
+                          "every game draws it\n"
+                        : "  [runtime] custom sky: FFlagDebugSkyGray kept off "
+                          "by an override, so games keep their own skies\n");
+    }
     if (setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
-               audio_capture_overrides.c_str(), 1) != 0) {
+               sky_overrides.c_str(), 1) != 0) {
       std::cerr << "[FATAL] Cannot export runtime client-settings policy\n";
       return EXIT_FAILURE;
     }

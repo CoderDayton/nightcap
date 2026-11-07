@@ -39,6 +39,8 @@ enum class SettingKind {
   kCache,
   // Installs a sky pack into the asset overlay, or removes it.
   kSky,
+  // Picks the font that replaces Roblox's, or goes back to Roblox's.
+  kFont,
 };
 
 struct SettingChoice {

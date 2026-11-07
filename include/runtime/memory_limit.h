@@ -15,6 +15,7 @@ namespace runtime {
 struct ProcessMemoryUsage {
   std::uint64_t resident_bytes = 0;
   std::uint64_t swap_bytes = 0;
+  std::uint64_t threads = 0;
   bool valid = false;
 
   std::uint64_t committed_bytes() const {
@@ -24,7 +25,13 @@ struct ProcessMemoryUsage {
 
 // Parses Linux /proc/<pid>/status memory fields. VmRSS is required; VmSwap is
 // optional because some kernels omit it when swap support is disabled.
+// Threads is optional and stays 0 when absent.
 ProcessMemoryUsage ParseProcessStatusMemory(std::string_view status);
+
+ProcessMemoryUsage ReadCurrentProcessMemory();
+
+// Entries in /proc/self/fd, or -1 when it cannot be read.
+int CountOpenFileDescriptors();
 
 enum class CgroupMemoryLimitStatus {
   kActive,

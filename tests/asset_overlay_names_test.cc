@@ -13,7 +13,9 @@
 namespace {
 
 using mocktail::runtime::DisableAssetNameMappings;
+using mocktail::runtime::MergeCustomSkyClientSettingsOverrides;
 using mocktail::runtime::OverlayRbxAssetNames;
+using mocktail::runtime::OverlayHasCustomSky;
 
 class TemporaryDirectory {
  public:
@@ -129,6 +131,63 @@ TEST(AssetOverlayNamesTest, LeavesDataAloneWithoutAMatch) {
             0u);
   EXPECT_EQ(table, before);
   EXPECT_EQ(DisableAssetNameMappings(nullptr, 0, {"alpha"}), 0u);
+}
+
+void WriteFaces(const std::filesystem::path& overlay, const char* prefix) {
+  for (const char* face : {"bk", "dn", "ft", "lf", "rt", "up"}) {
+    WriteFile(overlay / "content/android/textures/sky" /
+              (std::string(prefix) + face + ".tex"));
+  }
+}
+
+TEST(CustomSkyTest, NeedsAllSixSkyAndIndoorFaces) {
+  TemporaryDirectory temporary;
+  EXPECT_FALSE(OverlayHasCustomSky(temporary.path()));
+  WriteFaces(temporary.path(), "sky512_");
+  WriteFaces(temporary.path(), "indoor512_");
+  EXPECT_TRUE(OverlayHasCustomSky(temporary.path()));
+  std::filesystem::remove(temporary.path() /
+                          "content/android/textures/sky/indoor512_up.tex");
+  EXPECT_FALSE(OverlayHasCustomSky(temporary.path()));
+  EXPECT_FALSE(OverlayHasCustomSky({}));
+}
+
+// An indoor sky alone is a start-screen sky; games keep their own.
+TEST(CustomSkyTest, AnIndoorSkyAloneIsNotACustomSky) {
+  TemporaryDirectory temporary;
+  WriteFaces(temporary.path(), "indoor512_");
+  EXPECT_FALSE(OverlayHasCustomSky(temporary.path()));
+}
+
+std::string MergeSky(const std::string& base, bool* gray_sky = nullptr) {
+  std::string merged;
+  std::string error;
+  bool on = false;
+  EXPECT_TRUE(
+      MergeCustomSkyClientSettingsOverrides(base, &merged, &on, &error))
+      << error;
+  if (gray_sky != nullptr) *gray_sky = on;
+  return merged;
+}
+
+TEST(CustomSkyTest, TurnsOnTheGraySkySoEveryGameDrawsTheIndoorSky) {
+  bool gray_sky = false;
+  EXPECT_EQ(MergeSky("{}", &gray_sky), R"({"FFlagDebugSkyGray":"True"})");
+  EXPECT_TRUE(gray_sky);
+  EXPECT_EQ(MergeSky(R"({"FIntTargetRefreshRate":"144"})"),
+            R"({"FFlagDebugSkyGray":"True","FIntTargetRefreshRate":"144"})");
+}
+
+TEST(CustomSkyTest, KeepsAnExplicitGraySkyValue) {
+  bool gray_sky = true;
+  EXPECT_EQ(MergeSky(R"({"FFlagDebugSkyGray":"False"})", &gray_sky),
+            R"({"FFlagDebugSkyGray":"False"})");
+  EXPECT_FALSE(gray_sky);
+  std::string merged;
+  std::string error;
+  EXPECT_FALSE(
+      MergeCustomSkyClientSettingsOverrides("[]", &merged, &gray_sky, &error));
+  EXPECT_FALSE(error.empty());
 }
 
 }  // namespace

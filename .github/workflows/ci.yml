@@ -75,6 +75,7 @@ jobs:
           bash tests/flatpak_packaging_test.sh .
           bash tests/native_packaging_test.sh .
           bash tests/anylinux_dependencies_test.sh .
+          bash tests/shared_data_schema_test.sh .
 
   native-build:
     name: Native build (${{ matrix.arch }})
@@ -97,23 +98,56 @@ jobs:
       - name: Install build dependencies
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            build-essential binutils cmake git ninja-build pkg-config lld \
-            libsdl3-dev libsdl3-ttf-dev libcurl4-openssl-dev libssl-dev \
-            nlohmann-json3-dev libyaml-dev libelf-dev libminizip-dev \
-            libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsecret-1-dev \
-            libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
-            libplacebo-dev libavcodec-dev libpng-dev zlib1g-dev \
-            xvfb xauth libgl1-mesa-dri jq patchelf
+          packages=(
+            build-essential binutils cmake git ninja-build pkg-config lld
+            libsdl3-dev libsdl3-ttf-dev libcurl4-openssl-dev libssl-dev
+            nlohmann-json3-dev libyaml-dev libelf-dev libminizip-dev
+            libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsecret-1-dev
+            libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev
+            libplacebo-dev libavcodec-dev libpng-dev zlib1g-dev
+            xvfb xauth libgl1-mesa-dri libxtst-dev jq patchelf ccache
+          )
+          download() {
+            sudo apt-get update &&
+              sudo timeout 300 apt-get install --yes --no-install-recommends \
+                --download-only "${packages[@]}"
+          }
+          # The x86_64 runners' Azure mirror sometimes serves ~30 KB/s, which
+          # stalled this step for 45 minutes. Downloads already finished stay
+          # in apt's cache across the retry.
+          if ! download; then
+            echo "::warning::Ubuntu mirror too slow, retrying on archive.ubuntu.com"
+            if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+              echo "http://archive.ubuntu.com/ubuntu/" |
+                sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            fi
+            download
+          fi
+          sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+
+      - name: Restore compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.arch }}-
 
       - name: Build and check native executables
         shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_COMPILERCHECK: content
+          CCACHE_MAXSIZE: 1G
         run: |
           test "$(uname -m)" = "${{ matrix.arch }}"
+          ccache --zero-stats
           cmake -S . -B build-ci -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build-ci --parallel 4
+          ccache --show-stats
           ./build-ci/mocktail --help
           ./build-ci/mocktail_updater status
 

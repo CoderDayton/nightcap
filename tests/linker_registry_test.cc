@@ -152,6 +152,35 @@ TEST(LinkerRegistryTest, KeepsHostIndependentBionicAbiOwnedByLibc) {
             reinterpret_cast<void *>(mocktail_bionic_strtoll_l));
   EXPECT_EQ(symbols.at("strtoull_l"),
             reinterpret_cast<void *>(mocktail_bionic_strtoull_l));
+  EXPECT_EQ(symbols.at("strtod"),
+            reinterpret_cast<void *>(mocktail_bionic_strtod));
+  EXPECT_EQ(symbols.at("strtof"),
+            reinterpret_cast<void *>(mocktail_bionic_strtof));
+  EXPECT_EQ(symbols.at("atof"), reinterpret_cast<void *>(mocktail_bionic_atof));
+  EXPECT_EQ(symbols.at("sscanf"),
+            reinterpret_cast<void *>(mocktail_bionic_sscanf));
+  EXPECT_EQ(symbols.at("vsscanf"),
+            reinterpret_cast<void *>(mocktail_bionic_vsscanf));
+  EXPECT_EQ(symbols.at("snprintf"),
+            reinterpret_cast<void *>(mocktail_bionic_snprintf));
+  EXPECT_EQ(symbols.at("vsnprintf"),
+            reinterpret_cast<void *>(mocktail_bionic_vsnprintf));
+  EXPECT_EQ(symbols.at("__vsnprintf_chk"),
+            reinterpret_cast<void *>(mocktail_bionic___vsnprintf_chk));
+  EXPECT_EQ(symbols.at("__vsprintf_chk"),
+            reinterpret_cast<void *>(mocktail_bionic___vsprintf_chk));
+  EXPECT_EQ(symbols.at("vasprintf"),
+            reinterpret_cast<void *>(mocktail_bionic_vasprintf));
+  EXPECT_EQ(symbols.at("printf"),
+            reinterpret_cast<void *>(mocktail_bionic_printf));
+  EXPECT_EQ(symbols.at("strftime"),
+            reinterpret_cast<void *>(mocktail_bionic_strftime));
+  EXPECT_EQ(symbols.at("strftime_l"),
+            reinterpret_cast<void *>(mocktail_bionic_strftime_l));
+  EXPECT_EQ(symbols.at("localeconv"),
+            reinterpret_cast<void *>(mocktail_bionic_localeconv));
+  EXPECT_EQ(symbols.at("newlocale"),
+            reinterpret_cast<void *>(mocktail_bionic_newlocale));
   EXPECT_EQ(linker::GetBionicSymbols().at("strerror_r"),
             reinterpret_cast<void *>(mocktail_bionic_strerror_r));
   EXPECT_EQ(linker::GetBionicSymbols().at("getaddrinfo"),

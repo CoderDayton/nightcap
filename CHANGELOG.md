@@ -5,12 +5,31 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Copy Log button in Settings → About, for bug reports.
+- Custom font for Roblox's menus and games, in Settings → Appearance. Sky moved there too.
+- Nightly Flatpak from `nightcap-nightly.flatpakref` on the Pages site. It installs next to the regular one.
+
 ### Changed
 
+- Unknown settings in `config.yaml` are skipped instead of stopping Nightcap from starting.
+- With automatic updates off, a Roblox version this build can't run falls back to the one before it.
+- Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
+- Roblox downloads from GitHub first, with APKPure as a backup.
+- Startup no longer waits on an update check. It runs in the background two minutes after launch,
+  at low priority so it doesn't slow the game. If Roblox says your version needs an update, it
+  starts right away.
 - Runs Roblox 2.746.1266, and new installs start on it. Before, the updater rejected it and stayed on
   2.742.1059. The audio output-device menu also works on it.
 - Drops the profiles for Roblox 2.736.1408 and older on x86_64. Roblox no longer lets those versions join
   games. arm64 keeps 2.736.1408 for now.
+
+### Fixed
+
+- Decimal settings like camera sensitivity keep their value after a restart on comma-decimal systems.
+- Alt-tabbing during a right-click drag no longer pulls the mouse back into the game.
+- After a fast right-click drag, the mouse goes back to where you clicked.
 
 ## [0.5.0] - 2026-11-05
 

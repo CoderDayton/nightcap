@@ -27,6 +27,7 @@ Threads:	42
   EXPECT_EQ(usage.resident_bytes, 12345U * 1024U);
   EXPECT_EQ(usage.swap_bytes, 678U * 1024U);
   EXPECT_EQ(usage.committed_bytes(), (12345U + 678U) * 1024U);
+  EXPECT_EQ(usage.threads, 42U);
 }
 
 TEST(MemoryLimitTest, AcceptsKernelStatusWithoutSwapField) {
@@ -36,6 +37,15 @@ TEST(MemoryLimitTest, AcceptsKernelStatusWithoutSwapField) {
   ASSERT_TRUE(usage.valid);
   EXPECT_EQ(usage.resident_bytes, 2U * 1024U * 1024U);
   EXPECT_EQ(usage.swap_bytes, 0U);
+  EXPECT_EQ(usage.threads, 0U);
+}
+
+TEST(MemoryLimitTest, ReadsThisProcessForTheSessionLog) {
+  const ProcessMemoryUsage usage = ReadCurrentProcessMemory();
+  ASSERT_TRUE(usage.valid);
+  EXPECT_GT(usage.resident_bytes, 0U);
+  EXPECT_GE(usage.threads, 1U);
+  EXPECT_GE(CountOpenFileDescriptors(), 3);
 }
 
 TEST(MemoryLimitTest, RejectsMissingOrMalformedResidentMemory) {

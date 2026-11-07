@@ -1,5 +1,6 @@
 #include "runtime/memory_limit.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <time.h>
@@ -70,6 +71,8 @@ bool ParseKibibyteField(std::string_view status, std::string_view field,
   return true;
 }
 
+}  // namespace
+
 ProcessMemoryUsage ReadCurrentProcessMemory() {
   std::array<char, 32768> buffer{};
   const int status_file = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
@@ -97,7 +100,21 @@ ProcessMemoryUsage ReadCurrentProcessMemory() {
       std::string_view(buffer.data(), static_cast<std::size_t>(total)));
 }
 
-}  // namespace
+int CountOpenFileDescriptors() {
+  DIR* directory = opendir("/proc/self/fd");
+  if (directory == nullptr) {
+    return -1;
+  }
+  int count = 0;
+  while (const dirent* entry = readdir(directory)) {
+    if (entry->d_name[0] != '.') {
+      ++count;
+    }
+  }
+  (void)closedir(directory);
+  // Less the descriptor opendir held.
+  return count > 0 ? count - 1 : 0;
+}
 
 ProcessMemoryUsage ParseProcessStatusMemory(std::string_view status) {
   ProcessMemoryUsage usage;
@@ -110,6 +127,16 @@ ProcessMemoryUsage ParseProcessStatusMemory(std::string_view status) {
     return {};
   }
   usage.swap_bytes = swap_bytes;
+  const std::size_t threads = status.find("\nThreads:");
+  if (threads != std::string_view::npos) {
+    std::size_t begin = threads + 9;
+    while (begin < status.size() &&
+           (status[begin] == ' ' || status[begin] == '\t')) {
+      ++begin;
+    }
+    (void)std::from_chars(status.data() + begin,
+                          status.data() + status.size(), usage.threads);
+  }
   usage.valid = usage.resident_bytes <=
                 UINT64_MAX - usage.swap_bytes;
   return usage;

@@ -259,6 +259,11 @@ ProfileLookupResult FindBuildProfile(const std::string& manifest_path,
       if (normalized_profile == "5f0704edd9064f566ee3d6df2bd2fabbcc709f03" &&
           bridge.vtable_rva == 0x6cd3ce0 && bridge.vtable_layout_version == 2) {
         bridge.input_method_rvas = {0x320ccf6, 0x320cd04, 0x320d152, 0x320bd18};
+      } else if (normalized_profile ==
+                     "a67a91ef96c700c0730acd36a250c2f93cfafbc1" &&
+                 bridge.vtable_rva == 0x6e3d1d0 &&
+                 bridge.vtable_layout_version == 2) {
+        bridge.input_method_rvas = {0x2ee4f10, 0x2ee4f1e, 0x2ee536c, 0x2ee3f32};
       }
     }
 

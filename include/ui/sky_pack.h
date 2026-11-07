@@ -14,11 +14,17 @@ namespace mocktail {
 namespace ui {
 
 // The skybox in the asset overlay: the six sky512_<face>.tex files Roblox
-// loads in a game. The start screen's indoor sky is left alone.
+// loads in a game, and the indoor512_<face>.tex files the start screen and
+// FFlagDebugSkyGray draw, unless those were put there by hand.
 
 std::filesystem::path SkyFolder(const std::filesystem::path& overlay_dir);
 
 bool HasCustomSky(const std::filesystem::path& overlay_dir);
+
+// True when the installed sky owns indoor512 faces that are missing, as with
+// a sky installed before it replaced the indoor sky. Installing it again
+// fills them in.
+bool IndoorSkyMissing(const std::filesystem::path& overlay_dir);
 
 // Searches `source` a few folders deep for one PNG, JPEG, WebP, DDS or KTX
 // image per face, named *_bk, *_dn, *_ft, *_lf, *_rt and *_up (.tex, .png,

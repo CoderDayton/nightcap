@@ -1,5 +1,8 @@
 #include <SDL3/SDL.h>
 #include <adwaita.h>
+#include <fontconfig/fontconfig.h>
+// After fontconfig.h, which defines its types.
+#include <fontconfig/fcfreetype.h>
 
 #include <array>
 #include <atomic>
@@ -17,6 +20,7 @@
 
 #include "mocktail/platform/application_id.h"
 #include "mocktail/platform/sdl_window_icon_data.h"
+#include "runtime/custom_font.h"
 #include "runtime/environment.h"
 #include "runtime/fleasion.h"
 #include "runtime/session_log.h"
@@ -115,6 +119,7 @@ struct SettingsWindow {
   // Both empty when the window was not started by `mocktail --settings`.
   std::filesystem::path instance_lock;
   std::filesystem::path restart_program;
+  std::filesystem::path logs_root;
   // The restart question is asked once per window.
   bool asked_restart = false;
   bool restarting = false;
@@ -155,6 +160,12 @@ struct SettingsWindow {
   // Set while a sky import or switch runs on a worker thread; the Sky row is
   // locked until it ends.
   bool sky_busy = false;
+  std::filesystem::path font_dir;
+  GtkWidget* font_clear = nullptr;
+  GtkWidget* font_preview = nullptr;
+  // Font files already added to Pango for the preview, by path and mtime.
+  std::vector<std::string> font_previews;
+  bool font_shown = false;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -512,6 +523,67 @@ void AppendImportTile(SettingsWindow* window) {
   gtk_flow_box_append(grid, window->sky_import);
 }
 
+void SetRowText(GtkWidget* widget, std::string_view title,
+                std::string_view subtitle);
+std::filesystem::path PickedPath(Row* row, GFile* file, GError* error);
+
+// The family name in a font file, or empty when it is not a font.
+std::string FontFamily(const std::filesystem::path& file) {
+  int count = 0;
+  FcPattern* pattern = FcFreeTypeQuery(
+      reinterpret_cast<const FcChar8*>(file.c_str()), 0, nullptr, &count);
+  if (pattern == nullptr) return {};
+  FcChar8* family = nullptr;
+  std::string name;
+  if (FcPatternGetString(pattern, FC_FAMILY, 0, &family) == FcResultMatch) {
+    name = reinterpret_cast<const char*>(family);
+  }
+  FcPatternDestroy(pattern);
+  return name;
+}
+
+// Lets the preview draw in `font`, which is not installed on the system.
+bool LoadPreviewFont(SettingsWindow* window, const std::filesystem::path& font) {
+  std::error_code error;
+  const auto stamp = std::filesystem::last_write_time(font, error);
+  const std::string key =
+      font.string() + '\n' +
+      std::to_string(stamp.time_since_epoch().count());
+  for (const std::string& loaded : window->font_previews) {
+    if (loaded == key) return true;
+  }
+  GError* failure = nullptr;
+  if (!pango_font_map_add_font_file(pango_cairo_font_map_get_default(),
+                                    font.c_str(), &failure)) {
+    std::fprintf(stderr, "  [font] no preview for %s: %s\n", font.c_str(),
+                 failure->message);
+    g_error_free(failure);
+    return false;
+  }
+  window->font_previews.push_back(key);
+  return true;
+}
+
+void RefreshFontRow(Row* row) {
+  SettingsWindow* window = row->window;
+  window->font_shown = true;
+  const std::filesystem::path font =
+      mocktail::runtime::InstalledCustomFont(window->font_dir);
+  const std::string family = font.empty() ? std::string() : FontFamily(font);
+  SetRowText(row->widget, row->setting->title,
+             font.empty()      ? "Roblox's fonts"
+             : family.empty() ? font.filename().string()
+                               : family);
+  gtk_widget_set_visible(window->font_clear, !font.empty());
+  gtk_widget_set_visible(window->font_preview,
+                         !family.empty() && LoadPreviewFont(window, font));
+  PangoAttrList* attributes = pango_attr_list_new();
+  pango_attr_list_insert(attributes, pango_attr_family_new(family.c_str()));
+  pango_attr_list_insert(attributes, pango_attr_scale_new(1.4));
+  gtk_label_set_attributes(GTK_LABEL(window->font_preview), attributes);
+  pango_attr_list_unref(attributes);
+}
+
 // Shows the file's value in `row`. With `keep_edit`, text typed into the row
 // and not saved yet is left alone.
 void RefreshRow(Row* row, bool keep_edit) {
@@ -582,6 +654,10 @@ void RefreshRow(Row* row, bool keep_edit) {
     case SettingKind::kSky:
       // A 65-sky library costs ~1000 stats a scan, too many for every save.
       if (row->devices.empty()) RefreshSkyRow(row);
+      break;
+    case SettingKind::kFont:
+      // Reading the font file costs too much for every save.
+      if (!row->window->font_shown) RefreshFontRow(row);
       break;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
@@ -1371,6 +1447,65 @@ void OnSkyChanged(Row* row) {
   RefreshSkyRow(row);
 }
 
+void OnFontChanged(Row* row) {
+  SettingsWindow* window = row->window;
+  window->document.ForgetUndo();
+  OnChangeSaved(window, false);
+  gtk_widget_set_visible(window->undo, FALSE);
+  RefreshFontRow(row);
+}
+
+void OnFontPicked(GObject* source, GAsyncResult* result, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  GError* error = nullptr;
+  GFile* file =
+      gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+  const std::filesystem::path font = PickedPath(row, file, error);
+  if (font.empty()) return;
+  if (FontFamily(font).empty()) {
+    ShowError(window,
+              font.filename().string() + " is not a font Nightcap can read.");
+    return;
+  }
+  std::string failure;
+  if (!mocktail::runtime::InstallCustomFont(font, window->font_dir,
+                                            &failure)) {
+    ShowError(window, failure);
+    return;
+  }
+  OnFontChanged(row);
+}
+
+void OnChooseFont(GtkButton*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  GtkFileDialog* dialog = gtk_file_dialog_new();
+  gtk_file_dialog_set_title(dialog, "Choose a Font");
+  GtkFileFilter* filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "Fonts (.ttf, .otf)");
+  gtk_file_filter_add_suffix(filter, "ttf");
+  gtk_file_filter_add_suffix(filter, "otf");
+  GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+  g_list_store_append(filters, filter);
+  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+  gtk_file_dialog_set_default_filter(dialog, filter);
+  g_object_unref(filters);
+  g_object_unref(filter);
+  gtk_file_dialog_open(dialog, GTK_WINDOW(row->window->widget), nullptr,
+                       OnFontPicked, row);
+  g_object_unref(dialog);
+}
+
+void OnClearFont(GtkButton*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  std::string failure;
+  if (!mocktail::runtime::RemoveCustomFont(row->window->font_dir, &failure)) {
+    ShowError(row->window, failure);
+    return;
+  }
+  OnFontChanged(row);
+}
+
 void SetSkyBusy(Row* row, bool busy) {
   SettingsWindow* window = row->window;
   window->sky_busy = busy;
@@ -1635,7 +1770,8 @@ void OnSkyTileActivated(GtkFlowBox*, GtkFlowBoxChild* child,
   if (row->devices[selected].value == kOtherSky) return;
   const std::string value = row->devices[selected].value;
   if (mocktail::ui::InstalledSky(window->asset_overlay_dir,
-                                 window->sky_library) == value) {
+                                 window->sky_library) == value &&
+      !mocktail::ui::IndoorSkyMissing(window->asset_overlay_dir)) {
     return;
   }
   StartSkyJob(row, {}, value);
@@ -1997,6 +2133,38 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       g_object_unref(actions);
       break;
     }
+    case SettingKind::kFont: {
+      row.widget = adw_action_row_new();
+      window->font_clear = gtk_button_new_with_label("Use Roblox's");
+      gtk_widget_set_valign(window->font_clear, GTK_ALIGN_CENTER);
+      gtk_widget_add_css_class(window->font_clear, "flat");
+      g_signal_connect(window->font_clear, "clicked",
+                       G_CALLBACK(OnClearFont), &row);
+      GtkWidget* choose = gtk_button_new_with_label("Choose…");
+      gtk_widget_set_valign(choose, GTK_ALIGN_CENTER);
+      g_signal_connect(choose, "clicked", G_CALLBACK(OnChooseFont), &row);
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget),
+                                window->font_clear);
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), choose);
+      row.custom = adw_preferences_row_new();
+      gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row.custom), FALSE);
+      window->font_preview = gtk_label_new(
+          "The quick brown fox jumps over the lazy dog.\n"
+          "0123456789 Play Settings Leave");
+      GtkLabel* preview = GTK_LABEL(window->font_preview);
+      gtk_label_set_xalign(preview, 0);
+      gtk_label_set_wrap(preview, TRUE);
+      gtk_widget_set_margin_top(window->font_preview, 14);
+      gtk_widget_set_margin_bottom(window->font_preview, 14);
+      gtk_widget_set_margin_start(window->font_preview, 12);
+      gtk_widget_set_margin_end(window->font_preview, 12);
+      gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row.custom),
+                                 window->font_preview);
+      // The preview row hides with its label.
+      g_object_bind_property(window->font_preview, "visible", row.custom,
+                             "visible", G_BINDING_SYNC_CREATE);
+      break;
+    }
     case SettingKind::kCache:
       row.widget = adw_action_row_new();
       window->cache = &row;
@@ -2011,7 +2179,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
   if (row.reset == nullptr && setting.kind != SettingKind::kEditor &&
       setting.kind != SettingKind::kFolder &&
       setting.kind != SettingKind::kCache &&
-      setting.kind != SettingKind::kSky) {
+      setting.kind != SettingKind::kSky &&
+      setting.kind != SettingKind::kFont) {
     row.reset = NewResetButton(&row);
     adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.reset);
     // Before the row's own control, so the control stays at the edge.
@@ -2227,6 +2396,24 @@ void OnCopyVersion(GtkButton* button, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->toasts, toast);
 }
 
+void OnCopyLog(GtkButton* button, gpointer user_data) {
+  SettingsWindow* window = static_cast<SettingsWindow*>(user_data);
+  std::string text;
+  std::string error;
+  if (!mocktail::runtime::ReadLatestSessionLog(window->logs_root, &text,
+                                               &error)) {
+    ShowError(window, error);
+    return;
+  }
+  gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(button)),
+                         text.c_str());
+  // GNOME has no clipboard manager, so the copy dies with this window.
+  AdwToast* toast =
+      adw_toast_new("Copied the log. Paste it before closing Settings.");
+  adw_toast_set_timeout(toast, 3);
+  adw_toast_overlay_add_toast(window->toasts, toast);
+}
+
 GtkWidget* BuildAboutGroup(SettingsWindow* window) {
   GtkWidget* group = adw_preferences_group_new();
   adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "About");
@@ -2241,6 +2428,17 @@ GtkWidget* BuildAboutGroup(SettingsWindow* window) {
   g_signal_connect(copy, "clicked", G_CALLBACK(OnCopyVersion), window);
   adw_action_row_add_suffix(ADW_ACTION_ROW(row), copy);
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+  GtkWidget* log_row = adw_action_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(log_row), "Log");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(log_row),
+                              "The log from the last time Nightcap ran");
+  GtkWidget* copy_log = gtk_button_new_with_label("Copy Log");
+  gtk_widget_set_valign(copy_log, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text(copy_log, "Copy for a bug report");
+  g_signal_connect(copy_log, "clicked", G_CALLBACK(OnCopyLog), window);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(log_row), copy_log);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), log_row);
   return group;
 }
 
@@ -2502,6 +2700,8 @@ int main(int argc, char* argv[]) {
   window.asset_overlay_dir = paths.asset_overlay_dir();
   window.textures_dir = paths.texture_override_dir();
   window.sky_library = paths.sky_library_dir();
+  window.font_dir = paths.custom_font_dir();
+  window.logs_root = paths.logs_root();
   window.roblox_data_lock = mocktail::runtime::RobloxDataLockPath(paths);
   window.restart_program =
       absolute_path(mocktail::runtime::kRestartProgramVariable);

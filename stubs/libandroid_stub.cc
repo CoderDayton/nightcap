@@ -223,7 +223,13 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
           ? std::string()
       : overlay_env != nullptr ? overlay_env
                                : "rbx_bin/asset_overlay";
-  const std::string cache_key = AssetCacheKey(root, overlay, requested);
+  // The font picked in Settings, under fonts the user put in the overlay.
+  const char* font_overlay_env = GetEnvNonEmpty("MOCKTAIL_FONT_OVERLAY_DIR");
+  const std::string font_overlay =
+      overlay.empty() || font_overlay_env == nullptr ? std::string()
+                                                     : font_overlay_env;
+  const std::string cache_key =
+      AssetCacheKey(root, overlay + '\0' + font_overlay, requested);
 
   {
     std::scoped_lock lock(g_asset_lookup_cache.mutex);
@@ -238,14 +244,17 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
 
   const std::string stripped(StripAndroidAssetPrefix(requested_view));
 
-  if (!overlay.empty()) {
+  for (const std::string& dir : {overlay, font_overlay}) {
+    if (dir.empty()) {
+      continue;
+    }
     const std::vector<std::string> overlay_candidates = {
-        overlay + "/" + requested,
-        overlay + "/" + stripped,
-        overlay + "/content/" + requested,
-        overlay + "/content/" + stripped,
-        overlay + "/ExtraContent/" + requested,
-        overlay + "/ExtraContent/" + stripped,
+        dir + "/" + requested,
+        dir + "/" + stripped,
+        dir + "/content/" + requested,
+        dir + "/content/" + stripped,
+        dir + "/ExtraContent/" + requested,
+        dir + "/ExtraContent/" + stripped,
     };
     for (const std::string& candidate : overlay_candidates) {
       if (FileExists(candidate)) {

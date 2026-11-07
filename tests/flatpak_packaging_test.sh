@@ -111,6 +111,10 @@ assert (
     "-DMOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST="
     "/app/share/mocktail/metadata/roblox_signing_certificates.json"
 ) in mocktail_options
+assert (
+    "-DMOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST="
+    "/app/share/mocktail/metadata/roblox_download_sources.json"
+) in mocktail_options
 
 for module in manifest["modules"]:
     for source in module.get("sources", []):
@@ -150,8 +154,20 @@ grep -Fq -- '--jobs=4' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not cap Flatpak build parallelism'
 grep -Fq -- '--install-deps-from=flathub' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not install manifest dependencies from Flathub'
-grep -Fq -- '--default-branch=stable' "${GITHUB_CI}" ||
-  Fail 'GitHub Actions does not produce the stable Flatpak branch'
+grep -Fq -- '--default-branch="$CHANNEL"' "${GITHUB_CI}" ||
+  Fail 'GitHub Actions does not build the planned Flatpak branch'
+grep -Fq 'channel=nightly' "${GITHUB_CI}" ||
+  Fail 'GitHub Actions has no nightly Flatpak branch'
+grep -Fq "cron: '" "${GITHUB_CI}" ||
+  Fail 'GitHub Actions does not schedule the nightly Flatpak'
+grep -Fq 'group: ${{ (startsWith' "${GITHUB_CI}" && grep -Fq "'flatpak-pages'" "${GITHUB_CI}" ||
+  Fail 'Flatpak publishes do not queue behind each other'
+# A publish must start from the served repository, or it drops the other
+# branch, and must check the result before deploying.
+grep -Fq './scripts/mirror_flatpak_repo.sh' "${GITHUB_CI}" ||
+  Fail 'Flatpak publish does not mirror the served repository first'
+grep -Fq './scripts/check_flatpak_repo.sh' "${GITHUB_CI}" ||
+  Fail 'Flatpak publish does not check the repository before deploying'
 grep -Fq 'Nightcap-x86_64.flatpak' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not build the installable Flatpak bundle'
 grep -Fq 'actions/upload-artifact@' "${GITHUB_CI}" ||
@@ -254,6 +270,12 @@ grep -Fq 'Name=io.github.CoderDayton.nightcap' \
   Fail 'published Flatpak ref has the wrong application ID'
 grep -Fq 'GPGKey=' "${TEMP_DIR}/public/nightcap.flatpakref" ||
   Fail 'published Flatpak ref is not pinned to the signing key'
+grep -Fxq 'Branch=stable' "${TEMP_DIR}/public/nightcap.flatpakref" ||
+  Fail 'the main Flatpak ref does not install the stable branch'
+grep -Fxq 'Branch=nightly' "${TEMP_DIR}/public/nightcap-nightly.flatpakref" ||
+  Fail 'the nightly Flatpak ref does not install the nightly branch'
+grep -Fq 'GPGKey=' "${TEMP_DIR}/public/nightcap-nightly.flatpakref" ||
+  Fail 'the nightly Flatpak ref is not pinned to the signing key'
 grep -Fq 'flatpak install --user' "${TEMP_DIR}/public/index.html" ||
   Fail 'Pages landing page has no direct installation command'
 [[ -f "${TEMP_DIR}/public/Nightcap-x86_64.flatpak" &&

@@ -58,6 +58,7 @@ build() {
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DMOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=/usr/share/mocktail/metadata/roblox_compatibility.json \
     -DMOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST=/usr/share/mocktail/metadata/roblox_signing_certificates.json \
+    -DMOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST=/usr/share/mocktail/metadata/roblox_download_sources.json \
     -DBUILD_TESTING=OFF
   cmake --build build
 }
