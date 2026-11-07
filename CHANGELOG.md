@@ -9,6 +9,11 @@ Release notes on GitHub are taken from the matching section here.
 
 - VR works on Roblox 2.746.1266 (build 20836). It no longer supports 2.736.1408 or 2.738.1397, which
   Roblox no longer lets join games.
+
+## [0.5.1] - 2026-11-06
+
+### Added
+
 - Copy Log button in Settings → About, for bug reports.
 - Session logs show Roblox's saved graphics quality.
 - Custom font for Roblox's menus and games, in Settings → Appearance. Sky moved there too.
@@ -532,7 +537,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.1
 [0.5.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.4.0
 [0.3.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.4

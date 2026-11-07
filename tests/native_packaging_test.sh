@@ -103,7 +103,7 @@ grep -Fq 'git describe' "${AUR_PKGBUILD}" ||
 grep -Fq 'git describe' "${AUR_WORKFLOW}" ||
   Fail 'AUR workflow does not version from the release tag'
 for pkgbuild in "${PKGBUILD}" "${AUR_STABLE_PKGBUILD}" "${AUR_BIN_PKGBUILD}"; do
-  grep -Fqx 'pkgver=0.5.0' "${pkgbuild}" ||
+  grep -Fqx 'pkgver=0.5.1' "${pkgbuild}" ||
     Fail "package version does not match the release being prepared: ${pkgbuild}"
 done
 

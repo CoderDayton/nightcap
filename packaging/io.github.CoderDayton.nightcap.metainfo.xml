@@ -53,6 +53,19 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.5.1" date="2026-11-06">
+      <description>
+        <ul>
+          <li>Runs Roblox 2.746.1266, and new installs start on it.</li>
+          <li>Unknown settings in config.yaml are skipped instead of stopping Nightcap from starting.</li>
+          <li>A custom font for Roblox's menus and games, in Settings → Appearance.</li>
+          <li>A Copy Log button in Settings → About, for bug reports.</li>
+          <li>The default performance preset no longer lowers shadow detail or texture sharpness.</li>
+          <li>Startup no longer waits on an update check.</li>
+          <li>Mouse fixes after right-click drags and alt-tabbing.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-11-05">
       <description>
         <ul>
