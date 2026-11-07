@@ -140,7 +140,19 @@ class TargetDerivation:
         begin = DERIVER.LEADING_CONSTRUCTOR_BEGIN
         window = DERIVER.leading_constructor_window(candidate_init)
         leading = candidate_init[begin : begin + window]
-        reference_index = tuple(sorted(int(key) for key in anchors["constructor_rvas"]))
+        anchor_keys = anchors["constructor_rvas"]
+        if (
+            len(anchor_keys) != DERIVER.LEADING_CONSTRUCTOR_COUNT
+            or not all(
+                isinstance(key, str)
+                and key.isdecimal()
+                and str(int(key)) == key
+                and begin <= int(key) < begin + DERIVER.LEADING_CONSTRUCTOR_WINDOW
+                for key in anchor_keys
+            )
+        ):
+            raise AnalyzerError("reference constructor anchors are invalid")
+        reference_index = tuple(sorted(int(key) for key in anchor_keys))
         offsets = []
         for index in reference_index:
             expected = parse(anchors["constructor_rvas"][str(index)], f"constructor {index}")

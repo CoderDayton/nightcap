@@ -251,8 +251,9 @@ ProfileLookupResult FindBuildProfile(const std::string& manifest_path,
                      normalized_requested);
     }
 
-    // Manifests cached for 2.738.1397 before input-device support lack its
-    // input routes. Adding them leaves the approval status as it is.
+    // Manifests cached for 2.738.1397 and 2.742.1059 before input-device
+    // support lack their input routes. Adding them leaves the approval status
+    // as it is.
     if (fmod_output_device_bridge &&
         !fmod_output_device_bridge->has_input_devices()) {
       auto &bridge = *fmod_output_device_bridge;

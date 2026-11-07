@@ -229,6 +229,13 @@ class DataDecisionTest(unittest.TestCase):
         })
         self.assertIsNone(solver._chosen_by_data(0x100, {0x3000}))
 
+    def test_data_only_breaks_a_near_tie(self) -> None:
+        scored = [(0.54, 0x3000), (0.40, 0x4000), (0.30, 0x5000)]
+        self.assertTrue(SOLVER.near_best(scored, 0x3000))
+        self.assertTrue(SOLVER.near_best(scored, 0x4000))
+        self.assertFalse(SOLVER.near_best(scored, 0x5000))
+        self.assertFalse(SOLVER.near_best(scored, 0x6000))
+
 
 class VtableSlotDecisionTest(unittest.TestCase):
     def solver(self):

@@ -1355,8 +1355,8 @@ bool HasFmodDeviceListsSelectContract(const ElfImage& image,
     std::string local_error;
     if (!image.RequireCode(rva, size, &local_error)) continue;
     const auto offset = image.OffsetForRva(rva, size, &local_error);
-    return offset.has_value() &&
-           compat::HasFmodDeviceListsSelectContract(
+    if (!offset.has_value()) continue;
+    return compat::HasFmodDeviceListsSelectContract(
                image.Bytes(*offset, size, &local_error)) &&
            local_error.empty();
   }
@@ -2168,11 +2168,12 @@ std::optional<SignatureMatch> FindLeadingConstructorCallee(
     if (!candidate_reach.has_value()) return std::nullopt;
     std::multiset<std::pair<std::string, std::int64_t>> missing =
         ConstantOperations(*reference_code);
+    const bool has_constants = !missing.empty();
     for (const auto& operation : ConstantOperations(*candidate_reach)) {
       const auto found = missing.find(operation);
       if (found != missing.end()) missing.erase(found);
     }
-    if (ConstantOperations(*reference_code).empty() || !missing.empty()) {
+    if (!has_constants || !missing.empty()) {
       *error = "signature " + spec.name +
                " caller's call does not keep the wrapper's constants";
       return std::nullopt;

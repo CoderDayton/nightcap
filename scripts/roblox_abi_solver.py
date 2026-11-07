@@ -80,6 +80,14 @@ DATA_DECIDES_MIN = 4
 _TOLERANCE = 1e-9
 
 
+def near_best(scored: Sequence[tuple[float, int]], rva: int) -> bool:
+    """Whether `rva` was scored within ACCEPT_LEAD of the best candidate."""
+    best = max((value for value, _ in scored), default=0.0)
+    return any(
+        other == rva and best - value < ACCEPT_LEAD - _TOLERANCE for value, other in scored
+    )
+
+
 def choose_candidate(
     scored: Sequence[tuple[float, int]], tie_breaker: int | None = None
 ) -> int | None:
@@ -359,9 +367,12 @@ class Solver(TARGETS.TargetDerivation):
             decided_by = "slot"
         if chosen is None:
             # A rewritten function can lose its shape and strings yet keep
-            # the data it touches.
-            chosen = self._chosen_by_data(start, candidates)
-            decided_by = "data"
+            # the data it touches. Data only breaks a near-tie; it never
+            # overrules a candidate that scores clearly better.
+            by_data = self._chosen_by_data(start, candidates)
+            if by_data is not None and near_best(scored, by_data):
+                chosen = by_data
+                decided_by = "data"
         if chosen is None:
             ranked = sorted(scored, reverse=True)[:2]
             raise AnalyzerError(
