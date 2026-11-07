@@ -71,7 +71,6 @@ FPS counter, no menu blur, less CPU in the background:
 On a weak PC, also add:
 
 ```json
-  "DFIntDebugFRMQualityLevelOverride": 1,
   "FIntFRMMaxGrassDistance": 0,
   "FIntFRMMinGrassDistance": 0
 ```
@@ -80,11 +79,11 @@ On a weak PC, also add:
 
 | Flag | What it does | Use it? |
 |---|---|---|
-| `DFIntDebugFRMQualityLevelOverride` | Locks graphics quality, `1` (lowest) to `21` (highest). | ✅ |
 | `FIntDebugForceMSAASamples` | Smooths jagged edges. `0` off, up to `4`. Higher causes visual bugs. | ✅ |
 | `DFFlagTextureQualityOverrideEnabled` + `DFIntTextureQualityOverride` | Texture sharpness, `0` to `3` (default). Set the first to `true`. | ✅ `2` or lower on 4 GB graphics cards |
 | `FIntFRMMaxGrassDistance` + `FIntFRMMinGrassDistance` | Both `0` removes grass. | ✅ |
 | `FIntGrassMovementReducedMotionFactor` | `0` stops grass swaying. | ✅ |
+| `DFIntDebugFRMQualityLevelOverride` | Locks graphics quality and view distance, `1` (lowest) to `21` (highest). The in-game Graphics Quality slider stops working, neither drops when frame rate does, and dynamic resolution turns off. Try the slider first. | ⚠️ Strong PCs, `10` or higher |
 | `DFIntCSGLevelOfDetailSwitchingDistance` (and `L12`, `L23`, `L34`) | Lower makes far objects simpler sooner. Faster, blockier. Defaults `250`, `500`, `2000`, `3000`. | ⚠️ Weak PCs |
 | `DFFlagDebugPauseVoxelizer` | Stops lighting updates. Faster, but light and shadows can be wrong. | ⚠️ Weak PCs |
 | `DFFlagDebugForceAnisoOff` | Floors look blurrier further away. Slightly faster. | ⚠️ Weak PCs |
