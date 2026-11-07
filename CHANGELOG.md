@@ -7,7 +7,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
-- VR works on Roblox 2.746.1266 (build 20836).
+- VR works on Roblox 2.746.1266 (build 20836). It no longer supports 2.736.1408 or 2.738.1397, which
+  Roblox no longer lets join games.
 - Copy Log button in Settings → About, for bug reports.
 - Custom font for Roblox's menus and games, in Settings → Appearance. Sky moved there too.
 - Nightly Flatpak from `nightcap-nightly.flatpakref` on the Pages site. It installs next to the regular one.
@@ -21,6 +22,10 @@ Release notes on GitHub are taken from the matching section here.
 - Startup no longer waits on an update check. It runs in the background two minutes after launch,
   at low priority so it doesn't slow the game. If Roblox says your version needs an update, it
   starts right away.
+- Runs Roblox 2.746.1266, and new installs start on it. Before, the updater rejected it and stayed on
+  2.742.1059. The audio output-device menu also works on it.
+- Drops the profiles for Roblox 2.736.1408 and older on x86_64. Roblox no longer lets those versions join
+  games. arm64 keeps 2.736.1408 for now.
 
 ### Fixed
 

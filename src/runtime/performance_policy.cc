@@ -238,8 +238,6 @@ bool MergePerformanceClientSettingsOverrides(
         (custom_quality != nullptr && custom_quality[0] != '\0')
             ? custom_quality
             : "3";
-    const bool manual_quality =
-        quality_str == "auto" || quality_str == "0" || quality_str == "manual";
 
     // ForceCacheSize settings are byte counts. Let Roblox size its mesh and
     // SLIM content caches; values like 256/128 would cap them to a few bytes.
@@ -315,11 +313,6 @@ bool MergePerformanceClientSettingsOverrides(
         {"FIntMaxAudibleSoundChannels", "32"},
     }};
     apply_settings(rendering_settings);
-    if (!manual_quality) {
-      SetCompatibleValue(&overrides,
-                         {"FIntDebugFRMQualityLevelOverride", quality_str},
-                         kept_overrides);
-    }
   }
   *merged_json = overrides.dump();
   return true;

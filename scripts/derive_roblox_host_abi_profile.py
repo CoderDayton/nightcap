@@ -23,6 +23,7 @@ supported.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import contextlib
 from dataclasses import dataclass
 import hashlib
@@ -920,12 +921,19 @@ def validate_profile_shape(profile: dict[str, Any], anchors: dict[str, Any]) -> 
     ):
         parse_rva(anchors.get(name), f"derivation anchor {name}")
     constructor_rvas = anchors.get("constructor_rvas")
-    if not isinstance(constructor_rvas, dict) or set(constructor_rvas) != {
-        "2",
-        "3",
-        "4",
-        "5",
-    }:
+    # Keyed by init-array index. 2.746 has 2, 3, 4 and 6.
+    if (
+        not isinstance(constructor_rvas, dict)
+        or len(constructor_rvas) != LEADING_CONSTRUCTOR_COUNT
+        or not set(constructor_rvas)
+        <= {
+            str(index)
+            for index in range(
+                LEADING_CONSTRUCTOR_BEGIN,
+                LEADING_CONSTRUCTOR_BEGIN + LEADING_CONSTRUCTOR_WINDOW,
+            )
+        }
+    ):
         raise AnalyzerError("reference constructor derivation anchors are incomplete")
     for index, value in constructor_rvas.items():
         parse_rva(value, f"constructor {index} anchor")
@@ -1329,10 +1337,10 @@ def has_fmod_string_constructor_contract(image: ElfImage, rva: int) -> bool:
         return False
 
 
-def has_fmod_device_lists_select_contract(image: ElfImage, rva: int) -> bool:
-    # Keep in sync with compat/fmod_output_device_contract.h. The fixed bytes
-    # bind the int-index ABI, count slot, clamp, and FMOD system-object offset.
-    expected = bytes.fromhex(
+# Keep in sync with compat/fmod_output_device_contract.h. The fixed bytes bind
+# the int-index ABI, count slot, clamp, and FMOD system-object offset.
+FMOD_SELECT_CONTRACT = (
+    bytes.fromhex(
         "55 48 89 e5 41 57 41 56 41 54 53 48 83 ec 50 41 "
         "89 f7 49 89 fe 4c 8b 25 00 00 00 00 49 8b 04 24 "
         "48 89 45 d8 80 3d 00 00 00 00 00 74 25 49 8b 04 "
@@ -1341,19 +1349,42 @@ def has_fmod_device_lists_select_contract(image: ElfImage, rva: int) -> bool:
         "00 00 49 8b 06 4c 89 f7 ff 50 28 44 39 f8 0f 8e "
         "00 00 00 00 31 db 45 85 ff 41 0f 4f df 49 8b 7e "
         "28 89 de e8 00 00 00 00"
-    )
-    try:
-        image.require_code_rva(rva, len(expected))
-        offset = image.rva_to_offset(rva, len(expected))
-        code = image.bytes_at(offset, len(expected), "FMOD device-list selector")
-    except AnalyzerError:
-        return False
-    relocated = {index for start in (24, 38, 55, 78, 96, 116)
-                 for index in range(start, start + 4)}
-    return len(code) == len(expected) and all(
-        index in relocated or actual == wanted
-        for index, (actual, wanted) in enumerate(zip(code, expected))
-    )
+    ),
+    (24, 38, 55, 78, 96, 116),
+)
+# The same selector from 2.746, which ORs two feature flags where 2.738
+# tested one.
+FMOD_SELECT_TWO_FLAG_CONTRACT = (
+    bytes.fromhex(
+        "55 48 89 e5 41 57 41 56 41 54 53 48 83 ec 50 41 "
+        "89 f7 49 89 fe 4c 8b 25 00 00 00 00 49 8b 04 24 "
+        "48 89 45 d8 48 8d 05 00 00 00 00 8a 00 48 8d 0d "
+        "00 00 00 00 0a 01 74 25 49 8b 04 24 48 3b 45 d8 "
+        "0f 85 00 00 00 00 4c 89 f7 44 89 fe 48 83 c4 50 "
+        "5b 41 5c 41 5e 41 5f 5d e9 00 00 00 00 49 8b 06 "
+        "4c 89 f7 ff 50 28 44 39 f8 0f 8e 00 00 00 00 31 "
+        "db 45 85 ff 41 0f 4f df 49 8b 7e 28 89 de e8 00 "
+        "00 00 00"
+    ),
+    (24, 39, 48, 66, 89, 107, 127),
+)
+
+
+def has_fmod_device_lists_select_contract(image: ElfImage, rva: int) -> bool:
+    for expected, starts in (FMOD_SELECT_CONTRACT, FMOD_SELECT_TWO_FLAG_CONTRACT):
+        try:
+            image.require_code_rva(rva, len(expected))
+            offset = image.rva_to_offset(rva, len(expected))
+            code = image.bytes_at(offset, len(expected), "FMOD device-list selector")
+        except AnalyzerError:
+            continue
+        relocated = {index for start in starts for index in range(start, start + 4)}
+        if len(code) == len(expected) and all(
+            index in relocated or actual == wanted
+            for index, (actual, wanted) in enumerate(zip(code, expected))
+        ):
+            return True
+    return False
 
 
 FMOD_OUTPUT_FIELDS = frozenset({
@@ -1479,16 +1510,23 @@ def derive_fmod_output_device_bridge(
             minimum_anchor_bytes=3,
         ),
     ).rva
-    info_method = unique_semantic_signature_match(
-        reference,
-        candidate,
-        SignatureSpec(
-            "fmod-output-info",
-            source["info_method_rva"],
-            18,
-            minimum_anchor_bytes=3,
-        ),
-    ).rva
+    # 2.746's info method fails this signature, so a miss falls back to its
+    # vtable slot, found through the count, current and select methods.
+    info_error = None
+    try:
+        info_method = unique_semantic_signature_match(
+            reference,
+            candidate,
+            SignatureSpec(
+                "fmod-output-info",
+                source["info_method_rva"],
+                18,
+                minimum_anchor_bytes=3,
+            ),
+        ).rva
+    except AnalyzerError as error:
+        info_method = None
+        info_error = error
     try:
         select_method = unique_semantic_signature_match(
             reference,
@@ -1537,9 +1575,24 @@ def derive_fmod_output_device_bridge(
     relocations = relative_relocation_map(candidate)
     vtables = []
     for offset, addend in relocations.items():
-        if addend != info_method or offset < indexes["info_method_rva"] * 8:
+        if info_method is not None:
+            if addend != info_method or offset < indexes["info_method_rva"] * 8:
+                continue
+            vtable = offset - indexes["info_method_rva"] * 8
+        else:
+            if (
+                addend not in count_candidates
+                or offset < indexes["count_method_rva"] * 8
+            ):
+                continue
+            vtable = offset - indexes["count_method_rva"] * 8
+        info_slot = relocations.get(vtable + indexes["info_method_rva"] * 8)
+        if info_slot is None:
             continue
-        vtable = offset - indexes["info_method_rva"] * 8
+        try:
+            candidate.require_code_rva(info_slot)
+        except AnalyzerError:
+            continue
         count_method = relocations.get(vtable + indexes["count_method_rva"] * 8)
         for layout in (1, 2):
             layout_slots = fmod_vtable_slots(layout, False)
@@ -1564,12 +1617,17 @@ def derive_fmod_output_device_bridge(
                     continue
             elif not has_fmod_device_lists_select_contract(candidate, selected):
                 continue
-            vtables.append((vtable, count_method, current_method, selected, layout))
+            vtables.append(
+                (vtable, count_method, info_slot, current_method, selected, layout)
+            )
     if len(vtables) != 1:
-        raise AnalyzerError(
-            f"FMOD output vtable matched {len(vtables)} candidate locations"
-        )
-    vtable, count_method, current_method, select_method, layout = vtables[0]
+        message = f"FMOD output vtable matched {len(vtables)} candidate locations"
+        if info_error is not None:
+            message += f" ({info_error})"
+        raise AnalyzerError(message)
+    vtable, count_method, info_method, current_method, select_method, layout = vtables[
+        0
+    ]
     if not has_fmod_string_constructor_contract(candidate, string_constructor):
         raise AnalyzerError("candidate FMOD string constructor contract changed")
     result = {
@@ -1910,7 +1968,7 @@ def jni_singleton_publication(image: ElfImage, entry: int) -> tuple[Any, ...]:
        xchg qword ptr [rip + SLOT], rax
        mov qword ptr [rip + OBJECT], rax
 
-    OBJECT is the eight bytes after SLOT.
+    OBJECT is the eight bytes after SLOT, or from 2.746 0x38 bytes before it.
     """
     for frame in (0, 2):
         try:
@@ -1949,7 +2007,10 @@ def jni_singleton_publication(image: ElfImage, entry: int) -> tuple[Any, ...]:
             and len(slot_targets) == 1
             and len(stored_targets) == 1
             and object_targets[0] == stored_targets[0]
-            and object_targets[0] == slot_targets[0] + 8
+            and (
+                object_targets[0] == slot_targets[0] + 8
+                or object_targets[0] + 0x38 == slot_targets[0]
+            )
         ):
             return decoded[frame:]
     raise AnalyzerError(
@@ -2000,6 +2061,31 @@ LEADING_CONSTRUCTOR_BEGIN = 2
 # The process-load constructor, the JNI singleton initializer and two wiring
 # entries. A release may put them in any order.
 LEADING_CONSTRUCTOR_COUNT = 4
+# A release may also add constructors among them, such as 2.746's allocator
+# tracking keys. Those run like any later constructor.
+LEADING_CONSTRUCTOR_WINDOW = LEADING_CONSTRUCTOR_COUNT + 2
+
+
+@dataclass(frozen=True)
+class LeadingConstructors:
+    # Ascending reference init-array indexes. From 2.746: 2, 3, 4 and 6.
+    reference_index: tuple[int, ...]
+    # For each, the candidate index of the same constructor, counted from
+    # LEADING_CONSTRUCTOR_BEGIN, and its entry.
+    candidate_offsets: tuple[int, ...]
+    candidate_entries: tuple[int, ...]
+    window: int
+    jni_singleton: SignatureMatch
+
+
+def leading_constructor_window(candidate_init: Sequence[int]) -> int:
+    """Candidate leading-constructor window, leaving one later constructor."""
+    window = min(
+        LEADING_CONSTRUCTOR_WINDOW, len(candidate_init) - LEADING_CONSTRUCTOR_BEGIN - 1
+    )
+    if window < LEADING_CONSTRUCTOR_COUNT:
+        raise AnalyzerError("init-array shape is not derivable")
+    return window
 
 
 def match_leading_constructors(
@@ -2009,21 +2095,38 @@ def match_leading_constructors(
     jni_spec: SignatureSpec,
     reference_init: Sequence[int],
     candidate_init: Sequence[int],
-) -> tuple[tuple[int, ...], SignatureMatch]:
-    """Find each reference leading constructor in the candidate by its code.
-
-    Returns, for each reference leading constructor, the candidate init-array
-    index of the same constructor, both counted from
-    LEADING_CONSTRUCTOR_BEGIN, and the JNI singleton initializer match.
-    """
+) -> LeadingConstructors:
+    """Find each reference leading constructor in the candidate by its code."""
     moved = "constructor moved outside verified init-array boundary"
     end = LEADING_CONSTRUCTOR_BEGIN + LEADING_CONSTRUCTOR_COUNT
     if len(reference_init) < end or len(candidate_init) < end:
         raise AnalyzerError("init-array shape is not derivable")
-    candidate_entries = tuple(candidate_init[LEADING_CONSTRUCTOR_BEGIN:end])
+    window = leading_constructor_window(candidate_init)
+    candidate_entries = tuple(
+        candidate_init[LEADING_CONSTRUCTOR_BEGIN : LEADING_CONSTRUCTOR_BEGIN + window]
+    )
+    if not isinstance(constructor_anchors, dict) or len(constructor_anchors) != (
+        LEADING_CONSTRUCTOR_COUNT
+    ):
+        raise AnalyzerError("constructor anchors are invalid")
+    reference_index = []
+    for key in constructor_anchors:
+        if (
+            not isinstance(key, str)
+            or not key.isdecimal()
+            or not LEADING_CONSTRUCTOR_BEGIN
+            <= int(key)
+            < LEADING_CONSTRUCTOR_BEGIN + LEADING_CONSTRUCTOR_WINDOW
+            or int(key) >= len(reference_init)
+        ):
+            raise AnalyzerError(moved)
+        reference_index.append(int(key))
+    reference_index.sort()
+    if len(reference_init) <= reference_index[-1] + 1:
+        raise AnalyzerError("init-array shape is not derivable")
     candidate_offsets = []
     jni_match = None
-    for index in range(LEADING_CONSTRUCTOR_BEGIN, end):
+    for index in reference_index:
         reference_entry = reference_init[index]
         name = f"constructor-{index}"
         if parse_rva(constructor_anchors.get(str(index)), name) != reference_entry:
@@ -2049,7 +2152,107 @@ def match_leading_constructors(
         candidate_offsets.append(candidate_offset)
     if jni_match is None:
         raise AnalyzerError("JNI singleton initializer is not a leading constructor")
-    return tuple(candidate_offsets), jni_match
+    return LeadingConstructors(
+        tuple(reference_index),
+        tuple(candidate_offsets),
+        tuple(candidate_entries[offset] for offset in candidate_offsets),
+        window,
+        jni_match,
+    )
+
+
+def direct_calls_before_return(image: ElfImage, entry: int) -> list[int]:
+    """Direct call targets of the function at entry, up to its first return.
+
+    A constructor that is one jump to its body is scanned from the body. Code
+    that does not decode raises AnalyzerError.
+    """
+    targets = []
+    address = entry
+    for count in range(64):
+        instruction = disassemble(image, address, 1)[0]
+        if instruction.group(capstone.CS_GRP_RET):
+            break
+        if count == 0:
+            with contextlib.suppress(AnalyzerError):
+                address = direct_jump_target(instruction, "")
+                continue
+        with contextlib.suppress(AnalyzerError):
+            targets.append(direct_call_target(instruction, ""))
+        address += instruction.size
+    return targets
+
+
+def constant_operations(instructions: Sequence[Any]) -> Counter[tuple[str, int]]:
+    """Compare, mask and shift instructions with an immediate operand."""
+    return Counter(
+        (instruction.mnemonic, instruction.operands[1].imm)
+        for instruction in instructions
+        if instruction.mnemonic in ("cmp", "and", "shr", "shl", "sar")
+        and len(instruction.operands) == 2
+        and instruction.operands[1].type == capstone_x86.X86_OP_IMM
+    )
+
+
+def find_leading_constructor_callee(
+    reference: ElfImage,
+    candidate: ElfImage,
+    spec: SignatureSpec,
+    reference_init: Sequence[int],
+    leading: LeadingConstructors,
+) -> SignatureMatch:
+    """Find a changed function through the leading constructor that calls it.
+
+    The candidate callee is the one at the same call position. From 2.746 the
+    small-allocate and free wrappers also call an allocation tracker.
+    """
+    # A constructor that does not decode may be the caller, so its error
+    # explains a miss better than "not called".
+    scan_error = None
+    for offset, index in enumerate(leading.reference_index):
+        try:
+            reference_calls = direct_calls_before_return(
+                reference, reference_init[index]
+            )
+        except AnalyzerError as error:
+            if scan_error is None:
+                scan_error = f"reference constructor {index} does not decode: {error}"
+            continue
+        if spec.reference_rva not in reference_calls:
+            continue
+        try:
+            candidate_calls = direct_calls_before_return(
+                candidate, leading.candidate_entries[offset]
+            )
+        except AnalyzerError as error:
+            raise AnalyzerError(
+                f"signature {spec.name} caller does not decode in the candidate: "
+                f"{error}"
+            ) from error
+        if len(candidate_calls) != len(reference_calls):
+            raise AnalyzerError(
+                f"signature {spec.name} caller made a different number of calls"
+            )
+        rva = candidate_calls[reference_calls.index(spec.reference_rva)]
+        reference_code = disassemble(
+            reference, spec.reference_rva, spec.instruction_count
+        )
+        candidate_code = disassemble(candidate, rva, spec.instruction_count)
+        # The call order alone could pick a neighbouring function. The added
+        # tracking calls shift the wrapper's code by under 16 instructions, so
+        # its masks and size limits must all appear within that reach.
+        candidate_reach = disassemble(candidate, rva, spec.instruction_count + 16)
+        wanted = constant_operations(reference_code)
+        if not wanted or wanted - constant_operations(candidate_reach):
+            raise AnalyzerError(
+                f"signature {spec.name} caller's call does not keep the "
+                "wrapper's constants"
+            )
+        return SignatureMatch(rva, reference_code, candidate_code)
+    message = f"signature {spec.name} is not called by a leading constructor"
+    if scan_error is not None:
+        message += f" ({scan_error})"
+    raise AnalyzerError(message)
 
 
 def mapped_rip_target(
@@ -2216,27 +2419,36 @@ def remapped_constructor_ranges(
     candidate_offsets: Sequence[int],
     reference_count: int,
     candidate_count: int,
+    reference_index: Sequence[int] = tuple(
+        range(LEADING_CONSTRUCTOR_BEGIN, LEADING_CONSTRUCTOR_BEGIN + LEADING_CONSTRUCTOR_COUNT)
+    ),
+    window: int = LEADING_CONSTRUCTOR_COUNT,
 ) -> list[dict[str, int]]:
     """Rewrite the reference constructor ranges for the candidate init-array.
 
     Each leading constructor keeps its place in or out of the replay under
-    its candidate index, and every later constructor runs.
+    its candidate index, and every later constructor runs, as does a
+    candidate leading constructor the reference lacks.
     """
     cannot_fit = "reference constructor range cannot fit candidate init-array"
-    leading_end = LEADING_CONSTRUCTOR_BEGIN + LEADING_CONSTRUCTOR_COUNT
+    leading_end = reference_index[-1] + 1
+    candidate_leading_end = LEADING_CONSTRUCTOR_BEGIN + window
     ranges = validated_ranges(ranges, "reference constructor ranges", reference_count)
     if (
         ranges[0]["begin"] < LEADING_CONSTRUCTOR_BEGIN
         or ranges[-1]["begin"] > leading_end
         or ranges[-1]["end_exclusive"] != reference_count
         or reference_count <= leading_end
-        or candidate_count <= leading_end
+        or candidate_count <= candidate_leading_end
     ):
         raise AnalyzerError(cannot_fit)
-    runs = [False] * LEADING_CONSTRUCTOR_COUNT
+    runs = [True] * window
+    for offset in candidate_offsets:
+        runs[offset] = False
     for item in ranges:
-        for index in range(item["begin"], min(item["end_exclusive"], leading_end)):
-            runs[candidate_offsets[index - LEADING_CONSTRUCTOR_BEGIN]] = True
+        for offset, index in enumerate(reference_index):
+            if item["begin"] <= index < item["end_exclusive"]:
+                runs[candidate_offsets[offset]] = True
     result = []
     run_begin = None
     for offset, run in enumerate(runs):
@@ -2249,7 +2461,7 @@ def remapped_constructor_ranges(
             run_begin = None
     result.append(
         {
-            "begin": leading_end if run_begin is None else run_begin,
+            "begin": candidate_leading_end if run_begin is None else run_begin,
             "end_exclusive": candidate_count,
         }
     )
@@ -2303,6 +2515,7 @@ def derive_profile(
     anchors = reference_sidecar["derivation_anchors"]
     matches = {}
     allocate_matches = ()
+    called_by_leading = []
     for spec in create_signature_specs(reference_profile, anchors):
         if spec.name == "allocate":
             allocate_matches = find_signature_matches(
@@ -2313,7 +2526,7 @@ def derive_profile(
                 reference, candidate, spec
             )
         elif spec.name == "jni-singleton-initializer":
-            leading_offsets, matches[spec.name] = match_leading_constructors(
+            leading = match_leading_constructors(
                 reference,
                 candidate,
                 anchors["constructor_rvas"],
@@ -2321,8 +2534,22 @@ def derive_profile(
                 reference_init,
                 candidate_init,
             )
+            matches[spec.name] = leading.jni_singleton
         else:
-            matches[spec.name] = find_signature_match(reference, candidate, spec)
+            try:
+                matches[spec.name] = find_signature_match(reference, candidate, spec)
+            except AnalyzerError as error:
+                # Only a wrapper with no candidate match falls back. Ambiguous
+                # matches and reference-side failures still fail.
+                if spec.name not in ("small-allocate", "free") or str(error) != (
+                    f"signature {spec.name} matched 0 candidate locations"
+                ):
+                    raise
+                called_by_leading.append(spec)
+    for spec in called_by_leading:
+        matches[spec.name] = find_leading_constructor_callee(
+            reference, candidate, spec, reference_init, leading
+        )
 
     # The allocate signature alone is intentionally ambiguous in 2904. Resolve
     # it through an independent invariant: the registry initializer directly
@@ -2428,31 +2655,30 @@ def derive_profile(
     candidate_count = len(candidate_init)
     constructor_ranges = remapped_constructor_ranges(
         reference_profile["constructor_run_ranges"],
-        leading_offsets,
+        leading.candidate_offsets,
         reference_count,
         candidate_count,
+        leading.reference_index,
+        leading.window,
     )
     native_ranges = remapped_constructor_ranges(
         reference_profile["native_mimalloc_constructor_run_ranges"],
-        leading_offsets,
+        leading.candidate_offsets,
         reference_count,
         candidate_count,
+        leading.reference_index,
+        leading.window,
     )
     reference_thread_boundary = reference_profile[
         "native_mimalloc_thread_initializer_after_constructor"
     ]
-    if not (
-        LEADING_CONSTRUCTOR_BEGIN
-        <= reference_thread_boundary
-        < LEADING_CONSTRUCTOR_BEGIN + LEADING_CONSTRUCTOR_COUNT
-    ):
+    if reference_thread_boundary not in leading.reference_index:
         raise AnalyzerError("native allocator TLS boundary is no longer verified")
     # The thread initializer follows the process-load constructor to its
     # candidate index.
-    thread_boundary = (
-        LEADING_CONSTRUCTOR_BEGIN
-        + leading_offsets[reference_thread_boundary - LEADING_CONSTRUCTOR_BEGIN]
-    )
+    thread_boundary = LEADING_CONSTRUCTOR_BEGIN + leading.candidate_offsets[
+        leading.reference_index.index(reference_thread_boundary)
+    ]
     if not any(
         item["begin"] <= thread_boundary < item["end_exclusive"]
         for item in native_ranges
@@ -2500,10 +2726,10 @@ def derive_profile(
         ),
         "jni_singleton_initializer_rva": format_rva(singleton_match.rva),
         "constructor_rvas": {
-            "2": format_rva(candidate_init[2]),
-            "3": format_rva(candidate_init[3]),
-            "4": format_rva(candidate_init[4]),
-            "5": format_rva(candidate_init[5]),
+            str(LEADING_CONSTRUCTOR_BEGIN + offset): format_rva(entry)
+            for offset, entry in sorted(
+                zip(leading.candidate_offsets, leading.candidate_entries)
+            )
         },
     }
     validate_profile_shape(profile, derived_anchors)

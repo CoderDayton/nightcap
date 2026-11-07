@@ -126,9 +126,9 @@ after Roblox added measures against running multiple clients.
 ## Can I play in VR?
 
 Yes, as an experiment. VR lives on Nightcap's `vr` branch and is not in the
-releases yet. It works on Roblox builds 2998, 3092 and 3222. Install the
-[build dependencies](README.md#building), then switch to that branch and
-build:
+releases yet. It works on Roblox 2.742.1059 (build 3222), not yet on 2.746.
+Install the [build dependencies](README.md#building), then switch to that
+branch and build:
 
 ```bash
 git fetch origin

@@ -1373,8 +1373,6 @@ TEST(ShippedMetadataTest, EveryArchitectureCanUpgradeToThePinnedRelease) {
   const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
   const auto catalog = nlohmann::json::parse(
       ReadFile(root / "config/roblox_compatibility.json"));
-  const auto default_payload = nlohmann::json::parse(
-      ReadFile(root / "config/roblox_payload.json"));
   for (const char* filename : {"roblox_payload.json",
                                "roblox_payload.arm64-v8a.json"}) {
     SCOPED_TRACE(filename);
@@ -1396,7 +1394,6 @@ TEST(ShippedMetadataTest, EveryArchitectureCanUpgradeToThePinnedRelease) {
     EXPECT_EQ(preferred->version_name, payload.at("version_name"));
     EXPECT_EQ(preferred->version_code, payload.at("version_code"));
     EXPECT_EQ(preferred->elf_build_id, payload.at("elf_build_id"));
-    EXPECT_EQ(payload.at("version_name"), default_payload.at("version_name"));
     const auto pinned = LoadPinnedApkSource(
         root / "config/roblox_download_sources.json",
         {preferred->version_name, preferred->version_code, {}},

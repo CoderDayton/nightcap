@@ -127,6 +127,10 @@ struct HostAbiProfile {
 
 const HostAbiProfile *FindHostAbiProfile(std::string_view build_id) noexcept;
 
+// Roblox refuses these builds in games. They get no profile, built-in or
+// saved.
+bool IsRetiredRobloxBuild(std::string_view build_id) noexcept;
+
 } // namespace mocktail::compat
 
 #endif // MOCKTAIL_COMPAT_HOST_ABI_PROFILE_H_
