@@ -48,6 +48,9 @@ AnalyzerError = DERIVER.AnalyzerError
 format_rva = DERIVER.format_rva
 FMOD_OUTPUT_FIELDS = DERIVER.FMOD_OUTPUT_FIELDS
 FMOD_INPUT_FIELDS = DERIVER.FMOD_INPUT_FIELDS
+# Methods that must match on their own before the vtable they pin decides the
+# rest by slot.
+FMOD_SLOT_DECIDES_MIN = 3
 fmod_slots = DERIVER.fmod_vtable_slots
 
 
@@ -310,6 +313,7 @@ class TargetDerivation:
                         parse(source[field], field),
                         self._fmod_contract(target_layout, field),
                         relocations.get(located_vtable + target_slots[field] * 8),
+                        slot_decides=len(methods) >= FMOD_SLOT_DECIDES_MIN,
                     )
             except AnalyzerError:
                 continue
