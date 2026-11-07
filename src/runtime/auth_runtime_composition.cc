@@ -142,7 +142,6 @@ struct CookiePersistenceContext {
   std::thread worker;
 };
 
-
 bool WriteAll(int descriptor, const char* data, size_t size) {
   size_t written = 0;
   while (written < size) {

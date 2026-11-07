@@ -82,7 +82,6 @@ SDL_FunctionPointer SdlVulkanWsi::GetInstanceProcAddress() const {
   return initialized_ ? SDL_Vulkan_GetVkGetInstanceProcAddr() : nullptr;
 }
 
-
 Status SdlVulkanWsi::CreateSurface(VkInstance instance,
                                    const VkAllocationCallbacks* allocator,
                                    VkSurfaceKHR* surface) const {

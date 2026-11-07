@@ -198,6 +198,5 @@ Status WindowSurfaceLifecycle::RestoreLocked(uintptr_t native_window,
   return Status::Ok();
 }
 
-
 }  // namespace window
 }  // namespace mocktail

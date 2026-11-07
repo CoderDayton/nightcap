@@ -124,6 +124,5 @@ void AndroidVulkanWsiAdapter::DestroySurface(
   }
 }
 
-
 }  // namespace graphics
 }  // namespace mocktail

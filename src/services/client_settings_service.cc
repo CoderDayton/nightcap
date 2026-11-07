@@ -23,7 +23,6 @@ namespace {
 
 constexpr const char kEmptyDefaults[] = "{\"applicationSettings\":{}}";
 
-
 bool IsSupportedFflagValue(const nlohmann::json& value) {
   return value.is_string() || value.is_boolean() ||
          value.is_number_integer() || value.is_number_unsigned();
@@ -324,7 +323,6 @@ bool ClientSettingsService::IsValidJson(const std::string& content) {
       nlohmann::json::parse(content, nullptr, false, true);
   return !value.is_discarded() && value.is_object();
 }
-
 
 }  // namespace services
 }  // namespace mocktail

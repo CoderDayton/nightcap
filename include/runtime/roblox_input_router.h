@@ -253,7 +253,6 @@ class RobloxInputRouter final {
   bool raw_mouse_ = false;
 };
 
-
 }  // namespace runtime
 }  // namespace mocktail
 

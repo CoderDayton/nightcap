@@ -123,7 +123,6 @@ constexpr std::size_t kMaximumRequestBytes =
 constexpr std::string_view kInternalRoutePrefix = "www:";
 constexpr std::string_view kRobloxWebOrigin = "https://www.roblox.com/";
 
-
 class ScopedCurlUrl final {
 public:
   ScopedCurlUrl() : handle_(curl_url()) {}

@@ -1,6 +1,9 @@
 #ifndef MOCKTAIL_RUNTIME_JSON_FILE_H_
 #define MOCKTAIL_RUNTIME_JSON_FILE_H_
 
+#if defined(INCLUDE_NLOHMANN_JSON_HPP_) && !defined(JSON_NOEXCEPTION)
+#error "include runtime/json_file.h before nlohmann/json.hpp"
+#endif
 #define JSON_NOEXCEPTION 1
 #include <filesystem>
 #include <nlohmann/json.hpp>

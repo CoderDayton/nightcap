@@ -882,6 +882,5 @@ RobloxInputDispatchResult RobloxInputRouter::NativeResultLocked(
   return Result(RobloxInputDispatchState::kDispatched, kind);
 }
 
-
 }  // namespace runtime
 }  // namespace mocktail

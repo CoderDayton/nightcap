@@ -1652,8 +1652,6 @@ bool InitializeActiveHostAbiThread() {
 
 static uintptr_t NullVtableStub() { return 0; }
 
-
-
 bool OffsetListContains(const char* skip_list, uintptr_t offset) {
   if (skip_list == nullptr || *skip_list == '\0') {
     return false;
@@ -1754,7 +1752,6 @@ bool IndexRangeListContains(const char* range_list, size_t index) {
 
   return false;
 }
-
 
 // Constructors run once per libroblox load and nothing sets these variables
 // in between, so read them once instead of walking environ per constructor.

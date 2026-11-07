@@ -27,7 +27,6 @@ constexpr int kMaximumExtent = 16384;
 constexpr int kMaximumCoordinateMagnitude = 131072;
 std::atomic<std::uint64_t> g_temporary_sequence{0};
 
-
 Status InvalidState(std::string message) {
   return Status::Error(StatusCode::kInvalidArgument, std::move(message));
 }

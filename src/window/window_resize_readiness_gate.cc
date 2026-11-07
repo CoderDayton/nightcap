@@ -172,6 +172,5 @@ Status WindowResizeReadinessGate::FailLocked(std::string reason) {
   return FailedPrecondition(snapshot_.failure_reason);
 }
 
-
 }  // namespace window
 }  // namespace mocktail

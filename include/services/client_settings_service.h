@@ -71,7 +71,6 @@ class ClientSettingsService {
   HttpClient& http_client_;
 };
 
-
 }  // namespace services
 }  // namespace mocktail
 

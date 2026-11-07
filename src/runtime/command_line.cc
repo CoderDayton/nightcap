@@ -166,7 +166,6 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
   return result;
 }
 
-
 void ScrubCommandLineLaunchArguments(CommandLineOptions* options, int argc,
                                      char* argv[]) {
   if (options == nullptr || options->raw_launch_argument.empty()) return;
