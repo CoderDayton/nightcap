@@ -320,7 +320,8 @@ TEST(VrConstructorContract, VerifiesRelocatedVtableFor3092) {
 TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
   for (const auto* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
                          "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
-                         "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}) {
+                         "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+                         "1f8b6cc6597d6ae49104d32f0a30c79d029f400d"}) {
     const auto& contract = *internal::FindVrBuildContract(id);
     std::array<std::uint8_t, 0x1b2> code{};
     // movsxd rax,[rsi+selector] and movss xmm0,[r14+HeadScale].
@@ -893,7 +894,8 @@ namespace {
 
 TEST(VrSupportedBuilds, NamesEveryVerifiedBuild) {
   EXPECT_EQ(DescribeSupportedVrBuilds(),
-            "2998 (2.736.1408), 3092 (2.738.1397) and 3222 (2.742.1059)");
+            "2998 (2.736.1408), 3092 (2.738.1397), 3222 (2.742.1059) and"
+            " 20836 (2.746.1266)");
 }
 
 TEST(VrSupportedBuilds, InstallNamesTheBuildAndTheSupportedOnes) {
@@ -1026,6 +1028,33 @@ TEST(VrSupportedBuilds, Build3222CarriesTheOffsetFindersValues) {
   EXPECT_EQ(contract->fix_register_motors_flag_rva, 0x74cfa10u);
 }
 
+TEST(VrSupportedBuilds, Build20836CarriesTheOffsetFindersValues) {
+  // scripts/find_roblox_vr_offsets.py on the 2.746.1266 x86-64 libroblox.so.
+  const auto* contract = internal::FindVrBuildContract(
+      "1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
+  ASSERT_NE(contract, nullptr);
+  EXPECT_EQ(contract->device.vtable_rva, 0x6c33400u);
+  EXPECT_EQ(contract->device.constructor_rva, 0x500d640u);
+  EXPECT_EQ(contract->device.state_getter_rva, 0x500da22u);
+  EXPECT_EQ(contract->device.eye_getter_rva, 0x500da12u);
+  EXPECT_EQ(contract->device.eye_initializer_rva, 0x500da44u);
+  EXPECT_EQ(contract->device.emulator_flag_storage_rva, 0x6ed0dc0u);
+  EXPECT_EQ(contract->device.device_create_framebuffer_vtable_offset, 0x1b0u);
+  EXPECT_EQ(contract->state_memcpy_rva, 0x695b0b0u);
+  EXPECT_EQ(contract->pointer_frame_rva, 0x4b3db74u);
+  EXPECT_EQ(contract->workspace_getter_rva, 0x21cc240u);
+  EXPECT_EQ(contract->camera_vtable_offset, 0x3a0u);
+  EXPECT_EQ(contract->hand_pitch_storage_rva, 0x6ed07a8u);
+  EXPECT_EQ(contract->haptic_sink_rva, 0x1ac1df0u);
+  EXPECT_EQ(contract->pointer_hand_selector_offset, 0x100u);
+  EXPECT_EQ(contract->camera_head_scale_offset, 0x128u);
+  // 2.746 dropped KeepHapticsOnMobileWhenGamepadConnected.
+  EXPECT_EQ(contract->keep_haptics_flag_rva, 0u);
+  EXPECT_EQ(contract->vr_haptics_flag_rva, 0x6ed0660u);
+  EXPECT_EQ(contract->support_generic_haptics_flag_rva, 0x6ed07c0u);
+  EXPECT_EQ(contract->fix_register_motors_flag_rva, 0x6ed0a60u);
+}
+
 TEST(VrSupportedBuilds, EveryBuildCarriesAllHapticFlags) {
   for (const auto& [id, keep, vr, generic, motors] :
        {std::tuple<const char*, std::uintptr_t, std::uintptr_t, std::uintptr_t,
@@ -1056,7 +1085,8 @@ TEST(VrSupportedBuilds, ContractsMatchTheRealLibraries) {
        {std::pair<const char*, const char*>{
             "2998", "ade08266c67aee88ec9c1d00902150e1684dad3a"},
         {"3092", "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"},
-        {"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}}) {
+        {"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1"},
+        {"20836", "1f8b6cc6597d6ae49104d32f0a30c79d029f400d"}}) {
     const std::string path =
         std::string(root) + "/" + code_name + "-" + id + "/libroblox.so";
     std::ifstream file(path, std::ios::binary);
@@ -1309,7 +1339,9 @@ TEST(VrSetMotorHook, FindsTheReaderAndDescriptorInTheRealLibraries) {
        {Expected{"2998", "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x30b2d2e,
                  internal::MotorIntensityAbi::kTupleSpan, 0x7433fd0},
         Expected{"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x61cd6f2,
-                 internal::MotorIntensityAbi::kSharedTuple, 0x759ac70}}) {
+                 internal::MotorIntensityAbi::kSharedTuple, 0x759ac70},
+        Expected{"20836", "1f8b6cc6597d6ae49104d32f0a30c79d029f400d", 0x5d6cadc,
+                 internal::MotorIntensityAbi::kSharedTuple, 0x71949c0}}) {
     const std::string path = std::string(root) + "/" + expected.code_name +
                              "-" + expected.id + "/libroblox.so";
     std::ifstream file(path, std::ios::binary);

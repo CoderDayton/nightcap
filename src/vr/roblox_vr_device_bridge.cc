@@ -597,6 +597,23 @@ constexpr VrBuildContract kContracts[] = {
      0x74cf458,
      0x74cfa10,
      "3222 (2.742.1059)"},
+    // 2.746 dropped KeepHapticsOnMobileWhenGamepadConnected.
+    {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+     {0x6c33400, 0x500d640, 0x500da22, 0x500da12, 0x500da44, 0x6ed0dc0,
+      0x1b0},
+     0x695b0b0,
+     0x4b3db74,
+     0x21cc240,
+     0x3a0,
+     0x6ed07a8,
+     0x1ac1df0,
+     0x100,
+     0x128,
+     0,
+     0x6ed0660,
+     0x6ed07c0,
+     0x6ed0a60,
+     "20836 (2.746.1266)"},
 };
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id) {

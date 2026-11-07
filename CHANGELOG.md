@@ -7,6 +7,7 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
+- VR works on Roblox 2.746.1266 (build 20836).
 - From upstream: the Roblox sign-in can be kept in the desktop keyring through libsecret, such as
   GNOME Keyring or KWallet, instead of a private file. Turn on "Keep the sign-in in the keyring" under
   Settings > Advanced > Sign-in (`auth.use_libsecret`). It is off by default. Signing out from Roblox
