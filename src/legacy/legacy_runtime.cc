@@ -1764,6 +1764,8 @@ struct LibRobloxConstructorEnv {
   const char* skip_index_ranges;
   const char* allow_index_ranges;
   bool trace;
+  bool run_constructors;
+  bool quarantine_disabled;
 };
 
 const LibRobloxConstructorEnv& LibRobloxConstructorEnvironment() {
@@ -1773,6 +1775,8 @@ const LibRobloxConstructorEnv& LibRobloxConstructorEnvironment() {
       std::getenv("MOCKTAIL_SKIP_LIBROBLOX_CTOR_INDEX_RANGES"),
       std::getenv("MOCKTAIL_ALLOW_LIBROBLOX_CTOR_INDEX_RANGES"),
       LibRobloxConstructorTraceEnabled(),
+      IsEnabled("MOCKTAIL_RUN_LIBROBLOX_CTORS"),
+      IsDisabled("MOCKTAIL_QUARANTINE_LIBROBLOX_UNSAFE_CTORS"),
   };
   return env;
 }
@@ -1812,13 +1816,11 @@ bool LibRobloxConstructorDefaultQuarantineEnabled() {
   if (g_allow_host_constructor_replay.load(std::memory_order_acquire)) {
     return false;
   }
-  if (!IsEnabled("MOCKTAIL_RUN_LIBROBLOX_CTORS")) {
+  const LibRobloxConstructorEnv& env = LibRobloxConstructorEnvironment();
+  if (!env.run_constructors || env.quarantine_disabled) {
     return false;
   }
-  if (IsDisabled("MOCKTAIL_QUARANTINE_LIBROBLOX_UNSAFE_CTORS")) {
-    return false;
-  }
-  const char* policy = LibRobloxConstructorEnvironment().policy;
+  const char* policy = env.policy;
   if (policy != nullptr && (std::strcmp(policy, "all") == 0 ||
                             std::strcmp(policy, "unsafe") == 0)) {
     return false;
