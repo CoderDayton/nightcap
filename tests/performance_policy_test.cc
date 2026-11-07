@@ -114,7 +114,6 @@ TEST(PerformancePolicyTest, SizesFullMultithreadingFromPhysicalCoreCount) {
   EXPECT_EQ(parsed.at("FIntSmoothClusterTaskQueueMaxParallelTasks"), "14");
   EXPECT_EQ(parsed.at("FIntOcclusionWorkerThreadCount"), "7");
   EXPECT_EQ(parsed.at("FFlagMovePrerenderV2"), "True");
-  EXPECT_EQ(parsed.at("FFlagGcInParallelWithRenderPrepare3"), "True");
   EXPECT_FALSE(parsed.contains("FIntTaskSchedulerAutoThreadLimit"));
   EXPECT_FALSE(parsed.contains("FFlagTaskSchedulerLimitTargetFpsTo2402"));
 }
@@ -238,6 +237,53 @@ TEST(PerformancePolicyTest, ThroughputModeUsesEveryPhysicalCore) {
   EXPECT_EQ(parsed.at("FIntOcclusionWorkerThreadCount"), "7");
 }
 
+TEST(PerformancePolicyTest, PresetSetsOnlyFlagsRobloxReadsAndLeavesVisualsAlone) {
+  PerformancePolicy policy =
+      ParsePerformancePolicy("false", "0", "auto", "throughput");
+  policy.physical_core_count = 14;
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(
+      MergePerformanceClientSettingsOverrides(policy, "{}", &merged, &error))
+      << error;
+  const nlohmann::json parsed = nlohmann::json::parse(merged);
+  // Absent from Roblox 2.742 and 2.746, set under the wrong type prefix, or
+  // changing shadows and texture sharpness.
+  for (const char* name : {
+           "FFlagAdaptiveMeshCacheSizeForAndroid",
+           "FFlagDeduplicateLodRemovalRegions",
+           "FFlagFastGPULightGrid",
+           "FFlagGcInParallelWithRenderPrepare3",
+           "FFlagLuauIncrementalGC",
+           "FFlagMeshCompression",
+           "FFlagMeshLOD",
+           "FFlagRenderEnableLowEndLOD",
+           "FFlagRenderFixParticlesCulling",
+           "FFlagRenderOptimizeLightGrid",
+           "FFlagSimRuntimeContentTranscodeBlockingCall",
+           "FIntAssetProviderThreads",
+           "FIntLuauGcGoalRatio",
+           "FIntLuauGcStepMultiplier",
+           "FIntTextureCompositorMeshCache",
+           "FFlagCSGPublishDedupSolidMesh",
+           "FFlagLocalStorageArenaOptimization",
+           "FFlagSupportMeshLOD",
+           "FIntAssetProviderAssetCacheReadThreadCount",
+           "FIntAssetProviderAssetCacheWriteThreadCount",
+           "FIntLuaGcMaxKb",
+           "FIntLuauGcStepMul",
+           "FIntMaxAudibleSoundChannels",
+           "FIntTextureCompositorActiveJobs",
+           "FIntDebugFRMQualityLevelOverride",
+           "FIntRenderTextureMipBias",
+           "FIntTM2ShadowMapMaxMips",
+           "FIntRenderShadowMapDepthCacheMemLimit",
+           "FFlagRenderAllocateShadowMapResourcesOnDemand",
+       }) {
+    EXPECT_FALSE(parsed.contains(name)) << name;
+  }
+}
+
 TEST(PerformancePolicyTest, ComposesFrameRateBeforePerformanceMode) {
   std::string merged;
   std::string error;
@@ -272,7 +318,7 @@ TEST(PerformancePolicyTest, KeepsUserOverridesThatConflictWithPreset) {
   EXPECT_EQ(parsed.at("FIntOcclusionWorkerThreadCount"), "2");
   EXPECT_EQ(parsed.at("FFlagMovePrerenderV2"), true);
   EXPECT_EQ(parsed.at("FIntDebugForceMSAASamples"), 4);
-  EXPECT_EQ(parsed.at("FFlagFastGPULightGrid"), "True");
+  EXPECT_EQ(parsed.at("FFlagContentProviderMmapAssets"), "True");
   // The preset does not set MSAA, so that value passes through without
   // counting as a kept conflict.
   EXPECT_EQ(kept, (std::vector<std::string>{"FIntOcclusionWorkerThreadCount",

@@ -831,6 +831,13 @@ int main(int argc, char* argv[]) {
                   << framerate_error << '\n';
       }
     }
+    if (const std::string quality =
+            mocktail::runtime::DescribeRobloxQualitySettings(
+                paths.android_data_root());
+        !quality.empty()) {
+      std::cout << "  [runtime] Roblox saved graphics quality: " << quality
+                << '\n';
+    }
   }
   if (!mocktail::runtime::ExportNetworkProxyEnvironment(
           runtime_config.config, &command_line_error)) {

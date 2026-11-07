@@ -161,5 +161,27 @@ bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
   return true;
 }
 
+std::string DescribeRobloxQualitySettings(
+    const std::filesystem::path &android_data_root) {
+  std::ifstream input(
+      android_data_root / "files/appData/GlobalBasicSettings_13.xml",
+      std::ios::binary);
+  if (!input) return {};
+  const std::string text(std::istreambuf_iterator<char>(input), {});
+  std::string description;
+  for (const char *name : {"SavedQualityLevel", "GraphicsQualityLevel"}) {
+    // The element type differs (token or int), so match on the name only.
+    const std::string open = std::string("name=\"") + name + "\">";
+    const std::size_t found = text.find(open);
+    if (found == std::string::npos) continue;
+    const std::size_t start = found + open.size();
+    const std::size_t end = text.find('<', start);
+    if (end == std::string::npos) continue;
+    if (!description.empty()) description += ' ';
+    description += std::string(name) + "=" + text.substr(start, end - start);
+  }
+  return description;
+}
+
 } // namespace runtime
 } // namespace mocktail
