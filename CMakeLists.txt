@@ -890,3 +890,12 @@ add_dependencies(mocktail mocktail_webview_helper mocktail_cookie_helper)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
+
+# Manual benchmarks, built only on request (make bench, make bench-startup).
+add_executable(jnivm_session_benchmark EXCLUDE_FROM_ALL
+  tests/perf/jnivm_session_benchmark.cc)
+target_link_libraries(jnivm_session_benchmark PRIVATE
+  Mocktail::LegacyJni Threads::Threads)
+enable_language(C)
+add_library(mocktail_heap_counter MODULE EXCLUDE_FROM_ALL
+  tests/perf/heap_counter.c)
