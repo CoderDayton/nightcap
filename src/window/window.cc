@@ -148,6 +148,7 @@ struct WindowState {
   bool restored_fullscreen_sync_pending = false;
   int fullscreen_readiness_present_baseline = 0;
   bool state_persistence_active = false;
+  bool hidden_for_shutdown = false;
   bool state_persistence_dirty = false;
   uint64_t state_persistence_change_ticks_ns = 0;
   PersistedWindowState persisted_window;
@@ -1752,6 +1753,21 @@ void* GetGLProcAddress(const char* name) {
   return reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
 }
 
+void HideForShutdown() {
+  if (!g_state.initialised || g_state.sdl_window == nullptr ||
+      g_state.hidden_for_shutdown) {
+    return;
+  }
+  // Hiding can change the window flags, so save the state first.
+  (void)PersistWindowState();
+  g_state.state_persistence_active = false;
+  g_state.hidden_for_shutdown = true;
+  if (!SDL_HideWindow(g_state.sdl_window)) {
+    fprintf(stderr, "  [window] hide for shutdown failed: %s\n",
+            SDL_GetError());
+  }
+}
+
 void ShowIfHidden() {
   if (!g_state.initialised || !g_state.sdl_window || g_state.visible ||
       IsDisabledEnv("MOCKTAIL_SHOW_WINDOW_ON_FIRST_SWAP")) {
@@ -2732,6 +2748,7 @@ void Shutdown() {
   g_state.restored_fullscreen_sync_pending = false;
   g_state.fullscreen_readiness_present_baseline = 0;
   g_state.state_persistence_active = false;
+  g_state.hidden_for_shutdown = false;
   g_state.state_persistence_dirty = false;
   g_state.state_persistence_change_ticks_ns = 0;
   g_state.persisted_window = {};

@@ -7394,6 +7394,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   << std::flush;
       }
     }
+    if (lifecycle_shutdown_completed) {
+      mocktail::window::HideForShutdown();
+    }
     const mocktail::Status resize_stop_status =
         lifecycle_shutdown_completed
             ? mocktail::window::StopResizeReadiness()
