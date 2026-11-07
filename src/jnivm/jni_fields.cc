@@ -1,15 +1,22 @@
 #include "jni_fields.h"
 
+#include <deque>
+
 #include "jni_references.h"
 
 namespace jnivm::internal {
 namespace {
-std::unordered_set<std::string> g_field_names;
+// deque keeps element addresses as it grows, so the views stay valid.
+std::deque<std::string> g_field_name_storage;
+std::unordered_set<std::string_view> g_field_names;
 std::unordered_map<std::string, jobject> g_static_object_fields;
 
-// unordered_set keeps element addresses across rehashes, so views stay valid.
+// Looks up by view first, so a known name never allocates.
 std::string_view InternFieldName(std::string_view name) {
-  return *g_field_names.emplace(name).first;
+  if (const auto found = g_field_names.find(name); found != g_field_names.end()) {
+    return *found;
+  }
+  return *g_field_names.insert(g_field_name_storage.emplace_back(name)).first;
 }
 
 // Steady-state writes hit an existing key and skip interning.
