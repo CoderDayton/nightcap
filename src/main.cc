@@ -34,6 +34,7 @@
 #include "mocktail/vr/openxr_probe.h"
 #include "mocktail/vr/roblox_vr_device_bridge.h"
 #include "mocktail/vr/virtual_keyboard.h"
+#include "runtime/asset_overlay_names.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
 #include "runtime/crash_report_policy.h"
@@ -599,16 +600,16 @@ int main(int argc, char* argv[]) {
                   << forward_status.message() << '\n';
         (void)mocktail::runtime::ShowFailureDialog(
             environment,
-            "Mocktail is already running, but the requested experience "
+            "Nightcap is already running, but the requested experience "
             "could not be sent to it.");
       } else if (instance_lock->already_running()) {
         std::cerr << "[FATAL] Mocktail is already running for this user\n";
         (void)mocktail::runtime::ShowFailureDialog(
-            environment, "An instance of Mocktail is already running.");
+            environment, "An instance of Nightcap is already running.");
       } else {
         std::cerr << "[FATAL] " << instance_lock->error() << '\n';
         (void)mocktail::runtime::ShowFailureDialog(
-            environment, "Mocktail could not acquire its launch lock.");
+            environment, "Nightcap could not acquire its launch lock.");
       }
       return EXIT_FAILURE;
     }
@@ -662,7 +663,7 @@ int main(int argc, char* argv[]) {
               << config_bootstrap.error << '\n';
     if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
       (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not prepare its configuration.");
+          environment, "Nightcap could not prepare its configuration.");
     }
     return EXIT_FAILURE;
   }
@@ -673,9 +674,14 @@ int main(int argc, char* argv[]) {
               << runtime_config.error << '\n';
     if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
       (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not load its configuration.");
+          environment, "Nightcap could not load its configuration.");
     }
     return EXIT_FAILURE;
+  }
+  for (const mocktail::runtime::IgnoredConfigKey& ignored :
+       runtime_config.ignored) {
+    std::cerr << "  [config] ignoring " << ignored.key
+              << ", which this version cannot use: " << ignored.reason << '\n';
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       runtime_config.config.vr_mode() == mocktail::runtime::VrMode::kAuto) {
@@ -757,7 +763,7 @@ int main(int argc, char* argv[]) {
                  "execution.\n";
     (void)mocktail::runtime::ShowFailureDialog(
         environment,
-        "Mocktail cannot start with unsupported legacy thread "
+        "Nightcap cannot start with unsupported legacy thread "
         "overrides enabled.");
     return EXIT_FAILURE;
   }
@@ -884,6 +890,13 @@ int main(int argc, char* argv[]) {
                   << framerate_error << '\n';
       }
     }
+    if (const std::string quality =
+            mocktail::runtime::DescribeRobloxQualitySettings(
+                paths.android_data_root());
+        !quality.empty()) {
+      std::cout << "  [runtime] Roblox saved graphics quality: " << quality
+                << '\n';
+    }
   }
   if (!mocktail::runtime::ExportNetworkProxyEnvironment(
           runtime_config.config, &command_line_error)) {
@@ -966,12 +979,13 @@ int main(int argc, char* argv[]) {
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog = mocktail::runtime::FailureDialogMonitor::Start(
         environment,
-        "Mocktail could not start Roblox because of an internal error.");
+        "Nightcap could not start Roblox because of an internal error.");
+    failure_dialog.SetLogFolder(paths.logs_root() / "sessions");
   }
   if (use_memory_limit) {
     if (!memory_limit_watchdog.Start(memory_limit_bytes, &command_line_error)) {
       failure_dialog.SetMessage(
-          "Mocktail could not start its memory safety monitor.");
+          "Nightcap could not start its memory safety monitor.");
       std::cerr << "[FATAL] " << command_line_error << '\n';
       return EXIT_FAILURE;
     }
@@ -1029,30 +1043,35 @@ int main(int argc, char* argv[]) {
                 << adjacent_assets << '\n';
     }
   }
+  mocktail::runtime::BackgroundPayloadUpdate background_update;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
+    if (setenv("MOCKTAIL_GRAPHICS_BACKEND",
+               runtime_config.config.graphics_backend_name().c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot configure the Roblox update graphics backend\n";
+      return EXIT_FAILURE;
+    }
     failure_dialog.SetMessage(
-        "Mocktail could not update or verify the Roblox installation.");
+        "Nightcap could not update or verify the Roblox installation.");
     const mocktail::runtime::PayloadUpdatePreflightResult update_preflight =
         mocktail::runtime::RunPayloadUpdatePreflight(environment, paths);
     if (!update_preflight) {
       std::cerr << "[FATAL] " << update_preflight.error;
       if (!update_preflight.details.empty()) {
-        // Without this the dialog only ever said "could not update or verify",
-        // which is indistinguishable between a provider outage, a rejected
-        // signature, and a full disk.
         std::cerr << ": " << update_preflight.details;
         failure_dialog.SetMessage(
-            "Mocktail could not update or verify the Roblox installation.\n\n" +
-            update_preflight.details + "\n\nSession log: " +
-            (paths.logs_root() / "sessions").string());
+            "Nightcap could not update or verify the Roblox installation.\n\n" +
+            mocktail::runtime::DescribeUpdateFailure(
+                update_preflight.details));
       }
       std::cerr << '\n';
       return EXIT_FAILURE;
     }
     failure_dialog.SetMessage(
-        "Mocktail could not finish starting Roblox because of an internal "
+        "Nightcap could not finish starting Roblox because of an internal "
         "error.");
+    background_update.Start(environment, paths, std::chrono::minutes(30),
+                            mocktail::runtime::QueryRobloxUpgradeAction);
   }
   if (!mocktail::runtime::ExportRuntimePathEnvironment(paths,
                                                        &command_line_error)) {
@@ -1139,9 +1158,11 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
           }
           // Built-in profiles supersede stale probation receipts and never
-          // use external overrides.
-          use_external_profile = mocktail::compat::FindHostAbiProfile(
-                                     active_build_id.build_id) == nullptr;
+          // use external overrides. A retired build gets neither.
+          use_external_profile =
+              mocktail::compat::FindHostAbiProfile(active_build_id.build_id) ==
+                  nullptr &&
+              !mocktail::compat::IsRetiredRobloxBuild(active_build_id.build_id);
         }
         if (use_external_profile) {
           if (setenv("MOCKTAIL_COMPATIBILITY_MANIFEST",
@@ -1303,8 +1324,25 @@ int main(int argc, char* argv[]) {
       std::cerr << "[FATAL] Cannot apply VR policy: " << command_line_error << '\n';
       return EXIT_FAILURE;
     }
+    std::string sky_overrides = audio_capture_overrides;
+    if (runtime_config.config.asset_overlay() &&
+        mocktail::runtime::OverlayHasCustomSky(paths.asset_overlay_dir())) {
+      bool gray_sky = false;
+      if (!mocktail::runtime::MergeCustomSkyClientSettingsOverrides(
+              audio_capture_overrides, &sky_overrides, &gray_sky,
+              &command_line_error)) {
+        std::cerr << "[FATAL] Cannot apply the custom sky: "
+                  << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+      std::cout << (gray_sky
+                        ? "  [runtime] custom sky: FFlagDebugSkyGray on, so "
+                          "every game draws it\n"
+                        : "  [runtime] custom sky: FFlagDebugSkyGray kept off "
+                          "by an override, so games keep their own skies\n");
+    }
     if (setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
-               audio_capture_overrides.c_str(), 1) != 0) {
+               sky_overrides.c_str(), 1) != 0) {
       std::cerr << "[FATAL] Cannot export runtime client-settings policy\n";
       return EXIT_FAILURE;
     }
@@ -1737,6 +1775,7 @@ int main(int argc, char* argv[]) {
   int runtime_status =
       mocktail::legacy::Run(command_line.options, std::move(dependencies));
   ota_restart_watch.Stop();
+  background_update.Stop();
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kShutdown);

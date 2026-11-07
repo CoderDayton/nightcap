@@ -813,4 +813,39 @@ AMediaCodec* AMediaCodec_createEncoderByType(const char* mime) {
   return nullptr;
 }
 
+// Imported from Roblox 2.746 to decode video into hardware buffers. There are
+// none here, so creating a reader fails and nothing else gets a reader.
+struct AImageReader;
+struct AImage;
+struct ANativeWindow;
+struct AHardwareBuffer;
+
+media_status_t AImageReader_newWithUsage(int32_t width, int32_t height,
+                                         int32_t format, uint64_t,
+                                         int32_t, AImageReader** reader) {
+  if (reader != nullptr) *reader = nullptr;
+  std::fprintf(stderr, "  [media] no image reader for %dx%d format %d\n",
+               width, height, format);
+  return AMEDIA_ERROR_UNKNOWN;
+}
+void AImageReader_delete(AImageReader*) {}
+media_status_t AImageReader_getWindow(AImageReader*, ANativeWindow** window) {
+  if (window != nullptr) *window = nullptr;
+  return AMEDIA_ERROR_INVALID_PARAMETER;
+}
+media_status_t AImageReader_acquireNextImage(AImageReader*, AImage** image) {
+  if (image != nullptr) *image = nullptr;
+  return AMEDIA_ERROR_INVALID_PARAMETER;
+}
+void AImage_delete(AImage*) {}
+media_status_t AImage_getHardwareBuffer(const AImage*,
+                                        AHardwareBuffer** buffer) {
+  if (buffer != nullptr) *buffer = nullptr;
+  return AMEDIA_ERROR_INVALID_PARAMETER;
+}
+media_status_t AImage_getTimestamp(const AImage*, int64_t* timestamp) {
+  if (timestamp != nullptr) *timestamp = 0;
+  return AMEDIA_ERROR_INVALID_PARAMETER;
+}
+
 }  // extern "C"

@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "compat/file_digest_record.h"
 #include "compat/guest_abi.h"
 
 namespace mocktail::update {
@@ -388,7 +389,8 @@ PayloadIntegrityResult InspectPreparedPayload(
 }
 
 PayloadIntegrityResult VerifyPreparedPayload(
-    const std::filesystem::path& directory) {
+    const std::filesystem::path& directory,
+    const std::filesystem::path& digest_record_directory) {
   PayloadIntegrityResult result = InspectPreparedPayload(directory);
   if (!result) return result;
   const std::array<std::pair<std::filesystem::path, std::string>, 3> files = {{
@@ -398,8 +400,10 @@ PayloadIntegrityResult VerifyPreparedPayload(
        result.metadata.split_apk_sha256},
   }};
   for (const auto& [relative, expected] : files) {
-    const std::string actual =
-        HashRegularFile(directory / relative, &result.error);
+    const std::filesystem::path path = directory / relative;
+    const std::string actual = compat::RememberedFileDigest(
+        digest_record_directory, path,
+        [&] { return HashRegularFile(path, &result.error); });
     if (!result.error.empty()) return result;
     if (actual != expected) {
       result.error = "payload hash mismatch: " + relative.string();

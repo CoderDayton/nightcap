@@ -154,6 +154,21 @@ TEST(FailureDialogTest, MonitorDismissesAfterSuccessfulShutdown) {
       std::vector<std::string>({"MStartup failed.", "MRuntime failed.", "S"}));
 }
 
+TEST(FailureDialogTest, MonitorPassesTheLogFolderForItsButton) {
+  FakeDialogHelper helper;
+  const MapEnvironment environment = DialogEnvironment(helper);
+  {
+    FailureDialogMonitor monitor =
+        FailureDialogMonitor::Start(environment, "Startup failed.");
+    ASSERT_TRUE(monitor.active());
+    monitor.SetLogFolder("/state/mocktail/logs/sessions");
+  }
+
+  EXPECT_EQ(ReadLines(helper.capture()),
+            std::vector<std::string>({"MStartup failed.",
+                                      "L/state/mocktail/logs/sessions", "F"}));
+}
+
 TEST(FailureDialogTest, MonitorReportsNormalFailureOnScopeExit) {
   FakeDialogHelper helper;
   const MapEnvironment environment = DialogEnvironment(helper);

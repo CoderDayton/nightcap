@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace mocktail::runtime {
 namespace {
@@ -121,6 +122,66 @@ TEST(ProcessLaunchPolicyTest, DemotesRealtimeSchedulingBeforeCreatingWorkers) {
   if (WEXITSTATUS(status) == 77)
     GTEST_SKIP() << "Real-time scheduling requires CAP_SYS_NICE or RLIMIT_RTPRIO";
   EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(ProcessLaunchPolicyTest, ClearsInheritedHostMimallocEnvironment) {
+  ASSERT_EXIT(
+      {
+        if (setenv("MIMALLOC_ARENA_RESERVE", "0", 1) != 0 ||
+            setenv("MIMALLOC_PURGE_DELAY", "0", 1) != 0 ||
+            setenv("mimalloc_verbose", "1", 1) != 0 ||
+            setenv("MOCKTAIL_KEEP_ME", "1", 1) != 0) {
+          std::_Exit(10);
+        }
+        const std::string diagnostics = ApplyInteractiveProcessLaunchPolicy();
+        if (std::getenv("MIMALLOC_ARENA_RESERVE") != nullptr ||
+            std::getenv("MIMALLOC_PURGE_DELAY") != nullptr ||
+            std::getenv("mimalloc_verbose") != nullptr) {
+          std::_Exit(11);
+        }
+        const char* kept = std::getenv("MOCKTAIL_KEEP_ME");
+        if (kept == nullptr || std::string(kept) != "1") {
+          std::_Exit(12);
+        }
+        std::_Exit(
+            diagnostics.find(
+                "cleared inherited host mimalloc variable: MIMALLOC_ARENA_RESERVE") !=
+                    std::string::npos
+                ? 0
+                : 13);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(ProcessLaunchPolicyTest, ClearHostMimallocEnvironmentReturnsClearedNames) {
+  ASSERT_EXIT(
+      {
+        unsetenv("MOCKTAIL_KEEP_MIMALLOC_ENV");
+        if (setenv("Mimalloc_Purge_Delay", "0", 1) != 0) std::_Exit(10);
+        std::string error;
+        const std::vector<std::string> cleared =
+            ClearHostMimallocEnvironment(&error);
+        std::_Exit(cleared == std::vector<std::string>{"Mimalloc_Purge_Delay"} &&
+                           error.empty() &&
+                           std::getenv("Mimalloc_Purge_Delay") == nullptr
+                       ? 0
+                       : 11);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(ProcessLaunchPolicyTest, KeepsHostMimallocEnvironmentWhenAsked) {
+  ASSERT_EXIT(
+      {
+        if (setenv("MOCKTAIL_KEEP_MIMALLOC_ENV", "1", 1) != 0 ||
+            setenv("MIMALLOC_VERBOSE", "1", 1) != 0) {
+          std::_Exit(10);
+        }
+        ApplyInteractiveProcessLaunchPolicy();
+        const char* kept = std::getenv("MIMALLOC_VERBOSE");
+        std::_Exit(kept != nullptr && std::string(kept) == "1" ? 0 : 11);
+      },
+      ::testing::ExitedWithCode(0), "");
 }
 
 }  // namespace

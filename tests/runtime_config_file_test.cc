@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -40,6 +41,20 @@ class MapEnvironment final : public Environment {
  private:
   std::unordered_map<std::string, std::string> values_;
 };
+
+// A bad value in the file is left out, or fails the load when it cannot be.
+// Either way the file did not load as written.
+bool Clean(const RuntimeConfigLoadResult& loaded) {
+  return loaded && loaded.ignored.empty();
+}
+
+std::string Why(const RuntimeConfigLoadResult& loaded) {
+  std::string why = loaded.error;
+  for (const IgnoredConfigKey& ignored : loaded.ignored) {
+    why += (why.empty() ? "" : "; ") + ignored.reason;
+  }
+  return why;
+}
 
 class TemporaryDirectory {
  public:
@@ -174,8 +189,8 @@ TEST(RuntimeConfigFileTest, VrModeSelectsOnOffOrAuto) {
   EXPECT_FALSE(both);
   EXPECT_NE(both.error.find("vr.mode"), std::string::npos);
   const auto invalid = load("  mode: sometimes\n");
-  EXPECT_FALSE(invalid);
-  EXPECT_NE(invalid.error.find("vr.mode"), std::string::npos);
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_NE(Why(invalid).find("vr.mode"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaSmaaOrOff) {
@@ -207,8 +222,8 @@ TEST(RuntimeConfigFileTest, VrAntiAliasingAcceptsFxaaSmaaOrOff) {
   const auto invalid = LoadRuntimeConfig(
       MapEnvironment(),
       temporary.Write("version: 1\nvr:\n  anti_aliasing: msaa\n"));
-  EXPECT_FALSE(invalid);
-  EXPECT_NE(invalid.error.find("vr.anti_aliasing"), std::string::npos);
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_NE(Why(invalid).find("vr.anti_aliasing"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, VrSpatialToolbarDefaultsOnAndParsesBoolean) {
@@ -227,8 +242,8 @@ TEST(RuntimeConfigFileTest, VrSpatialToolbarDefaultsOnAndParsesBoolean) {
   const auto invalid = LoadRuntimeConfig(
       MapEnvironment(),
       temporary.Write("version: 1\nvr:\n  spatial_toolbar: sometimes\n"));
-  EXPECT_FALSE(invalid);
-  EXPECT_NE(invalid.error.find("vr.spatial_toolbar"), std::string::npos);
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_NE(Why(invalid).find("vr.spatial_toolbar"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
@@ -264,8 +279,8 @@ TEST(RuntimeConfigFileTest, VrFrameRateLimitIsSeparateFromDesktopLimit) {
   const auto invalid = LoadRuntimeConfig(
       MapEnvironment(),
       temporary.Write("version: 1\nvr:\n  frame_rate_limit: fastest\n"));
-  EXPECT_FALSE(invalid);
-  EXPECT_NE(invalid.error.find("vr.frame_rate_limit"), std::string::npos);
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_NE(Why(invalid).find("vr.frame_rate_limit"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, RejectsMalformedVrSectionAndUnsupportedKeys) {
@@ -275,7 +290,7 @@ TEST(RuntimeConfigFileTest, RejectsMalformedVrSectionAndUnsupportedKeys) {
         "vr:\n  enable: true\n", "vr:\n  enabled: true\n  enabled: false\n"}) {
     const auto result =
         LoadRuntimeConfig(MapEnvironment(), temporary.Write(yaml));
-    EXPECT_FALSE(result) << yaml;
+    EXPECT_FALSE(Clean(result)) << yaml;
   }
 }
 
@@ -470,8 +485,8 @@ TEST(RuntimeConfigFileTest, LibsecretUsesYamlBoolean) {
   }
   const auto file = temporary.Write("auth:\n  use_libsecret: auto\n");
   const auto invalid = LoadRuntimeConfig(MapEnvironment(), file);
-  EXPECT_FALSE(invalid);
-  EXPECT_EQ(invalid.error, "auth.use_libsecret must be true or false");
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_EQ(Why(invalid), "auth.use_libsecret must be true or false");
 }
 
 TEST(RuntimeConfigFileTest, RejectsSymlinkAndOversizedConfiguration) {
@@ -544,8 +559,8 @@ version: 1
 input:
   system_cursor: sometimes
 )yaml"));
-  EXPECT_FALSE(invalid);
-  EXPECT_NE(invalid.error.find("input.system_cursor"), std::string::npos);
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_NE(Why(invalid).find("input.system_cursor"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, OverlayIsOffByDefaultAtTheBottomLeft) {
@@ -597,8 +612,8 @@ overlay:
         bad_offset_directory.Write(
             std::string("version: 1\noverlay:\n  location_offset: ") +
             offset + "\n"));
-    EXPECT_FALSE(bad_offset) << offset;
-    EXPECT_NE(bad_offset.error.find("overlay.location_offset"),
+    EXPECT_FALSE(Clean(bad_offset)) << offset;
+    EXPECT_NE(Why(bad_offset).find("overlay.location_offset"),
               std::string::npos)
         << bad_offset.error;
   }
@@ -610,8 +625,8 @@ version: 1
 overlay:
   location: notice
 )yaml"));
-  EXPECT_FALSE(bad_location);
-  EXPECT_NE(bad_location.error.find("overlay.location"), std::string::npos);
+  EXPECT_FALSE(Clean(bad_location));
+  EXPECT_NE(Why(bad_location).find("overlay.location"), std::string::npos);
 
   TemporaryDirectory old_off_directory;
   const RuntimeConfigLoadResult old_off = LoadRuntimeConfig(
@@ -652,8 +667,8 @@ version: 1
 overlay:
   server_info: banana
 )yaml"));
-  EXPECT_FALSE(old_bad);
-  EXPECT_NE(old_bad.error.find("overlay.server_info"), std::string::npos);
+  EXPECT_FALSE(Clean(old_bad));
+  EXPECT_NE(Why(old_bad).find("overlay.server_info"), std::string::npos);
 
   TemporaryDirectory bad_position_directory;
   const RuntimeConfigLoadResult bad_position = LoadRuntimeConfig(
@@ -662,8 +677,8 @@ version: 1
 overlay:
   position: middle
 )yaml"));
-  EXPECT_FALSE(bad_position);
-  EXPECT_NE(bad_position.error.find("overlay.position"), std::string::npos);
+  EXPECT_FALSE(Clean(bad_position));
+  EXPECT_NE(Why(bad_position).find("overlay.position"), std::string::npos);
 
   TemporaryDirectory top_left_directory;
   const RuntimeConfigLoadResult top_left = LoadRuntimeConfig(
@@ -672,8 +687,8 @@ version: 1
 overlay:
   position: top_left
 )yaml"));
-  EXPECT_FALSE(top_left);
-  EXPECT_NE(top_left.error.find("overlay.position"), std::string::npos);
+  EXPECT_FALSE(Clean(top_left));
+  EXPECT_NE(Why(top_left).find("overlay.position"), std::string::npos);
 
   TemporaryDirectory bad_fps_directory;
   const RuntimeConfigLoadResult bad_fps = LoadRuntimeConfig(
@@ -682,8 +697,8 @@ version: 1
 overlay:
   fps: always
 )yaml"));
-  EXPECT_FALSE(bad_fps);
-  EXPECT_NE(bad_fps.error.find("overlay.fps"), std::string::npos);
+  EXPECT_FALSE(Clean(bad_fps));
+  EXPECT_NE(Why(bad_fps).find("overlay.fps"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, HardwareCursorIsSeparateFromTheSystemTheme) {
@@ -705,8 +720,8 @@ version: 1
 input:
   hardware_cursor: maybe
 )yaml"));
-  EXPECT_FALSE(invalid);
-  EXPECT_NE(invalid.error.find("input.hardware_cursor"), std::string::npos);
+  EXPECT_FALSE(Clean(invalid));
+  EXPECT_NE(Why(invalid).find("input.hardware_cursor"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, LoadsTypedDesktopAndGraphicsSettings) {
@@ -832,10 +847,10 @@ integrations:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("integrations.discord_rpc.images.small_text"),
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("integrations.discord_rpc.images.small_text"),
             std::string::npos);
-  EXPECT_NE(loaded.error.find("control bytes"), std::string::npos)
+  EXPECT_NE(Why(loaded).find("control bytes"), std::string::npos)
       << loaded.error;
 }
 
@@ -963,8 +978,8 @@ audio:
   output_device: ""
 )yaml");
   RuntimeConfigLoadResult loaded = LoadRuntimeConfig(MapEnvironment(), empty);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("audio.output_device"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("audio.output_device"), std::string::npos);
 
   const RuntimeConfig from_environment = RuntimeConfig::FromEnvironment(
       MapEnvironment({{"MOCKTAIL_AUDIO_OUTPUT_DEVICE", "Speaker\nInjected"}}));
@@ -985,8 +1000,8 @@ window:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("window.high_dpi"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("window.high_dpi"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, RejectsUnsafeAudioInputDevice) {
@@ -997,8 +1012,8 @@ audio:
   input_device: ""
 )yaml");
   RuntimeConfigLoadResult loaded = LoadRuntimeConfig(MapEnvironment(), empty);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("audio.input_device"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("audio.input_device"), std::string::npos);
 
   const RuntimeConfig from_environment = RuntimeConfig::FromEnvironment(
       MapEnvironment({{"MOCKTAIL_AUDIO_INPUT_DEVICE", "Mic\nInjected"}}));
@@ -1017,8 +1032,8 @@ network:
 )yaml");
   RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), incomplete);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("configured together"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("configured together"), std::string::npos);
 
   const std::filesystem::path scheme = temporary.Write(R"yaml(
 version: 1
@@ -1027,8 +1042,8 @@ network:
   proxy_port: 8080
 )yaml");
   loaded = LoadRuntimeConfig(MapEnvironment(), scheme);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("without a scheme"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("without a scheme"), std::string::npos);
 
   const std::filesystem::path path = temporary.Write(R"yaml(
 version: 1
@@ -1037,7 +1052,7 @@ network:
   proxy_port: 8080
 )yaml");
   loaded = LoadRuntimeConfig(MapEnvironment(), path);
-  EXPECT_FALSE(loaded);
+  EXPECT_FALSE(Clean(loaded));
 
   const std::filesystem::path port = temporary.Write(R"yaml(
 version: 1
@@ -1046,8 +1061,8 @@ network:
   proxy_port: 65536
 )yaml");
   loaded = LoadRuntimeConfig(MapEnvironment(), port);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("1 to 65535"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("1 to 65535"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, LoadsSystemProxyFlagWithoutFixedEndpoint) {
@@ -1152,8 +1167,8 @@ performance:
 )yaml");
   RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), negative);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("memory_limit_mb"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("memory_limit_mb"), std::string::npos);
 
   loaded = LoadRuntimeConfig(
       MapEnvironment({{"MOCKTAIL_MEMORY_LIMIT_MB", "not-a-number"}}),
@@ -1179,8 +1194,8 @@ performance:
   gamemode: required
 )yaml");
   RuntimeConfigLoadResult loaded = LoadRuntimeConfig(MapEnvironment(), invalid);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("performance.gamemode"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("performance.gamemode"), std::string::npos);
 
   loaded = LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_GAMEMODE", "invalid"}}),
                              "/does/not/exist/config.yaml");
@@ -1382,6 +1397,69 @@ device: mobile-pixel-7
             kRobloxConsoleAdmissionUserAgent);
 }
 
+// Nightly and stable share one config file, so a build must start with keys
+// and values only a newer build knows.
+TEST(RuntimeConfigFileTest, LeavesOutKeysAndValuesFromANewerBuild) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  vsync: off
+  future_upscaler: fsr4
+appearance:
+  theme: sepia
+future_section_key: 1
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.theme_mode(), RuntimeConfig().theme_mode());
+  std::vector<std::string> keys;
+  for (const IgnoredConfigKey& ignored : loaded.ignored) {
+    keys.push_back(ignored.key);
+    EXPECT_FALSE(ignored.reason.empty()) << ignored.key;
+  }
+  std::sort(keys.begin(), keys.end());
+  EXPECT_EQ(keys, (std::vector<std::string>{"appearance.theme",
+                                            "graphics.future_upscaler"}));
+}
+
+TEST(RuntimeConfigFileTest, StillRefusesANewerFileVersion) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 2
+graphics:
+  vsync: off
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("version"), std::string::npos);
+}
+
+// A bad proxy must stop the load, not drop the proxy and connect directly.
+TEST(RuntimeConfigFileTest, ABadProxyIsNeverLeftOut) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+network:
+  proxy_host: proxy.example
+  proxy_port: 65536
+)yaml");
+
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+
+  EXPECT_FALSE(loaded);
+  EXPECT_TRUE(loaded.ignored.empty());
+  EXPECT_NE(loaded.error.find("1 to 65535"), std::string::npos);
+}
+
 TEST(RuntimeConfigFileTest, RejectsUnknownOrContradictoryDevicePreset) {
   TemporaryDirectory temporary;
   const std::filesystem::path unknown = temporary.Write(R"yaml(
@@ -1389,8 +1467,8 @@ version: 1
 device: smart-fridge
 )yaml");
   RuntimeConfigLoadResult loaded = LoadRuntimeConfig(MapEnvironment(), unknown);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("device must be"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("device must be"), std::string::npos);
 
   const std::filesystem::path contradictory = temporary.Write(R"yaml(
 version: 1
@@ -1399,8 +1477,8 @@ input:
   touch_enabled: false
 )yaml");
   loaded = LoadRuntimeConfig(MapEnvironment(), contradictory);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("cannot be combined"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("cannot be combined"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, RejectsInvalidDetailedDeviceConfiguration) {
@@ -1412,8 +1490,8 @@ device:
 )yaml");
   RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), missing_type);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("device.type is required"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("device.type is required"), std::string::npos);
 
   const std::filesystem::path empty_model = temporary.Write(R"yaml(
 version: 1
@@ -1422,8 +1500,8 @@ device:
   model: ""
 )yaml");
   loaded = LoadRuntimeConfig(MapEnvironment(), empty_model);
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("device.model"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("device.model"), std::string::npos);
 
   const std::filesystem::path invalid_input = temporary.Write(R"yaml(
 version: 1
@@ -1468,8 +1546,8 @@ compatibility:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("compatibility.desktop_playability"),
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("compatibility.desktop_playability"),
             std::string::npos);
 }
 
@@ -1518,8 +1596,8 @@ graphics:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("frame_rate_limit"), std::string::npos);
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("frame_rate_limit"), std::string::npos);
 }
 
 TEST(RuntimeConfigFileTest, ValidatesAndExportsPresentModes) {
@@ -1530,8 +1608,8 @@ TEST(RuntimeConfigFileTest, ValidatesAndExportsPresentModes) {
         std::string("version: 1\ngraphics:\n  present_mode: ") + mode + "\n");
     const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
     if (std::string(mode) == "fastest") {
-      EXPECT_FALSE(loaded);
-      EXPECT_NE(loaded.error.find("present_mode"), std::string::npos);
+      EXPECT_FALSE(Clean(loaded));
+      EXPECT_NE(Why(loaded).find("present_mode"), std::string::npos);
     } else {
       ASSERT_TRUE(loaded) << loaded.error;
       std::string error;
@@ -1579,53 +1657,63 @@ TEST(RuntimeConfigFileTest, ExportsTextureCompressionPolicy) {
   unsetenv("MOCKTAIL_ETC2_BC_TRANSCODE");
 }
 
-TEST(RuntimeConfigFileTest, LoadsSmallTextureUpscaleFromFile) {
+TEST(RuntimeConfigFileTest, LoadsAndExportsSmoothTextureLoading) {
+  unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET");
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
+      << error;
+  ASSERT_NE(getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), "1");
+
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(
 version: 1
 graphics:
-  small_texture_upscale: 2
+  smooth_texture_loading: false
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.smooth_texture_loading());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ETC2_ENCODE_BUDGET"), "0");
+  unsetenv("MOCKTAIL_ETC2_ENCODE_BUDGET");
+}
+
+TEST(RuntimeConfigFileTest, RejectsNonBooleanSmoothTextureLoading) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+graphics:
+  smooth_texture_loading: maybe
 )yaml");
 
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  ASSERT_TRUE(loaded) << loaded.error;
-  EXPECT_EQ(loaded.config.small_texture_upscale(), "2");
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("graphics.smooth_texture_loading"),
+            std::string::npos);
 }
 
-TEST(RuntimeConfigFileTest, ExportsSmallTextureUpscale) {
-  unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
-  std::string error;
-  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
-      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
-      << error;
-  ASSERT_NE(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), nullptr);
-  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "adaptive");
-
-  ASSERT_TRUE(ExportRuntimeConfigEnvironment(
-      RuntimeConfig::FromEnvironment(
-          MapEnvironment({{"MOCKTAIL_SMALL_TEXTURE_UPSCALE", "4"}})),
-      &error))
-      << error;
-  EXPECT_STREQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), "4");
-  unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
-}
-
-TEST(RuntimeConfigFileTest, RejectsUnsupportedSmallTextureUpscale) {
-  for (const char* value : {"3", "8", "fast"}) {
-    SCOPED_TRACE(value);
+// The setting is retired: an old config still loads, and the upscale stays
+// at the engine's default.
+TEST(RuntimeConfigFileTest, IgnoresTheRetiredSmallTextureUpscale) {
+  for (const char* saved : {"1", "2", "4", "adaptive", "auto"}) {
+    SCOPED_TRACE(saved);
+    unsetenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE");
     TemporaryDirectory temporary;
     const std::filesystem::path file = temporary.Write(
         std::string("version: 1\ngraphics:\n  small_texture_upscale: ") +
-        value + "\n");
-
+        saved + "\n");
     const RuntimeConfigLoadResult loaded =
         LoadRuntimeConfig(MapEnvironment(), file);
-
-    EXPECT_FALSE(loaded);
-    EXPECT_NE(loaded.error.find("graphics.small_texture_upscale"),
-              std::string::npos);
+    ASSERT_TRUE(loaded) << loaded.error;
+    std::string error;
+    ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error))
+        << error;
+    EXPECT_EQ(getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"), nullptr);
   }
 }
 
@@ -1640,9 +1728,55 @@ graphics:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("graphics.texture_compression"),
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("graphics.texture_compression"),
             std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, CustomAssetsAreOnUnlessTheFileTurnsThemOff) {
+  unsetenv("MOCKTAIL_ASSET_OVERLAY");
+  unsetenv("MOCKTAIL_TEXTURE_OVERRIDES");
+  std::string error;
+  const RuntimeConfig defaults =
+      RuntimeConfig::FromEnvironment(MapEnvironment());
+  EXPECT_TRUE(defaults.asset_overlay());
+  EXPECT_TRUE(defaults.texture_overrides());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(defaults, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ASSET_OVERLAY"), "1");
+  EXPECT_STREQ(getenv("MOCKTAIL_TEXTURE_OVERRIDES"), "1");
+
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(R"yaml(
+version: 1
+assets:
+  overlay: false
+  texture_overrides: false
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.asset_overlay());
+  EXPECT_FALSE(loaded.config.texture_overrides());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_ASSET_OVERLAY"), "0");
+  EXPECT_STREQ(getenv("MOCKTAIL_TEXTURE_OVERRIDES"), "0");
+  unsetenv("MOCKTAIL_ASSET_OVERLAY");
+  unsetenv("MOCKTAIL_TEXTURE_OVERRIDES");
+}
+
+TEST(RuntimeConfigFileTest, RejectsNonBooleanCustomAssetSwitches) {
+  for (const char* key : {"overlay", "texture_overrides"}) {
+    SCOPED_TRACE(key);
+    TemporaryDirectory temporary;
+    const std::filesystem::path file = temporary.Write(
+        std::string("version: 1\nassets:\n  ") + key + ": sometimes\n");
+    const RuntimeConfigLoadResult loaded =
+        LoadRuntimeConfig(MapEnvironment(), file);
+    EXPECT_FALSE(Clean(loaded));
+    EXPECT_NE(Why(loaded).find(std::string("assets.") + key),
+              std::string::npos)
+        << loaded.error;
+  }
 }
 
 TEST(RuntimeConfigFileTest, RejectsNonBooleanPerformancePolicy) {
@@ -1656,8 +1790,8 @@ performance:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("performance.multithreaded_rendering"),
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("performance.multithreaded_rendering"),
             std::string::npos);
 }
 
@@ -1672,8 +1806,8 @@ performance:
   const RuntimeConfigLoadResult loaded =
       LoadRuntimeConfig(MapEnvironment(), file);
 
-  EXPECT_FALSE(loaded);
-  EXPECT_NE(loaded.error.find("performance.physics_worker_mode"),
+  EXPECT_FALSE(Clean(loaded));
+  EXPECT_NE(Why(loaded).find("performance.physics_worker_mode"),
             std::string::npos);
 }
 
@@ -1756,7 +1890,7 @@ TEST(RuntimeConfigFileTest, FleasionCanClearTheRobloxCacheOnLaunch) {
 
   file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n"
                          "    clear_cache_on_launch: sometimes\n");
-  EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment(), file));
+  EXPECT_FALSE(Clean(LoadRuntimeConfig(MapEnvironment(), file)));
 }
 
 }  // namespace

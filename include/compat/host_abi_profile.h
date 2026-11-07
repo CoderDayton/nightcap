@@ -98,6 +98,7 @@ struct HostAbiProfile {
   // legacy profiles keep the historical host-bridge default.
   HostAllocatorStrategy default_allocator_strategy =
       HostAllocatorStrategy::kHostBridges;
+  bool host_allocator_bridges_supported = true;
 
   bool HasValidConstructorRanges() const noexcept;
   bool AllowsConstructor(size_t index) const noexcept;
@@ -125,6 +126,10 @@ struct HostAbiProfile {
 };
 
 const HostAbiProfile *FindHostAbiProfile(std::string_view build_id) noexcept;
+
+// Roblox refuses these builds in games. They get no profile, built-in or
+// saved.
+bool IsRetiredRobloxBuild(std::string_view build_id) noexcept;
 
 } // namespace mocktail::compat
 

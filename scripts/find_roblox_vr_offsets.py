@@ -987,6 +987,30 @@ def extract_bool_flag_storage(instructions: Sequence[Any],
     return None
 
 
+def find_static_flag_storage(image: ElfImage, name_rva: int) -> int | None:
+    """Storage of a flag defined in a static table, as 2.746 does.
+
+    The live entry holds a relocated name pointer at storage+8 in writable
+    data; a read-only copy of the table sits in RELRO and is skipped. Keep in
+    step with VrTargets._static_flag_storage in roblox_abi_vr.py.
+    """
+    found = set()
+    for offset, addend in image.relative_relocations().items():
+        if addend != name_rva or offset < 8:
+            continue
+        if any(begin <= offset < begin + length for begin, length in image.relro_ranges):
+            continue
+        try:
+            image.require_writable_rva(offset - 8, 16)
+        except AnalyzerError:
+            continue
+        found.add(offset - 8)
+    if len(found) > 1:
+        listed = ", ".join(f"0x{rva:x}" for rva in sorted(found))
+        raise AnalyzerError(f"ambiguous static flag storage: [{listed}]")
+    return found.pop() if found else None
+
+
 def find_bool_flags(image: ElfImage, table: FunctionTable,
                     disasm: Disassembler, names: dict[str, bytes],
                     evidence: list[str], warnings: list[str]) -> dict[str, int]:
@@ -1007,6 +1031,10 @@ def find_bool_flags(image: ElfImage, table: FunctionTable,
                                                     name_rva)
                 if storage is not None:
                     matches.add(storage)
+        if not matches:
+            static = find_static_flag_storage(image, name_rva)
+            if static is not None:
+                matches.add(static)
         if len(matches) != 1:
             listed = ", ".join(f"0x{rva:x}" for rva in sorted(matches))
             raise AnalyzerError(f"{label} flag storage is not unique: [{listed}]")
@@ -1329,21 +1357,22 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
         haptic_matches = []
         for slot, target in slots.items():
             start, end = table.bounds(target)
-            if end - start == 1:
-                body = image.bytes_at(image.rva_to_offset(target, 1), 1,
-                                      "haptic sink")
-                if body == b"\xc3":
+            # A lone ret, maybe followed by int3 padding the FDE covers.
+            if 1 <= end - start <= 16:
+                body = image.bytes_at(image.rva_to_offset(target, end - start),
+                                      end - start, "haptic sink")
+                if body[:1] == b"\xc3" and body[1:] == b"\xcc" * (len(body) - 1):
                     haptic_matches.append((slot, target))
         if not haptic_matches:
             raise AnalyzerError(
-                "no vtable slot points at a 1-byte ret haptic sink")
+                "no vtable slot points at a ret-only haptic sink")
         haptic_slot, haptic_sink = min(haptic_matches)
         if haptic_slot != EXPECTED_HAPTIC_SLOT:
             warnings.append(
                 f"haptic sink moved from vtable+0x{EXPECTED_HAPTIC_SLOT:x} to"
                 f" vtable+0x{haptic_slot:x}")
         evidence.append(
-            f"haptic sink: 1-byte ret stub at vtable+0x{haptic_slot:x} ->"
+            f"haptic sink: ret-only stub at vtable+0x{haptic_slot:x} ->"
             f" 0x{haptic_sink:x}")
 
         device_name_rva = image.find_alloc_string(DEVICE_OBJECT_NAME)
@@ -1402,14 +1431,21 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                                         f" 0x{registration_storage:x}"
                                         f" and 0x{storage:x}")
                 registration_storage = storage
+        from_static = registration_storage is None
+        if from_static:
+            registration_storage = find_static_flag_storage(image, emulator_name_rva)
         if registration_storage is None:
             raise AnalyzerError(
                 "DebugEnableVREmulator registration contract was not found")
         image.require_writable_rva(registration_storage, 1)
-        zeroing_seen = any(
+        zeroing_seen = not from_static and any(
             find_flag_zeroing(disasm.function(start, end), registration_storage)
             for start, end in flag_functions.items())
-        if zeroing_seen:
+        if from_static:
+            evidence.append(
+                "emulator flag: static table entry with name pointer at"
+                f" storage+8 -> 0x{registration_storage:x}")
+        elif zeroing_seen:
             evidence.append(
                 "emulator flag: registration lea rsi/rdx contract plus init"
                 f" byte-store cross-check -> 0x{registration_storage:x}")
@@ -1435,6 +1471,14 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                         f" 0x{hand_pitch[0]:x}"
                         f" and 0x{match[0]:x}")
                 hand_pitch = match
+        if hand_pitch is None:
+            static = find_static_flag_storage(image, hand_pitch_name_rva)
+            if static is not None:
+                # A static entry starts out holding its default.
+                default = struct.unpack(
+                    "<i", image.bytes_at(image.rva_to_offset(static, 4), 4,
+                                         "hand pitch default"))[0]
+                hand_pitch = (static, default)
         if hand_pitch is None:
             raise AnalyzerError(
                 "NewVRSystemHandPitch storage contract was not found")

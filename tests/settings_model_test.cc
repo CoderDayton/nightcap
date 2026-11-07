@@ -116,7 +116,8 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
     }
   }
   EXPECT_EQ(titles, (std::vector<std::string_view>{
-                        "Graphics", "Input", "VR", "Performance", "Audio",
+                        "Graphics", "Input", "VR", "Appearance", "Files",
+                        "Performance", "Audio",
                         "Network", "Discord", "Fleasion", "Advanced"}));
 }
 
@@ -160,7 +161,8 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
            "graphics.vsync", "graphics.texture_compression",
-           "graphics.small_texture_upscale",
+           "graphics.smooth_texture_loading",
+           "assets.overlay", "assets.texture_overrides",
            "performance.multithreaded_rendering",
            "performance.physics_worker_mode", "performance.memory_limit_mb",
            "performance.gamemode", "performance.mangohud",
@@ -219,6 +221,39 @@ TEST_F(SettingsModelTest, TheAdvancedPageOpensTheConfigFolder) {
   const Setting& folder = Find("config_folder");
   EXPECT_EQ(folder.kind, SettingKind::kFolder);
   EXPECT_EQ(&advanced.groups.back().settings.back(), &folder);
+}
+
+TEST_F(SettingsModelTest, TheCustomizeSectionHoldsAppearanceAndFiles) {
+  std::vector<std::string_view> customize;
+  for (const SettingsPage& page : SettingsPages()) {
+    if (page.section == "Customize") customize.push_back(page.name);
+  }
+  EXPECT_EQ(customize,
+            (std::vector<std::string_view>{"appearance", "files"}));
+  EXPECT_EQ(Find("sky").kind, SettingKind::kSky);
+  EXPECT_EQ(Find("font").kind, SettingKind::kFont);
+  for (const std::string_view key :
+       {"assets.overlay", "assets.texture_overrides"}) {
+    EXPECT_EQ(Find(key).kind, SettingKind::kToggle) << key;
+    EXPECT_EQ(Find(key).default_value, "true") << key;
+  }
+  EXPECT_EQ(Find("asset_folder").kind, SettingKind::kFolder);
+  EXPECT_EQ(Find("textures_folder").kind, SettingKind::kFolder);
+  EXPECT_EQ(Find("sky_library").kind, SettingKind::kFolder);
+}
+
+TEST_F(SettingsModelTest, TheSkyIsGreyedOutWhileCustomAssetsAreOff) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("sky"));
+  EXPECT_TRUE(document.IsActive("font"));
+  ASSERT_TRUE(document.Set("assets.overlay", "false", &error)) << error;
+  EXPECT_FALSE(document.IsActive("sky"));
+  EXPECT_FALSE(document.IsActive("font"));
+  const runtime::RuntimeConfigLoadResult loaded = LoadFile();
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.asset_overlay());
 }
 
 TEST_F(SettingsModelTest, TheAdvancedPageClearsTheRobloxCache) {
@@ -1060,6 +1095,33 @@ TEST_F(SettingsModelTest, TheFixedProxyIsOneHostAndPortRow) {
   EXPECT_FALSE(loaded.config.network_proxy().has_value());
 }
 
+TEST_F(SettingsModelTest, DesktopDrawnGameCursorIsUnderMore) {
+  const SettingsPage* input = nullptr;
+  for (const SettingsPage& page : SettingsPages()) {
+    if (page.name == "input") input = &page;
+  }
+  ASSERT_NE(input, nullptr);
+  ASSERT_FALSE(input->groups.empty());
+  const SettingsGroup& mouse = input->groups[0];
+  EXPECT_EQ(mouse.title, "Mouse and touch");
+  ASSERT_EQ(mouse.settings.size(), 4U);
+  EXPECT_EQ(mouse.settings[1].key, "input.system_cursor");
+  EXPECT_EQ(mouse.settings[1].title, "System cursor");
+  EXPECT_EQ(mouse.more_from, 3U);
+  EXPECT_EQ(mouse.settings[3].key, "input.hardware_cursor");
+  EXPECT_EQ(mouse.settings[3].title, "Desktop-drawn game cursor");
+}
+
+TEST_F(SettingsModelTest, MoreRowsSitInsideTheirGroup) {
+  for (const SettingsPage& page : SettingsPages()) {
+    for (const SettingsGroup& group : page.groups) {
+      if (group.more_from == 0) continue;
+      EXPECT_LT(group.more_from, group.settings.size()) << group.title;
+      EXPECT_TRUE(group.expander.empty()) << group.title;
+    }
+  }
+}
+
 TEST_F(SettingsModelTest, LocationAndPerformanceOverlayAreSeparateGroups) {
   const SettingsGroup* location = nullptr;
   const SettingsGroup* performance = nullptr;
@@ -1284,6 +1346,8 @@ std::optional<std::string> ChangedSample(const Setting& setting) {
     case SettingKind::kEditor:
     case SettingKind::kFolder:
     case SettingKind::kCache:
+    case SettingKind::kSky:
+    case SettingKind::kFont:
       return std::nullopt;
   }
   return std::nullopt;

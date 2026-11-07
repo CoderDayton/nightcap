@@ -38,14 +38,15 @@ side by side.
   and your own cursor theme.
 - **Performance.** Less idle CPU use and faster texture loading.
 - **Custom assets.** Cursors, fonts and skies go in
-  `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Fleasion
-  works too.
+  `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Settings >
+  Appearance imports sky packs, zips included, switches between them, and
+  swaps Roblox's fonts for one of yours. Fleasion works too.
 - **Overlays.** FPS, ping, and the server's location when you join.
 - **Discord.** Shows the game you're playing.
 - **Settings window.** Every option in one place.
 
 More: [custom textures](textures/README.md) ·
-[performance](docs/PERFORMANCE.md) · [FAQ](FAQ.md) ·
+[performance](docs/PERFORMANCE.md) · [FFlags](docs/FFLAGS.md) · [FAQ](FAQ.md) ·
 [changelog](CHANGELOG.md) · [roadmap](docs/ROADMAP.md)
 
 ## Install with AppImage
@@ -61,13 +62,18 @@ chmod +x Nightcap-x86_64.AppImage
 
 ## Install on Arch Linux from the AUR
 
+[`nightcap-bin`](https://aur.archlinux.org/packages/nightcap-bin) installs the
+prebuilt latest release, with nothing to compile.
 [`nightcap-git`](https://aur.archlinux.org/packages/nightcap-git) builds the
-current `main` branch. It is maintained by
+current `main` branch. Both are maintained by
 [@dim-ghub](https://github.com/dim-ghub):
 
 ```bash
-paru -S nightcap-git    # or: yay -S nightcap-git
+paru -S nightcap-bin    # or: yay -S nightcap-bin
+paru -S nightcap-git    # latest main, built from source
 ```
+
+Install one or the other; they replace each other.
 
 ## Install with Flatpak
 
@@ -77,6 +83,16 @@ flatpak run io.github.CoderDayton.nightcap
 ```
 
 Updates arrive through `flatpak update`. Nightcap is not on Flathub yet.
+
+A nightly build of `main` installs beside it and shares its settings:
+
+```bash
+flatpak install --user https://coderdayton.github.io/nightcap/nightcap-nightly.flatpakref
+flatpak run --branch=nightly io.github.CoderDayton.nightcap
+```
+
+`flatpak make-current --user io.github.CoderDayton.nightcap stable` points
+the app menu back at the regular build.
 
 ## Distribution packages
 
@@ -127,6 +143,8 @@ removing the marker.
 
 Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
 `~/.config/mocktail/fflags.json`). Nightcap applies it on the next launch.
+[docs/FFLAGS.md](docs/FFLAGS.md) lists recommended flags, ones to avoid, and
+which flags Nightcap sets itself.
 The Advanced page of the [settings window](#settings) edits this file and
 does not save text that Nightcap could not load.
 
@@ -270,9 +288,8 @@ and names them:
 
 | Build | Roblox version |
 | --- | --- |
-| 2998 | 2.736.1408 |
-| 3092 | 2.738.1397 |
 | 3222 | 2.742.1059 |
+| 20836 | 2.746.1266 |
 
 ### Build with VR
 

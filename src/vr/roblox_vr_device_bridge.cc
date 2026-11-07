@@ -516,6 +516,17 @@ void InstallSetMotorHook(std::uintptr_t image_base) {
     Log("  [vr-device] SetMotor hand haptics unavailable: no method slot in "
         "descriptor +0x%" PRIxPTR "\n",
         descriptor);
+    // Shows where a new build moved the method.
+    for (std::size_t offset = 0x40; offset <= 0xc8; offset += 8) {
+      std::uintptr_t value = 0;
+      std::memcpy(&value,
+                  reinterpret_cast<const void*>(image_base + descriptor + offset),
+                  sizeof(value));
+      const bool code = value > image_base && value % 2 == 0 &&
+                        IsExecutableRva(image_base, value - image_base);
+      Log("  [vr-device]   descriptor +0x%02zx = %s0x%" PRIxPTR "\n", offset,
+          code ? "code +" : "", code ? value - image_base : value);
+    }
     return;
   }
   auto* slot =
@@ -549,38 +560,6 @@ void RestoreSetMotorHook() {
 namespace internal {
 
 constexpr VrBuildContract kContracts[] = {
-    {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-     {0x6c87b38, 0x3810614, 0x38109f6, 0x38109e6, 0x3810a18, 0x7369920,
-      0x180},
-     0x6b7bfe0,
-     0x4d573ee,
-     0x263778c,
-     0x3a8,
-     0x73677a8,
-     0x1d48b70,
-     0x118,
-     0x140,
-     0x72fcd18,
-     0x7367588,
-     0x73677d0,
-     0x7367da0,
-     "2998 (2.736.1408)"},
-    {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
-     {0x6d08108, 0x37f9fe4, 0x37fa3c6, 0x37fa3b6, 0x37fa3e8, 0x73f4690,
-      0x188},
-     0x6bfb180,
-     0x4d97b98,
-     0x265cebc,
-     0x3a0,
-     0x73f24c8,
-     0x1d8f8c0,
-     0x118,
-     0x140,
-     0x7387118,
-     0x73f2268,
-     0x73f24f0,
-     0x73f2ac0,
-     "3092 (2.738.1397)"},
     {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
      {0x7083a48, 0x549c884, 0x549cc66, 0x549cc56, 0x549cc88, 0x74d1640,
       0x190},
@@ -597,6 +576,23 @@ constexpr VrBuildContract kContracts[] = {
      0x74cf458,
      0x74cfa10,
      "3222 (2.742.1059)"},
+    // 2.746 dropped KeepHapticsOnMobileWhenGamepadConnected.
+    {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+     {0x6c33400, 0x500d640, 0x500da22, 0x500da12, 0x500da44, 0x6ed0dc0,
+      0x1b0},
+     0x695b0b0,
+     0x4b3db74,
+     0x21cc240,
+     0x3a0,
+     0x6ed07a8,
+     0x1ac1df0,
+     0x100,
+     0x128,
+     0,
+     0x6ed0660,
+     0x6ed07c0,
+     0x6ed0a60,
+     "20836 (2.746.1266)"},
 };
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id) {
@@ -1007,7 +1003,9 @@ std::size_t SetMotorDescriptorSlot(std::uintptr_t image_base,
                                    std::uintptr_t descriptor_rva,
                                    bool (*is_code)(std::uintptr_t image_base,
                                                    std::uintptr_t rva)) {
-  for (const std::size_t slot : {std::size_t{0x80}, std::size_t{0x88}}) {
+  // Roblox grows this descriptor between builds; 2.746 added 0x20 bytes.
+  for (const std::size_t slot :
+       {std::size_t{0x80}, std::size_t{0x88}, std::size_t{0xa8}}) {
     std::uintptr_t function = 0;
     std::uintptr_t adjust = 0;
     std::memcpy(&function,

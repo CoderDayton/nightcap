@@ -58,6 +58,10 @@ const HostAbiProfile* FindLoadedExternalHostAbiProfile(
 
 void SetHostAbiProfileHashingFaultForTesting(bool enabled) noexcept;
 
+// Unregisters every loaded external profile, so a Build ID can load again.
+// Pointers returned earlier stay valid.
+void ResetLoadedExternalHostAbiProfilesForTesting() noexcept;
+
 }  // namespace mocktail::compat
 
 #endif  // MOCKTAIL_COMPAT_HOST_ABI_PROFILE_LOADER_H_

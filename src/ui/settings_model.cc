@@ -555,19 +555,15 @@ const std::vector<SettingsPage>& SettingsPages() {
                   "You gain:\n"
                   "• May fix broken or black textures\n\n"
                   "Requires a restart to take effect."),
-                {"graphics.small_texture_upscale",
-                 "Small texture upscale",
-                 "Sharpens textures of 64px or less. Adaptive picks the "
-                 "factor from your GPU's speed and holds back while it is "
-                 "busy. Requires a restart.",
-                 SettingKind::kChoice,
-                 {
-                     {"adaptive", "Adaptive"},
-                     {"1", "1× (off)"},
-                     {"2", "2×"},
-                     {"4", "4×"},
-                 },
-                 "adaptive",
+                {"graphics.smooth_texture_loading",
+                 "Smooth Texture Loading",
+                 "If textures turn black on a low-memory GPU, turn this off. "
+                 "Uses a faster encoder while many textures load, to avoid "
+                 "stutter. Only applies with Compress Textures on. "
+                 "Requires a restart.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
                  {}},
             }},
            {"Display",
@@ -671,17 +667,9 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "false",
                  {}},
                 {"input.system_cursor",
-                 "System cursor theme",
+                 "System cursor",
                  "Use your desktop's arrow, hand and text cursors instead of "
                  "Roblox's.",
-                 SettingKind::kToggle,
-                 {},
-                 "false",
-                 {}},
-                {"input.hardware_cursor",
-                 "Hardware cursor",
-                 "Let the desktop draw the cursor, a game's own included, so "
-                 "cursor effects work with it.",
                  SettingKind::kToggle,
                  {},
                  "false",
@@ -693,7 +681,21 @@ const std::vector<SettingsPage>& SettingsPages() {
                  {},
                  "false",
                  {}},
-            }},
+                {"input.hardware_cursor",
+                 "Desktop-drawn game cursor",
+                 "For desktop cursor effects, like Hyprland cursor plugins. "
+                 "Your desktop draws a game's own mouse cursor instead of "
+                 "Roblox. Most people should leave this off.",
+                 SettingKind::kToggle,
+                 {},
+                 "false",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            {},
+            3},
            {"Device",
             {
                 {kDeviceKey,
@@ -772,6 +774,88 @@ const std::vector<SettingsPage>& SettingsPages() {
                  SettingKind::kToggle,
                  {},
                  "true",
+                 {}},
+            }},
+       }},
+      {"appearance",
+       "Appearance",
+       "applications-graphics-symbolic",
+       "Customize",
+       {
+           {"Font",
+            {
+                {"font",
+                 "Font",
+                 "",
+                 SettingKind::kFont,
+                 {},
+                 "",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            "One font for Roblox's menus and games. Emoji and other scripts "
+            "keep Roblox's fonts. A new pick shows the next time Nightcap "
+            "starts."},
+           {"Sky",
+            {
+                {"sky",
+                 "Sky",
+                 "",
+                 SettingKind::kSky,
+                 {},
+                 "",
+                 {}},
+                {"sky_library",
+                 "Open sky library",
+                 "Imported skies, one folder each.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            "The sky in games. A new pick shows the next time Nightcap "
+            "starts. Right-click a sky to remove it."},
+       }},
+      {"files",
+       "Files",
+       "folder-symbolic",
+       "Customize",
+       {
+           {"Custom files",
+            {
+                {"assets.overlay",
+                 "Custom assets",
+                 "Use the cursors, fonts and sky in the asset folder.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
+                {"assets.texture_overrides",
+                 "Texture overrides",
+                 "Use the replacement PNGs in the textures folder.",
+                 SettingKind::kToggle,
+                 {},
+                 "true",
+                 {}},
+                {"asset_folder",
+                 "Open asset folder",
+                 "Cursors, fonts and the sky, laid out like Roblox's "
+                 "content folder.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
+                 {}},
+                {"textures_folder",
+                 "Open textures folder",
+                 "Replacement textures, named by the texture they replace.",
+                 SettingKind::kFolder,
+                 {},
+                 "",
                  {}},
             }},
        }},
@@ -1410,6 +1494,9 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
+  if ((key == "sky" || key == "font") && !IsSwitchedOn("assets.overlay")) {
+    return false;
+  }
   if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
     return false;
   }
@@ -1462,6 +1549,8 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
     case SettingKind::kEditor:
     case SettingKind::kFolder:
     case SettingKind::kCache:
+    case SettingKind::kSky:
+    case SettingKind::kFont:
       return false;
   }
   return false;

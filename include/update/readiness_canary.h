@@ -50,10 +50,12 @@ struct CanaryResult {
   int exit_code = -1;
   // Direct posix_spawn return code; zero when spawn was not attempted.
   int spawn_error = 0;
+  bool teardown_crash = false;
   std::string error;
 
   explicit operator bool() const {
-    return error.empty() && !log_path.empty() && exit_code == 0;
+    return error.empty() && !log_path.empty() &&
+           (exit_code == 0 || teardown_crash);
   }
 };
 
@@ -61,6 +63,9 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options);
 
 bool ValidateReadinessLog(CanaryGraphicsBackend backend, std::string_view log,
                           std::string* error);
+
+bool ValidateTeardownCrashLog(CanaryGraphicsBackend backend,
+                              std::string_view log, std::string* error);
 
 }  // namespace mocktail::update
 

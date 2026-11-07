@@ -687,6 +687,18 @@ TEST(RuntimePathsTest, PreservesUnexpectedManagedPayloadFiles) {
   EXPECT_FALSE(std::filesystem::exists(data / "rbx_bin/libroblox.so"));
 }
 
+TEST(RuntimePathsTest, TextureOverrideDirFollowsItsVariable) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(
+      MapEnvironment({
+          {"HOME", temporary.path().string()},
+          {"MOCKTAIL_TEXTURE_OVERRIDE_DIR", "/srv/textures"},
+      }),
+      temporary.path());
+  EXPECT_EQ(paths.texture_override_dir(), "/srv/textures");
+}
+
 TEST(RuntimePathsTest, ExportsXdgBackedAndroidPathsAndCreatesParents) {
   TemporaryDirectory temporary;
   ASSERT_FALSE(temporary.path().empty());
@@ -721,8 +733,9 @@ TEST(RuntimePathsTest, ExportsXdgBackedAndroidPathsAndCreatesParents) {
                paths.android_cache_root().c_str());
   EXPECT_STREQ(std::getenv("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH"),
                paths.vulkan_shader_cache_file().c_str());
+  EXPECT_EQ(paths.texture_override_dir(), paths.config_root() / "textures");
   EXPECT_STREQ(std::getenv("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
-               (paths.config_root() / "textures").c_str());
+               paths.texture_override_dir().c_str());
   EXPECT_STREQ(std::getenv("MOCKTAIL_ASSET_OVERLAY_DIR"),
                paths.asset_overlay_dir().c_str());
   EXPECT_TRUE(std::filesystem::is_directory(paths.android_runtime_root()));

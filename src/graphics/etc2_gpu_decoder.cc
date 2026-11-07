@@ -62,7 +62,11 @@ struct PushConstants {
   std::uint32_t source_layer_blocks;
   std::uint32_t destination_offset;
   std::uint32_t destination_layer_words;
+  std::uint32_t flags;
 };
+
+// PushConstants::flags bit for Etc2GpuJob::fast.
+constexpr std::uint32_t kFastFlag = 1;
 
 constexpr std::uint32_t kGroupBlocks = 8;
 // Broken BC packing decodes to noise, far below this; real encodes of random
@@ -428,7 +432,8 @@ bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
             !job.scale ? OutputLayerBytes(job) / 4
             : job.scale_texels_offset != 0
                 ? job.scale_texels_offset / 4
-                : (job.source_offset + kEtc2ScaleHeaderBytes) / 4)};
+                : (job.source_offset + kEtc2ScaleHeaderBytes) / 4),
+        job.transcode && job.fast ? kFastFlag : 0};
     procs_->cmd_push_constants(command_buffer, pipeline_layout_,
                                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
                                &push);
@@ -705,6 +710,10 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
     total += AlignProbe(Etc2GpuOutputBytes(encoding));
     encodes.push_back(encoding);
   }
+  std::vector<Etc2GpuJob> fast_transcodes = transcodes;
+  for (Etc2GpuJob& job : fast_transcodes) {
+    job.fast = true;
+  }
 
   const Procs& p = *procs_;
   VkBuffer upload = VK_NULL_HANDLE;
@@ -755,6 +764,17 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
     state ^= state << 17;
     bytes[i] = static_cast<std::uint8_t>(state >> 24);
   }
+  // Every other transcoded block is opaque: alpha base 255, multiplier 0.
+  // Random alpha alone times only the BC7 alpha modes, where the fast
+  // encoder saves the most.
+  for (const Etc2GpuJob& job : transcodes) {
+    for (std::uint32_t block = 0; block < job.source_layer_blocks;
+         block += 2) {
+      std::uint8_t* alpha = bytes + job.source_offset + block * block_bytes;
+      alpha[0] = 0xFF;
+      alpha[1] = 0x00;
+    }
+  }
   constexpr std::uint32_t kTexels = kProbeSmallBlocks * 4;
   const std::uint32_t header[4] = {kTexels, kTexels, 0, 0};
   for (VkDeviceSize offset : headers) {
@@ -764,11 +784,11 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
   VkCommandPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   pool_info.queueFamilyIndex = queue_family;
-  VkCommandBuffer buffers[4] = {};
+  VkCommandBuffer buffers[5] = {};
   VkCommandBufferAllocateInfo command_info{};
   command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  command_info.commandBufferCount = 4;
+  command_info.commandBufferCount = 5;
   if (p.create_command_pool(device_, &pool_info, nullptr, &pool) !=
       VK_SUCCESS) {
     pool = VK_NULL_HANDLE;
@@ -819,6 +839,10 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
     }
     ok = ok && p.begin_command_buffer(buffers[3], &begin) == VK_SUCCESS &&
          p.end_command_buffer(buffers[3]) == VK_SUCCESS;
+    ok = ok && p.begin_command_buffer(buffers[4], &begin) == VK_SUCCESS &&
+         Record(buffers[4], binding, fast_transcodes.data(),
+                fast_transcodes.size()) &&
+         p.end_command_buffer(buffers[4]) == VK_SUCCESS;
   }
   if (!ok) {
     return finish(false, "speed probe recording failed");
@@ -846,10 +870,12 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
   double copy_ns = 0;
   double empty_ns = 0;
   double transcode_ns = 0;
+  double fast_ns = 0;
   double upscale_ns = 0;
   if (!time(buffers[0], 1, &copy_ns) ||
       !time(buffers[3], kProbeEmptyRuns, &empty_ns) ||
       (encode && !time(buffers[1], kProbeRuns, &transcode_ns)) ||
+      (encode && !time(buffers[4], kProbeRuns, &fast_ns)) ||
       !time(buffers[2], kProbeRuns, &upscale_ns)) {
     return finish(false, "speed probe submit failed");
   }
@@ -858,11 +884,10 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
   const auto work_ns = [empty_ns](double measured) {
     return std::max(measured - empty_ns, measured / 2);
   };
-  speed->transcode_ns =
-      encode ? work_ns(transcode_ns) / (kProbeTranscodes *
-                                        kProbeTranscodeBlocks *
-                                        kProbeTranscodeBlocks)
-             : 0;
+  constexpr double kTranscodeBlocks =
+      kProbeTranscodes * kProbeTranscodeBlocks * kProbeTranscodeBlocks;
+  speed->transcode_ns = encode ? work_ns(transcode_ns) / kTranscodeBlocks : 0;
+  speed->fast_transcode_ns = encode ? work_ns(fast_ns) / kTranscodeBlocks : 0;
   speed->upscale_ns = work_ns(upscale_ns) /
                       (kProbeUpscales * (kTarget / 4) * (kTarget / 4));
   return finish(true, nullptr);

@@ -143,6 +143,36 @@ TEST(SessionLogTest, PreservesSessionsStartedInTheSameSecond) {
             std::filesystem::canonical(second));
 }
 
+TEST(SessionLogTest, ReadsTheLatestSessionForCopying) {
+  TemporaryDirectory temporary;
+  const MapEnvironment environment({
+      {"HOME", (temporary.root() / "home").string()},
+      {"MOCKTAIL_STATE_ROOT", (temporary.root() / "state").string()},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  std::string text;
+  std::string error;
+  EXPECT_FALSE(ReadLatestSessionLog(paths.logs_root(), &text, &error));
+  EXPECT_FALSE(error.empty());
+
+  const auto timestamp = std::chrono::system_clock::from_time_t(1770000000);
+  {
+    SessionLog log = SessionLog::Start(environment, paths, timestamp);
+    ASSERT_TRUE(log) << log.error();
+    std::cout << "older-session-marker\n" << std::flush;
+  }
+  {
+    SessionLog log =
+        SessionLog::Start(environment, paths, timestamp + std::chrono::hours(1));
+    ASSERT_TRUE(log) << log.error();
+    std::cout << "newer-session-marker\n" << std::flush;
+  }
+  error.clear();
+  ASSERT_TRUE(ReadLatestSessionLog(paths.logs_root(), &text, &error)) << error;
+  EXPECT_NE(text.find("newer-session-marker"), std::string::npos);
+  EXPECT_EQ(text.find("older-session-marker"), std::string::npos);
+}
+
 TEST(SessionLogTest, SkipsIsolatedCanary) {
   TemporaryDirectory temporary;
   const MapEnvironment environment({

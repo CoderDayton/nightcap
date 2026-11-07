@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -37,17 +38,27 @@ const char* CursorShapeName(CursorShape shape);
 
 using CursorImagePtr = std::shared_ptr<const CursorImage>;
 
+struct PointerPosition {
+  float x = 0.0f;
+  float y = 0.0f;
+};
+
 class PointerCaptureBackend {
  public:
   virtual ~PointerCaptureBackend() = default;
   // `image` is set for kCustom only.
   // `center_pointer` moves the pointer to the middle of the window as
   // relative mode starts, where Roblox draws its cursor under its own lock.
+  // `restore_pointer` puts the pointer back where the capture began as it
+  // ends; false once focus has moved to another window.
   virtual bool Apply(bool relative_mode, CursorShape cursor,
-                     const CursorImagePtr& image, bool center_pointer) = 0;
+                     const CursorImagePtr& image, bool center_pointer,
+                     bool restore_pointer) = 0;
   // True when a cursor shown during relative mode stays where the capture
   // began, instead of following the hidden pointer.
   virtual bool ShowsCursorWhileCaptured() const { return false; }
+  // Set only while an RMB press is handled: the anchor if it starts a capture.
+  virtual void SetPressAnchor(std::optional<PointerPosition> /*anchor*/) {}
 };
 
 class WindowPointerCaptureOwner final {
@@ -71,7 +82,9 @@ class WindowPointerCaptureOwner final {
   bool Pump(bool text_input_active);
   // Android's lock-center query does not represent desktop RMB camera drag,
   // so the SDL owner tracks that transient capture source independently.
-  bool OnRightButton(bool pressed, bool text_input_active);
+  // `position` is the press point in window coordinates, from the event.
+  bool OnRightButton(bool pressed, bool text_input_active,
+                     std::optional<PointerPosition> position = std::nullopt);
   // The RMB fallback only stands in for a camera. Outside an experience there
   // is none, and capturing there freezes the cursor over Roblox's own UI.
   // Starts false: the app surface is what the client shows first.
@@ -84,9 +97,17 @@ class WindowPointerCaptureOwner final {
   // key so the subsequent RMB release preserves the intentional lock.
   bool OnShiftKeyPressed(bool text_input_active);
   bool NeedsRightButtonReleaseRecovery(bool observed_pressed) const;
-  // Mirrors Android's captured-pointer listener: the motion that releases a
-  // transient capture is consumed instead of leaking one final camera delta.
-  bool ShouldDispatchMouseMotion();
+  // A capture's end warps the pointer to its anchor, and SDL reports that as
+  // motion whose delta must not reach Roblox. True once, for the first moving
+  // event stamped (on the owner's clock) at or after the release.
+  bool TakeCaptureReleaseMotion(std::uint64_t event_ms, bool moved) {
+    if (!capture_release_motion_pending_ || !moved ||
+        event_ms < capture_release_ms_) {
+      return false;
+    }
+    capture_release_motion_pending_ = false;
+    return true;
+  }
   // Focus loss reveals the system cursor. Regaining focus must re-apply the
   // pointer state immediately: Pump() runs at the top of the frame, before
   // SDL_PollEvent delivers the focus event, so deferring the re-apply leaves
@@ -133,7 +154,7 @@ class WindowPointerCaptureOwner final {
   std::uint64_t NowMs() const;
 
   bool Apply(bool capture, CursorShape cursor, CursorImagePtr image = nullptr,
-             bool center_pointer = false);
+             bool center_pointer = false, bool restore_pointer = true);
   std::pair<CursorShape, CursorImagePtr> CurrentRobloxCursor();
 
   PointerCaptureBackend* backend_ = nullptr;
@@ -153,7 +174,8 @@ class WindowPointerCaptureOwner final {
   bool native_lock_was_active_before_right_drag_ = false;
   bool shift_key_pressed_during_right_drag_ = false;
   bool wait_for_native_unlock_after_right_drag_ = false;
-  bool discard_next_motion_after_right_drag_ = false;
+  bool capture_release_motion_pending_ = false;
+  std::uint64_t capture_release_ms_ = 0;
   bool native_unlock_pending_ = false;
   std::uint64_t native_unlock_frame_ = 0;
   std::uint64_t native_unlock_ms_ = 0;
@@ -183,8 +205,12 @@ class SdlPointerCaptureBackend final : public PointerCaptureBackend {
   explicit SdlPointerCaptureBackend(void* window) : window_(window) {}
 
   bool Apply(bool relative_mode, CursorShape cursor,
-             const CursorImagePtr& image, bool center_pointer) override;
+             const CursorImagePtr& image, bool center_pointer,
+             bool restore_pointer) override;
   bool ShowsCursorWhileCaptured() const override;
+  void SetPressAnchor(std::optional<PointerPosition> anchor) override {
+    press_anchor_ = anchor;
+  }
 
  private:
   // The SDL cursor for a shape, or for a game's picture; null when the
@@ -199,6 +225,7 @@ class SdlPointerCaptureBackend final : public PointerCaptureBackend {
   void* current_cursor_ = nullptr;
   float capture_anchor_x_ = 0.0f;
   float capture_anchor_y_ = 0.0f;
+  std::optional<PointerPosition> press_anchor_;
   bool relative_mode_ = false;
   bool pointer_centered_ = false;
   bool capture_anchor_valid_ = false;

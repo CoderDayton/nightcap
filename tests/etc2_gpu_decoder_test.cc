@@ -2,12 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "mocktail/graphics/bc_decoder.h"
 #include "vulkan_test_device.h"
 
 namespace mocktail::graphics {
@@ -174,6 +176,88 @@ TEST(Etc2GpuDecoderTest, DecodesTinyImagesAndMipTails) {
   ExpectMatchesCpu(EtcFormat::kEacR11, 5, 3, 1, 10);
 }
 
+// PSNR of a tight single-layer BC7 transcode against the CPU decode of its
+// source blocks, or -1 when a block fails to decode.
+double TranscodePsnr(const Etc2GpuJob& job, const std::uint8_t* source,
+                     const std::uint8_t* output) {
+  std::uint8_t want[64];
+  std::uint8_t got[64];
+  double squared = 0;
+  const std::size_t blocks = std::size_t{job.blocks_wide} * job.blocks_high;
+  for (std::size_t b = 0; b < blocks; ++b) {
+    if (!DecodeEtcImage(job.format, source + b * EtcBlockBytes(job.format),
+                        EtcBlockBytes(job.format), 4, 4, want, sizeof(want)) ||
+        !DecodeBcBlock(BcFormat::kBc7, output + b * 16, got)) {
+      return -1;
+    }
+    for (int v = 0; v < 64; ++v) {
+      const double error = want[v] - got[v];
+      squared += error * error;
+    }
+  }
+  return 10 * std::log10(255.0 * 255.0 * blocks * 64 / squared);
+}
+
+TEST(Etc2GpuDecoderTest, FastTranscodeStaysCloseToTheFullOne) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a compute queue";
+  }
+  constexpr std::uint32_t kBlocks = 64;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    std::string error;
+    std::unique_ptr<Etc2GpuDecoder> decoder =
+        Etc2GpuDecoder::Create(vk.device, vk.get_device_proc_addr, &error);
+    ASSERT_NE(decoder, nullptr) << error;
+    if (!decoder->CanTranscode()) {
+      continue;
+    }
+    for (EtcFormat format : {EtcFormat::kEtc2Rgb8, EtcFormat::kEtc2Rgb8A1,
+                             EtcFormat::kEtc2Rgba8}) {
+      SCOPED_TRACE(static_cast<int>(format));
+      Etc2GpuJob job;
+      job.format = format;
+      job.transcode = true;
+      job.blocks_wide = kBlocks;
+      job.blocks_high = kBlocks;
+      job.source_row_blocks = kBlocks;
+      job.source_layer_blocks = kBlocks * kBlocks;
+      const std::size_t source_bytes =
+          std::size_t{kBlocks} * kBlocks * EtcBlockBytes(format);
+      job.destination_offset = source_bytes;
+      HostBuffer src = CreateHostBuffer(vk, source_bytes,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      HostBuffer dst = CreateHostBuffer(
+          vk, source_bytes + Etc2GpuOutputBytes(job),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      BindAndMap(vk, &src);
+      BindAndMap(vk, &dst);
+      std::mt19937_64 random(static_cast<int>(format) + 40);
+      auto* bytes = static_cast<std::uint8_t*>(src.mapped);
+      for (std::size_t i = 0; i < source_bytes; ++i) {
+        bytes[i] = static_cast<std::uint8_t>(random());
+      }
+      const auto* out =
+          static_cast<const std::uint8_t*>(dst.mapped) + job.destination_offset;
+      const bool full_ran = RunOnGpu(vk, *decoder, src, dst, job);
+      const double full = full_ran ? TranscodePsnr(job, bytes, out) : -1;
+      job.fast = true;
+      const bool fast_ran = RunOnGpu(vk, *decoder, src, dst, job);
+      const double fast = fast_ran ? TranscodePsnr(job, bytes, out) : -1;
+      DestroyHostBuffer(vk, src);
+      DestroyHostBuffer(vk, dst);
+      EXPECT_TRUE(full_ran && fast_ran);
+      EXPECT_GT(full, 0.0);
+      std::printf("format %d: full %.2f dB, fast %.2f dB\n",
+                  static_cast<int>(format), full, fast);
+      // PERFORMANCE.md promises under 1 dB lost.
+      EXPECT_GE(fast, full - 1.0);
+    }
+  }
+  CloseTestDevices(&devices);
+}
+
 TEST(Etc2GpuDecoderTest, SelfTestPassesOnEveryDevice) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();
   if (devices.empty()) {
@@ -211,8 +295,11 @@ TEST(Etc2GpuDecoderTest, MeasuresEncodeSpeedOnEveryDevice) {
         << error;
     EXPECT_GT(speed.transcode_ns, 0.0);
     EXPECT_GT(speed.upscale_ns, 0.0);
-    std::printf("%s: transcode %.2f ns/block, upscale %.2f ns/block\n",
-                vk.name.c_str(), speed.transcode_ns, speed.upscale_ns);
+    EXPECT_GT(speed.fast_transcode_ns, 0.0);
+    std::printf(
+        "%s: transcode %.2f ns/block, fast %.2f, upscale %.2f ns/block\n",
+        vk.name.c_str(), speed.transcode_ns, speed.fast_transcode_ns,
+        speed.upscale_ns);
   }
   CloseTestDevices(&devices);
 }

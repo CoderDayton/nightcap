@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace mocktail {
 namespace runtime {
@@ -179,6 +180,10 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.frame_rate_limit",
       "graphics.vsync",
       "graphics.texture_compression",
+      "graphics.smooth_texture_loading",
+      "assets.overlay",
+      "assets.texture_overrides",
+      // Retired: still accepted so old configs load, and ignored.
       "graphics.small_texture_upscale",
       "graphics.present_mode",
       "performance.multithreaded_rendering",
@@ -460,14 +465,19 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_ETC2_BC_TRANSCODE"] = parsed ? "1" : "0";
   }
-  if (const auto upscale = value("graphics.small_texture_upscale");
-      upscale.has_value()) {
-    if (*upscale != "adaptive" && *upscale != "1" && *upscale != "2" &&
-        *upscale != "4") {
-      *error = "graphics.small_texture_upscale must be adaptive, 1, 2, or 4";
-      return false;
+  for (const auto& [key, variable] :
+       {std::pair{"graphics.smooth_texture_loading",
+                  "MOCKTAIL_ETC2_ENCODE_BUDGET"},
+        std::pair{"assets.overlay", "MOCKTAIL_ASSET_OVERLAY"},
+        std::pair{"assets.texture_overrides", "MOCKTAIL_TEXTURE_OVERRIDES"}}) {
+    if (const auto setting = value(key); setting.has_value()) {
+      bool parsed = false;
+      if (!ParseBoolean(*setting, &parsed)) {
+        *error = std::string(key) + " must be true or false";
+        return false;
+      }
+      (*environment)[variable] = parsed ? "1" : "0";
     }
-    (*environment)["MOCKTAIL_SMALL_TEXTURE_UPSCALE"] = *upscale;
   }
   if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
     if (!RuntimeConfig::IsValidPresentMode(*mode)) {
@@ -792,6 +802,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   return true;
 }
 
+bool ParseYaml(std::string_view contents, const std::string& source,
+               ValueMap* values, bool* loaded, std::string* error);
+
 bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
               std::string* error) {
   const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -843,7 +856,11 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
     *error = "cannot close runtime configuration: " + path.string();
     return false;
   }
+  return ParseYaml(contents, path.string(), values, loaded, error);
+}
 
+bool ParseYaml(std::string_view contents, const std::string& source,
+               ValueMap* values, bool* loaded, std::string* error) {
   yaml_parser_t parser;
   if (!yaml_parser_initialize(&parser)) {
     *error = "cannot initialize YAML parser";
@@ -855,7 +872,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
       contents.size());
   const bool parsed = yaml_parser_load(&parser, &document) != 0;
   if (!parsed) {
-    *error = "invalid YAML in " + path.string();
+    *error = "invalid YAML in " + source;
     yaml_parser_delete(&parser);
     return false;
   }
@@ -898,7 +915,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
                  key == "vr" || key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network" ||
-                 key == "overlay") {
+                 key == "overlay" || key == "assets") {
         valid = ReadMapping(&document, value_node, key, values, error);
       } else if (key == "integrations") {
         valid = ReadNestedMapping(&document, value_node, key, 2, values, error);
@@ -947,18 +964,39 @@ bool UnsetEnvironmentValue(const char* name, std::string* error) {
   return false;
 }
 
-}  // namespace
-
-RuntimeConfigLoadResult LoadRuntimeConfig(
-    const Environment& environment, const std::filesystem::path& config_file) {
-  RuntimeConfigLoadResult result;
-  ValueMap yaml;
-  if (!LoadYaml(config_file, &yaml, &result.file_loaded, &result.error)) {
-    return result;
-  }
+RuntimeConfigLoadResult Resolve(const Environment& environment, ValueMap yaml,
+                                RuntimeConfigLoadResult result) {
   ValueMap fallback;
-  if (result.file_loaded && !ValidateAndMap(yaml, &fallback, &result.error)) {
-    return result;
+  std::string error;
+  while (result.file_loaded && !ValidateAndMap(yaml, &fallback, &error)) {
+    // Leave out only the key the error names: an unknown key, or a value this
+    // build rejects. An error naming no single key, such as a bad proxy, still
+    // fails, so a setting is never dropped to satisfy a rule between keys.
+    // The version is never left out: a newer file format must not half-load.
+    // device.__mapping is the loader's own marker, not a key in the file.
+    std::optional<std::string> culprit;
+    for (const auto& [key, ignored] : yaml) {
+      if (key == "version" || key == "device.__mapping") continue;
+      const std::string unknown = ": " + key;
+      if (error.rfind(key + " ", 0) == 0 ||
+          (error.size() > unknown.size() &&
+           error.compare(error.size() - unknown.size(), unknown.size(),
+                         unknown) == 0)) {
+        culprit = key;
+        break;
+      }
+    }
+    if (!culprit.has_value()) {
+      result.error = error;
+      return result;
+    }
+    result.ignored.push_back(
+        {*culprit, error,
+         error.rfind("unknown runtime configuration key: ", 0) == 0,
+         yaml.at(*culprit)});
+    yaml.erase(*culprit);
+    fallback.clear();
+    error.clear();
   }
   const LayeredEnvironment layered(environment, std::move(fallback));
   result.config = RuntimeConfig::FromEnvironment(layered);
@@ -1010,6 +1048,29 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "Discord Rich Presence configuration is invalid";
   }
   return result;
+}
+
+}  // namespace
+
+RuntimeConfigLoadResult LoadRuntimeConfig(
+    const Environment& environment, const std::filesystem::path& config_file) {
+  RuntimeConfigLoadResult result;
+  ValueMap yaml;
+  if (!LoadYaml(config_file, &yaml, &result.file_loaded, &result.error)) {
+    return result;
+  }
+  return Resolve(environment, std::move(yaml), std::move(result));
+}
+
+RuntimeConfigLoadResult LoadRuntimeConfigText(const Environment& environment,
+                                              std::string_view text) {
+  RuntimeConfigLoadResult result;
+  ValueMap yaml;
+  if (!ParseYaml(text, "runtime configuration text", &yaml,
+                 &result.file_loaded, &result.error)) {
+    return result;
+  }
+  return Resolve(environment, std::move(yaml), std::move(result));
 }
 
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
@@ -1157,8 +1218,13 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
       SetEnvironmentValue("MOCKTAIL_ETC2_BC_TRANSCODE",
                           config.texture_compression() ? "1" : "0", error) &&
-      SetEnvironmentValue("MOCKTAIL_SMALL_TEXTURE_UPSCALE",
-                          config.small_texture_upscale(), error) &&
+      SetEnvironmentValue("MOCKTAIL_ETC2_ENCODE_BUDGET",
+                          config.smooth_texture_loading() ? "1" : "0",
+                          error) &&
+      SetEnvironmentValue("MOCKTAIL_ASSET_OVERLAY",
+                          config.asset_overlay() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_TEXTURE_OVERRIDES",
+                          config.texture_overrides() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",

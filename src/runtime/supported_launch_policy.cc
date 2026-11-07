@@ -2,6 +2,8 @@
 
 #include <unistd.h>
 
+#include "runtime/process_launch_policy.h"
+
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -85,6 +87,8 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
        metadata_directory / "roblox_compatibility.json"},
       {"MOCKTAIL_UPDATE_SIGNING_TRUST_PATH",
        metadata_directory / "roblox_signing_certificates.json"},
+      {"MOCKTAIL_UPDATE_DOWNLOAD_SOURCES_PATH",
+       metadata_directory / "roblox_download_sources.json"},
       {"MOCKTAIL_BOOTSTRAP_SOURCES_PATH",
        metadata_directory / "roblox_bootstrap_sources.json"},
       {"MOCKTAIL_UPDATE_CANARY_BIN", executable},
@@ -104,6 +108,12 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
 }  // namespace
 
 bool ApplySupportedLaunchPolicy(bool interactive, std::string* error) {
+  std::string mimalloc_error;
+  ClearHostMimallocEnvironment(&mimalloc_error);
+  if (!mimalloc_error.empty()) {
+    if (error != nullptr) *error = mimalloc_error;
+    return false;
+  }
   // A packaging launcher may reload its environment for each native child.
   // Keep the bundled default separate from the updater's per-candidate
   // manifest, which must survive both normal launches and isolated canaries.

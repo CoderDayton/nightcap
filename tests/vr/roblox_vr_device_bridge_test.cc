@@ -1,5 +1,5 @@
 // Contract tests for the experimental DebugDeviceVR bridge. They pin the
-// machine-code contracts of the exact 2998 payload ABI and the fail-closed
+// machine-code contracts of the exact 3222 payload ABI and the fail-closed
 // bridge lifecycle; they do not execute any guest code.
 #include <elf.h>
 #include <gtest/gtest.h>
@@ -48,12 +48,12 @@ using internal::kEyeGetterContractSize;
 using internal::kInitializerContractSize;
 using internal::kStateGetterContractSize;
 
-// Real 2998 machine code, transcribed from the verified payload disassembly
-// (ade08266c67aee88ec9c1d00902150e1684dad3a).
+// Real 3222 machine code, transcribed from the verified payload disassembly
+// (a67a91ef96c700c0730acd36a250c2f93cfafbc1).
 const std::vector<uint8_t> kStateGetter = {
     0x55, 0x48, 0x89, 0xe5, 0x53, 0x50, 0x48, 0x89, 0xfb, 0x48, 0x83,
-    0xc6, 0x14, 0xba, 0x38, 0x01, 0x00, 0x00, 0xe8, 0xd3, 0xb5, 0x36,
-    0x03, 0x48, 0x89, 0xd8, 0x48, 0x83, 0xc4, 0x08, 0x5b, 0x5d, 0xc3};
+    0xc6, 0x14, 0xba, 0x38, 0x01, 0x00, 0x00, 0xe8, 0xb3, 0xe0, 0x90,
+    0x01, 0x48, 0x89, 0xd8, 0x48, 0x83, 0xc4, 0x08, 0x5b, 0x5d, 0xc3};
 
 const std::vector<uint8_t> kEyeGetter = {0x48, 0x63, 0xc6, 0x48, 0xc1, 0xe0,
                                          0x04, 0x48, 0x8b, 0x84, 0x07, 0x50,
@@ -61,7 +61,7 @@ const std::vector<uint8_t> kEyeGetter = {0x48, 0x63, 0xc6, 0x48, 0xc1, 0xe0,
 
 const internal::VrBuildContract& TestContract() {
   return *internal::FindVrBuildContract(
-      "ade08266c67aee88ec9c1d00902150e1684dad3a");
+      "a67a91ef96c700c0730acd36a250c2f93cfafbc1");
 }
 
 std::vector<uint8_t> ValidConstructor() {
@@ -72,7 +72,7 @@ std::vector<uint8_t> ValidConstructor() {
       0x41, 0x89, 0xd4, 0x41, 0x89, 0xf5, 0x48, 0x89, 0xfb};
   std::memcpy(code.data(), prologue.data(), prologue.size());
   const std::vector<std::vector<uint8_t>> markers = {
-      {0x48, 0x8d, 0x05, 0xf2, 0x74, 0x47, 0x03},
+      {0x48, 0x8d, 0x05, 0x92, 0x71, 0xbe, 0x01},
       {0x48, 0x89, 0x07},
       {0xc7, 0x47, 0x10, 0x06, 0x00, 0x00, 0x00},
       {0x4c, 0x8d, 0x77, 0x14, 0xba, 0x34, 0x01, 0x00, 0x00},
@@ -91,13 +91,13 @@ std::vector<uint8_t> ValidConstructor() {
 
 compat::VrDebugDeviceBridgeProfile TestProfile() {
   compat::VrDebugDeviceBridgeProfile profile{};
-  profile.vtable_rva = 0x6c87b38;
-  profile.constructor_rva = 0x3810614;
-  profile.state_getter_rva = 0x38109f6;
-  profile.eye_getter_rva = 0x38109e6;
-  profile.eye_initializer_rva = 0x3810a18;
-  profile.emulator_flag_storage_rva = 0x7369920;
-  profile.device_create_framebuffer_vtable_offset = 0x180;
+  profile.vtable_rva = 0x7083a48;
+  profile.constructor_rva = 0x549c884;
+  profile.state_getter_rva = 0x549cc66;
+  profile.eye_getter_rva = 0x549cc56;
+  profile.eye_initializer_rva = 0x549cc88;
+  profile.emulator_flag_storage_rva = 0x74d1640;
+  profile.device_create_framebuffer_vtable_offset = 0x190;
   return profile;
 }
 
@@ -131,9 +131,9 @@ ValidInitializer(const compat::VrDebugDeviceBridgeProfile &profile) {
 
 compat::BuildProfile MakeBuildProfile(bool with_vr, bool allow_bridges) {
   compat::BuildProfile profile{};
-  profile.version_name = "2.736.1408";
-  profile.version_code = 2998;
-  profile.elf_build_id = "ade08266c67aee88ec9c1d00902150e1684dad3a";
+  profile.version_name = "2.742.1059";
+  profile.version_code = 3222;
+  profile.elf_build_id = "a67a91ef96c700c0730acd36a250c2f93cfafbc1";
   profile.status = compat::BuildStatus::kSupported;
   profile.default_allowed = true;
   profile.allow_host_abi_bridges = allow_bridges;
@@ -249,7 +249,7 @@ TEST(VrResourceReadiness,
             internal::EyeResourceState::kInvalid);
 }
 
-TEST(VrStateGetterContract, AcceptsExact2998Bytes) {
+TEST(VrStateGetterContract, AcceptsExact3222Bytes) {
   ASSERT_EQ(kStateGetter.size(), kStateGetterContractSize);
   EXPECT_TRUE(internal::HasExpectedVrStateGetterContract(
       kStateGetter.data(), kStateGetter.size(), TestContract()));
@@ -270,7 +270,7 @@ TEST(VrStateGetterContract, RejectsCorruptionAndShortInput) {
 TEST(VrBuildContracts, RejectsUnknownBuildsAndMismatchedMetadata) {
   EXPECT_EQ(FindRobloxVrDeviceProfile("unknown"), nullptr);
   auto profile = MakeBuildProfile(true, true);
-  profile.elf_build_id = "5f0704edd9064f566ee3d6df2bd2fabbcc709f03";
+  profile.elf_build_id = "1f8b6cc6597d6ae49104d32f0a30c79d029f400d";
   RobloxVrDeviceBridge bridge;
   EXPECT_FALSE(bridge.Install(profile).ok());
   profile.vr_debug_device_bridge =
@@ -281,20 +281,20 @@ TEST(VrBuildContracts, RejectsUnknownBuildsAndMismatchedMetadata) {
 
 TEST(VrBuildContracts, RestoresVrForApprovedProfileWithoutVrMetadata) {
   auto profile = MakeBuildProfile(false, true);
-  profile.elf_build_id = "5f0704edd9064f566ee3d6df2bd2fabbcc709f03";
+  profile.elf_build_id = "1f8b6cc6597d6ae49104d32f0a30c79d029f400d";
   const auto* vr = FindRobloxVrDeviceProfile(profile.elf_build_id);
   ASSERT_NE(vr, nullptr);
-  EXPECT_EQ(vr->device_create_framebuffer_vtable_offset, 0x188u);
+  EXPECT_EQ(vr->device_create_framebuffer_vtable_offset, 0x1b0u);
   profile.vr_debug_device_bridge = *vr;
   RobloxVrDeviceBridge bridge;
   EXPECT_TRUE(bridge.Install(profile).ok());
 }
 
-TEST(VrStateGetterContract, Verifies3092CopyTargetAndRejectsWrongBuild) {
+TEST(VrStateGetterContract, Verifies20836CopyTargetAndRejectsWrongBuild) {
   const auto& latest = *internal::FindVrBuildContract(
-      "5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+      "1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
   auto code = kStateGetter;
-  const std::uint8_t displacement[] = {0xa3, 0x0d, 0x40, 0x03};
+  const std::uint8_t displacement[] = {0x77, 0xd6, 0x94, 0x01};
   std::memcpy(code.data() + 19, displacement, sizeof(displacement));
   EXPECT_TRUE(internal::HasExpectedVrStateGetterContract(code.data(),
                                                          code.size(), latest));
@@ -305,11 +305,11 @@ TEST(VrStateGetterContract, Verifies3092CopyTargetAndRejectsWrongBuild) {
                                                           code.size(), latest));
 }
 
-TEST(VrConstructorContract, VerifiesRelocatedVtableFor3092) {
+TEST(VrConstructorContract, VerifiesRelocatedVtableFor20836) {
   const auto& latest =
-      *FindRobloxVrDeviceProfile("5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+      *FindRobloxVrDeviceProfile("1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
   auto code = ValidConstructor();
-  const std::uint8_t displacement[] = {0xf2, 0xe0, 0x50, 0x03};
+  const std::uint8_t displacement[] = {0x8e, 0x5d, 0xc2, 0x01};
   std::memcpy(code.data() + 46, displacement, sizeof(displacement));
   EXPECT_TRUE(internal::HasExpectedVrConstructorContract(code.data(),
                                                          code.size(), latest));
@@ -318,9 +318,8 @@ TEST(VrConstructorContract, VerifiesRelocatedVtableFor3092) {
 }
 
 TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
-  for (const auto* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
-                         "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}) {
+  for (const auto* id : {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+                         "1f8b6cc6597d6ae49104d32f0a30c79d029f400d"}) {
     const auto& contract = *internal::FindVrBuildContract(id);
     std::array<std::uint8_t, 0x1b2> code{};
     // movsxd rax,[rsi+selector] and movss xmm0,[r14+HeadScale].
@@ -365,7 +364,7 @@ TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
   }
 }
 
-TEST(VrEyeGetterContract, AcceptsExact2998Bytes) {
+TEST(VrEyeGetterContract, AcceptsExact3222Bytes) {
   ASSERT_EQ(kEyeGetter.size(), kEyeGetterContractSize);
   EXPECT_TRUE(internal::HasExpectedVrEyeGetterContract(kEyeGetter.data(),
                                                        kEyeGetter.size()));
@@ -404,9 +403,9 @@ TEST(VrInitializerContract, PinsDeviceVtableSlotFromProfile) {
   EXPECT_TRUE(internal::HasExpectedVrEyeInitializerContract(
       valid.data(), valid.size(), profile));
 
-  // The 3092 payload uses +0x188; a profile mismatch must fail closed.
+  // The 20836 payload uses +0x1b0; a profile mismatch must fail closed.
   compat::VrDebugDeviceBridgeProfile other = profile;
-  other.device_create_framebuffer_vtable_offset = 0x188;
+  other.device_create_framebuffer_vtable_offset = 0x1b0;
   EXPECT_FALSE(internal::HasExpectedVrEyeInitializerContract(
       valid.data(), valid.size(), other));
 
@@ -893,14 +892,14 @@ namespace {
 
 TEST(VrSupportedBuilds, NamesEveryVerifiedBuild) {
   EXPECT_EQ(DescribeSupportedVrBuilds(),
-            "2998 (2.736.1408), 3092 (2.738.1397) and 3222 (2.742.1059)");
+            "3222 (2.742.1059) and 20836 (2.746.1266)");
 }
 
 TEST(VrSupportedBuilds, InstallNamesTheBuildAndTheSupportedOnes) {
   compat::BuildProfile profile;
   profile.elf_build_id = "00112233445566778899aabbccddeeff00112233";
   profile.vr_debug_device_bridge = *FindRobloxVrDeviceProfile(
-      "ade08266c67aee88ec9c1d00902150e1684dad3a");
+      "a67a91ef96c700c0730acd36a250c2f93cfafbc1");
   RobloxVrDeviceBridge bridge;
   const Status status = bridge.Install(profile);
   ASSERT_FALSE(status.ok());
@@ -984,16 +983,6 @@ TEST(VrPointerLayout, ReadsHandIndexAndHeadScaleAtTheBuildsOwnOffsets) {
                   1.5f);
 }
 
-TEST(VrPointerLayout, VerifiedBuildsKeepTheirOffsets) {
-  for (const char* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"}) {
-    const auto* contract = internal::FindVrBuildContract(id);
-    ASSERT_NE(contract, nullptr);
-    EXPECT_EQ(contract->pointer_hand_selector_offset, 0x118u) << id;
-    EXPECT_EQ(contract->camera_head_scale_offset, 0x140u) << id;
-  }
-}
-
 }  // namespace
 }  // namespace mocktail::vr
 
@@ -1026,16 +1015,41 @@ TEST(VrSupportedBuilds, Build3222CarriesTheOffsetFindersValues) {
   EXPECT_EQ(contract->fix_register_motors_flag_rva, 0x74cfa10u);
 }
 
+TEST(VrSupportedBuilds, Build20836CarriesTheOffsetFindersValues) {
+  // scripts/find_roblox_vr_offsets.py on the 2.746.1266 x86-64 libroblox.so.
+  const auto* contract = internal::FindVrBuildContract(
+      "1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
+  ASSERT_NE(contract, nullptr);
+  EXPECT_EQ(contract->device.vtable_rva, 0x6c33400u);
+  EXPECT_EQ(contract->device.constructor_rva, 0x500d640u);
+  EXPECT_EQ(contract->device.state_getter_rva, 0x500da22u);
+  EXPECT_EQ(contract->device.eye_getter_rva, 0x500da12u);
+  EXPECT_EQ(contract->device.eye_initializer_rva, 0x500da44u);
+  EXPECT_EQ(contract->device.emulator_flag_storage_rva, 0x6ed0dc0u);
+  EXPECT_EQ(contract->device.device_create_framebuffer_vtable_offset, 0x1b0u);
+  EXPECT_EQ(contract->state_memcpy_rva, 0x695b0b0u);
+  EXPECT_EQ(contract->pointer_frame_rva, 0x4b3db74u);
+  EXPECT_EQ(contract->workspace_getter_rva, 0x21cc240u);
+  EXPECT_EQ(contract->camera_vtable_offset, 0x3a0u);
+  EXPECT_EQ(contract->hand_pitch_storage_rva, 0x6ed07a8u);
+  EXPECT_EQ(contract->haptic_sink_rva, 0x1ac1df0u);
+  EXPECT_EQ(contract->pointer_hand_selector_offset, 0x100u);
+  EXPECT_EQ(contract->camera_head_scale_offset, 0x128u);
+  // 2.746 dropped KeepHapticsOnMobileWhenGamepadConnected.
+  EXPECT_EQ(contract->keep_haptics_flag_rva, 0u);
+  EXPECT_EQ(contract->vr_haptics_flag_rva, 0x6ed0660u);
+  EXPECT_EQ(contract->support_generic_haptics_flag_rva, 0x6ed07c0u);
+  EXPECT_EQ(contract->fix_register_motors_flag_rva, 0x6ed0a60u);
+}
+
 TEST(VrSupportedBuilds, EveryBuildCarriesAllHapticFlags) {
   for (const auto& [id, keep, vr, generic, motors] :
        {std::tuple<const char*, std::uintptr_t, std::uintptr_t, std::uintptr_t,
-                   std::uintptr_t>{
-            "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x72fcd18, 0x7367588,
-            0x73677d0, 0x7367da0},
-        {"5f0704edd9064f566ee3d6df2bd2fabbcc709f03", 0x7387118, 0x73f2268,
-         0x73f24f0, 0x73f2ac0},
-        {"a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x763fef8, 0x74cf1e0,
-         0x74cf458, 0x74cfa10}}) {
+                   std::uintptr_t>{"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+                                   0x763fef8, 0x74cf1e0, 0x74cf458, 0x74cfa10},
+        // 2.746 dropped KeepHapticsOnMobileWhenGamepadConnected.
+        {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d", 0, 0x6ed0660, 0x6ed07c0,
+         0x6ed0a60}}) {
     const auto* contract = internal::FindVrBuildContract(id);
     ASSERT_NE(contract, nullptr) << id;
     EXPECT_EQ(contract->keep_haptics_flag_rva, keep) << id;
@@ -1054,9 +1068,8 @@ TEST(VrSupportedBuilds, ContractsMatchTheRealLibraries) {
   int checked = 0;
   for (const auto& [code_name, id] :
        {std::pair<const char*, const char*>{
-            "2998", "ade08266c67aee88ec9c1d00902150e1684dad3a"},
-        {"3092", "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"},
-        {"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}}) {
+            "3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1"},
+        {"20836", "1f8b6cc6597d6ae49104d32f0a30c79d029f400d"}}) {
     const std::string path =
         std::string(root) + "/" + code_name + "-" + id + "/libroblox.so";
     std::ifstream file(path, std::ios::binary);
@@ -1272,6 +1285,12 @@ TEST(VrSetMotorHook, PicksTheMethodSlotWithACodeAddressAndNoAdjust) {
   image.fill(0);
   put(0x80, base + 0x40);
   EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0x80u);
+  // 20836: the descriptor grew by 0x20; +0x80 and +0x88 hold heap data.
+  image.fill(0);
+  put(0x80, 0x7f0000001000);
+  put(0x88, 0x7f0000002000);
+  put(0xa8, base + 0x40);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0xa8u);
   // A virtual (odd) pointer, an adjust, or data is not a method.
   image.fill(0);
   put(0x88, base + 0x41);
@@ -1306,10 +1325,10 @@ TEST(VrSetMotorHook, FindsTheReaderAndDescriptorInTheRealLibraries) {
   };
   int checked = 0;
   for (const Expected& expected :
-       {Expected{"2998", "ade08266c67aee88ec9c1d00902150e1684dad3a", 0x30b2d2e,
-                 internal::MotorIntensityAbi::kTupleSpan, 0x7433fd0},
-        Expected{"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x61cd6f2,
-                 internal::MotorIntensityAbi::kSharedTuple, 0x759ac70}}) {
+       {Expected{"3222", "a67a91ef96c700c0730acd36a250c2f93cfafbc1", 0x61cd6f2,
+                 internal::MotorIntensityAbi::kSharedTuple, 0x759ac70},
+        Expected{"20836", "1f8b6cc6597d6ae49104d32f0a30c79d029f400d", 0x5d6cadc,
+                 internal::MotorIntensityAbi::kSharedTuple, 0x71949c0}}) {
     const std::string path = std::string(root) + "/" + expected.code_name +
                              "-" + expected.id + "/libroblox.so";
     std::ifstream file(path, std::ios::binary);

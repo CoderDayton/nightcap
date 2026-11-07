@@ -48,6 +48,9 @@ AnalyzerError = DERIVER.AnalyzerError
 format_rva = DERIVER.format_rva
 FMOD_OUTPUT_FIELDS = DERIVER.FMOD_OUTPUT_FIELDS
 FMOD_INPUT_FIELDS = DERIVER.FMOD_INPUT_FIELDS
+# Methods that must match on their own before the vtable they pin decides the
+# rest by slot.
+FMOD_SLOT_DECIDES_MIN = 3
 fmod_slots = DERIVER.fmod_vtable_slots
 
 
@@ -135,18 +138,31 @@ class TargetDerivation:
         reference_init = reference_image.init_array_relocations()
         candidate_init = candidate_image.init_array_relocations()
         begin = DERIVER.LEADING_CONSTRUCTOR_BEGIN
-        count = DERIVER.LEADING_CONSTRUCTOR_COUNT
-        leading = candidate_init[begin : begin + count]
+        window = DERIVER.leading_constructor_window(candidate_init)
+        leading = candidate_init[begin : begin + window]
+        anchor_keys = anchors["constructor_rvas"]
+        if (
+            len(anchor_keys) != DERIVER.LEADING_CONSTRUCTOR_COUNT
+            or not all(
+                isinstance(key, str)
+                and key.isdecimal()
+                and str(int(key)) == key
+                and begin <= int(key) < begin + DERIVER.LEADING_CONSTRUCTOR_WINDOW
+                for key in anchor_keys
+            )
+        ):
+            raise AnalyzerError("reference constructor anchors are invalid")
+        reference_index = tuple(sorted(int(key) for key in anchor_keys))
         offsets = []
-        for index in range(begin, begin + count):
+        for index in reference_index:
             expected = parse(anchors["constructor_rvas"][str(index)], f"constructor {index}")
-            if reference_init[index] != expected:
+            if index >= len(reference_init) or reference_init[index] != expected:
                 raise AnalyzerError(f"reference constructor {index} differs from its anchor")
             rva = self.match_function(f"constructor-{index}", expected)
             if leading.count(rva) != 1:
                 raise AnalyzerError(f"constructor {index} left the leading constructors")
             offsets.append(leading.index(rva))
-        if sorted(offsets) != list(range(count)):
+        if len(set(offsets)) != len(offsets):
             raise AnalyzerError("leading constructors do not map one to one")
 
         singleton = parse(anchors["jni_singleton_initializer_rva"], "JNI singleton")
@@ -187,12 +203,12 @@ class TargetDerivation:
         candidate_count = len(candidate_init)
         reference_count = reference_profile["init_array_count"]
         boundary = reference_profile["native_mimalloc_thread_initializer_after_constructor"]
-        if not begin <= boundary < begin + count:
+        if boundary not in reference_index:
             raise AnalyzerError("native allocator TLS boundary is no longer verified")
-        thread_boundary = begin + offsets[boundary - begin]
+        thread_boundary = begin + offsets[reference_index.index(boundary)]
         native_ranges = DERIVER.remapped_constructor_ranges(
             reference_profile["native_mimalloc_constructor_run_ranges"],
-            offsets, reference_count, candidate_count,
+            offsets, reference_count, candidate_count, reference_index, window,
         )
         if not any(item["begin"] <= thread_boundary < item["end_exclusive"] for item in native_ranges):
             raise AnalyzerError("native allocator TLS boundary is no longer verified")
@@ -220,7 +236,7 @@ class TargetDerivation:
             "init_array_count": candidate_count,
             "constructor_run_ranges": DERIVER.remapped_constructor_ranges(
                 reference_profile["constructor_run_ranges"],
-                offsets, reference_count, candidate_count,
+                offsets, reference_count, candidate_count, reference_index, window,
             ),
             "native_mimalloc_constructor_run_ranges": native_ranges,
             "native_mimalloc_thread_initializer_after_constructor": thread_boundary,
@@ -240,8 +256,7 @@ class TargetDerivation:
             ),
             "jni_singleton_initializer_rva": format_rva(jni_singleton),
             "constructor_rvas": {
-                str(index): format_rva(candidate_init[index])
-                for index in range(begin, begin + count)
+                str(begin + offset): format_rva(leading[offset]) for offset in sorted(offsets)
             },
         }
         DERIVER.validate_profile_shape(profile, derived_anchors)
@@ -310,6 +325,7 @@ class TargetDerivation:
                         parse(source[field], field),
                         self._fmod_contract(target_layout, field),
                         relocations.get(located_vtable + target_slots[field] * 8),
+                        slot_decides=len(methods) >= FMOD_SLOT_DECIDES_MIN,
                     )
             except AnalyzerError:
                 continue

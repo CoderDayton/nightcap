@@ -1,5 +1,7 @@
 #include "compat/bionic_stdio_runtime.h"
 
+#include "compat/bionic_c_locale.h"
+
 #include <cerrno>
 #include <cstdint>
 
@@ -166,17 +168,14 @@ int mocktail_vfprintf(FILE* stream, const char* format, va_list arguments) {
   if (format == nullptr || host_stream == nullptr) {
     return -1;
   }
+  const mocktail::compat::ScopedBionicCLocale c_locale;
   return std::vfprintf(host_stream, format, arguments);
 }
 
 int mocktail_fprintf(FILE* stream, const char* format, ...) {
-  FILE* host_stream = RequireHostStream(stream);
-  if (format == nullptr || host_stream == nullptr) {
-    return -1;
-  }
   va_list arguments;
   va_start(arguments, format);
-  const int result = std::vfprintf(host_stream, format, arguments);
+  const int result = mocktail_vfprintf(stream, format, arguments);
   va_end(arguments);
   return result;
 }
@@ -186,17 +185,14 @@ int mocktail_vfscanf(FILE* stream, const char* format, va_list arguments) {
   if (format == nullptr || host_stream == nullptr) {
     return EOF;
   }
+  const mocktail::compat::ScopedBionicCLocale c_locale;
   return std::vfscanf(host_stream, format, arguments);
 }
 
 int mocktail_fscanf(FILE* stream, const char* format, ...) {
-  FILE* host_stream = RequireHostStream(stream);
-  if (format == nullptr || host_stream == nullptr) {
-    return EOF;
-  }
   va_list arguments;
   va_start(arguments, format);
-  const int result = std::vfscanf(host_stream, format, arguments);
+  const int result = mocktail_vfscanf(stream, format, arguments);
   va_end(arguments);
   return result;
 }

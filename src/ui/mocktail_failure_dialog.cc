@@ -17,9 +17,10 @@ constexpr char kMessagePacket = 'M';
 constexpr char kFailurePacket = 'F';
 constexpr char kSuccessPacket = 'S';
 constexpr char kProgressPacket = 'P';
+constexpr char kLogFolderPacket = 'L';
 constexpr std::size_t kMaximumPacketBytes = 4096;
 constexpr std::string_view kDefaultMessage =
-    "Mocktail closed unexpectedly because of an internal error.";
+    "Nightcap closed unexpectedly because of an internal error.";
 constexpr std::string_view kDefaultProgressMessage = "Installing Roblox...";
 // Keep AdwAlertDialog semantics while preventing host GTK themes such as
 // Breeze from replacing the compact dark crash-card appearance.
@@ -188,31 +189,77 @@ bool InitializeUi(UiStyle style) {
   return true;
 }
 
+struct DialogState {
+  GMainLoop* loop = nullptr;
+  std::string log_folder;
+  bool launching = false;
+  bool closed = false;
+};
+
 void OnDialogClosed(AdwDialog*, gpointer user_data) {
-  g_main_loop_quit(static_cast<GMainLoop*>(user_data));
+  auto* state = static_cast<DialogState*>(user_data);
+  state->closed = true;
+  if (!state->launching) g_main_loop_quit(state->loop);
+}
+
+void OnLogFolderLaunched(GObject* source, GAsyncResult* result,
+                         gpointer user_data) {
+  auto* state = static_cast<DialogState*>(user_data);
+  GError* error = nullptr;
+  if (!gtk_file_launcher_launch_finish(GTK_FILE_LAUNCHER(source), result,
+                                       &error)) {
+    g_printerr("[dialog] cannot open %s: %s\n", state->log_folder.c_str(),
+               error != nullptr ? error->message : "unknown error");
+    g_clear_error(&error);
+  }
+  state->launching = false;
+  if (state->closed) g_main_loop_quit(state->loop);
+}
+
+void OnDialogResponse(AdwAlertDialog*, const char* response,
+                      gpointer user_data) {
+  auto* state = static_cast<DialogState*>(user_data);
+  if (std::string_view(response) != "logs") return;
+  GFile* folder = g_file_new_for_path(state->log_folder.c_str());
+  GtkFileLauncher* launcher = gtk_file_launcher_new(folder);
+  state->launching = true;
+  gtk_file_launcher_launch(launcher, nullptr, nullptr, OnLogFolderLaunched,
+                           state);
+  g_object_unref(launcher);
+  g_object_unref(folder);
 }
 
 int ShowDialog(std::string_view requested_message,
-               const char* heading = "Crash",
-               const char* response_label = "Close") {
+               const char* heading = "Nightcap",
+               const char* response_label = "Close",
+               std::string_view log_folder = {}) {
   if (!InitializeUi(UiStyle::kDialog)) {
     return EXIT_FAILURE;
   }
 
   const std::string message = ValidMessage(requested_message);
-  GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
+  DialogState state;
+  state.loop = g_main_loop_new(nullptr, FALSE);
+  state.log_folder = std::string(log_folder);
   AdwDialog* dialog = adw_alert_dialog_new(heading, message.c_str());
   g_object_ref_sink(dialog);
-  adw_dialog_set_content_width(dialog, 270);
+  adw_dialog_set_content_width(dialog, 420);
   AdwAlertDialog* alert = ADW_ALERT_DIALOG(dialog);
+  // The narrow layout caps the width near 370 px and ignores the setting.
+  adw_alert_dialog_set_prefer_wide_layout(alert, TRUE);
+  if (!state.log_folder.empty() &&
+      g_utf8_validate(state.log_folder.c_str(), -1, nullptr)) {
+    adw_alert_dialog_add_response(alert, "logs", "Open Log Folder");
+  }
   adw_alert_dialog_add_response(alert, "close", response_label);
   adw_alert_dialog_set_close_response(alert, "close");
   adw_alert_dialog_set_default_response(alert, "close");
-  g_signal_connect(dialog, "closed", G_CALLBACK(OnDialogClosed), loop);
+  g_signal_connect(dialog, "response", G_CALLBACK(OnDialogResponse), &state);
+  g_signal_connect(dialog, "closed", G_CALLBACK(OnDialogClosed), &state);
   adw_dialog_present(dialog, nullptr);
-  g_main_loop_run(loop);
+  g_main_loop_run(state.loop);
   g_object_unref(dialog);
-  g_main_loop_unref(loop);
+  g_main_loop_unref(state.loop);
   return EXIT_SUCCESS;
 }
 
@@ -335,6 +382,7 @@ int MonitorProgress() {
 
 int MonitorParent() {
   std::string message(kDefaultMessage);
+  std::string log_folder;
   char packet[kMaximumPacketBytes];
   while (true) {
     const ssize_t received = recv(STDIN_FILENO, packet, sizeof(packet), 0);
@@ -342,7 +390,7 @@ int MonitorParent() {
       continue;
     }
     if (received <= 0) {
-      return ShowDialog(message);
+      return ShowDialog(message, "Nightcap", "Close", log_folder);
     }
     const std::string_view payload(packet + 1,
                                    static_cast<std::size_t>(received - 1));
@@ -350,8 +398,11 @@ int MonitorParent() {
       case kMessagePacket:
         message = ValidMessage(payload);
         break;
+      case kLogFolderPacket:
+        log_folder.assign(payload);
+        break;
       case kFailurePacket:
-        return ShowDialog(message);
+        return ShowDialog(message, "Nightcap", "Close", log_folder);
       case kSuccessPacket:
         return EXIT_SUCCESS;
       default:

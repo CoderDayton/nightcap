@@ -19,6 +19,8 @@ layout(push_constant) uniform Job {
   uint src_layer_blocks;
   uint dst_offset;
   uint dst_layer_words;
+  // Bit 0: fast encode, one fit per mode and fewer modes.
+  uint flags;
 } job;
 
 #include "etc2_common.glsl"
@@ -64,6 +66,7 @@ bool g_halves;
 
 uvec4 g_bits;
 uint g_pos;
+bool g_fast;
 
 void Put(uint value, uint count) {
   uint word = g_pos >> 5u;
@@ -345,7 +348,7 @@ AlphaFit FitAlpha(int abits, int ibits) {
     hi = max(hi, a);
   }
   AlphaFit best = EvaluateAlpha(lo, hi, abits, ibits);
-  for (int it = 0; it < 2 && best.error != kInvalid && best.error != 0u; ++it) {
+  for (int it = 0; it < (g_fast ? 0 : 2) && best.error != kInvalid && best.error != 0u; ++it) {
     float a00 = 0.0, a01 = 0.0, a11 = 0.0, b0 = 0.0, b1 = 0.0;
     for (uint i = 0u; i < 16u; ++i) {
       float w = float(Weight(ibits, int(GetIndex(best.indices, i)))) / 64.0;
@@ -444,6 +447,9 @@ Fit FitExtremes(uint mask, int cbits, int abits, int pmode, int ibits) {
     if (next.error < fit.error) {
       fit = next;
     }
+  }
+  if (g_fast) {
+    return fit;
   }
   // Rounding each endpoint to its nearest code is not the best pair of
   // codes. On real ETC halves, widening the pair one code along the grey
@@ -655,9 +661,14 @@ uvec4 EncodeBc7(uint rgb_word, bool punchthrough) {
   uvec4 best_bits = uvec4(0u);
   uvec4 bits;
   if (!opaque) {
-    Keep(EncodeMode45(4u, 1u, bits), bits, best, best_bits);
+    if (!g_fast) {
+      Keep(EncodeMode45(4u, 1u, bits), bits, best, best_bits);
+    }
     Keep(EncodeMode45(5u, 0u, bits), bits, best, best_bits);
-    Keep(EncodeMode6(bits), bits, best, best_bits);
+    // A cutout that mode 5's alpha cannot keep still needs mode 6.
+    if (!g_fast || best == kInvalid) {
+      Keep(EncodeMode6(bits), bits, best, best_bits);
+    }
     return best_bits;
   }
   uint split;
@@ -681,7 +692,8 @@ uvec4 EncodeBc7(uint rgb_word, bool punchthrough) {
   for (uint k = 0u; k < count; ++k) {
     Keep(EncodeMode1(split, bits), bits, best, best_bits);
   }
-  if (best > kGoodEnough) {
+  // Planar blocks skip mode 1, so they always need this.
+  if (best > kGoodEnough && (!g_fast || best == kInvalid)) {
     Keep(EncodeMode6Corners(bits), bits, best, best_bits);
   }
   return best_bits;
@@ -906,6 +918,7 @@ void main() {
   if (bx >= job.blocks_wide || by >= job.blocks_high) {
     return;
   }
+  g_fast = (job.flags & 1u) != 0u;
   bool rg = job.format == kRg11 || job.format == kRg11Signed;
   bool wide = job.format == kRgba8 || rg;
   uint word = job.src_offset +

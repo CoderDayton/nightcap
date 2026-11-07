@@ -77,6 +77,8 @@ _STORAGE_FIELDS = (
     "support_generic_haptics_flag_rva",
     "fix_register_motors_flag_rva",
 )
+# Haptic flags a build may lack; their RVA is then 0, as the offset finder writes it.
+_OPTIONAL_FLAG_FIELDS = frozenset(_STORAGE_FIELDS[2:])
 # Storage users tried, smallest first; registration functions are small.
 _STORAGE_USER_LIMIT = 8
 _VTABLE_SLOT_LIMIT = 0x400
@@ -164,7 +166,69 @@ class VrTargets:
             raise AnalyzerError(f"{name} has no unique call target")
         return found.pop()
 
-    def _map_storage(self, name: str, target: int) -> int:
+    def _map_storage(
+        self, name: str, target: int, reference_relocations: dict[int, int],
+        relocations: dict[int, int],
+    ) -> int:
+        found = self._map_storage_by_users(name, target)
+        if len(found) == 1:
+            return found.pop()
+        if found:
+            raise AnalyzerError(f"{name} maps to {len(found)} addresses")
+        # 2.746 moved flags into a static table no user maps to.
+        flag = self._flag_name(target, reference_relocations)
+        if flag is None:
+            raise AnalyzerError(f"{name} maps to 0 addresses and has no flag name")
+        return self._static_flag_storage(name, flag, relocations)
+
+    def _flag_name(self, target: int, reference_relocations: dict[int, int]) -> bytes | None:
+        """Name of a reference flag: the string its storage+8 points at, either
+        relocated statically or stored by `lea reg, [name]; mov [storage+8], reg`."""
+        relocated = reference_relocations.get(target + 8)
+        if relocated is not None:
+            return self.reference.string_at(relocated)
+        names = set()
+        for user in self.reference.data_users.get(target + 8, ()):
+            instructions = self.reference.instructions(user)
+            for previous, item in zip(instructions, instructions[1:]):
+                if target + 8 in item.rip_targets and previous.shape.startswith("lea "):
+                    for rva in previous.rip_targets:
+                        string = self.reference.string_at(rva)
+                        if string is not None:
+                            names.add(string)
+        return names.pop() if len(names) == 1 else None
+
+    def _static_flag_storage(self, name: str, flag: bytes, relocations: dict[int, int]) -> int:
+        """Storage of a flag defined in a static table: a writable entry whose
+        name pointer at +8 is relocated to the flag's name. 0 when the
+        candidate lacks the flag. Keep in step with find_static_flag_storage in
+        find_roblox_vr_offsets.py."""
+        image = self.candidate.image
+        names = set()
+        offset = image.data.find(b"\0" + flag + b"\0")
+        while offset >= 0:
+            for segment in image.segments:
+                if segment.offset <= offset + 1 < segment.offset + segment.file_size:
+                    names.add(offset + 1 - segment.offset + segment.virtual_address)
+            offset = image.data.find(b"\0" + flag + b"\0", offset + 1)
+        if not names:
+            return 0
+        found = set()
+        for slot, addend in relocations.items():
+            if addend not in names or slot < 8:
+                continue
+            if any(begin <= slot < begin + length for begin, length in image.relro_ranges):
+                continue
+            try:
+                image.require_writable_rva(slot - 8, 16)
+            except AnalyzerError:
+                continue
+            found.add(slot - 8)
+        if len(found) != 1:
+            raise AnalyzerError(f"{name} has {len(found)} static flag entries")
+        return found.pop()
+
+    def _map_storage_by_users(self, name: str, target: int) -> set[int]:
         users = sorted(
             self.reference.data_users.get(target, ()),
             key=lambda start: self.reference.functions[start].size,
@@ -177,9 +241,7 @@ class VrTargets:
                 found.add(self.map_data(name, user_name, user, target))
             except AnalyzerError:
                 continue
-        if len(found) != 1:
-            raise AnalyzerError(f"{name} maps to {len(found)} addresses")
-        return found.pop()
+        return found
 
     def _map_vtable(self, constructor: int, vtable: int) -> int:
         found = set()
@@ -207,7 +269,12 @@ class VrTargets:
         missing = [field for field in VR_FIELDS if field not in source]
         if missing:
             raise AnalyzerError("reference VR bridge lacks " + ", ".join(missing))
-        value = {field: DERIVER.parse_rva(source[field], field) for field in VR_FIELDS}
+        value = {
+            field: 0
+            if field in _OPTIONAL_FLAG_FIELDS and source[field] == "0x0"
+            else DERIVER.parse_rva(source[field], field)
+            for field in VR_FIELDS
+        }
         result = {}
         constructor = self.match_function("vr-constructor", value["constructor_rva"])
         result["constructor_rva"] = constructor
@@ -257,6 +324,18 @@ class VrTargets:
                 vtable_call=field == "camera_vtable_offset",
             )
         for field in _STORAGE_FIELDS:
-            result[field] = self._map_storage(field, value[field])
-            self.candidate.image.require_writable_rva(result[field], 1)
-        return {field: format_rva(result[field]) for field in VR_FIELDS}
+            if value[field] == 0 and field in _OPTIONAL_FLAG_FIELDS:
+                result[field] = 0  # The reference lacks the flag too.
+                continue
+            result[field] = self._map_storage(
+                field, value[field], reference_relocations, relocations
+            )
+            if result[field] != 0:
+                self.candidate.image.require_writable_rva(result[field], 1)
+            elif field not in _OPTIONAL_FLAG_FIELDS:
+                raise AnalyzerError(f"candidate lacks the {field} flag")
+        # A flag the candidate lacks stays 0, as the offset finder writes it.
+        return {
+            field: format_rva(result[field]) if result[field] else "0x0"
+            for field in VR_FIELDS
+        }

@@ -185,6 +185,12 @@ target_link_libraries(settings_model_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(sky_pack_test sky_pack_test.cc)
+target_link_libraries(sky_pack_test PRIVATE
+  Mocktail::SettingsModel
+  GTest::gtest_main
+)
+
 add_executable(runtime_config_store_test runtime_config_store_test.cc)
 target_link_libraries(runtime_config_store_test PRIVATE
   Mocktail::Runtime
@@ -261,6 +267,13 @@ add_dependencies(payload_update_preflight_test
   native_update_helper_fixture
   native_progress_helper_fixture
 )
+if(MOCKTAIL_TEST_PYTHON)
+  add_test(NAME UpdateLaunchEnvironmentTest.ConfiguredBackend
+    COMMAND ${MOCKTAIL_TEST_PYTHON}
+      ${CMAKE_CURRENT_SOURCE_DIR}/updater_launch_environment_test.py
+      $<TARGET_FILE:mocktail> $<TARGET_FILE:native_update_helper_fixture>)
+  set_tests_properties(UpdateLaunchEnvironmentTest.ConfiguredBackend PROPERTIES TIMEOUT 60)
+endif()
 
 add_executable(native_update_test native_update_test.cc)
 target_link_libraries(native_update_test PRIVATE
@@ -270,6 +283,16 @@ target_link_libraries(native_update_test PRIVATE
 target_compile_definitions(native_update_test PRIVATE
   MOCKTAIL_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
+
+add_executable(http_download_fixture http_download_fixture.cc)
+target_link_libraries(http_download_fixture PRIVATE Mocktail::Update)
+mocktail_apply_compile_options(http_download_fixture)
+if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
+  add_test(NAME HttpDownloadIntegrationTest.Resume
+    COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/http_download_integration_test.py
+            $<TARGET_FILE:http_download_fixture> ${MOCKTAIL_TEST_OPENSSL})
+  set_tests_properties(HttpDownloadIntegrationTest.Resume PROPERTIES TIMEOUT 60)
+endif()
 
 add_executable(compatibility_catalog_test compatibility_catalog_test.cc)
 target_link_libraries(compatibility_catalog_test PRIVATE
@@ -282,6 +305,9 @@ target_link_libraries(apk_provider_test PRIVATE
   Mocktail::Update
   GTest::gtest_main
 )
+
+add_executable(pinned_apk_provider_test pinned_apk_provider_test.cc)
+target_link_libraries(pinned_apk_provider_test PRIVATE Mocktail::Update GTest::gtest_main)
 
 add_executable(support_bundle_runtime_test support_bundle_runtime_test.cc)
 target_link_libraries(support_bundle_runtime_test PRIVATE
@@ -418,6 +444,13 @@ mocktail_apply_compile_options(memory_limit_test)
 add_executable(runtime_paths_test runtime_paths_test.cc)
 target_link_libraries(runtime_paths_test PRIVATE
   Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(custom_font_test custom_font_test.cc)
+target_link_libraries(custom_font_test PRIVATE
+  Mocktail::Runtime
+  nlohmann_json::nlohmann_json
   GTest::gtest_main
 )
 
@@ -1097,6 +1130,38 @@ target_link_libraries(window_pointer_capture_owner_test PRIVATE
 )
 mocktail_apply_compile_options(window_pointer_capture_owner_test)
 
+find_package(X11 QUIET)
+find_program(MOCKTAIL_TEST_XVFB Xvfb)
+if(X11_FOUND AND X11_Xtst_FOUND AND MOCKTAIL_TEST_XVFB AND
+   MOCKTAIL_TEST_PYTHON AND NOT CMAKE_CROSSCOMPILING)
+  add_executable(window_pointer_capture_sdl_test
+    window_pointer_capture_sdl_test.cc
+  )
+  target_link_libraries(window_pointer_capture_sdl_test PRIVATE
+    mocktail_window
+    SDL3::SDL3
+    GTest::gtest_main
+    Threads::Threads
+    X11::X11
+    X11::Xtst
+  )
+  mocktail_apply_compile_options(window_pointer_capture_sdl_test)
+  add_test(NAME WindowPointerCaptureSdlTest.X11
+    COMMAND ${MOCKTAIL_TEST_PYTHON} -B
+      ${CMAKE_CURRENT_SOURCE_DIR}/run_xvfb_pointer_test.py
+      ${MOCKTAIL_TEST_XVFB} $<TARGET_FILE:window_pointer_capture_sdl_test>)
+  set_tests_properties(WindowPointerCaptureSdlTest.X11 PROPERTIES TIMEOUT 60)
+endif()
+
+add_executable(right_drag_motion_trace_test
+  right_drag_motion_trace_test.cc
+)
+target_link_libraries(right_drag_motion_trace_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(right_drag_motion_trace_test)
+
 add_executable(roblox_text_input_jni_bridge_test
   roblox_text_input_jni_bridge_test.cc
 )
@@ -1169,6 +1234,17 @@ set_target_properties(host_abi_profile_fixture PROPERTIES
 )
 mocktail_apply_compile_options(host_abi_profile_fixture)
 
+# The same fixture under Roblox 2.736.1408's x86_64 Build ID, which is retired.
+add_library(host_abi_retired_fixture SHARED host_abi_profile_fixture.cc)
+set_target_properties(host_abi_retired_fixture PROPERTIES
+  CXX_VISIBILITY_PRESET default
+  VISIBILITY_INLINES_HIDDEN OFF
+)
+mocktail_apply_compile_options(host_abi_retired_fixture)
+target_link_options(host_abi_retired_fixture PRIVATE
+  -Wl,--build-id=0xade08266c67aee88ec9c1d00902150e1684dad3a
+)
+
 add_executable(host_abi_profile_test host_abi_profile_test.cc)
 target_link_libraries(host_abi_profile_test PRIVATE
   Mocktail::Compat
@@ -1177,8 +1253,11 @@ target_link_libraries(host_abi_profile_test PRIVATE
 )
 target_compile_definitions(host_abi_profile_test PRIVATE
   MOCKTAIL_HOST_ABI_FIXTURE_PATH="$<TARGET_FILE:host_abi_profile_fixture>"
+  MOCKTAIL_HOST_ABI_RETIRED_FIXTURE_PATH="$<TARGET_FILE:host_abi_retired_fixture>"
 )
-add_dependencies(host_abi_profile_test host_abi_profile_fixture)
+add_dependencies(host_abi_profile_test host_abi_profile_fixture
+  host_abi_retired_fixture
+)
 
 add_executable(file_digest_record_test
   file_digest_record_test.cc
@@ -1246,6 +1325,7 @@ add_executable(bionic_host_libc_runtime_test
 )
 target_link_libraries(bionic_host_libc_runtime_test PRIVATE
   Mocktail::Compat
+  Mocktail::BionicStdio
   libc_shim
   GTest::gtest_main
   Threads::Threads
@@ -1421,9 +1501,11 @@ gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_editor_test)
 gtest_discover_tests(runtime_config_store_test)
 gtest_discover_tests(settings_model_test)
+gtest_discover_tests(sky_pack_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
+gtest_discover_tests(pinned_apk_provider_test)
 gtest_discover_tests(native_update_test)
 gtest_discover_tests(compatibility_catalog_test)
 gtest_discover_tests(support_bundle_runtime_test)
@@ -1448,6 +1530,7 @@ gtest_discover_tests(game_mode_link_namespace_test PROPERTIES
 gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(asset_overlay_names_test)
+gtest_discover_tests(custom_font_test)
 gtest_discover_tests(roblox_cursor_hook_test)
 gtest_discover_tests(roblox_mouse_behavior_query_test)
 gtest_discover_tests(cursor_picture_source_test)
@@ -1533,6 +1616,7 @@ gtest_discover_tests(android_log_observer_test)
 gtest_discover_tests(roblox_output_device_bridge_test)
 gtest_discover_tests(window_text_input_owner_test)
 gtest_discover_tests(window_pointer_capture_owner_test)
+gtest_discover_tests(right_drag_motion_trace_test)
 gtest_discover_tests(roblox_text_input_jni_bridge_test)
 gtest_discover_tests(auth_service_test)
 gtest_discover_tests(auth_runtime_composition_test)
@@ -1613,6 +1697,12 @@ add_test(
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/roblox_signing_trust_test.sh
           ${CMAKE_SOURCE_DIR}/config/roblox_signing_certificates.json
           ${CMAKE_SOURCE_DIR}/config/roblox_payload.json
+)
+
+add_test(
+  NAME SharedDataSchemaTest.ReleasedBuildCanReadNightlyData
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/shared_data_schema_test.sh
+          ${CMAKE_SOURCE_DIR}
 )
 
 find_program(MOCKTAIL_PATCHELF_EXECUTABLE patchelf)

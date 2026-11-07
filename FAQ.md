@@ -86,6 +86,31 @@ With systemd-resolved and no NetworkManager, set `DNS=1.1.1.1 8.8.8.8` under
 
 Run the `getent` check again, then relaunch Nightcap.
 
+## The update cannot reach the download server
+
+Nightcap downloads Roblox from APKPure. Some internet providers, schools and
+workplaces block it. To check, run:
+
+```sh
+curl -sSI https://api.pureapk.com
+curl -sSI https://data.winudf.com
+```
+
+The first is where Nightcap checks for updates, the second is where the
+download comes from. Each should print an `HTTP/` line; any status, even
+`403`, means the server is reachable. If either prints a curl error instead, or
+only works with a VPN, your network is blocking it. Connect
+a VPN or another network and launch Nightcap once to download Roblox. After
+that, Nightcap starts without it and keeps your installed Roblox until the next
+update.
+
+## Some textures are black
+
+Open Settings (`mocktail --settings`), turn off **Smooth Texture Loading**
+under Graphics, and restart Nightcap. New textures may stutter briefly while
+they load. If textures are still black, turn off **Compress Textures** too;
+that uses more video memory.
+
 ## Can I run multiple Roblox instances?
 
 No. Nightcap won't add multi-instance launching. It would mean working around
@@ -101,9 +126,9 @@ after Roblox added measures against running multiple clients.
 ## Can I play in VR?
 
 Yes, as an experiment. VR lives on Nightcap's `vr` branch and is not in the
-releases yet. It works on Roblox builds 2998, 3092 and 3222. Install the
-[build dependencies](README.md#building), then switch to that branch and
-build:
+releases yet. It works on Roblox 2.742.1059 (build 3222), not yet on 2.746.
+Install the [build dependencies](README.md#building), then switch to that
+branch and build:
 
 ```bash
 git fetch origin

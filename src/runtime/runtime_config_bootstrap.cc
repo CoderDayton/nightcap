@@ -77,10 +77,16 @@ graphics:
   # Boolean (default: true): keep ETC2/EAC textures compressed as BC7/BC4/BC5
   # on the GPU to use less video memory. Set false if textures look wrong.
   # texture_compression: true
-  # String (default: adaptive): upscale for textures of 64px or less, as
-  # adaptive, 1, 2, or 4. adaptive picks up to 4 from the GPU's encode speed
-  # and steps down while the GPU is busy encoding.
-  # small_texture_upscale: adaptive
+  # Boolean (default: true): use a faster texture encoder while many textures
+  # load, to avoid stutter. Only applies with texture_compression on. Set false
+  # if textures turn black on a low-memory GPU.
+  # smooth_texture_loading: true
+
+assets:
+  # Boolean (default: true): use asset_overlay's cursors, fonts and sky.
+  overlay: true
+  # Boolean (default: true): use the PNGs in the textures folder.
+  texture_overrides: true
 
 # vr:
   # String (default: off): experimental VR through OpenXR on supported Roblox
@@ -144,10 +150,9 @@ input:
   # Boolean (default: false): use the desktop's cursor theme for the arrow,
   # hand and text cursors instead of Roblox's pictures.
   system_cursor: false
-  # Boolean (default: false): have the desktop draw the cursor instead of
-  # Roblox drawing it into the game, so cursor effects and tools work with it.
-  # Uses Roblox's pictures, a game's own cursor included. The shift lock
-  # cursor is still drawn by Roblox.
+  # Boolean (default: false): only for desktop cursor effects, like Hyprland
+  # plugins. The desktop draws a game's own cursor instead of Roblox; the
+  # shift lock cursor stays Roblox's. Most people should leave this off.
   hardware_cursor: false
 
 overlay:

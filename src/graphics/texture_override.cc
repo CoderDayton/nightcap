@@ -493,6 +493,24 @@ std::string EnvironmentString(const char* name) {
   return value != nullptr ? value : "";
 }
 
+// Ratio of an override PNG to the texture it replaces, from the PNG header.
+std::uint32_t OverrideUpscale(const std::string& path, std::uint32_t width,
+                              std::uint32_t height) {
+  png_image png{};
+  png.version = PNG_IMAGE_VERSION;
+  if (width == 0 || height == 0 ||
+      png_image_begin_read_from_file(&png, path.c_str()) == 0) {
+    return 1;
+  }
+  const std::uint32_t ratio = std::min(png.width / width, png.height / height);
+  png_image_free(&png);
+  std::uint32_t scale = 1;
+  while (scale < 8 && scale * 2 <= ratio) {
+    scale *= 2;
+  }
+  return scale;
+}
+
 }  // namespace
 
 TextureOverrides::TextureOverrides(std::string override_dir,
@@ -515,8 +533,21 @@ TextureOverrides::TextureOverrides(std::string override_dir,
       if (stem.size() > 17 && stem[16] == '_' &&
           std::sscanf(stem.c_str(), "%16llx_%ux%u%c", &hash, &width, &height,
                       &tail) == 3) {
-        files_[hash] = it->path().string();
-        sizes_.insert(std::uint64_t{width} << 32 | height);
+        const std::string& path = files_[hash] = it->path().string();
+        const std::uint64_t size = std::uint64_t{width} << 32 | height;
+        sizes_.insert(size);
+        const std::uint32_t upscale = OverrideUpscale(path, width, height);
+        if (upscale > 1 && width <= kOverrideUpscaleMaxExtent &&
+            height <= kOverrideUpscaleMaxExtent) {
+          std::uint32_t& kept = upscales_[size];
+          if (upscale > kept) {
+            kept = upscale;
+            std::fprintf(stderr,
+                         "  [vulkan] texture override: %ux%u colour textures "
+                         "upscaled up to %ux\n",
+                         width, height, upscale);
+          }
+        }
       } else {
         std::fprintf(stderr,
                      "  [vulkan] texture override skipped: %s; name it "
@@ -537,9 +568,17 @@ bool TextureOverrides::MayReplace(std::uint32_t width,
          sizes_.count(std::uint64_t{width} << 32 | height) != 0;
 }
 
+std::uint32_t TextureOverrides::UpscaleFor(std::uint32_t width,
+                                           std::uint32_t height) const {
+  const auto it = upscales_.find(std::uint64_t{width} << 32 | height);
+  return it != upscales_.end() ? it->second : 1;
+}
+
 TextureOverrides TextureOverrides::FromEnvironment() {
-  return TextureOverrides(EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
-                          EnvironmentString("MOCKTAIL_TEXTURE_DUMP_DIR"));
+  const bool off = EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDES") == "0";
+  return TextureOverrides(
+      off ? std::string() : EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
+      EnvironmentString("MOCKTAIL_TEXTURE_DUMP_DIR"));
 }
 
 std::shared_ptr<const RgbaImage> TextureOverrides::Lookup(std::uint64_t hash) {

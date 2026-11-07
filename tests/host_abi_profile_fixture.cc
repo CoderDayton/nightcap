@@ -55,6 +55,10 @@ MocktailFixtureConstructorFour() {}
 __attribute__((visibility("default"), constructor(104), used)) void
 MocktailFixtureConstructorFive() {}
 
+// Index 6, so a profile can anchor a constructor after an added one.
+__attribute__((visibility("default"), constructor(105), used)) void
+MocktailFixtureConstructorSix() {}
+
 __attribute__((visibility("default"),
                used)) void* mocktail_fixture_allocator_slot = nullptr;
 __attribute__((visibility("default"),
