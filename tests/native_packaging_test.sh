@@ -211,6 +211,9 @@ for expected in \
     'uses: ./.github/workflows/build-packages.yml' \
     'channel: release' \
     'Nightcap-x86_64.AppImage' \
+    'uses: ./.github/workflows/flatpak.yml' \
+    'needs: [build, flatpak]' \
+    'Nightcap-x86_64.flatpak' \
     'gh release upload' \
     'uses: ./.github/workflows/aur-publish.yml'; do
   grep -Fq -- "${expected}" "${RELEASE_WORKFLOW}" ||

@@ -19,10 +19,22 @@ jobs:
     with:
       channel: release
 
+  # Also publishes the stable Flatpak repository to Pages, so only tags run it.
+  flatpak:
+    name: Flatpak
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/flatpak.yml
+    permissions:
+      contents: read
+      actions: write
+      pages: write
+      id-token: write
+    secrets: inherit
+
   publish:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, flatpak]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -49,7 +61,8 @@ jobs:
           # literal text, so every package pattern has to match before upload.
           shopt -s nullglob
           test -s release/Nightcap-x86_64.AppImage
-          assets=(Nightcap-x86_64.AppImage)
+          test -s release/Nightcap-x86_64.flatpak
+          assets=(Nightcap-x86_64.AppImage Nightcap-x86_64.flatpak)
           for glob in '*.deb' '*.rpm' '*.pkg.tar.zst'; do
             matched=(release/$glob)
             if [[ ${#matched[@]} -eq 0 ]]; then
@@ -69,8 +82,6 @@ jobs:
             done
           )
           ./scripts/release_notes.sh "$tag" > release/notes.md
-          # The Flatpak workflow creates the same release; whichever job
-          # arrives second sees "already exists" and continues.
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --title "Nightcap $tag" --notes-file release/notes.md ||
