@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "mocktail/graphics/etc2_decoder.h"
@@ -56,35 +57,28 @@ bool Etc2SupportAdvertised();
 // decoded, anything else (or unset) transcodes.
 bool Etc2BcTranscodeEnabled(const char* value);
 
-// Factor applied to emulated ETC2 colour images no larger than
-// kSmallTextureMaxExtent, from the MOCKTAIL_SMALL_TEXTURE_UPSCALE value:
-// 1 leaves them alone; 2, 4 or 8 add log2(factor) levels above the image's
-// own, upscaled from level 0, so a texture override can carry more detail
-// than the original. Unset or non-numeric values ("adaptive") return
-// kAdaptiveSmallTextureUpscale; numeric values are clamped to 1..8 and
-// rounded down to a power of two.
+// Factor for ETC2 colour images up to kSmallTextureMaxExtent: 1 leaves them;
+// 2, 4 or 8 add log2(factor) levels above the image's own, upscaled from
+// level 0. 4 unless MOCKTAIL_SMALL_TEXTURE_UPSCALE holds a number, which is
+// clamped to 1..8 and rounded down to a power of two.
 inline constexpr std::uint32_t kSmallTextureMaxExtent = 64;
-inline constexpr std::uint32_t kDefaultSmallTextureUpscale = 4;
-inline constexpr std::uint32_t kAdaptiveSmallTextureUpscale = 0;
 std::uint32_t SmallTextureUpscale(const char* value);
+
+// `upscale` up to kSmallTextureMaxExtent, or `override_upscale` up to
+// kOverrideUpscaleMaxExtent, whichever is larger.
+std::uint32_t SmallTextureScale(std::uint32_t width, std::uint32_t height,
+                                std::uint32_t upscale,
+                                std::uint32_t override_upscale);
 
 // Every mip level and layer, plus the levels a `scale` above 1 adds.
 VkDeviceSize Etc2HostBlockCount(const VkExtent3D& extent,
                                 std::uint32_t mip_levels, std::uint32_t layers,
                                 std::uint32_t scale);
 
-// The largest of 4, 2 and 1, the factors the setting offers, whose 64x64 BC7
-// chain encodes within kAdaptiveUpscaleTextureNs: the top levels at
-// `upscale_ns` per block, the texture's own levels at `transcode_ns`. 0 ns
-// (unmeasured) gives 1, as an unknown card may be too slow for any upscale.
-inline constexpr double kAdaptiveUpscaleTextureNs = 0.5e6;
-std::uint32_t AdaptiveSmallTextureUpscale(double upscale_ns,
-                                          double transcode_ns);
-
 // GPU-time token bucket. A cost above the burst runs from a full bucket and
 // leaves it negative until wall time pays it back. Take asks before work is
-// planned; Charge books work already recorded; Refund returns a Take whose
-// work never ran.
+// planned; Charge books work already recorded, down to four bursts of debt;
+// Refund returns a Take whose work never ran.
 inline constexpr double kEncodeBudgetShare = 0.1;
 inline constexpr double kEncodeBudgetBurstNs = 16e6;
 class Etc2EncodeBudget {
@@ -153,6 +147,12 @@ class VulkanEtc2Emulation final {
                       PFN_vkGetDeviceProcAddr get_device_proc_addr,
                       bool timeline_semaphore = false,
                       bool bc_textures = false);
+  // False when VK_EXT_memory_budget is unavailable. With it, small texture
+  // upscaling also leaves a tenth of video memory, and at least 96 MiB, free
+  // by the driver's count.
+  using MemoryBudgetQuery =
+      std::function<bool(VkPhysicalDeviceMemoryBudgetPropertiesEXT*)>;
+  void SetMemoryBudgetQuery(VkDevice device, MemoryBudgetQuery query);
   void DestroyDevice(VkDevice device);
 
   void RegisterQueue(VkDevice device, VkQueue queue,
@@ -315,6 +315,9 @@ class VulkanEtc2Emulation final {
   EmulatedTextureBytes TextureBytes() const;
   // The startup speed probe's result; zero when it did not run.
   Etc2GpuSpeed GpuSpeed(VkDevice device) const;
+  // The encode budget was dry when `image` was created, so its BC encodes
+  // take the fast path.
+  bool EncodesFast(VkImage image) const;
 
   struct State;
 

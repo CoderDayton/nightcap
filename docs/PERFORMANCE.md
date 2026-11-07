@@ -129,43 +129,89 @@ runs cooler for a few frames per second less; measure before keeping it.
 
 ## Small texture upscaling
 
-`graphics.small_texture_upscale` (Small texture upscale in the settings
-window, `MOCKTAIL_SMALL_TEXTURE_UPSCALE` for one run) gives ETC2 textures of
-64px or smaller sharper levels above their own: one at 2, two at 4, upscaled
-from the texture's largest level. The texture's own levels keep their size
-and the texels Roblox sent, so the card picks them at normal draw size and
-the sharper ones only when the texture is drawn larger. 4 is 16 times the
-pixels per affected texture.
+ETC2 colour textures of 64px or smaller get two sharper levels above their
+own, 4× upscaled from the texture's largest level. A desktop screen draws
+these, such as crosshairs, cursors and icons, larger than a phone does. The
+texture's own levels keep their size and the texels Roblox sent, so the card
+picks them at normal draw size and the sharper ones only when the texture is
+drawn larger. 4× is 16 times the pixels per affected texture: a 64px texture
+grows from 16 KiB to 256 KiB uncompressed.
 
-The default, `adaptive`, sizes this to the graphics card. At startup Nightcap
-times the card's BC7 encoder on a few textures, minus the round trip of an
-empty submit, and picks 4, 2 or 1: the largest at which a 64px texture
-encodes in 0.5 ms. An RTX 4090 measures about 9 ns per block and gets 4;
-llvmpipe measures about 700 ns and gets 1. With texture compression off it
-times only the decode and scale, which is all those textures cost. Without a
-measurement (GPU decode off, or the probe fails) it uses 1.
+Upscaled textures share a budget of an eighth of the card's video memory,
+as Vulkan reports it: 256 MiB on a 2 GB card, 3 GiB on a 24 GB one. Roblox
+sizes its own texture budget for the textures it sends, so it cannot see
+this cost. Past the budget a new small texture steps down to 2×, then to
+its own size, so it stays as sharp as memory allows:
 
-Every BC encode draws from a budget of a tenth of wall time, with a 16 ms
+- Textures of 32px or less, such as crosshairs and cursors, cost a quarter
+  of a 64px one or less, and keep 4× until the budget is full. Larger ones
+  take 2× once half of it is used, unless the driver reports twice the
+  share below free.
+- Where the driver reports free video memory (`VK_EXT_memory_budget`, read
+  at most every 250 ms), an upscale must also leave a tenth of video memory
+  free, and at least 96 MiB, which counts what Roblox and other programs
+  use. 96 MiB covers what a loading burst adds between two reads.
+- Destroyed textures give their share back, so later ones get 4× again.
+- The upscale an override file asks for is not limited, but counts toward
+  the budget.
+
+The session log says the first time textures step down to each size.
+`MOCKTAIL_ETC2_VIDEO_MEMORY_MB` sets the video memory for one run, so a large
+card acts as a small one; the driver's free memory is then not read.
+
+A texture of 64px or less with an override file is sized at least to its
+PNG: the smaller axis's ratio, rounded down to a power of two, up to 8×. A
+128px override for a 64px texture shows at 2×. The factor applies to every
+colour texture of that size, not only the one the override replaces, which
+is why larger textures don't take it. The session log names each size once.
+
+`MOCKTAIL_SMALL_TEXTURE_UPSCALE` sets the factor for one run: 1 turns it off
+for textures without an override, and 2, 4 or 8 apply, with other numbers
+rounded down to a power of two. There is no config setting; an old
+`graphics.small_texture_upscale` is ignored.
+
+At startup Nightcap times the card's BC7 encoder on a few textures, minus the
+round trip of an empty submit, in both its full and fast modes. An RTX 4090
+measures about 9 ns per block, and about 5 ns fast; llvmpipe measures about
+700 ns. Half the timed blocks are opaque and half have alpha, since the fast
+encoder saves more on alpha blocks. With texture compression off there is no
+encode to time, so it is skipped.
+
+The encode budget aims BC encoding at a tenth of wall time, with a 16 ms
 burst. Creating a texture prepays its first upload; later uploads, re-uploads
 included, are charged as they are recorded, and a texture destroyed before
 its upload gives its prepayment back. When the budget runs dry, new textures
-step down to a smaller factor, then stay decoded at their own size, as with
-texture compression off, until it refills. A fixed `1`, `2` or `4` keeps
-that factor and, when held back, stays decoded at it.
-`MOCKTAIL_ETC2_ENCODE_BUDGET=0` turns the budget off; with a fixed factor
-too, the startup measurement is skipped.
+are still compressed, with the fast encoder: one least-squares fit per BC7
+mode and fewer modes tried. That cuts the GPU cost by about 40% and loses
+under 1 dB on random blocks. It is not a hard cap: a burst of new textures
+still encodes in the frames that load them, only cheaper. Those textures
+keep the fast encode for their life. The budget goes into debt for the fast
+cost, at most four bursts deep, so it refills within 0.64 s of a burst.
+`MOCKTAIL_ETC2_ENCODE_BUDGET=0`, or `graphics.smooth_texture_loading: false`
+(Smooth Texture Loading in Settings), turns the budget off and skips the
+startup measurement; the log then says `[vulkan] BC encode budget off`.
 
 The session log shows the measured speed once:
 
 ```text
-[vulkan] BC encode speed: transcode 10.0 ns/block, upscale 8.9 ns/block; small texture upscale adaptive up to 4x; encode budget on
+[vulkan] BC encode speed: transcode 10.0 ns/block (fast 4.9), upscale 8.9 ns/block; small texture upscale 4x; encode budget on
 ```
 
 It also shows, every 5 seconds while textures are created, how many landed at
-each factor, how many stayed decoded, and the estimated GPU time:
+each factor, how many used the fast encoder, and the estimated GPU time:
 
 ```text
-[vulkan] BC encodes over 5.0 s: 4x 300, 2x 50, 1x 40, kept decoded 22; est 38.1 ms GPU
+[vulkan] BC encodes over 5.0 s: 1x 390, fast 22; est 38.1 ms GPU
+```
+
+At the first texture and then every 5 seconds while textures are created, it
+shows what emulated textures take in GPU memory, how much of that is
+upscaling against its budget and the driver's free video memory, how many
+small textures got each scale, and how many ETC2 blocks stay in system
+memory for later copies:
+
+```text
+[vulkan] ETC2 textures: 412.3 MiB on the GPU, 38.1 MiB of it upscaled (budget 256.0 MiB, 640.2 MiB free; 4x 310, 2x 42, 1x 0); 12.4 MiB of blocks kept on the CPU
 ```
 
 Upscaling adds no new detail. Textures grow with a sharpened bicubic filter,
@@ -182,7 +228,7 @@ than a steady load. The enlarged textures then stay in GPU memory for the
 session and cost
 extra sampling bandwidth on every frame that uses them. In Blade Ball the
 memory share is small: decoded textures came to 5.1 times their ETC2 size both
-with the default and with upscaling off. The `emulated texture (MB)` and
+with upscaling at 4 and with it off. The `emulated texture (MB)` and
 `compressed texture (MB)` counters in a `--profile` trace give the figures for
 any game.
 
@@ -193,7 +239,7 @@ the render thread. In the trace this is the `etc2 decode` slice on its own
 thread, with only a negligible `etc2 gather` left on the submitting one. A
 device without that feature decodes inline as before.
 
-Set it to `1` to turn upscaling off for one run:
+Set it for one run:
 
 ```bash
 MOCKTAIL_SMALL_TEXTURE_UPSCALE=1 mocktail

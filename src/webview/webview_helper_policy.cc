@@ -173,6 +173,17 @@ std::string BuildRobloxAndroidUserAgent() {
          std::string(version) + " (GlobalDist; GooglePlayStore)";
 }
 
+std::string UriPathForLog(const char* uri) {
+  if (uri == nullptr) return "none";
+  GUri* parsed = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+  if (parsed == nullptr) return "none";
+  const char* path = g_uri_get_path(parsed);
+  std::string result =
+      BoundedLogToken(path != nullptr && *path != '\0' ? path : "/", "/");
+  g_uri_unref(parsed);
+  return result;
+}
+
 bool IsBrowserLoginUrl(std::string_view url) {
   GUri* parsed = g_uri_parse(std::string(url).c_str(), G_URI_FLAGS_NONE, nullptr);
   if (parsed == nullptr) return false;

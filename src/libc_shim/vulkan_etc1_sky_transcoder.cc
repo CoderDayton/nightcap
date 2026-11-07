@@ -140,7 +140,8 @@ void WriteLe32(uint8_t *bytes, uint32_t value) {
 }
 
 bool IsBundledSkyTexture(const char *path) {
-  constexpr char kSkyDirectory[] = "/assets/android/textures/sky/";
+  // Also matches the asset overlay's copy of the folder.
+  constexpr char kSkyDirectory[] = "/android/textures/sky/";
   if (path == nullptr || std::strstr(path, kSkyDirectory) == nullptr) {
     return false;
   }

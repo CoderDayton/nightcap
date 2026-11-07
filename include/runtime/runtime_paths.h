@@ -77,6 +77,21 @@ class RuntimePaths {
   const std::filesystem::path& asset_overlay_dir() const {
     return asset_overlay_dir_;
   }
+  // Replacement texture PNGs: MOCKTAIL_TEXTURE_OVERRIDE_DIR, or
+  // <config>/textures.
+  const std::filesystem::path& texture_override_dir() const {
+    return texture_override_dir_;
+  }
+  // Sky packs imported in Settings, one folder each.
+  std::filesystem::path sky_library_dir() const { return data_root_ / "skies"; }
+  // The font picked in Settings, the only file in the folder.
+  std::filesystem::path custom_font_dir() const {
+    return data_root_ / "custom_font";
+  }
+  // Rebuilt at each start from custom_font_dir() and Roblox's fonts.
+  std::filesystem::path custom_font_overlay_dir() const {
+    return data_root_ / "custom_font_overlay";
+  }
   bool use_real_sober_paths() const { return use_real_sober_paths_; }
 
   std::filesystem::path DefaultAssetPath() const;
@@ -110,6 +125,7 @@ class RuntimePaths {
   std::filesystem::path active_payload_manifest_;
   std::filesystem::path cookie_file_;
   std::filesystem::path asset_overlay_dir_;
+  std::filesystem::path texture_override_dir_;
   bool use_real_sober_paths_ = false;
 };
 

@@ -8,6 +8,37 @@ Release notes on GitHub are taken from the matching section here.
 ### Added
 
 - VR works on Roblox 2.746.1266 (build 20836).
+- Copy Log button in Settings → About, for bug reports.
+- Custom font for Roblox's menus and games, in Settings → Appearance. Sky moved there too.
+- Nightly Flatpak from `nightcap-nightly.flatpakref` on the Pages site. It installs next to the regular one.
+
+### Changed
+
+- Unknown settings in `config.yaml` are skipped instead of stopping Nightcap from starting.
+- With automatic updates off, a Roblox version this build can't run falls back to the one before it.
+- Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
+- Roblox downloads from GitHub first, with APKPure as a backup.
+- Startup no longer waits on an update check. It runs in the background two minutes after launch,
+  at low priority so it doesn't slow the game. If Roblox says your version needs an update, it
+  starts right away.
+
+### Fixed
+
+- Decimal settings like camera sensitivity keep their value after a restart on comma-decimal systems.
+- Alt-tabbing during a right-click drag no longer pulls the mouse back into the game.
+- After a fast right-click drag, the mouse goes back to where you clicked.
+
+## [0.5.0] - 2026-11-05
+
+### Added
+
+- A Customization page in Settings. Sky shows a grid of previews: Roblox's own and every sky in the library
+  (`~/.local/share/mocktail/skies`). Import adds sky packs from a folder or a .zip, including a zip of
+  pack zips: six images up to 2048 px named like `sky_bk` … `sky_up`, as PNG, JPEG, WebP, DDS or Roblox
+  .tex files. An import can be cancelled. A sky already in the asset folder is kept in the library as
+  "Custom sky" before another replaces it. Switches turn the asset folder
+  (`assets.overlay`) and texture overrides (`assets.texture_overrides`) off without deleting files,
+  and rows open the sky library, asset folder and textures folder.
 - From upstream: the Roblox sign-in can be kept in the desktop keyring through libsecret, such as
   GNOME Keyring or KWallet, instead of a private file. Turn on "Keep the sign-in in the keyring" under
   Settings > Advanced > Sign-in (`auth.use_libsecret`). It is off by default. Signing out from Roblox
@@ -46,6 +77,20 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- A custom sky in the asset overlay folder now shows on Vulkan. Put Android-format `sky512_*.tex` files in
+  `content/android/textures/sky/`. Nightcap converts the stock sky so Vulkan can draw it, but skipped
+  overlay files. The session log now names each overlay file the game uses, and logs every time the game
+  opens a sky file, with its source, format and time.
+- With texture compression off, small textures such as crosshairs no longer turn blurry when the game
+  copies them in while it streams textures. With it on, such a texture no longer shows an old picture
+  after the game moves it between textures, or turns black on slower GPUs.
+- The camera no longer flicks when you let go of the right mouse button after turning it.
+- Nightcap no longer crashes at startup when the desktop or launcher sets `MIMALLOC_*` variables such
+  as `MIMALLOC_ARENA_RESERVE=0`. Set `MOCKTAIL_KEEP_MIMALLOC_ENV=1` to keep them.
+- Roblox verification windows, such as the press-and-hold check when signing up or joining a game, no longer
+  reload themselves right after they appear. Nightcap reloaded the page when Roblox changed the window,
+  which cut off the check while it loaded and could leave the window blank. Roblox's Android app ignores
+  the address in that change, and Nightcap now does too.
 - The Settings window no longer shows a second Nightcap icon or missing page icons on KDE with the
   Breeze icon theme.
 - Launching with Fleasion in env mode no longer fails at sign-in when nothing is listening on its proxy
@@ -81,13 +126,32 @@ Release notes on GitHub are taken from the matching section here.
 - When the Roblox updater crashes or quits without saying why, the session log and error dialog now
   give its exit status or signal instead of only "Roblox update preflight failed". When DNS cannot find
   a download server, the error points to a new FAQ entry with the commands to switch DNS servers.
+  When the server cannot be reached or the connection is cut, the error says your network may be
+  blocking it and points to a FAQ entry on using a VPN or another network. The dialog also shows the
+  updater's reason when the download progress window was open, instead of "without reporting a reason".
+  Error dialogs are titled "Nightcap" instead of "Crash", and an update failure leads with what to do,
+  with the network error below it.
+- A Roblox update is no longer rejected when the NVIDIA driver crashes as the test launch shuts down,
+  after the update has already drawn frames.
 - PCs with 4 GB of RAM now get a larger texture budget instead of Roblox's 64 MB mobile default.
   The budget now applies to any PC with at least 2 GB, at an eighth of its memory.
 - Large `fflags.json` files load, and the settings window opens them. Both used to refuse a file over
   64 KiB.
+- From upstream: a changed `window.width` or `window.height` now applies instead of the size Nightcap
+  remembered from the last session. Thanks to @justacalico.
+- From upstream: typed text with spaces at the end of a wrapped line no longer puts the text cursor in
+  the wrong place, such as in the chat box.
+- From upstream: a crash when Roblox passed an invalid Java string is fixed. Thanks to @justacalico.
 
 ### Changed
 
+- From upstream: Roblox 2.742.1059 runs with a profile tested for that exact build instead of as an
+  experimental build, and new installs start on it.
+- In Settings > Input, System cursor theme is now called System cursor, and Hardware cursor is now
+  Desktop-drawn game cursor, under More, with a description of what it is for.
+- Roblox updates now download in the background while Nightcap runs and install on the next launch.
+  An interrupted download resumes where it stopped. It runs at low CPU and disk priority, and stops
+  if Nightcap closes or crashes.
 - ETC2 textures now decode on the graphics card instead of the CPU, so loading them no longer takes CPU
   time from the game. Only textures the size of an override still decode on the CPU. Override files
   must now be named `<hash>_<width>x<height>.png` with the original size, as the dump names them;
@@ -96,15 +160,21 @@ Release notes on GitHub are taken from the matching section here.
   texture support keep these textures compressed as BC7, BC4 or BC5, in a quarter of the video memory,
   and small upscaled textures too. The Compress textures setting (`graphics.texture_compression`) or
   `MOCKTAIL_ETC2_BC_TRANSCODE=0` keeps them decoded.
-- Small textures are upscaled on the graphics card with a smoothing filter that keeps hard two-colour
-  edges sharp, instead of nearest-neighbour on the CPU. The Small texture upscale setting
-  (`graphics.small_texture_upscale`) offers Adaptive, 1×, 2× or 4×. Adaptive, the default, times the
-  card's BC7 encoder at startup (decode and scale with Compress textures off) and picks up to 4×,
-  or 1× when it can't measure. While textures load, it steps new ones down, or
-  keeps them uncompressed, once encoding would take more than a tenth of the GPU's time, so slower
-  cards no longer stutter with Compress textures on. The log shows the measured speed and what was
-  held back. Upscaling adds sharper levels above a texture's own and leaves Roblox's smaller levels
-  as they are, so textures Roblox streams in no longer turn blurry or lose detail at a distance.
+- Textures of 64 px or less, such as crosshairs, cursors and icons, are upscaled 4×, since a desktop
+  screen draws them larger than a phone does. Larger textures are left at the size Roblox sends. An
+  override for a texture of 64 px or less is drawn at least at its PNG's size, up to 8×. Upscaled
+  textures take at most an eighth of video memory and leave a tenth (at least 96 MiB) free; past that,
+  new ones are upscaled 2×, then left at their own size, with crosshair-sized ones kept at 4× longest.
+  The Small texture upscale setting is gone; an old `graphics.small_texture_upscale` is ignored.
+  Upscaling runs on the graphics card with a smoothing filter that keeps hard two-colour edges sharp,
+  instead of nearest-neighbour on the CPU. Nightcap times the card's BC7 encoder at startup, and while
+  textures load it switches new ones to a fast encoder at 40% less GPU cost once encoding would take
+  more than a tenth of the GPU's time, so slower cards stutter less with Compress textures on. Every
+  texture stays compressed, so video memory no longer climbs during long sessions. The log shows the
+  measured speed and how many used the fast encoder. The Smooth Texture Loading setting
+  (`graphics.smooth_texture_loading`) turns this off, so every texture gets the full encoder right away;
+  try it if textures turn black on a low-memory GPU. Upscaling adds sharper levels above a texture's
+  own and leaves Roblox's smaller levels as they are, so streamed textures keep their detail at a distance.
 
 ## [0.4.0] - 2026-10-18
 
@@ -454,7 +524,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.4.0
 [0.3.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.4
 [0.3.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.3.3

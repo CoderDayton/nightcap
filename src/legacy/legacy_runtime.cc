@@ -73,6 +73,7 @@
 #include "runtime/owned_pthread.h"
 #include "runtime/platform_cache_migration.h"
 #include "runtime/asset_overlay_names.h"
+#include "runtime/custom_font.h"
 #include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_cursor_hook.h"
 #include "runtime/roblox_app_lifecycle.h"
@@ -1326,6 +1327,15 @@ std::string DefaultAssetPath() {
   return CurrentRuntimePaths().DefaultAssetPath().string();
 }
 
+// Empty while config.yaml's assets.overlay is off.
+std::filesystem::path ActiveAssetOverlayDir() {
+  const char* overlay = std::getenv("MOCKTAIL_ASSET_OVERLAY");
+  if (overlay != nullptr && std::string_view(overlay) == "0") {
+    return {};
+  }
+  return CurrentRuntimePaths().asset_overlay_dir();
+}
+
 bool RegisterFreshGamePresentObserver(
     void* context, mocktail::runtime::FreshLaunchPresentObserver observer,
     void* observer_context) {
@@ -1992,13 +2002,52 @@ extern "C" void MocktailConstructorWrapper() {
   MaybePrintLibRobloxConstructorSummary(idx);
 }
 
+// Rebuilds the font overlay from the font picked in Settings and exports it
+// to the asset lookup. Empty without a pick or while custom assets are off.
+std::filesystem::path PrepareCustomFontOverlay() {
+  unsetenv("MOCKTAIL_FONT_OVERLAY_DIR");
+  const mocktail::runtime::RuntimePaths& paths = CurrentRuntimePaths();
+  const std::filesystem::path font =
+      mocktail::runtime::InstalledCustomFont(paths.custom_font_dir());
+  if (ActiveAssetOverlayDir().empty() || font.empty()) {
+    return {};
+  }
+  const std::filesystem::path out = paths.custom_font_overlay_dir();
+  const auto started = std::chrono::steady_clock::now();
+  std::size_t replaced = 0;
+  std::string error;
+  if (!mocktail::runtime::BuildCustomFontOverlay(
+          font, std::filesystem::path(DefaultAssetPath()) / "fonts",
+          out, &replaced, &error)) {
+    std::cerr << "  [asset] custom font not applied: " << error << '\n'
+              << std::flush;
+    return {};
+  }
+  setenv("MOCKTAIL_FONT_OVERLAY_DIR", out.c_str(), 1);
+  std::cout << "  [asset] custom font " << font.filename().string()
+            << " replaces " << replaced
+            << " Roblox font file(s) and families in "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - started)
+                   .count()
+            << " ms\n"
+            << std::flush;
+  return out;
+}
+
 // Unmaps the rbxasset:// names that have a file in the asset overlay folder, so
 // Roblox opens those files instead of downloading the stock asset. Must run
 // before any libroblox code does: the segment loses PROT_EXEC while it is
 // written.
 void DisableOverlaidAssetMappings(uintptr_t base) {
-  std::vector<std::string> names = mocktail::runtime::OverlayRbxAssetNames(
-      CurrentRuntimePaths().asset_overlay_dir());
+  std::vector<std::string> names =
+      mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir());
+  for (std::string& name : mocktail::runtime::OverlayRbxAssetNames(
+           PrepareCustomFontOverlay())) {
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+      names.push_back(std::move(name));
+    }
+  }
   // Stock cursors become transparent local files under the system theme.
   if (mocktail::runtime::RobloxCursorThemeActive()) {
     for (std::string& name :
@@ -2096,7 +2145,7 @@ void InstallCursorHooks(uintptr_t base) {
           }
           return saved;
         },
-        CurrentRuntimePaths().asset_overlay_dir(), [] {
+        ActiveAssetOverlayDir(), [] {
           // Roblox reports its asset folder once it starts.
           const char* root = std::getenv("MOCKTAIL_ASSET_ROOT");
           return std::filesystem::path(root != nullptr ? root

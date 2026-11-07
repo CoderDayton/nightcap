@@ -56,6 +56,7 @@ class AssetManagerTest : public ::testing::Test {
     ASSERT_FALSE(root_.empty());
     setenv("MOCKTAIL_ASSET_ROOT", root_.c_str(), 1);
     unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
+    unsetenv("MOCKTAIL_FONT_OVERLAY_DIR");
     const char* backend = std::getenv("MOCKTAIL_GRAPHICS_BACKEND");
     had_backend_ = backend != nullptr;
     previous_backend_ = backend != nullptr ? backend : "";
@@ -65,6 +66,8 @@ class AssetManagerTest : public ::testing::Test {
   void TearDown() override {
     unsetenv("MOCKTAIL_ASSET_ROOT");
     unsetenv("MOCKTAIL_ASSET_OVERLAY_DIR");
+    unsetenv("MOCKTAIL_FONT_OVERLAY_DIR");
+    unsetenv("MOCKTAIL_ASSET_OVERLAY");
     if (had_backend_) {
       setenv("MOCKTAIL_GRAPHICS_BACKEND", previous_backend_.c_str(), 1);
     } else {
@@ -103,7 +106,12 @@ class AssetManagerTest : public ::testing::Test {
 
   void WriteBinaryAsset(const std::string& name,
                          const std::vector<unsigned char>& data) {
-    const std::filesystem::path path = std::filesystem::path(root_) / name;
+    WriteBinaryAssetAt(root_, name, data);
+  }
+
+  void WriteBinaryAssetAt(const std::string& root, const std::string& name,
+                          const std::vector<unsigned char>& data) {
+    const std::filesystem::path path = std::filesystem::path(root) / name;
     std::filesystem::create_directories(path.parent_path());
     std::ofstream file(path, std::ios::binary);
     file.write(reinterpret_cast<const char*>(data.data()), data.size());
@@ -116,6 +124,38 @@ class AssetManagerTest : public ::testing::Test {
   bool had_backend_ = false;
   std::string previous_backend_;
 };
+
+std::string ReadWhole(const char* name) {
+  AAsset* asset =
+      AAssetManager_open(AAssetManager_fromJava(nullptr, nullptr), name, 0);
+  if (asset == nullptr) {
+    return {};
+  }
+  const auto* data = static_cast<const char*>(AAsset_getBuffer(asset));
+  std::string text(data, data + AAsset_getLength(asset));
+  AAsset_close(asset);
+  return text;
+}
+
+// The font picked in Settings stands in for Roblox's, but a font the user put
+// in the overlay by hand still wins, and both go with custom assets.
+TEST_F(AssetManagerTest, ServesThePickedFontUnderTheUsersOwn) {
+  WriteAsset("content/fonts/Arimo-Regular.ttf", "stock arimo");
+  WriteAsset("content/fonts/Oswald-Bold.ttf", "stock oswald");
+  const std::string overlay = MakeTempRoot();
+  const std::string fonts = MakeTempRoot();
+  WriteAssetAt(overlay, "content/fonts/Oswald-Bold.ttf", "own oswald");
+  WriteAssetAt(fonts, "content/fonts/Arimo-Regular.ttf", "picked");
+  WriteAssetAt(fonts, "content/fonts/Oswald-Bold.ttf", "picked");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay.c_str(), 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_FONT_OVERLAY_DIR", fonts.c_str(), 1), 0);
+
+  EXPECT_EQ(ReadWhole("rbxasset://fonts/Arimo-Regular.ttf"), "picked");
+  EXPECT_EQ(ReadWhole("rbxasset://fonts/Oswald-Bold.ttf"), "own oswald");
+
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY", "0", 1), 0);
+  EXPECT_EQ(ReadWhole("rbxasset://fonts/Arimo-Regular.ttf"), "stock arimo");
+}
 
 TEST_F(AssetManagerTest, FromJavaReturnsSingletonManager) {
   EXPECT_NE(AAssetManager_fromJava(nullptr, nullptr), nullptr);
@@ -234,6 +274,27 @@ TEST_F(AssetManagerTest, TranscodedSkyCannotBypassConversionThroughDescriptor) {
   EXPECT_EQ(on_disk, original);
 }
 
+TEST_F(AssetManagerTest, OverlaySkyIsTranscodedForVulkan) {
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteBinaryAssetAt(overlay_root,
+                     "content/android/textures/sky/sky512_bk.tex",
+                     MakeEtc1SkyTexture());
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan", 1), 0);
+
+  AAsset* asset =
+      AAssetManager_open(AAssetManager_fromJava(nullptr, nullptr),
+                         "android/textures/sky/sky512_bk.tex", 0);
+  ASSERT_NE(asset, nullptr);
+  const auto* buffer = static_cast<const unsigned char*>(AAsset_getBuffer(asset));
+  ASSERT_NE(buffer, nullptr);
+  // BC1 format in the KTX header.
+  EXPECT_EQ(buffer[28], 0xf0);
+  EXPECT_EQ(buffer[29], 0x83);
+  AAsset_close(asset);
+}
+
 TEST_F(AssetManagerTest, OpenGlSkyKeepsOriginalFileDescriptor) {
   const auto original = MakeEtc1SkyTexture();
   const std::string name = "assets/android/textures/sky/test.tex";
@@ -298,6 +359,81 @@ TEST_F(AssetManagerTest, CacheSeparatesRuntimeAssetRootChanges) {
                         static_cast<std::size_t>(AAsset_getLength(second))),
             "second-root");
   AAsset_close(second);
+}
+
+// A reporter's session log shows which overlay files Roblox used, once each
+// however often it opens them.
+TEST_F(AssetManagerTest, LogsAnOverlayFileOnceWhenServed) {
+  WriteAsset("content/android/textures/sky/sky512_up.tex", "stock-sky");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/android/textures/sky/sky512_up.tex",
+               "custom-sky");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  ::testing::internal::CaptureStderr();
+  for (int open = 0; open < 2; ++open) {
+    AAsset* asset =
+        AAssetManager_open(manager, "android/textures/sky/sky512_up.tex", 0);
+    ASSERT_NE(asset, nullptr);
+    AAsset_close(asset);
+  }
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  const std::string line = "  [asset] overlay served "
+                           "android/textures/sky/sky512_up.tex from " +
+                           overlay_root +
+                           "/content/android/textures/sky/sky512_up.tex\n";
+  const std::size_t first = log.find(line);
+  ASSERT_NE(first, std::string::npos) << log;
+  EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
+}
+
+// Every sky open is logged, so a log shows whether a game reloads the sky.
+TEST_F(AssetManagerTest, LogsEverySkyOpenWithItsSourceAndFormat) {
+  WriteAsset("content/android/textures/sky/sky512_bk.tex", "stock-sky");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root, "content/android/textures/sky/sky512_bk.tex",
+               "\x89PNG\r\n\x1a\npixels");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  AAssetManager* manager = AAssetManager_fromJava(nullptr, nullptr);
+
+  ::testing::internal::CaptureStderr();
+  for (int open = 0; open < 2; ++open) {
+    AAsset* asset =
+        AAssetManager_open(manager, "android/textures/sky/sky512_bk.tex", 0);
+    ASSERT_NE(asset, nullptr);
+    AAsset_close(asset);
+  }
+  const std::string log = ::testing::internal::GetCapturedStderr();
+  const std::string line =
+      "  [asset] sky open android/textures/sky/sky512_bk.tex: overlay PNG "
+      "14 bytes at ";
+  const std::size_t first = log.find(line);
+  ASSERT_NE(first, std::string::npos) << log;
+  EXPECT_NE(log.find(line, first + 1), std::string::npos) << log;
+}
+
+TEST_F(AssetManagerTest, CustomAssetsOffServesTheStockFile) {
+  WriteAsset("content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
+             "stock-arrow");
+  const std::string overlay_root = MakeTempRoot();
+  ASSERT_FALSE(overlay_root.empty());
+  WriteAssetAt(overlay_root,
+               "content/textures/Cursors/KeyboardMouse/ArrowCursor.png",
+               "custom-overlay-arrow");
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY_DIR", overlay_root.c_str(), 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_OVERLAY", "0", 1), 0);
+
+  AAsset* asset = AAssetManager_open(
+      AAssetManager_fromJava(nullptr, nullptr),
+      "content/textures/Cursors/KeyboardMouse/ArrowCursor.png", 0);
+  ASSERT_NE(asset, nullptr);
+  EXPECT_EQ(std::string(static_cast<const char*>(AAsset_getBuffer(asset)),
+                        static_cast<std::size_t>(AAsset_getLength(asset))),
+            "stock-arrow");
+  AAsset_close(asset);
 }
 
 TEST_F(AssetManagerTest, OverlayAssetTakesPrecedenceOverRootAsset) {

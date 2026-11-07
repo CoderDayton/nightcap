@@ -1,17 +1,23 @@
 #include "compat/bionic_host_libc_runtime.h"
+#include "compat/bionic_stdio_runtime.h"
 
 #include <gtest/gtest.h>
 #include <limits.h>
 #include <locale.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
 #include <climits>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <string>
 #include <thread>
@@ -276,6 +282,207 @@ TEST(BionicHostLibcRuntimeTest, ParsesIntegersInScopedCLocale) {
   EXPECT_EQ(errno, ERANGE);
   EXPECT_STREQ(unsigned_end, "!");
   EXPECT_EQ(uselocale(nullptr), original_locale);
+}
+
+int CallVsscanf(const char *text, const char *format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  const int result = mocktail_bionic_vsscanf(text, format, arguments);
+  va_end(arguments);
+  return result;
+}
+
+int CallVsnprintfChk(char *buffer, size_t size, size_t buffer_size,
+                     const char *format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  const int result = mocktail_bionic___vsnprintf_chk(
+      buffer, size, 0, buffer_size, format, arguments);
+  va_end(arguments);
+  return result;
+}
+
+int CallVsprintfChk(char *buffer, size_t buffer_size, const char *format,
+                    ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  const int result =
+      mocktail_bionic___vsprintf_chk(buffer, 0, buffer_size, format, arguments);
+  va_end(arguments);
+  return result;
+}
+
+int CallVasprintf(char **result, const char *format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  const int length = mocktail_bionic_vasprintf(result, format, arguments);
+  va_end(arguments);
+  return length;
+}
+
+// Android reads and writes numbers with a dot whatever the language. Under a
+// host comma locale glibc reads "0.2" as 0, which cut camera sensitivity to
+// whole numbers (#79). LOCPATH can point at a de_DE built with localedef.
+class CommaLocaleTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    comma_ = newlocale(LC_ALL_MASK, "de_DE.UTF-8", nullptr);
+    if (comma_ == nullptr) {
+      GTEST_SKIP() << "de_DE.UTF-8 is not installed";
+    }
+    previous_ = uselocale(comma_);
+    EXPECT_EQ(strtod("0.2", nullptr), 0.0);
+  }
+
+  void TearDown() override {
+    if (comma_ != nullptr) {
+      EXPECT_EQ(uselocale(nullptr), comma_);
+      uselocale(previous_);
+      freelocale(comma_);
+    }
+  }
+
+  locale_t comma_ = nullptr;
+  locale_t previous_ = nullptr;
+};
+
+TEST_F(CommaLocaleTest, WritesDecimalsWithADot) {
+  std::array<char, 32> buffer{};
+  EXPECT_EQ(mocktail_bionic_snprintf(buffer.data(), buffer.size(), "%.1f",
+                                     0.2),
+            3);
+  EXPECT_STREQ(buffer.data(), "0.2");
+  EXPECT_EQ(CallVsnprintfChk(buffer.data(), buffer.size(), buffer.size(),
+                             "%.1f", 2.3),
+            3);
+  EXPECT_STREQ(buffer.data(), "2.3");
+  EXPECT_EQ(CallVsprintfChk(buffer.data(), buffer.size(), "%.1f", 1.6), 3);
+  EXPECT_STREQ(buffer.data(), "1.6");
+  char *allocated = nullptr;
+  ASSERT_EQ(CallVasprintf(&allocated, "%.3f", 0.001), 5);
+  EXPECT_STREQ(allocated, "0.001");
+  std::free(allocated);
+  EXPECT_STREQ(mocktail_bionic_localeconv()->decimal_point, ".");
+}
+
+TEST_F(CommaLocaleTest, StreamsRoundTripDecimals) {
+  FILE *file = std::tmpfile();
+  ASSERT_NE(file, nullptr);
+  EXPECT_EQ(mocktail_fprintf(file, "%.1f", 0.2), 3);
+  std::rewind(file);
+  float value = 0;
+  EXPECT_EQ(mocktail_fscanf(file, "%f", &value), 1);
+  EXPECT_FLOAT_EQ(value, 0.2f);
+  std::fclose(file);
+}
+
+TEST_F(CommaLocaleTest, NamesDaysInEnglish) {
+  std::tm thursday{};
+  thursday.tm_year = 126;
+  thursday.tm_mon = 10;
+  thursday.tm_mday = 5;
+  thursday.tm_wday = 4;
+  std::array<char, 32> buffer{};
+  ASSERT_GT(mocktail_bionic_strftime(buffer.data(), buffer.size(), "%A %b",
+                                     &thursday),
+            0u);
+  EXPECT_STREQ(buffer.data(), "Thursday Nov");
+  buffer.fill('\0');
+  ASSERT_GT(mocktail_bionic_strftime_l(buffer.data(), buffer.size(), "%A",
+                                       &thursday, comma_),
+            0u);
+  EXPECT_STREQ(buffer.data(), "Thursday");
+}
+
+TEST_F(CommaLocaleTest, PrintfWritesADot) {
+  FILE *capture = std::tmpfile();
+  ASSERT_NE(capture, nullptr);
+  std::fflush(stdout);
+  const int saved_stdout = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_stdout, 0);
+  dup2(fileno(capture), STDOUT_FILENO);
+  const int written = mocktail_bionic_printf("%.1f", 0.2);
+  std::fflush(stdout);
+  dup2(saved_stdout, STDOUT_FILENO);
+  close(saved_stdout);
+  EXPECT_EQ(written, 3);
+  std::rewind(capture);
+  std::array<char, 8> text{};
+  ASSERT_NE(std::fgets(text.data(), text.size(), capture), nullptr);
+  EXPECT_STREQ(text.data(), "0.2");
+  std::fclose(capture);
+}
+
+// A guest asking for the user's locale gets C, as on Android, even when the
+// environment names a comma locale.
+TEST_F(CommaLocaleTest, TheUsersLocaleIsC) {
+  const char *saved = std::getenv("LC_ALL");
+  const std::string restore = saved != nullptr ? saved : "";
+  setenv("LC_ALL", "de_DE.UTF-8", 1);
+  const locale_t guest = mocktail_bionic_newlocale(LC_ALL_MASK, "", nullptr);
+  saved != nullptr ? setenv("LC_ALL", restore.c_str(), 1)
+                   : unsetenv("LC_ALL");
+  ASSERT_NE(guest, nullptr);
+  uselocale(guest);
+  std::array<char, 32> buffer{};
+  std::snprintf(buffer.data(), buffer.size(), "%.1f", 0.2);
+  EXPECT_STREQ(buffer.data(), "0.2");
+  uselocale(comma_);
+  freelocale(guest);
+}
+
+TEST(BionicHostLibcRuntimeTest, NewlocaleFollowsBionic) {
+  errno = 0;
+  EXPECT_EQ(mocktail_bionic_newlocale(LC_ALL_MASK, "de_DE.UTF-8", nullptr),
+            nullptr);
+  EXPECT_EQ(errno, ENOENT);
+  errno = 0;
+  EXPECT_EQ(mocktail_bionic_newlocale(LC_ALL_MASK, nullptr, nullptr), nullptr);
+  EXPECT_EQ(errno, EINVAL);
+  errno = 0;
+  EXPECT_EQ(mocktail_bionic_newlocale(1 << 6, "C", nullptr), nullptr);
+  EXPECT_EQ(errno, EINVAL);
+
+  const locale_t original = uselocale(nullptr);
+  const locale_t base = newlocale(LC_ALL_MASK, "C", nullptr);
+  ASSERT_NE(base, nullptr);
+  const locale_t utf8 = mocktail_bionic_newlocale(LC_NUMERIC_MASK, "", base);
+  ASSERT_NE(utf8, nullptr);
+  EXPECT_NE(utf8, base);
+  uselocale(utf8);
+  EXPECT_GT(MB_CUR_MAX, 1u);
+  const locale_t plain = mocktail_bionic_newlocale(LC_ALL_MASK, "POSIX", nullptr);
+  ASSERT_NE(plain, nullptr);
+  uselocale(plain);
+  EXPECT_EQ(MB_CUR_MAX, 1u);
+  uselocale(original);
+  freelocale(plain);
+  freelocale(utf8);
+  freelocale(base);
+}
+
+TEST(BionicHostLibcRuntimeDeathTest, FortifiedFormattingStopsAnOverflow) {
+  std::array<char, 4> buffer{};
+  EXPECT_DEATH(CallVsprintfChk(buffer.data(), buffer.size(), "%s", "toolong"),
+               "vsprintf");
+  EXPECT_DEATH(CallVsnprintfChk(buffer.data(), 8, buffer.size(), "%d", 1),
+               "vsnprintf");
+}
+
+TEST_F(CommaLocaleTest, ReadsDecimalsWithADot) {
+  char *end = nullptr;
+  EXPECT_DOUBLE_EQ(mocktail_bionic_strtod("0.2x", &end), 0.2);
+  EXPECT_STREQ(end, "x");
+  EXPECT_FLOAT_EQ(mocktail_bionic_strtof("2.3", nullptr), 2.3f);
+  EXPECT_DOUBLE_EQ(mocktail_bionic_atof("1.6"), 1.6);
+  float first = 0;
+  float second = 0;
+  EXPECT_EQ(mocktail_bionic_sscanf("0.2 1.6", "%f %f", &first, &second), 2);
+  EXPECT_FLOAT_EQ(first, 0.2f);
+  EXPECT_FLOAT_EQ(second, 1.6f);
+  double third = 0;
+  EXPECT_EQ(CallVsscanf("0.001", "%lf", &third), 1);
+  EXPECT_DOUBLE_EQ(third, 0.001);
 }
 
 TEST(BionicHostLibcRuntimeTest, FortifiedReadlinkAcceptsInBoundsRequest) {

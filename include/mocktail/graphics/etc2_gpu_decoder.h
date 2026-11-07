@@ -26,6 +26,9 @@ struct Etc2GpuJob {
   // The source holds RGBA8 texels, a block row being source_row_blocks * 4
   // texels wide, instead of ETC2 blocks. Needs transcode and a colour format.
   bool rgba_source = false;
+  // BC7 with one fit per mode and fewer modes: cheaper, slightly lower
+  // quality. Only for transcode jobs.
+  bool fast = false;
   // Scales RGBA8 texels to scale_width x scale_height as ScaleRgba does and
   // writes them padded to blocks_wide x blocks_high blocks, repeating the
   // edge texels. The source is a header of kEtc2ScaleHeaderBytes: texel
@@ -49,6 +52,8 @@ VkDeviceSize Etc2GpuOutputBytes(const Etc2GpuJob& job);
 struct Etc2GpuSpeed {
   // ETC2 RGBA8 blocks transcoded to BC7.
   double transcode_ns = 0;
+  // The same with Etc2GpuJob::fast.
+  double fast_transcode_ns = 0;
   // A small texture decoded, upscaled 4x and encoded to BC7, per output
   // block.
   double upscale_ns = 0;

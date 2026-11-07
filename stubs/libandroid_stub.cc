@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <limits>
@@ -34,6 +35,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Read-only asset access
@@ -156,6 +158,53 @@ ResolvedAsset CacheResolvedAsset(const std::string& cache_key,
   return resolved;
 }
 
+// Once per file, as Roblox opens some of them every frame.
+void LogOverlayServed(const char* filename, const std::string& path) {
+  static std::mutex mutex;
+  static std::unordered_set<std::string> logged;
+  {
+    std::scoped_lock lock(mutex);
+    if (!logged.insert(path).second) {
+      return;
+    }
+  }
+  std::fprintf(stderr, "  [asset] overlay served %s from %s\n", filename,
+               path.c_str());
+}
+
+const char* SkyFormat(const std::vector<unsigned char>& data) {
+  const auto starts = [&data](std::string_view magic, std::size_t at = 0) {
+    return data.size() >= at + magic.size() &&
+           std::memcmp(data.data() + at, magic.data(), magic.size()) == 0;
+  };
+  if (starts("\x89PNG")) return "PNG";
+  if (starts("\xff\xd8\xff")) return "JPEG";
+  if (starts("DDS ")) return "DDS";
+  if (starts("\xabKTX 11")) return "KTX";
+  if (starts("RIFF") && starts("WEBP", 8)) return "WebP";
+  return "unknown format";
+}
+
+// Every open, unlike other overlay files, so a log shows whether a game
+// reloads the sky. Capped in case a game reopens it every frame.
+void LogSkyOpen(const char* filename, bool is_overlay,
+                const std::vector<unsigned char>& data) {
+  if (std::strstr(filename, "textures/sky/") == nullptr) return;
+  static std::atomic<int> logged{0};
+  if (logged.fetch_add(1) >= 240) return;
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+  const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now.time_since_epoch()).count() % 1000;
+  std::tm utc{};
+  gmtime_r(&seconds, &utc);
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &utc);
+  std::fprintf(stderr, "  [asset] sky open %s: %s %s %zu bytes at %s.%03lldZ\n",
+               filename, is_overlay ? "overlay" : "stock", SkyFormat(data),
+               data.size(), stamp, static_cast<long long>(millis));
+}
+
 ResolvedAsset ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
@@ -182,9 +231,19 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
     }
   }
   const char* overlay_env = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY_DIR");
+  const char* overlay_switch = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY");
   const std::string overlay =
-      overlay_env != nullptr ? overlay_env : "rbx_bin/asset_overlay";
-  const std::string cache_key = AssetCacheKey(root, overlay, requested);
+      overlay_switch != nullptr && std::string_view(overlay_switch) == "0"
+          ? std::string()
+      : overlay_env != nullptr ? overlay_env
+                               : "rbx_bin/asset_overlay";
+  // The font picked in Settings, under fonts the user put in the overlay.
+  const char* font_overlay_env = GetEnvNonEmpty("MOCKTAIL_FONT_OVERLAY_DIR");
+  const std::string font_overlay =
+      overlay.empty() || font_overlay_env == nullptr ? std::string()
+                                                     : font_overlay_env;
+  const std::string cache_key =
+      AssetCacheKey(root, overlay + '\0' + font_overlay, requested);
 
   {
     std::scoped_lock lock(g_asset_lookup_cache.mutex);
@@ -199,14 +258,17 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
 
   const std::string stripped(StripAndroidAssetPrefix(requested_view));
 
-  if (!overlay.empty()) {
+  for (const std::string& dir : {overlay, font_overlay}) {
+    if (dir.empty()) {
+      continue;
+    }
     const std::vector<std::string> overlay_candidates = {
-        overlay + "/" + requested,
-        overlay + "/" + stripped,
-        overlay + "/content/" + requested,
-        overlay + "/content/" + stripped,
-        overlay + "/ExtraContent/" + requested,
-        overlay + "/ExtraContent/" + stripped,
+        dir + "/" + requested,
+        dir + "/" + stripped,
+        dir + "/content/" + requested,
+        dir + "/content/" + stripped,
+        dir + "/ExtraContent/" + requested,
+        dir + "/ExtraContent/" + stripped,
     };
     for (const std::string& candidate : overlay_candidates) {
       if (FileExists(candidate)) {
@@ -423,6 +485,10 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
     delete asset;
     return nullptr;
   }
+  if (resolved.is_overlay) {
+    LogOverlayServed(filename, resolved.path);
+  }
+  LogSkyOpen(filename, resolved.is_overlay, asset->data);
   if (MocktailUsesDirectVulkan()) {
     asset->transcoded =
         libc_shim::TranscodeEtc1SkyTextureForVulkan(resolved.path.c_str(),

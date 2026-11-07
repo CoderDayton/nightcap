@@ -33,9 +33,14 @@ enum class SettingKind {
   kDevice,
   // A row that opens the editor for fflags.json.
   kEditor,
-  // A row that opens the folder config.yaml is in.
+  // A row that opens a folder: config_folder, asset_folder or
+  // textures_folder.
   kFolder,
   kCache,
+  // Installs a sky pack into the asset overlay, or removes it.
+  kSky,
+  // Picks the font that replaces Roblox's, or goes back to Roblox's.
+  kFont,
 };
 
 struct SettingChoice {
@@ -77,6 +82,9 @@ struct SettingsGroup {
   // Shown under the title. Text rows have no subtitle, so their format is
   // explained here.
   std::string_view description = {};
+  // Settings from this index on sit in a collapsed More row at the end of
+  // the group. 0 for none.
+  std::size_t more_from = 0;
 };
 
 struct SettingsPage {
