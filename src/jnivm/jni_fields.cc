@@ -6,14 +6,35 @@ namespace jnivm::internal {
 namespace {
 std::unordered_set<std::string> g_field_names;
 std::unordered_map<std::string, jobject> g_static_object_fields;
+
+// unordered_set keeps element addresses across rehashes, so views stay valid.
+std::string_view InternFieldName(std::string_view name) {
+  return *g_field_names.emplace(name).first;
+}
+
+// Steady-state writes hit an existing key and skip interning.
+template <typename Map>
+typename Map::mapped_type& FieldSlot(Map& fields, const char* name) {
+  const std::string_view key(name);
+  if (const auto found = fields.find(key); found != fields.end()) {
+    return found->second;
+  }
+  return fields[InternFieldName(key)];
+}
+
+template <typename Map>
+typename Map::mapped_type FieldValueOr(const Map& fields, const char* name,
+                                       typename Map::mapped_type fallback) {
+  const auto found = fields.find(std::string_view(name));
+  return found == fields.end() ? fallback : found->second;
+}
 }  // namespace
 
 jfieldID StoreFieldId(const char* name) {
   if (name == nullptr) return nullptr;
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  const auto stored = g_field_names.emplace(name).first;
-  // unordered_set preserves references to its elements across rehashes.
-  return reinterpret_cast<jfieldID>(const_cast<char*>(stored->c_str()));
+  return reinterpret_cast<jfieldID>(
+      const_cast<char*>(InternFieldName(name).data()));
 }
 
 void SetStaticObjectFieldRaw(const char* name, jobject value) {
@@ -40,10 +61,9 @@ void SetObjectFieldRaw(jobject obj, const char* field_name, jobject value) {
   PseudoJavaObject* pseudo_object = PseudoObjectFromRef(obj);
   if (pseudo_object && field_name) {
     RetainJniReference(value);
-    auto it = pseudo_object->object_fields.find(field_name);
-    jobject prev =
-        (it != pseudo_object->object_fields.end()) ? it->second : nullptr;
-    pseudo_object->object_fields[field_name] = value;
+    jobject& slot = FieldSlot(pseudo_object->object_fields, field_name);
+    const jobject prev = slot;
+    slot = value;
     if (prev != nullptr) {
       ReleaseJniReference(prev);
     }
@@ -54,7 +74,7 @@ void SetIntFieldRaw(jobject obj, const char* field_name, jint value) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   PseudoJavaObject* pseudo_object = PseudoObjectFromRef(obj);
   if (pseudo_object && field_name) {
-    pseudo_object->int_fields[field_name] = value;
+    FieldSlot(pseudo_object->int_fields, field_name) = value;
   }
 }
 
@@ -62,7 +82,7 @@ void SetLongFieldRaw(jobject obj, const char* field_name, jlong value) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   PseudoJavaObject* pseudo_object = PseudoObjectFromRef(obj);
   if (pseudo_object && field_name) {
-    pseudo_object->long_fields[field_name] = value;
+    FieldSlot(pseudo_object->long_fields, field_name) = value;
   }
 }
 
@@ -70,7 +90,7 @@ void SetFloatFieldRaw(jobject obj, const char* field_name, jfloat value) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   PseudoJavaObject* pseudo_object = PseudoObjectFromRef(obj);
   if (pseudo_object && field_name) {
-    pseudo_object->float_fields[field_name] = value;
+    FieldSlot(pseudo_object->float_fields, field_name) = value;
   }
 }
 
@@ -78,7 +98,7 @@ void SetBooleanFieldRaw(jobject obj, const char* field_name, jboolean value) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   PseudoJavaObject* pseudo_object = PseudoObjectFromRef(obj);
   if (pseudo_object && field_name) {
-    pseudo_object->boolean_fields[field_name] = value;
+    FieldSlot(pseudo_object->boolean_fields, field_name) = value;
   }
 }
 
@@ -88,7 +108,7 @@ jobject ObjectFieldValue(jobject obj, const char* field_name) {
   if (!pseudo_object || !field_name) {
     return nullptr;
   }
-  auto it = pseudo_object->object_fields.find(field_name);
+  auto it = pseudo_object->object_fields.find(std::string_view(field_name));
   return it == pseudo_object->object_fields.end()
              ? nullptr
              : NewLocalJniReference(it->second);
@@ -100,8 +120,7 @@ jint IntFieldValue(jobject obj, const char* field_name) {
   if (!pseudo_object || !field_name) {
     return 0;
   }
-  auto it = pseudo_object->int_fields.find(field_name);
-  return it == pseudo_object->int_fields.end() ? 0 : it->second;
+  return FieldValueOr(pseudo_object->int_fields, field_name, 0);
 }
 
 jboolean BooleanFieldValue(jobject obj, const char* field_name) {
@@ -110,8 +129,8 @@ jboolean BooleanFieldValue(jobject obj, const char* field_name) {
   if (!pseudo_object || !field_name) {
     return JNI_FALSE;
   }
-  auto it = pseudo_object->boolean_fields.find(field_name);
-  return it == pseudo_object->boolean_fields.end() ? JNI_FALSE : it->second;
+  return FieldValueOr(pseudo_object->boolean_fields, field_name,
+                      static_cast<jboolean>(JNI_FALSE));
 }
 
 jlong LongFieldValue(jobject obj, const char* field_name) {
@@ -120,8 +139,7 @@ jlong LongFieldValue(jobject obj, const char* field_name) {
   if (!pseudo_object || !field_name) {
     return 0;
   }
-  auto it = pseudo_object->long_fields.find(field_name);
-  return it == pseudo_object->long_fields.end() ? 0 : it->second;
+  return FieldValueOr(pseudo_object->long_fields, field_name, jlong{0});
 }
 
 jfloat FloatFieldValue(jobject obj, const char* field_name) {
@@ -130,8 +148,7 @@ jfloat FloatFieldValue(jobject obj, const char* field_name) {
   if (!pseudo_object || !field_name) {
     return 0.0f;
   }
-  auto it = pseudo_object->float_fields.find(field_name);
-  return it == pseudo_object->float_fields.end() ? 0.0f : it->second;
+  return FieldValueOr(pseudo_object->float_fields, field_name, 0.0f);
 }
 
 }  // namespace jnivm::internal

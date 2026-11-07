@@ -172,10 +172,16 @@ static inline bool IsRawStringPointer(jstring str) {
   return true;
 }
 
+// Fallback classes are never freed, so one lookup serves every string.
+static std::shared_ptr<Class> StringClass() {
+  static const std::shared_ptr<Class> cls =
+      FallbackClassForName("java/lang/String");
+  return cls;
+}
+
 jstring MakeString(const char* utf) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  auto cls = FallbackClassForName("java/lang/String");
-  auto object = std::make_unique<PseudoStringObject>(std::move(cls), utf);
+  auto object = std::make_unique<PseudoStringObject>(StringClass(), utf);
   jobject handle = StoreObject(std::move(object));
   jstring str = reinterpret_cast<jstring>(handle);
   g_known_strings.insert(str);
@@ -184,9 +190,8 @@ jstring MakeString(const char* utf) {
 
 jstring MakeUtf16String(const jchar* utf16, jsize length) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  auto cls = FallbackClassForName("java/lang/String");
   auto object =
-      std::make_unique<PseudoStringObject>(std::move(cls), utf16, length);
+      std::make_unique<PseudoStringObject>(StringClass(), utf16, length);
   jobject handle = StoreObject(std::move(object));
   jstring str = reinterpret_cast<jstring>(handle);
   g_known_strings.insert(str);

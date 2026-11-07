@@ -402,9 +402,7 @@ jobjectArray MakeObjectArray(jsize len, jobject init) {
   if (len > 0) {
     array->objects.resize(static_cast<std::size_t>(len), init);
     if (init != nullptr) {
-      for (jsize index = 0; index < len; ++index) {
-        RetainJniReference(init);
-      }
+      g_jni_ref_counts[init] += static_cast<uint32_t>(len);
     }
   }
   jobjectArray ref = reinterpret_cast<jobjectArray>(array.get());
