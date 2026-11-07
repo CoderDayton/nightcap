@@ -546,6 +546,16 @@ struct RobloxTextInputJniBridge::State {
   }
 
   bool Drain() {
+    // Idle pumps have nothing to do. Return before making the deque below,
+    // which allocates when constructed.
+    if (!applied_active) {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (commands.empty() && terminal_error.empty()) {
+        pending_text_bytes = 0;
+        geometry_refresh_pumps = 0;
+        return true;
+      }
+    }
     std::deque<Command> pending;
     bool terminal = false;
     {
