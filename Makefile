@@ -160,7 +160,7 @@ payload-rollback: build ## Atomically restore the previous-good payload
 support-bundle: ## Create a private sanitized diagnostics archive
 	@./scripts/collect_support_bundle.sh --context manual --reason manual-request
 
-submodules: ## Initialise git submodules (libjnivm, Vulkan-Headers)
+submodules: ## Initialise git submodules (Vulkan-Headers)
 	@./scripts/add_submodules.sh
 
 clean: ## Remove the build and test build directories

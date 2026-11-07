@@ -40,13 +40,7 @@
 }:
 let
   # submodules are not part of the flake source tree
-  # so these two vendored dependencies are fetched from their pinned upstream revisions
-  libjnivmSrc = fetchFromGitHub {
-    owner = "ChristopherHX";
-    repo = "libjnivm";
-    rev = "f24b98c198fcc5c59a68d1efadd3f5791eb01c2e";
-    hash = "sha256-K4+1Zo7AJIouIqnHn2ZE4GyrNrYOczmWYblLAnGYA5w=";
-  };
+  # so Vulkan-Headers is fetched from its pinned upstream revision
   vulkanHeadersSrc = fetchFromGitHub {
     owner = "KhronosGroup";
     repo = "Vulkan-Headers";
@@ -112,8 +106,7 @@ stdenv.mkDerivation (finalAttrs: {
   ];
 
   preConfigure = ''
-    rm -rf third_party/libjnivm third_party/Vulkan-Headers
-    cp -r --no-preserve=mode ${libjnivmSrc} third_party/libjnivm
+    rm -rf third_party/Vulkan-Headers
     cp -r --no-preserve=mode ${vulkanHeadersSrc} third_party/Vulkan-Headers
   '';
 

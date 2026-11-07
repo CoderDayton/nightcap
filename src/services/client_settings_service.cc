@@ -14,6 +14,7 @@
 #include <system_error>
 #include <utility>
 
+#include "mocktail/scoped_file_descriptor.h"
 #include "runtime/runtime_paths.h"
 
 namespace mocktail {
@@ -22,19 +23,6 @@ namespace {
 
 constexpr const char kEmptyDefaults[] = "{\"applicationSettings\":{}}";
 
-class ScopedFileDescriptor final {
- public:
-  explicit ScopedFileDescriptor(int descriptor) : descriptor_(descriptor) {}
-  ~ScopedFileDescriptor() { close(descriptor_); }
-
-  ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
-  ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
-
-  int get() const { return descriptor_; }
-
- private:
-  int descriptor_;
-};
 
 bool IsSupportedFflagValue(const nlohmann::json& value) {
   return value.is_string() || value.is_boolean() ||
@@ -337,25 +325,6 @@ bool ClientSettingsService::IsValidJson(const std::string& content) {
   return !value.is_discarded() && value.is_object();
 }
 
-const char* ClientSettingsSourceName(ClientSettingsSource source) {
-  switch (source) {
-    case ClientSettingsSource::kExplicitJson:
-      return "explicit JSON";
-    case ClientSettingsSource::kExplicitFile:
-      return "explicit file";
-    case ClientSettingsSource::kBundledFile:
-      return "bundled file";
-    case ClientSettingsSource::kSafeDefaults:
-      return "safe defaults";
-    case ClientSettingsSource::kDownloaded:
-      return "download";
-    case ClientSettingsSource::kCache:
-      return "cache";
-    case ClientSettingsSource::kEmptyDefaults:
-      return "empty defaults";
-  }
-  return "unknown";
-}
 
 }  // namespace services
 }  // namespace mocktail

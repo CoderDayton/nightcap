@@ -1,8 +1,8 @@
 #include "jni_strings.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
-#include <iostream>
 #include <limits>
 
 #include "jni_references.h"
@@ -83,6 +83,8 @@ std::vector<jchar> ModifiedUtf8ToUtf16(const char* input) {
   }
   const auto* bytes = reinterpret_cast<const std::uint8_t*>(input);
   const std::size_t size = std::strlen(input);
+  // Each byte yields at most one UTF-16 unit.
+  output.reserve(size);
   for (std::size_t index = 0; index < size;) {
     const std::uint8_t first = bytes[index];
     std::uint32_t code_point = 0xfffd;
@@ -131,7 +133,7 @@ std::vector<jchar> ModifiedUtf8ToUtf16(const char* input) {
   return output;
 }
 
-static std::vector<jchar> MakeUtf16Vector(const jchar* utf16, jsize length) {
+std::vector<jchar> MakeUtf16Vector(const jchar* utf16, jsize length) {
   if (utf16 != nullptr && length > 0) {
     return std::vector<jchar>(utf16, utf16 + length);
   }
@@ -246,8 +248,9 @@ std::string JavaStringUtf8Bytes(const std::vector<jchar>& utf16) {
 jbyteArray JavaStringGetUtf8Bytes(jobject obj, jstring charset_name) {
   if (!IsUtf8CharsetName(charset_name)) {
     if (TraceEnabled()) {
-      std::cerr << "  [JNI] java/lang/String.getBytes rejected unsupported "
-                   "charset\n";
+      std::fprintf(stderr,
+                   "  [JNI] java/lang/String.getBytes rejected unsupported "
+                   "charset\n");
     }
     return nullptr;
   }

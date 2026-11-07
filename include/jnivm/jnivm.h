@@ -22,7 +22,7 @@ public:
   explicit Object(std::shared_ptr<Class> klass) : klass_(std::move(klass)) {}
   virtual ~Object() = default;
 
-  std::shared_ptr<Class> GetClass() const { return klass_; }
+  const std::shared_ptr<Class> &GetClass() const { return klass_; }
 
 private:
   std::shared_ptr<Class> klass_;
@@ -251,10 +251,6 @@ public:
   const MethodCallback *FindMethod(const std::string &method_name,
                                    const std::string &signature) const;
 
-  const std::unordered_map<std::string, MethodCallback> &GetMethods() const {
-    return methods_;
-  }
-
 private:
   std::string name_;
 
@@ -371,7 +367,6 @@ public:
                                     std::size_t *direct_buffer_capacity);
   bool DispatchWebRtcAudioRecordStart(const void *identity);
   bool DispatchWebRtcAudioRecordStop(const void *identity);
-  void DispatchWebRtcAudioRecordClose(const void *identity);
   void DispatchWebRtcAudioRecordData(const void *identity,
                                      std::size_t size_bytes);
 
@@ -390,7 +385,6 @@ public:
   int DispatchWebRtcAudioTrackBufferSizeFrames(const void *identity);
   bool DispatchWebRtcAudioTrackStart(const void *identity);
   bool DispatchWebRtcAudioTrackStop(const void *identity);
-  void DispatchWebRtcAudioTrackClose(const void *identity);
   void DispatchWebRtcAudioTrackData(const void *identity,
                                     std::size_t size_bytes);
 

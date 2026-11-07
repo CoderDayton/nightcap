@@ -90,7 +90,6 @@ target_compile_definitions(mocktail_platform_sdl PRIVATE
 add_library(Mocktail::PlatformSdl ALIAS mocktail_platform_sdl)
 
 add_library(mocktail_graphics_foundation STATIC
-  ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/graphics_backend.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/angle_probe.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/bionic_egl_bridge.cc
 )

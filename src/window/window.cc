@@ -2448,34 +2448,31 @@ bool PumpEvents() {
     }
     const bool is_window_event = event.type >= SDL_EVENT_WINDOW_FIRST &&
                                  event.type <= SDL_EVENT_WINDOW_LAST;
-    if (event.type == SDL_EVENT_QUIT) {
-      if (!ShouldIgnoreCloseRequest()) {
-        g_state.quit_requested = true;
+    if ((event.type == SDL_EVENT_QUIT ||
+         event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) &&
+        !ShouldIgnoreCloseRequest()) {
+      g_state.quit_requested = true;
+    }
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+      if (g_text_input_owner != nullptr) {
+        g_text_input_owner->OnFocusLost();
+      }
+      if (g_pointer_capture_owner != nullptr &&
+          !g_pointer_capture_owner->OnFocusLost()) {
+        fprintf(stderr,
+                "  [input] failed to release pointer after focus loss\n");
       }
     }
-    if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
-      if (!ShouldIgnoreCloseRequest()) {
-        g_state.quit_requested = true;
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+      if (g_text_input_owner != nullptr) {
+        g_text_input_owner->OnFocusGained();
       }
-    }
-    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST &&
-        g_text_input_owner != nullptr) {
-      g_text_input_owner->OnFocusLost();
-    }
-    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST &&
-        g_pointer_capture_owner != nullptr &&
-        !g_pointer_capture_owner->OnFocusLost()) {
-      fprintf(stderr, "  [input] failed to release pointer after focus loss\n");
-    }
-    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED &&
-        g_text_input_owner != nullptr) {
-      g_text_input_owner->OnFocusGained();
-    }
-    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED &&
-        g_pointer_capture_owner != nullptr &&
-        !g_pointer_capture_owner->OnFocusGained(
-            g_text_input_owner != nullptr && g_text_input_owner->active())) {
-      fprintf(stderr, "  [input] failed to restore pointer after focus gain\n");
+      if (g_pointer_capture_owner != nullptr &&
+          !g_pointer_capture_owner->OnFocusGained(
+              g_text_input_owner != nullptr && g_text_input_owner->active())) {
+        fprintf(stderr,
+                "  [input] failed to restore pointer after focus gain\n");
+      }
     }
 
     const bool geometry_changed = event.type == SDL_EVENT_WINDOW_MOVED ||

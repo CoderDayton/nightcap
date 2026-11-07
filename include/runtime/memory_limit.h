@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "runtime/owned_pthread.h"
 
@@ -33,27 +32,7 @@ ProcessMemoryUsage ReadCurrentProcessMemory();
 // Entries in /proc/self/fd, or -1 when it cannot be read.
 int CountOpenFileDescriptors();
 
-enum class CgroupMemoryLimitStatus {
-  kActive,
-  kUnavailable,
-  kExecFailed,
-};
-
-struct CgroupMemoryLimitResult {
-  CgroupMemoryLimitStatus status = CgroupMemoryLimitStatus::kUnavailable;
-  std::string detail;
-
-  bool active() const { return status == CgroupMemoryLimitStatus::kActive; }
-};
-
-// Compatibility hook for the former cgroup re-exec path. Automatic cgroup
-// scope creation is disabled, so callers continue with the watchdog fallback.
-CgroupMemoryLimitResult MaybeReexecWithCgroupMemoryLimit(
-    int argc, char* const argv[], std::uint64_t limit_bytes,
-    const std::vector<std::string>* reexec_arguments = nullptr);
-
-// Portable fallback for Linux systems where a delegated cgroup cannot be
-// created. It watches the current process's actual RSS plus swap and exits with
+// It watches the current process's actual RSS plus swap and exits with
 // status 137 before a runaway guest can keep exhausting host memory.
 class MemoryLimitWatchdog final {
  public:

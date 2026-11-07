@@ -75,16 +75,6 @@ TEST(CommandLineTest, AcceptsDesktopUriWithoutBreakingMenuLaunch) {
   EXPECT_FALSE(result.options.launch_request_json.empty());
   EXPECT_EQ(result.options.launch_argument_index, 1);
 
-  std::vector<std::string> reexec_arguments;
-  std::string reexec_error;
-  ASSERT_TRUE(BuildCommandLineReexecArguments(result.options, arguments.size(),
-                                              arguments.data(),
-                                              &reexec_arguments, &reexec_error))
-      << reexec_error;
-  ASSERT_EQ(reexec_arguments.size(), 2u);
-  EXPECT_EQ(reexec_arguments[0], "--launch-request-json");
-  EXPECT_EQ(reexec_arguments[1], result.options.launch_request_json);
-
   const std::array<const char*, 1> menu_launch = {"mocktail"};
   const CommandLineParseResult menu_result =
       ParseCommandLine(menu_launch.size(), menu_launch.data());
@@ -93,7 +83,7 @@ TEST(CommandLineTest, AcceptsDesktopUriWithoutBreakingMenuLaunch) {
   EXPECT_TRUE(menu_result.options.launch_request_json.empty());
 }
 
-TEST(CommandLineTest, RedactsBrowserTicketAcrossCgroupReexec) {
+TEST(CommandLineTest, RedactsBrowserTicketFromLaunchRequest) {
   constexpr char kSecret[] = "SECRET-BROWSER-GAMEINFO-TICKET";
   constexpr char kLaunchUri[] =
       "roblox-player:1+launchmode:play+"
@@ -108,21 +98,11 @@ TEST(CommandLineTest, RedactsBrowserTicketAcrossCgroupReexec) {
   ASSERT_EQ(result.options.launch_request_json.find(kSecret),
             std::string::npos);
 
-  std::vector<std::string> reexec_arguments;
-  std::string error;
-  ASSERT_TRUE(BuildCommandLineReexecArguments(result.options, arguments.size(),
-                                              arguments.data(),
-                                              &reexec_arguments, &error))
-      << error;
-  ASSERT_EQ(reexec_arguments.size(), 2u);
-  EXPECT_EQ(reexec_arguments[0], "--launch-request-json");
-  EXPECT_EQ(reexec_arguments[1], result.options.launch_request_json);
-  EXPECT_EQ(reexec_arguments[1].find(kSecret), std::string::npos);
-
-  const std::array<const char*, 3> reexec = {
-      "mocktail", reexec_arguments[0].c_str(), reexec_arguments[1].c_str()};
+  const std::array<const char*, 3> internal = {
+      "mocktail", "--launch-request-json",
+      result.options.launch_request_json.c_str()};
   const CommandLineParseResult reparsed =
-      ParseCommandLine(reexec.size(), reexec.data());
+      ParseCommandLine(internal.size(), internal.data());
   ASSERT_TRUE(reparsed) << reparsed.error;
   EXPECT_FALSE(reparsed.options.raw_launch_argument.empty());
   EXPECT_EQ(reparsed.options.launch_argument_index, 2);

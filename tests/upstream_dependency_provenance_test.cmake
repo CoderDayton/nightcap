@@ -57,10 +57,6 @@ function(read_index_entry output dependency_path)
   set("${output}" "${entry}" PARENT_SCOPE)
 endfunction()
 
-read_dependency_field(libjnivm_mode libjnivm mode)
-read_dependency_field(libjnivm_url libjnivm url)
-read_dependency_field(libjnivm_commit libjnivm commit)
-read_dependency_field(libjnivm_tree libjnivm tree)
 read_dependency_field(jni_headers_mode OpenJDK-JNI-Headers mode)
 read_dependency_field(jni_headers_url OpenJDK-JNI-Headers url)
 read_dependency_field(jni_headers_tag OpenJDK-JNI-Headers tag)
@@ -114,8 +110,6 @@ string(JSON angle_license_blob GET "${manifest_json}" dependencies
 string(JSON angle_license_sha256 GET "${manifest_json}" dependencies
        ANGLE-Headers files LICENSE sha256)
 
-require_git_object_id("libjnivm commit" "${libjnivm_commit}")
-require_git_object_id("libjnivm tree" "${libjnivm_tree}")
 require_git_object_id("OpenJDK JNI headers upstream commit"
                       "${jni_headers_commit}")
 foreach(jni_file IN ITEMS
@@ -159,8 +153,7 @@ if(NOT linker_core_url STREQUAL
   message(FATAL_ERROR "android_core canonical upstream URL differs")
 endif()
 
-if(NOT libjnivm_mode STREQUAL "git-submodule" OR
-   NOT vulkan_mode STREQUAL "git-submodule" OR
+if(NOT vulkan_mode STREQUAL "git-submodule" OR
    NOT jni_headers_mode STREQUAL "vendored-unmodified-header-snapshot" OR
    NOT linker_mode STREQUAL "vendored-patched-snapshot" OR
    NOT angle_mode STREQUAL "vendored-unmodified-header-snapshot")
@@ -226,11 +219,6 @@ if(EXISTS "${angle_root}/.git")
   message(FATAL_ERROR "vendored ANGLE header snapshot contains Git metadata")
 endif()
 
-read_index_entry(libjnivm_entry third_party/libjnivm)
-if(NOT libjnivm_entry MATCHES "^160000 commit ${libjnivm_commit}")
-  message(FATAL_ERROR "libjnivm is not pinned as the declared Git submodule")
-endif()
-
 read_index_entry(vulkan_entry third_party/Vulkan-Headers)
 if(NOT vulkan_entry MATCHES "^160000 commit ${vulkan_commit}")
   message(FATAL_ERROR "Vulkan-Headers is not pinned as the declared Git submodule")
@@ -261,18 +249,6 @@ foreach(core_subtree IN ITEMS base libcutils liblog libziparchive)
             "vendored android_core ${core_subtree} tree differs from provenance")
   endif()
 endforeach()
-
-execute_process(
-  COMMAND git -C "${MOCKTAIL_SOURCE_DIR}" config -f .gitmodules --get
-          submodule.third_party/libjnivm.url
-  RESULT_VARIABLE libjnivm_url_result
-  OUTPUT_VARIABLE configured_libjnivm_url
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT libjnivm_url_result EQUAL 0 OR
-   NOT configured_libjnivm_url STREQUAL libjnivm_url)
-  message(FATAL_ERROR "libjnivm submodule URL differs from the lock manifest")
-endif()
 
 execute_process(
   COMMAND git -C "${MOCKTAIL_SOURCE_DIR}" config -f .gitmodules --get
@@ -329,28 +305,6 @@ execute_process(
 )
 if(NOT linker_patch_result EQUAL 0)
   message(FATAL_ERROR "vendored mcpelauncher-linker does not contain the declared patch")
-endif()
-
-execute_process(
-  COMMAND git -C "${MOCKTAIL_SOURCE_DIR}/third_party/libjnivm" rev-parse HEAD
-  RESULT_VARIABLE checkout_result
-  OUTPUT_VARIABLE checkout_commit
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT checkout_result EQUAL 0 OR NOT checkout_commit STREQUAL libjnivm_commit)
-  message(FATAL_ERROR "libjnivm checkout is unavailable or not at the pinned commit")
-endif()
-
-execute_process(
-  COMMAND git -C "${MOCKTAIL_SOURCE_DIR}/third_party/libjnivm" rev-parse
-          "HEAD^{tree}"
-  RESULT_VARIABLE libjnivm_tree_result
-  OUTPUT_VARIABLE checkout_libjnivm_tree
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT libjnivm_tree_result EQUAL 0 OR
-   NOT checkout_libjnivm_tree STREQUAL libjnivm_tree)
-  message(FATAL_ERROR "libjnivm checkout tree differs from the lock manifest")
 endif()
 
 execute_process(

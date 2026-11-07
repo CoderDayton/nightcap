@@ -81,29 +81,6 @@ TEST(MemoryLimitTest, RejectsDisabledOrDuplicateWatchdogStart) {
   watchdog.Stop();
 }
 
-TEST(MemoryLimitTest, ReexecutesInsideVerifiedCgroupV2LimitWhenAvailable) {
-  constexpr std::uint64_t kTestLimitBytes = 64ULL * 1024ULL * 1024ULL;
-  constexpr char kChildMarker[] = "MOCKTAIL_MEMORY_LIMIT_TEST_CHILD";
-  char program[] = "memory_limit_test";
-  char filter[] =
-      "--gtest_filter=MemoryLimitTest."
-      "ReexecutesInsideVerifiedCgroupV2LimitWhenAvailable";
-  char* arguments[] = {program, filter, nullptr};
-
-  if (getenv(kChildMarker) == nullptr) {
-    ASSERT_EQ(setenv(kChildMarker, "1", 1), 0);
-  }
-  const CgroupMemoryLimitResult result =
-      MaybeReexecWithCgroupMemoryLimit(2, arguments, kTestLimitBytes);
-  if (result.status == CgroupMemoryLimitStatus::kUnavailable) {
-    (void)unsetenv(kChildMarker);
-    GTEST_SKIP() << result.detail;
-  }
-  ASSERT_EQ(result.status, CgroupMemoryLimitStatus::kActive) << result.detail;
-  EXPECT_TRUE(result.active());
-  (void)unsetenv(kChildMarker);
-}
-
 TEST(MemoryLimitTest, TerminatesOnlyGuardedProcessWithExit137) {
   const pid_t child = fork();
   ASSERT_GE(child, 0);

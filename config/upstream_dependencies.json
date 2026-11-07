@@ -1,12 +1,6 @@
 {
   "schema_version": 1,
   "dependencies": {
-    "libjnivm": {
-      "mode": "git-submodule",
-      "url": "https://github.com/ChristopherHX/libjnivm.git",
-      "commit": "f24b98c198fcc5c59a68d1efadd3f5791eb01c2e",
-      "tree": "77fa9e645f5b29ef4ac34a3fec8e36056f632e7b"
-    },
     "OpenJDK-JNI-Headers": {
       "mode": "vendored-unmodified-header-snapshot",
       "url": "https://github.com/openjdk/jdk17u.git",
