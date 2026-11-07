@@ -1285,6 +1285,12 @@ TEST(VrSetMotorHook, PicksTheMethodSlotWithACodeAddressAndNoAdjust) {
   image.fill(0);
   put(0x80, base + 0x40);
   EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0x80u);
+  // 20836: the descriptor grew by 0x20; +0x80 and +0x88 hold heap data.
+  image.fill(0);
+  put(0x80, 0x7f0000001000);
+  put(0x88, 0x7f0000002000);
+  put(0xa8, base + 0x40);
+  EXPECT_EQ(internal::SetMotorDescriptorSlot(base, 0, below_0x100), 0xa8u);
   // A virtual (odd) pointer, an adjust, or data is not a method.
   image.fill(0);
   put(0x88, base + 0x41);

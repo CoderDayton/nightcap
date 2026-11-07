@@ -516,6 +516,17 @@ void InstallSetMotorHook(std::uintptr_t image_base) {
     Log("  [vr-device] SetMotor hand haptics unavailable: no method slot in "
         "descriptor +0x%" PRIxPTR "\n",
         descriptor);
+    // Shows where a new build moved the method.
+    for (std::size_t offset = 0x40; offset <= 0xc8; offset += 8) {
+      std::uintptr_t value = 0;
+      std::memcpy(&value,
+                  reinterpret_cast<const void*>(image_base + descriptor + offset),
+                  sizeof(value));
+      const bool code = value > image_base && value % 2 == 0 &&
+                        IsExecutableRva(image_base, value - image_base);
+      Log("  [vr-device]   descriptor +0x%02zx = %s0x%" PRIxPTR "\n", offset,
+          code ? "code +" : "", code ? value - image_base : value);
+    }
     return;
   }
   auto* slot =
@@ -992,7 +1003,9 @@ std::size_t SetMotorDescriptorSlot(std::uintptr_t image_base,
                                    std::uintptr_t descriptor_rva,
                                    bool (*is_code)(std::uintptr_t image_base,
                                                    std::uintptr_t rva)) {
-  for (const std::size_t slot : {std::size_t{0x80}, std::size_t{0x88}}) {
+  // Roblox grows this descriptor between builds; 2.746 added 0x20 bytes.
+  for (const std::size_t slot :
+       {std::size_t{0x80}, std::size_t{0x88}, std::size_t{0xa8}}) {
     std::uintptr_t function = 0;
     std::uintptr_t adjust = 0;
     std::memcpy(&function,
