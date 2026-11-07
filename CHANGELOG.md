@@ -5,6 +5,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- The window closes as soon as Roblox stops, instead of after audio and display shutdown.
+
 ## [0.5.1] - 2026-11-06
 
 ### Added

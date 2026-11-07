@@ -614,27 +614,27 @@ Status RobloxBrowserServiceBridge::QueueBrowserWindowClosed() {
 }
 
 Status RobloxBrowserServiceBridge::DrainOutgoingEvents() {
-  std::deque<OutgoingEvent> events;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_ || !accepting_messages_) {
-      return FailedPrecondition(
-          "BrowserService bridge is not accepting outgoing events");
-    }
-    if (outgoing_drain_active_) {
-      return FailedPrecondition(
-          "BrowserService outgoing drain is already active");
-    }
-    if (outgoing_events_.empty()) {
-      return Status::Ok();
-    }
-    outgoing_drain_active_ = true;
-    outgoing_drain_events_ = outgoing_events_.size();
-    outgoing_drain_bytes_ = outgoing_event_bytes_;
-    outgoing_event_bytes_ = 0;
-    events.swap(outgoing_events_);
-    ++in_flight_dispatches_;
+  std::unique_lock<std::mutex> queue_lock(mutex_);
+  if (!initialized_ || !accepting_messages_) {
+    return FailedPrecondition(
+        "BrowserService bridge is not accepting outgoing events");
   }
+  if (outgoing_drain_active_) {
+    return FailedPrecondition(
+        "BrowserService outgoing drain is already active");
+  }
+  if (outgoing_events_.empty()) {
+    return Status::Ok();
+  }
+  outgoing_drain_active_ = true;
+  outgoing_drain_events_ = outgoing_events_.size();
+  outgoing_drain_bytes_ = outgoing_event_bytes_;
+  outgoing_event_bytes_ = 0;
+  // A std::deque allocates when constructed, so make it only when needed.
+  std::deque<OutgoingEvent> events;
+  events.swap(outgoing_events_);
+  ++in_flight_dispatches_;
+  queue_lock.unlock();
 
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);

@@ -48,15 +48,8 @@ struct CommandLineParseResult {
 };
 
 CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]);
-// Produces argv[1..] for a possible cgroup re-exec. A raw website URI is
-// replaced with the already-normalized internal request, so browser gameinfo
-// tickets do not cross the exec boundary.
-bool BuildCommandLineReexecArguments(const CommandLineOptions& options,
-                                     int argc, const char* const argv[],
-                                     std::vector<std::string>* arguments,
-                                     std::string* error);
 // Overwrites the original raw launch argument and both owned launch strings
-// after the request and sanitized re-exec argv have been created.
+// after the launch request has been created.
 void ScrubCommandLineLaunchArguments(CommandLineOptions* options, int argc,
                                      char* argv[]);
 bool ApplyCommandLineEnvironment(const CommandLineOptions& options,

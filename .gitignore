@@ -141,7 +141,6 @@ desktop.ini
 .env.*
 !.env.example
 *.pem
-!exe/cacert.pem
 cookies*.txt
 *credentials*
 *secret*

@@ -116,12 +116,7 @@ void RetainJniReference(jobject obj) {
     return;
   }
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  auto it = g_jni_ref_counts.find(obj);
-  if (it != g_jni_ref_counts.end()) {
-    ++it->second;
-  } else {
-    g_jni_ref_counts[obj] = 1;
-  }
+  ++g_jni_ref_counts[obj];
 }
 
 void ReportHandleTableFull();
@@ -322,10 +317,14 @@ jobject SingletonObject(const std::string& class_name) {
 
 std::string_view ObjectClassName(jobject obj) {
   PseudoJavaObject* pseudo_object = PseudoObjectFromRef(obj);
-  if (!pseudo_object || !pseudo_object->GetClass()) {
+  if (!pseudo_object) {
     return {};
   }
-  return pseudo_object->GetClass()->GetName();
+  const std::shared_ptr<Class>& cls = pseudo_object->GetClass();
+  if (!cls) {
+    return {};
+  }
+  return cls->GetName();
 }
 
 void MarkSingletonHandle(jobject obj) {
@@ -403,9 +402,7 @@ jobjectArray MakeObjectArray(jsize len, jobject init) {
   if (len > 0) {
     array->objects.resize(static_cast<std::size_t>(len), init);
     if (init != nullptr) {
-      for (jsize index = 0; index < len; ++index) {
-        RetainJniReference(init);
-      }
+      g_jni_ref_counts[init] += static_cast<uint32_t>(len);
     }
   }
   jobjectArray ref = reinterpret_cast<jobjectArray>(array.get());

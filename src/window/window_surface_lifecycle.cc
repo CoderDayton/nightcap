@@ -198,17 +198,5 @@ Status WindowSurfaceLifecycle::RestoreLocked(uintptr_t native_window,
   return Status::Ok();
 }
 
-const char* WindowSurfaceEventTypeName(WindowSurfaceEventType type) {
-  switch (type) {
-    case WindowSurfaceEventType::kCreated:
-      return "Created";
-    case WindowSurfaceEventType::kChanged:
-      return "Changed";
-    case WindowSurfaceEventType::kDestroyed:
-      return "Destroyed";
-  }
-  return "Unknown";
-}
-
 }  // namespace window
 }  // namespace mocktail

@@ -2,7 +2,6 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -140,21 +139,6 @@ ProcessMemoryUsage ParseProcessStatusMemory(std::string_view status) {
   usage.valid = usage.resident_bytes <=
                 UINT64_MAX - usage.swap_bytes;
   return usage;
-}
-
-CgroupMemoryLimitResult MaybeReexecWithCgroupMemoryLimit(
-    int argc, char* const argv[], std::uint64_t limit_bytes,
-    const std::vector<std::string>* reexec_arguments) {
-  CgroupMemoryLimitResult result;
-  (void)argc;
-  (void)argv;
-  (void)reexec_arguments;
-  if (limit_bytes == 0) {
-    result.detail = "memory limit is disabled";
-    return result;
-  }
-  result.detail = "automatic cgroup scopes are disabled";
-  return result;
 }
 
 MemoryLimitWatchdog::~MemoryLimitWatchdog() { Stop(); }

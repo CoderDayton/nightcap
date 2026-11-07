@@ -2,10 +2,8 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <EGL/eglext_angle.h>
 #include <dlfcn.h>
 
-#include <array>
 #include <initializer_list>
 #include <string>
 #include <utility>
@@ -67,8 +65,9 @@ bool HasSymbols(const SharedLibrary& library,
   return true;
 }
 
-BackendCapability CheckAngleLibraries(const AngleProbeOptions& options,
-                                      bool initialize_display) {
+}  // namespace
+
+BackendCapability InspectAngleLibraries(const AngleProbeOptions& options) {
   if (options.egl_library_path.empty() || options.gles_library_path.empty()) {
     return Unavailable(
         "pinned ANGLE EGL and GLES library paths are both required");
@@ -111,86 +110,9 @@ BackendCapability CheckAngleLibraries(const AngleProbeOptions& options,
   if (extension_list.find(" EGL_ANGLE_platform_angle ") == std::string::npos) {
     return Unavailable("EGL library does not support EGL_ANGLE_platform_angle");
   }
-  if (!initialize_display) {
-    return {GraphicsBackendKind::kAngleVulkan, CapabilityState::kLoadable,
-            HardwareAcceleration::kUnknown,
-            "ANGLE EGL/GLES entry points available"};
-  }
-
-  auto get_proc_address =
-      reinterpret_cast<PFNEGLGETPROCADDRESSPROC>(egl.Find("eglGetProcAddress"));
-  auto get_platform_display = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
-      egl.Find("eglGetPlatformDisplayEXT"));
-  if (get_platform_display == nullptr && get_proc_address != nullptr) {
-    get_platform_display = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
-        get_proc_address("eglGetPlatformDisplayEXT"));
-  }
-  if (get_platform_display == nullptr) {
-    return Unavailable(
-        "ANGLE EGL library does not expose eglGetPlatformDisplayEXT");
-  }
-
-  auto initialize =
-      reinterpret_cast<PFNEGLINITIALIZEPROC>(egl.Find("eglInitialize"));
-  auto terminate =
-      reinterpret_cast<PFNEGLTERMINATEPROC>(egl.Find("eglTerminate"));
-  const EGLint device_type =
-      options.allow_software_device
-          ? EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE
-          : EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE;
-  const std::array<EGLint, 7> attributes = {
-      EGL_PLATFORM_ANGLE_TYPE_ANGLE,
-      EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE,
-      EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
-      device_type,
-      EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE,
-      EGL_FALSE,
-      EGL_NONE,
-  };
-
-  EGLDisplay display = get_platform_display(
-      EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, attributes.data());
-  if (display == EGL_NO_DISPLAY) {
-    return Unavailable("ANGLE failed to create a Vulkan EGLDisplay");
-  }
-
-  EGLint major = 0;
-  EGLint minor = 0;
-  if (initialize(display, &major, &minor) != EGL_TRUE) {
-    terminate(display);
-    return Unavailable("ANGLE Vulkan EGLDisplay failed eglInitialize");
-  }
-
-  const char* vendor = query_string(display, EGL_VENDOR);
-  const char* version = query_string(display, EGL_VERSION);
-  std::string detail = "validated ANGLE Vulkan EGL ";
-  detail += std::to_string(major);
-  detail += ".";
-  detail += std::to_string(minor);
-  if (vendor != nullptr) {
-    detail += ", vendor=";
-    detail += vendor;
-  }
-  if (version != nullptr) {
-    detail += ", version=";
-    detail += version;
-  }
-  terminate(display);
-
-  return {GraphicsBackendKind::kAngleVulkan, CapabilityState::kReady,
-          options.allow_software_device ? HardwareAcceleration::kSoftware
-                                        : HardwareAcceleration::kHardware,
-          std::move(detail)};
-}
-
-}  // namespace
-
-BackendCapability InspectAngleLibraries(const AngleProbeOptions& options) {
-  return CheckAngleLibraries(options, false);
-}
-
-BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options) {
-  return CheckAngleLibraries(options, true);
+  return {GraphicsBackendKind::kAngleVulkan, CapabilityState::kLoadable,
+          HardwareAcceleration::kUnknown,
+          "ANGLE EGL/GLES entry points available"};
 }
 
 }  // namespace graphics

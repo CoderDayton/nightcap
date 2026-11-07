@@ -1,20 +1,13 @@
 #include "runtime/roblox_desktop_app_policy.h"
 
-#define JSON_NOEXCEPTION 1
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#include <atomic>
-#include <cerrno>
 #include <charconv>
 #include <cstdint>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "runtime/json_file.h"
 #include "runtime/luau_codegen_switch.h"
 #include "runtime/runtime_paths.h"
 
@@ -22,160 +15,16 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-constexpr std::uintmax_t kMaximumJsonBytes = 16U * 1024U * 1024U;
 constexpr std::string_view kAppPolicySuffix = ":app-policy";
 constexpr std::string_view kDesktopAppPolicyOverride =
     "FStringAppConfigurationOverrideAppPolicy";
-std::atomic<std::uint64_t> g_temporary_sequence{0};
-
-class ScopedFileDescriptor final {
- public:
-  explicit ScopedFileDescriptor(int descriptor = -1)
-      : descriptor_(descriptor) {}
-  ~ScopedFileDescriptor() {
-    if (descriptor_ >= 0) {
-      close(descriptor_);
-    }
-  }
-
-  ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
-  ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
-
-  int get() const { return descriptor_; }
-
- private:
-  int descriptor_ = -1;
-};
-
-enum class ReadStatus { kMissing, kReady, kInvalid };
-
-struct JsonReadResult {
-  ReadStatus status = ReadStatus::kMissing;
-  nlohmann::json value;
-  std::string error;
-};
-
-bool WriteAll(int descriptor, std::string_view bytes) {
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    const ssize_t written =
-        write(descriptor, bytes.data() + offset, bytes.size() - offset);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    if (written == 0) {
-      return false;
-    }
-    offset += static_cast<std::size_t>(written);
-  }
-  return true;
-}
-
-JsonReadResult ReadJsonObject(const std::filesystem::path& path,
-                              std::string_view label) {
-  const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0) {
-    if (errno == ENOENT) {
-      return {};
-    }
-    return {
-        ReadStatus::kInvalid, {}, "cannot safely open " + std::string(label)};
-  }
-  const ScopedFileDescriptor file(descriptor);
-  struct stat status{};
-  if (fstat(file.get(), &status) != 0 || !S_ISREG(status.st_mode) ||
-      status.st_size < 0 ||
-      static_cast<std::uintmax_t>(status.st_size) > kMaximumJsonBytes) {
-    return {ReadStatus::kInvalid,
-            {},
-            std::string(label) + " is not a bounded regular file"};
-  }
-
-  std::string bytes(static_cast<std::size_t>(status.st_size), '\0');
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    const ssize_t count =
-        read(file.get(), bytes.data() + offset, bytes.size() - offset);
-    if (count < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return {ReadStatus::kInvalid, {}, "cannot read " + std::string(label)};
-    }
-    if (count == 0) {
-      return {ReadStatus::kInvalid,
-              {},
-              std::string(label) + " changed while being read"};
-    }
-    offset += static_cast<std::size_t>(count);
-  }
-  nlohmann::json parsed = nlohmann::json::parse(bytes, nullptr, false, true);
-  if (parsed.is_discarded() || !parsed.is_object()) {
-    return {
-        ReadStatus::kInvalid, {}, std::string(label) + " is not a JSON object"};
-  }
-  return {ReadStatus::kReady, std::move(parsed), {}};
-}
 
 bool AtomicWriteJson(const std::filesystem::path& path,
                      const nlohmann::json& value, std::string* error) {
-  std::error_code filesystem_error;
-  if (!RuntimePaths::EnsureDirectory(path.parent_path(), &filesystem_error)) {
-    *error = "cannot create Roblox appStorage directory";
-    return false;
-  }
-  const std::filesystem::file_status target_status =
-      std::filesystem::symlink_status(path, filesystem_error);
-  if (!filesystem_error && std::filesystem::is_symlink(target_status)) {
-    *error = "Roblox appStorage is a symlink";
-    return false;
-  }
-  if (filesystem_error != std::errc::no_such_file_or_directory &&
-      filesystem_error) {
-    *error = "cannot inspect Roblox appStorage";
-    return false;
-  }
-
-  const std::filesystem::path temporary =
-      path.parent_path() /
-      (".mocktail-desktop-policy.tmp." + std::to_string(getpid()) + "." +
-       std::to_string(g_temporary_sequence.fetch_add(1)));
-  const int descriptor =
-      open(temporary.c_str(),
-           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-  if (descriptor < 0) {
-    *error = "cannot create temporary Roblox appStorage";
-    return false;
-  }
-  bool stored = false;
-  {
-    const ScopedFileDescriptor file(descriptor);
-    const std::string bytes = value.dump();
-    stored = fchmod(file.get(), S_IRUSR | S_IWUSR) == 0 &&
-             WriteAll(file.get(), bytes) && fsync(file.get()) == 0;
-  }
-  if (!stored || rename(temporary.c_str(), path.c_str()) != 0) {
-    const int saved_errno = errno;
-    (void)unlink(temporary.c_str());
-    errno = saved_errno;
-    *error = "cannot atomically store Roblox appStorage";
-    return false;
-  }
-  const int directory_descriptor =
-      open(path.parent_path().c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
-  if (directory_descriptor < 0) {
-    *error = "cannot open Roblox appStorage directory for sync";
-    return false;
-  }
-  const ScopedFileDescriptor directory(directory_descriptor);
-  if (fsync(directory.get()) != 0) {
-    *error = "cannot sync Roblox appStorage directory";
-    return false;
-  }
-  return true;
+  return WriteJsonFileAtomically(
+      path, value,
+      {"Roblox appStorage", "Roblox appStorage", ".mocktail-desktop-policy.tmp."},
+      error);
 }
 
 bool HasSuffix(std::string_view value, std::string_view suffix) {
@@ -247,9 +96,9 @@ std::size_t AddUnrecordedOtaPatchEntries(
     if (storage->contains(storage_key)) {
       continue;
     }
-    const JsonReadResult builtin =
-        ReadJsonObject(patch.builtin_config_file, "built-in OTA patch config");
-    if (builtin.status != ReadStatus::kReady) {
+    const JsonFileReadResult builtin =
+        ReadJsonObjectFile(patch.builtin_config_file, "built-in OTA patch config");
+    if (builtin.status != JsonFileStatus::kReady) {
       continue;
     }
     std::string asset_id;
@@ -323,14 +172,14 @@ DesktopAppPolicyResult ApplyDesktopAppPolicy(
       theme_mode == "light" || theme_mode == "dark" ? std::string(theme_mode)
                                                      : std::string();
 
-  JsonReadResult storage =
-      ReadJsonObject(app_storage_file, "Roblox appStorage");
-  if (storage.status == ReadStatus::kInvalid) {
+  JsonFileReadResult storage =
+      ReadJsonObjectFile(app_storage_file, "Roblox appStorage");
+  if (storage.status == JsonFileStatus::kInvalid) {
     result.error = storage.error;
     return result;
   }
-  if (storage.status == ReadStatus::kMissing) {
-    storage.status = ReadStatus::kReady;
+  if (storage.status == JsonFileStatus::kMissing) {
+    storage.status = JsonFileStatus::kReady;
     storage.value = nlohmann::json::object();
     result.app_storage_created = true;
   }
@@ -389,10 +238,10 @@ DesktopAppPolicyResult ApplyDesktopAppPolicy(
   }
 
   if (!template_policy.is_object()) {
-    const JsonReadResult fallback =
-        ReadJsonObject(default_policy_file, "Roblox default app-policy");
-    if (fallback.status != ReadStatus::kReady) {
-      result.error = fallback.status == ReadStatus::kMissing
+    const JsonFileReadResult fallback =
+        ReadJsonObjectFile(default_policy_file, "Roblox default app-policy");
+    if (fallback.status != JsonFileStatus::kReady) {
+      result.error = fallback.status == JsonFileStatus::kMissing
                          ? "Roblox default app-policy is missing"
                          : fallback.error;
       return result;
@@ -481,13 +330,13 @@ OtaPatchSeedResult SeedDownloadedOtaPatchConfigs(
     const std::filesystem::path& patch_backup_directory,
     const std::vector<OtaPatchSeed>& patches) {
   OtaPatchSeedResult result;
-  JsonReadResult storage =
-      ReadJsonObject(app_storage_file, "Roblox appStorage");
-  if (storage.status == ReadStatus::kInvalid) {
+  JsonFileReadResult storage =
+      ReadJsonObjectFile(app_storage_file, "Roblox appStorage");
+  if (storage.status == JsonFileStatus::kInvalid) {
     result.error = storage.error;
     return result;
   }
-  if (storage.status == ReadStatus::kMissing) {
+  if (storage.status == JsonFileStatus::kMissing) {
     return result;
   }
   result.seeded_count = AddUnrecordedOtaPatchEntries(
@@ -503,9 +352,9 @@ std::size_t CountUnrecordedOtaPatches(
     const std::filesystem::path& app_storage_file,
     const std::filesystem::path& patch_backup_directory,
     const std::vector<OtaPatchSeed>& patches) {
-  JsonReadResult storage =
-      ReadJsonObject(app_storage_file, "Roblox appStorage");
-  if (storage.status != ReadStatus::kReady) {
+  JsonFileReadResult storage =
+      ReadJsonObjectFile(app_storage_file, "Roblox appStorage");
+  if (storage.status != JsonFileStatus::kReady) {
     return 0;
   }
   return AddUnrecordedOtaPatchEntries(&storage.value, patch_backup_directory,

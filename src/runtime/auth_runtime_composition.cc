@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "jnivm/jnivm.h"
+#include "mocktail/scoped_file_descriptor.h"
 #include "runtime/environment.h"
 #include "runtime/roblox_cookie_jar.h"
 #include "runtime/roblox_cookie_store.h"
@@ -139,24 +140,6 @@ struct CookiePersistenceContext {
   bool writing = false;
   bool stopping = false;
   std::thread worker;
-};
-
-class ScopedFileDescriptor final {
- public:
-  explicit ScopedFileDescriptor(int descriptor) : descriptor_(descriptor) {}
-  ~ScopedFileDescriptor() {
-    if (descriptor_ >= 0) {
-      close(descriptor_);
-    }
-  }
-
-  ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
-  ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
-
-  int get() const { return descriptor_; }
-
- private:
-  int descriptor_ = -1;
 };
 
 bool WriteAll(int descriptor, const char* data, size_t size) {

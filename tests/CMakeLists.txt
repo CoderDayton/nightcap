@@ -1274,33 +1274,6 @@ set_tests_properties(
   PROPERTIES RESOURCE_LOCK mocktail_current_user_instance
 )
 
-if(MOCKTAIL_ENABLE_UPSTREAM_JNIVM)
-  add_library(upstream_jni_fixture SHARED
-    fixtures/upstream_jni_fixture.cc
-  )
-  target_include_directories(upstream_jni_fixture PRIVATE
-    ${PROJECT_SOURCE_DIR}/third_party/libjnivm/include
-  )
-  set_target_properties(upstream_jni_fixture PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-  )
-
-  add_executable(upstream_jnivm_integration_test
-    upstream_jnivm_integration_test.cc
-  )
-  target_link_libraries(upstream_jnivm_integration_test PRIVATE
-    Mocktail::UpstreamJni
-    GTest::gtest_main
-    Threads::Threads
-    ${CMAKE_DL_LIBS}
-  )
-  target_compile_definitions(upstream_jnivm_integration_test PRIVATE
-    MOCKTAIL_UPSTREAM_JNI_FIXTURE_PATH="$<TARGET_FILE:upstream_jni_fixture>"
-  )
-  add_dependencies(upstream_jnivm_integration_test upstream_jni_fixture)
-endif()
-
 add_executable(libc_shim_test
   libc_shim_test.cc
 )
@@ -1489,9 +1462,7 @@ gtest_discover_tests(bionic_semaphore_runtime_test)
 gtest_discover_tests(bionic_rwlock_runtime_test)
 gtest_discover_tests(bionic_abi_exports_test)
 gtest_discover_tests(bionic_stdio_runtime_test)
-if(MOCKTAIL_ENABLE_UPSTREAM_JNIVM)
-  gtest_discover_tests(upstream_jnivm_integration_test)
-endif()
+
 gtest_discover_tests(libc_shim_test)
 gtest_discover_tests(discord_rpc_test)
 gtest_discover_tests(luau_codegen_switch_test)

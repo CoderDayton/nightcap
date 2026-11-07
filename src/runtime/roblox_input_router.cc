@@ -882,55 +882,5 @@ RobloxInputDispatchResult RobloxInputRouter::NativeResultLocked(
   return Result(RobloxInputDispatchState::kDispatched, kind);
 }
 
-const char* RobloxInputDispatchStateName(RobloxInputDispatchState state) {
-  switch (state) {
-    case RobloxInputDispatchState::kDispatched:
-      return "Dispatched";
-    case RobloxInputDispatchState::kStateUpdated:
-      return "StateUpdated";
-    case RobloxInputDispatchState::kIgnoredInactive:
-      return "IgnoredInactive";
-    case RobloxInputDispatchState::kIgnoredUnfocused:
-      return "IgnoredUnfocused";
-    case RobloxInputDispatchState::kIgnoredUnsupported:
-      return "IgnoredUnsupported";
-    case RobloxInputDispatchState::kRejectedInvalid:
-      return "RejectedInvalid";
-    case RobloxInputDispatchState::kNativeError:
-      return "NativeError";
-  }
-  return "Unknown";
-}
-
-const char* RobloxInputEventKindName(RobloxInputEventKind kind) {
-  switch (kind) {
-    case RobloxInputEventKind::kNone:
-      return "None";
-    case RobloxInputEventKind::kMouseMotion:
-      return "MouseMotion";
-    case RobloxInputEventKind::kMouseButton:
-      return "MouseButton";
-    case RobloxInputEventKind::kMouseWheel:
-      return "MouseWheel";
-    case RobloxInputEventKind::kTouch:
-      return "Touch";
-    case RobloxInputEventKind::kKeyboard:
-      return "Keyboard";
-    case RobloxInputEventKind::kText:
-      return "Text";
-    case RobloxInputEventKind::kFocus:
-      return "Focus";
-    case RobloxInputEventKind::kViewport:
-      return "Viewport";
-    case RobloxInputEventKind::kGamepadConnection:
-      return "GamepadConnection";
-    case RobloxInputEventKind::kGamepadButton:
-      return "GamepadButton";
-    case RobloxInputEventKind::kGamepadAxis:
-      return "GamepadAxis";
-  }
-  return "Unknown";
-}
-
 }  // namespace runtime
 }  // namespace mocktail

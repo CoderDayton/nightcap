@@ -129,10 +129,7 @@ void RestoreGameSessionJniEnvironment(void* context) {
   }
 }
 
-volatile uintptr_t g_stage6_jni_env = 0;
 volatile uintptr_t g_libroblox_base = 0;
-volatile uintptr_t g_game_activity_native_handle = 0;
-jobject g_saved_game_activity = nullptr;
 extern "C" void* mocktail_gameactivity_on_trim_memory_native;
 volatile sig_atomic_t g_jni_onload_in_progress = 0;
 volatile sig_atomic_t g_jni_onload_timings_printed = 0;
@@ -145,52 +142,15 @@ thread_local sigjmp_buf g_start_app_with_params_jmp_buf;
 thread_local volatile sig_atomic_t g_start_app_with_params_recovery_in_progress = 0;
 thread_local sigjmp_buf g_start_lua_app_dm_jmp_buf;
 thread_local volatile sig_atomic_t g_start_lua_app_dm_recovery_in_progress = 0;
-thread_local sigjmp_buf g_send_app_ready_jmp_buf;
-thread_local volatile sig_atomic_t g_send_app_ready_recovery_in_progress = 0;
-thread_local sigjmp_buf g_send_game_loaded_jmp_buf;
-thread_local volatile sig_atomic_t g_send_game_loaded_recovery_in_progress = 0;
-thread_local sigjmp_buf g_set_asset_path_jmp_buf;
-thread_local volatile sig_atomic_t g_set_asset_path_recovery_in_progress = 0;
 thread_local sigjmp_buf g_game_global_init_jmp_buf;
 thread_local volatile sig_atomic_t g_game_global_init_recovery_in_progress = 0;
 thread_local sigjmp_buf g_init_client_settings_jmp_buf;
 thread_local volatile sig_atomic_t g_init_client_settings_recovery_in_progress = 0;
 thread_local sigjmp_buf g_post_client_settings_jmp_buf;
 thread_local volatile sig_atomic_t g_post_client_settings_recovery_in_progress = 0;
-thread_local sigjmp_buf g_initialize_native_flags_jmp_buf;
-thread_local volatile sig_atomic_t
-    g_initialize_native_flags_recovery_in_progress = 0;
-thread_local sigjmp_buf g_cookie_setter_jmp_buf;
-thread_local volatile sig_atomic_t g_cookie_setter_recovery_in_progress = 0;
-thread_local sigjmp_buf g_native_settings_jmp_buf;
-thread_local volatile sig_atomic_t g_native_settings_recovery_in_progress = 0;
-thread_local const char* g_native_settings_recovery_name = nullptr;
-thread_local sigjmp_buf g_app_bridge_app_start_jmp_buf;
-thread_local volatile sig_atomic_t g_app_bridge_app_start_recovery_in_progress =
-    0;
-thread_local sigjmp_buf g_game_activity_init_jmp_buf;
-thread_local volatile sig_atomic_t g_game_activity_init_recovery_in_progress =
-    0;
-thread_local sigjmp_buf g_game_activity_surface_jmp_buf;
-thread_local volatile sig_atomic_t g_game_activity_surface_recovery_in_progress = 0;
-thread_local sigjmp_buf g_activity_lifecycle_jmp_buf;
-thread_local volatile sig_atomic_t g_activity_lifecycle_recovery_in_progress = 0;
-thread_local sigjmp_buf g_update_screen_orientation_jmp_buf;
-thread_local volatile sig_atomic_t
-    g_update_screen_orientation_recovery_in_progress = 0;
-thread_local sigjmp_buf g_update_surface_app_jmp_buf;
-thread_local volatile sig_atomic_t g_update_surface_app_recovery_in_progress = 0;
-thread_local sigjmp_buf g_native_fragment_start_jmp_buf;
-thread_local volatile sig_atomic_t
-    g_native_fragment_start_recovery_in_progress = 0;
-thread_local sigjmp_buf g_display_refresh_rate_jmp_buf;
-thread_local volatile sig_atomic_t
-    g_display_refresh_rate_recovery_in_progress = 0;
 constexpr sig_atomic_t kStage6RecoveryInactive = 0;
 constexpr sig_atomic_t kStage6RecoveryInline = 1;
 
-void PrintBacktraceNoSig(const char* prefix);
-void PrintContextBacktrace(ucontext_t* ucontext, const char* prefix);
 static uintptr_t NullVtableStub();
 
 using JniOnLoadFn = jint (*)(JavaVM*, void*);
@@ -544,11 +504,11 @@ SymbolResolveResult ResolveSymbolForBionic(const char* name, bool has_window,
                                           const std::vector<void*>& stub_handles) {
   const bool is_gl_symbol = IsGlSymbol(name);
   const bool prefer_real_gles =
-      has_window && !IsEnabled("MOCKTAIL_GLES_FORCE_STUB") &&
+      is_gl_symbol && has_window && !IsEnabled("MOCKTAIL_GLES_FORCE_STUB") &&
       !IsEnabled("MOCKTAIL_GLES_NOOP_DRAW_CALLS");
   SymbolResolveResult result;
 
-  if (is_gl_symbol && prefer_real_gles) {
+  if (prefer_real_gles) {
     result.address = mocktail::window::GetGLProcAddress(name);
     if (result.address != nullptr) {
       result.source = SymbolResolveSource::kWindow;
@@ -556,7 +516,7 @@ SymbolResolveResult ResolveSymbolForBionic(const char* name, bool has_window,
     }
   }
 
-  if (is_gl_symbol && prefer_real_gles && real_gles_handle != nullptr) {
+  if (prefer_real_gles && real_gles_handle != nullptr) {
     result.address = ::dlsym(real_gles_handle, name);
     if (result.address != nullptr) {
       result.source = SymbolResolveSource::kRealGles;
@@ -868,22 +828,12 @@ bool InvokeTaskSchedulerForeground(
             << "] NativeGLInterface.setTaskSchedulerBackgroundMode(false, "
             << "ASMA.start)\n"
             << std::flush;
-  if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
-    g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
-    native_set_task_scheduler_background_mode(env, native_gl_class, JNI_FALSE,
-                                              reason);
-    g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
-    std::cout << "  [" << log_scope
-              << "] NativeGLInterface.setTaskSchedulerBackgroundMode returned\n"
-              << std::flush;
-    return true;
-  }
-
-  g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
-  std::cerr << "  [" << log_scope
-            << "] setTaskSchedulerBackgroundMode recovered from crash\n"
+  native_set_task_scheduler_background_mode(env, native_gl_class, JNI_FALSE,
+                                            reason);
+  std::cout << "  [" << log_scope
+            << "] NativeGLInterface.setTaskSchedulerBackgroundMode returned\n"
             << std::flush;
-  return false;
+  return true;
 }
 
 void RunPendingMainThreadTaskSchedulerForeground() {
@@ -1527,6 +1477,7 @@ void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
       "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
       "X0=0x%016llx\n";
 #else
+  static_cast<void>(uc);
   uintptr_t rip = 0, rsp = 0, rbp = 0, rax = 0;
   const char* regs_format =
       "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
@@ -1545,10 +1496,8 @@ void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
   g_jni_onload_timings_printed = 1;
 
   const char prefix[] =
-      "  [timeout] JNI_OnLoad still in progress; stack snapshot:\n";
+      "  [timeout] JNI_OnLoad still in progress\n";
   write(2, prefix, sizeof(prefix) - 1);
-  PrintContextBacktrace(uc, "    ");
-  PrintBacktraceNoSig("    ");
   if (g_jni_onload_soft_timeout != 0 && g_jni_onload_jmp_armed != 0 &&
       !IsUnsafeSoftTimeoutModule(reinterpret_cast<void*>(rip))) {
     g_jni_onload_jmp_armed = 0;
@@ -1703,16 +1652,7 @@ bool InitializeActiveHostAbiThread() {
 
 static uintptr_t NullVtableStub() { return 0; }
 
-
-void PrintBacktraceNoSig(const char* prefix) { (void)prefix; }
-
-void PrintContextBacktrace(ucontext_t* ucontext, const char* prefix) {
-  (void)ucontext;
-  (void)prefix;
-}
-
-bool EnvOffsetListContains(const char* name, uintptr_t offset) {
-  const char* skip_list = std::getenv(name);
+bool OffsetListContains(const char* skip_list, uintptr_t offset) {
   if (skip_list == nullptr || *skip_list == '\0') {
     return false;
   }
@@ -1769,8 +1709,7 @@ extern "C" int mocktail_recover_stack_chk_fail() {
   return 0;
 }
 
-bool EnvIndexRangeListContains(const char* name, size_t index) {
-  const char* range_list = std::getenv(name);
+bool IndexRangeListContains(const char* range_list, size_t index) {
   if (range_list == nullptr || *range_list == '\0') {
     return false;
   }
@@ -1814,19 +1753,44 @@ bool EnvIndexRangeListContains(const char* name, size_t index) {
   return false;
 }
 
+// Constructors run once per libroblox load and nothing sets these variables
+// in between, so read them once instead of walking environ per constructor.
+struct LibRobloxConstructorEnv {
+  const char* policy;
+  const char* skip_offsets;
+  const char* skip_index_ranges;
+  const char* allow_index_ranges;
+  bool trace;
+  bool run_constructors;
+  bool quarantine_disabled;
+};
+
+const LibRobloxConstructorEnv& LibRobloxConstructorEnvironment() {
+  static const LibRobloxConstructorEnv env{
+      std::getenv("MOCKTAIL_LIBROBLOX_CTOR_POLICY"),
+      std::getenv("MOCKTAIL_SKIP_LIBROBLOX_CTOR_OFFSETS"),
+      std::getenv("MOCKTAIL_SKIP_LIBROBLOX_CTOR_INDEX_RANGES"),
+      std::getenv("MOCKTAIL_ALLOW_LIBROBLOX_CTOR_INDEX_RANGES"),
+      LibRobloxConstructorTraceEnabled(),
+      IsEnabled("MOCKTAIL_RUN_LIBROBLOX_CTORS"),
+      IsDisabled("MOCKTAIL_QUARANTINE_LIBROBLOX_UNSAFE_CTORS"),
+  };
+  return env;
+}
 
 bool LibRobloxConstructorOffsetSkipped(uintptr_t offset) {
-  return EnvOffsetListContains("MOCKTAIL_SKIP_LIBROBLOX_CTOR_OFFSETS", offset);
+  return OffsetListContains(LibRobloxConstructorEnvironment().skip_offsets,
+                            offset);
 }
 
 bool LibRobloxConstructorIndexSkipped(size_t index) {
-  return EnvIndexRangeListContains("MOCKTAIL_SKIP_LIBROBLOX_CTOR_INDEX_RANGES",
-                                   index);
+  return IndexRangeListContains(
+      LibRobloxConstructorEnvironment().skip_index_ranges, index);
 }
 
 bool LibRobloxConstructorIndexAllowed(size_t index) {
-  return EnvIndexRangeListContains("MOCKTAIL_ALLOW_LIBROBLOX_CTOR_INDEX_RANGES",
-                                   index);
+  return IndexRangeListContains(
+      LibRobloxConstructorEnvironment().allow_index_ranges, index);
 }
 
 
@@ -1849,13 +1813,11 @@ bool LibRobloxConstructorDefaultQuarantineEnabled() {
   if (g_allow_host_constructor_replay.load(std::memory_order_acquire)) {
     return false;
   }
-  if (!IsEnabled("MOCKTAIL_RUN_LIBROBLOX_CTORS")) {
+  const LibRobloxConstructorEnv& env = LibRobloxConstructorEnvironment();
+  if (!env.run_constructors || env.quarantine_disabled) {
     return false;
   }
-  if (IsDisabled("MOCKTAIL_QUARANTINE_LIBROBLOX_UNSAFE_CTORS")) {
-    return false;
-  }
-  const char* policy = std::getenv("MOCKTAIL_LIBROBLOX_CTOR_POLICY");
+  const char* policy = env.policy;
   if (policy != nullptr && (std::strcmp(policy, "all") == 0 ||
                             std::strcmp(policy, "unsafe") == 0)) {
     return false;
@@ -1905,7 +1867,7 @@ extern "C" void MocktailConstructorWrapper() {
   size_t idx = g_current_ctor_index++;
   uintptr_t orig = g_original_ctors[idx];
   uintptr_t offset = orig - g_libroblox_base_static;
-  const bool trace_constructor = LibRobloxConstructorTraceEnabled();
+  const bool trace_constructor = LibRobloxConstructorEnvironment().trace;
   if (trace_constructor) {
     std::cout << "  [ctor] [" << idx << "/" << g_original_ctors.size()
               << "] offset 0x" << std::hex << offset << std::dec << '\n'
@@ -3339,22 +3301,7 @@ void ConfigureNativeSettings(JNIEnv* env, jclass settings_class,
   jstring advertising_id_string = env->NewStringUTF(advertising_id.c_str());
   jstring googleplay_string = env->NewStringUTF("googleplay");
   jstring user_id_string = env->NewStringUTF(account_user_id.c_str());
-  auto run_native_setting = [](const char* name, auto call) -> bool {
-    if (sigsetjmp(g_native_settings_jmp_buf, 1) == 0) {
-      g_native_settings_recovery_name = name;
-      g_native_settings_recovery_in_progress = 1;
-      call();
-      g_native_settings_recovery_in_progress = 0;
-      g_native_settings_recovery_name = nullptr;
-      return true;
-    }
-    g_native_settings_recovery_in_progress = 0;
-    std::cerr << "  [engine] NativeSettings " << name
-              << " recovered from crash\n"
-              << std::flush;
-    g_native_settings_recovery_name = nullptr;
-    return false;
-  };
+  auto run_native_setting = [](const char* /*name*/, auto call) { call(); };
 
   if (context->native_set_http_client_proxy &&
       ShouldRunStartupStep("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY", false)) {
@@ -3489,19 +3436,10 @@ void ConfigureNativeSettings(JNIEnv* env, jclass settings_class,
                 << cookie_domain << " bytes=" << cookie_manager_cookies.size()
                 << '\n' << std::flush;
       if (IsEnabled("MOCKTAIL_UNSAFE_NATIVE_COOKIE_SETTER")) {
-        if (sigsetjmp(g_cookie_setter_jmp_buf, 1) == 0) {
-          g_cookie_setter_recovery_in_progress = 1;
-          context->native_cookie_manager_set_cookie(
-              env, cls, cookie_domain_string, cookie_manager_cookies_string);
-          g_cookie_setter_recovery_in_progress = 0;
-          std::cout << "  [engine] JNICookieManager.setCookie returned\n"
-                    << std::flush;
-        } else {
-          g_cookie_setter_recovery_in_progress = 0;
-          std::cerr << "  [engine] JNICookieManager.setCookie recovered; "
-                    << "native cookie singleton is not ready\n"
-                    << std::flush;
-        }
+        context->native_cookie_manager_set_cookie(
+            env, cls, cookie_domain_string, cookie_manager_cookies_string);
+        std::cout << "  [engine] JNICookieManager.setCookie returned\n"
+                  << std::flush;
       } else {
         std::cerr << "  [engine] JNICookieManager.setCookie blocked; set "
                   << "MOCKTAIL_UNSAFE_NATIVE_COOKIE_SETTER=1 to run the "
@@ -3714,7 +3652,6 @@ void* EngineStartupThread(void* arg) {
               << " raw_env=" << raw_env << '\n' << std::flush;
     if (attach_result == JNI_OK) {
       env = static_cast<JNIEnv*>(raw_env);
-      g_stage6_jni_env = reinterpret_cast<uintptr_t>(env);
       attached_to_thread = true;
     }
     EngineLog("AttachCurrentThread returned");
@@ -3725,7 +3662,6 @@ void* EngineStartupThread(void* arg) {
   }
   if (!env) {
     env = context->vm->GetJNIEnv();
-    g_stage6_jni_env = reinterpret_cast<uintptr_t>(env);
   }
   auto ensure_env = [&]() -> JNIEnv* {
     if (!env) {
@@ -3903,21 +3839,9 @@ void* EngineStartupThread(void* arg) {
         env->NewStringUTF("/sdcard/Android/obb/com.roblox.client");
     jstring external_data_dir =
         env->NewStringUTF("/sdcard/Android/data/com.roblox.client/files");
-    if (sigsetjmp(g_game_activity_init_jmp_buf, 1) == 0) {
-      g_game_activity_init_recovery_in_progress = 1;
-      g_saved_game_activity = game_activity;
-      game_activity_handle = context->native_game_activity_init(
-          env, game_activity, internal_data_dir, obb_dir, external_data_dir,
-          game_activity_asset_manager, nullptr, game_activity_config);
-      g_game_activity_init_recovery_in_progress = 0;
-    } else {
-      g_game_activity_init_recovery_in_progress = 0;
-      game_activity_handle = 0;
-      std::cerr << "  [engine] GameActivity.initializeNativeCode recovered\n"
-                << std::flush;
-    }
-    g_game_activity_native_handle =
-        static_cast<uintptr_t>(game_activity_handle);
+    game_activity_handle = context->native_game_activity_init(
+        env, game_activity, internal_data_dir, obb_dir, external_data_dir,
+        game_activity_asset_manager, nullptr, game_activity_config);
     std::cout << "  [engine] GameActivity.initializeNativeCode returned "
               << game_activity_handle << '\n'
               << std::flush;
@@ -3942,20 +3866,13 @@ void* EngineStartupThread(void* arg) {
     env = ensure_env();
     std::cout << "  [engine] nativeSetAssetPath\n" << std::flush;
     if (context->call_real_set_asset_path) {
-      if (sigsetjmp(g_set_asset_path_jmp_buf, 1) == 0) {
-        g_set_asset_path_recovery_in_progress = 1;
-        if (EngineTraceEnabled()) {
-          std::cerr << "  [engine] nativeSetAssetPath env=" << (void*)env
-                    << " class=" << (void*)startup_activity_class
-                    << " path=" << asset_path_value << '\n'
-                    << std::flush;
-        }
-        context->native_set_asset_path(env, startup_activity_class, asset_path);
-        g_set_asset_path_recovery_in_progress = 0;
-      } else {
-        std::cerr << "  [engine] nativeSetAssetPath recovered\n" << std::flush;
-        MocktailSetAssetPath(env, asset_path);
+      if (EngineTraceEnabled()) {
+        std::cerr << "  [engine] nativeSetAssetPath env=" << (void*)env
+                  << " class=" << (void*)startup_activity_class
+                  << " path=" << asset_path_value << '\n'
+                  << std::flush;
       }
+      context->native_set_asset_path(env, startup_activity_class, asset_path);
     } else {
       MocktailSetAssetPath(env, asset_path);
     }
@@ -4007,23 +3924,15 @@ void* EngineStartupThread(void* arg) {
   if (context->run_update_screen_orientation &&
       context->native_update_screen_orientation != nullptr) {
     env = ensure_env();
-    if (sigsetjmp(g_update_screen_orientation_jmp_buf, 1) == 0) {
-      const jint orientation =
-          static_cast<jint>(GetEnvInt("MOCKTAIL_SCREEN_ORIENTATION", 2));
-      std::cout << "  [engine] nativeUpdateScreenOrientation orientation="
-                << orientation << '\n'
-                << std::flush;
-      g_update_screen_orientation_recovery_in_progress = 1;
-      context->native_update_screen_orientation(env, native_input_class,
-                                                orientation);
-      g_update_screen_orientation_recovery_in_progress = 0;
-      std::cout << "  [engine] nativeUpdateScreenOrientation returned\n"
-                << std::flush;
-    } else {
-      g_update_screen_orientation_recovery_in_progress = 0;
-      std::cerr << "  [engine] nativeUpdateScreenOrientation recovered\n"
-                << std::flush;
-    }
+    const jint orientation =
+        static_cast<jint>(GetEnvInt("MOCKTAIL_SCREEN_ORIENTATION", 2));
+    std::cout << "  [engine] nativeUpdateScreenOrientation orientation="
+              << orientation << '\n'
+              << std::flush;
+    context->native_update_screen_orientation(env, native_input_class,
+                                              orientation);
+    std::cout << "  [engine] nativeUpdateScreenOrientation returned\n"
+              << std::flush;
   }
 
   if (context->run_init_client_settings) {
@@ -4117,19 +4026,11 @@ void* EngineStartupThread(void* arg) {
     jclass string_class = env->FindClass("java/lang/String");
     jobjectArray native_flag_keys =
         env->NewObjectArray(0, string_class, nullptr);
-    if (sigsetjmp(g_initialize_native_flags_jmp_buf, 1) == 0) {
-      g_initialize_native_flags_recovery_in_progress = 1;
-      jobject init_result = context->native_initialize_native_flags(
-          env, flag_jni_class, native_flag_keys);
-      g_initialize_native_flags_recovery_in_progress = 0;
-      std::cout << "  [engine] nativeInitializeNativeFlags returned "
-                << init_result << '\n'
-                << std::flush;
-    } else {
-      g_initialize_native_flags_recovery_in_progress = 0;
-      std::cerr << "  [engine] nativeInitializeNativeFlags recovered\n"
-                << std::flush;
-    }
+    jobject init_result = context->native_initialize_native_flags(
+        env, flag_jni_class, native_flag_keys);
+    std::cout << "  [engine] nativeInitializeNativeFlags returned "
+              << init_result << '\n'
+              << std::flush;
   }
 
   if (context->run_set_init_params) {
@@ -4205,17 +4106,9 @@ void* EngineStartupThread(void* arg) {
                 << std::flush;
     }
     std::cout << "  [engine] nativeAppBridgeAppStart\n" << std::flush;
-    if (sigsetjmp(g_app_bridge_app_start_jmp_buf, 1) == 0) {
-      g_app_bridge_app_start_recovery_in_progress = 1;
-      context->native_app_bridge_app_start(
-          env, native_app_bridge_class, base_url, user_agent, JNI_FALSE,
-          android_id, launch_source, empty_string);
-      g_app_bridge_app_start_recovery_in_progress = 0;
-    } else {
-      g_app_bridge_app_start_recovery_in_progress = 0;
-      std::cerr << "  [engine] nativeAppBridgeAppStart recovered\n"
-                << std::flush;
-    }
+    context->native_app_bridge_app_start(
+        env, native_app_bridge_class, base_url, user_agent, JNI_FALSE,
+        android_id, launch_source, empty_string);
     std::cout << "  [engine] nativeAppBridgeAppStart returned\n"
               << std::flush;
   }
@@ -4281,8 +4174,6 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
                 << std::flush;
       const bool run_lifecycle_callbacks =
           IsEnabled("MOCKTAIL_GAME_ACTIVITY_LIFECYCLE_CALLBACKS");
-      if (sigsetjmp(g_game_activity_surface_jmp_buf, 1) == 0) {
-        g_game_activity_surface_recovery_in_progress = 1;
       if (run_lifecycle_callbacks && on_start) {
         on_start(env, game_activity, handle);
       }
@@ -4301,14 +4192,8 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
       if (run_lifecycle_callbacks && on_surface_redraw_needed) {
         on_surface_redraw_needed(env, game_activity, handle, surface);
       }
-        g_game_activity_surface_recovery_in_progress = 0;
-        std::cout << "  [engine] GameActivity surface callbacks returned\n"
-                  << std::flush;
-      } else {
-        g_game_activity_surface_recovery_in_progress = 0;
-        std::cerr << "  [engine] GameActivity surface callbacks recovered\n"
-                  << std::flush;
-      }
+      std::cout << "  [engine] GameActivity surface callbacks returned\n"
+                << std::flush;
     }
   }
 
@@ -4340,19 +4225,10 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
           std::cout << "  [engine] JNIActivityLifecycleCallbacks." << label
                     << '\n'
                     << std::flush;
-          if (sigsetjmp(g_activity_lifecycle_jmp_buf, 1) == 0) {
-            g_activity_lifecycle_recovery_in_progress = 1;
-            callback(env, lifecycle_callbacks, activity_name_string);
-            g_activity_lifecycle_recovery_in_progress = 0;
-            std::cout << "  [engine] JNIActivityLifecycleCallbacks." << label
-                      << " returned\n"
-                      << std::flush;
-          } else {
-            g_activity_lifecycle_recovery_in_progress = 0;
-            std::cerr << "  [engine] JNIActivityLifecycleCallbacks." << label
-                      << " recovered from crash\n"
-                      << std::flush;
-          }
+          callback(env, lifecycle_callbacks, activity_name_string);
+          std::cout << "  [engine] JNIActivityLifecycleCallbacks." << label
+                    << " returned\n"
+                    << std::flush;
         };
     invoke_lifecycle_callback(
         "nativeOnPreCreated",
@@ -4396,17 +4272,9 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
     env = ensure_env();
     std::cout << "  [engine] NativeGLInterface.nativeOnFragmentStart\n"
               << std::flush;
-    if (sigsetjmp(g_native_fragment_start_jmp_buf, 1) == 0) {
-      g_native_fragment_start_recovery_in_progress = kStage6RecoveryInline;
-      context->native_on_fragment_start(env, native_gl_class);
-      g_native_fragment_start_recovery_in_progress = kStage6RecoveryInactive;
-      std::cout << "  [engine] NativeGLInterface.nativeOnFragmentStart returned\n"
-                << std::flush;
-    } else {
-      g_native_fragment_start_recovery_in_progress = kStage6RecoveryInactive;
-      std::cerr << "  [engine] NativeGLInterface.nativeOnFragmentStart recovered\n"
-                << std::flush;
-    }
+    context->native_on_fragment_start(env, native_gl_class);
+    std::cout << "  [engine] NativeGLInterface.nativeOnFragmentStart returned\n"
+              << std::flush;
   }
 
   const mocktail::platform::DisplayRefreshCapabilities display_refresh =
@@ -4417,20 +4285,11 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
     std::cout << "  [engine] NativeGLInterface.nativePassCurrentDisplayRefreshRate "
               << display_refresh.current_hz << '\n'
               << std::flush;
-    if (sigsetjmp(g_display_refresh_rate_jmp_buf, 1) == 0) {
-      g_display_refresh_rate_recovery_in_progress = kStage6RecoveryInline;
-      context->native_pass_current_display_refresh_rate(env, native_gl_class,
-                                                        display_refresh.current_hz);
-      g_display_refresh_rate_recovery_in_progress = kStage6RecoveryInactive;
-      std::cout
-          << "  [engine] NativeGLInterface.nativePassCurrentDisplayRefreshRate returned\n"
-          << std::flush;
-    } else {
-      g_display_refresh_rate_recovery_in_progress = kStage6RecoveryInactive;
-      std::cerr
-          << "  [engine] NativeGLInterface.nativePassCurrentDisplayRefreshRate recovered\n"
-          << std::flush;
-    }
+    context->native_pass_current_display_refresh_rate(env, native_gl_class,
+                                                      display_refresh.current_hz);
+    std::cout
+        << "  [engine] NativeGLInterface.nativePassCurrentDisplayRefreshRate returned\n"
+        << std::flush;
   }
 
   if (context->run_display_refresh_rate && display_refresh.valid() &&
@@ -4440,27 +4299,18 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
     std::cout << "  [engine] NativeGLInterface.nativePassSupportedRefreshRates"
               << " count=" << display_refresh.supported_hz.size() << '\n'
               << std::flush;
-    if (sigsetjmp(g_display_refresh_rate_jmp_buf, 1) == 0) {
-      g_display_refresh_rate_recovery_in_progress = kStage6RecoveryInline;
-      const jsize count =
-          static_cast<jsize>(display_refresh.supported_hz.size());
-      jfloatArray refresh_rates = env->NewFloatArray(count);
-      if (refresh_rates != nullptr && count > 0) {
-        env->SetFloatArrayRegion(refresh_rates, 0, count,
-                                 display_refresh.supported_hz.data());
-        context->native_pass_supported_refresh_rates(env, native_gl_class,
-                                                     refresh_rates);
-      }
-      g_display_refresh_rate_recovery_in_progress = kStage6RecoveryInactive;
-      std::cout
-          << "  [engine] NativeGLInterface.nativePassSupportedRefreshRates returned\n"
-          << std::flush;
-    } else {
-      g_display_refresh_rate_recovery_in_progress = kStage6RecoveryInactive;
-      std::cerr
-          << "  [engine] NativeGLInterface.nativePassSupportedRefreshRates recovered\n"
-          << std::flush;
+    const jsize count =
+        static_cast<jsize>(display_refresh.supported_hz.size());
+    jfloatArray refresh_rates = env->NewFloatArray(count);
+    if (refresh_rates != nullptr && count > 0) {
+      env->SetFloatArrayRegion(refresh_rates, 0, count,
+                               display_refresh.supported_hz.data());
+      context->native_pass_supported_refresh_rates(env, native_gl_class,
+                                                   refresh_rates);
     }
+    std::cout
+        << "  [engine] NativeGLInterface.nativePassSupportedRefreshRates returned\n"
+        << std::flush;
   }
 
   if (context->native_update_app_ui_sizes &&
@@ -4703,57 +4553,31 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
   if (context->native_send_app_ready &&
       ShouldRunStartupStep("MOCKTAIL_SEND_APP_READY", false)) {
     env = ensure_env();
-    volatile sig_atomic_t send_app_ready_recovered = 0;
     std::cout << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady\n"
               << std::flush;
-    if (sigsetjmp(g_send_app_ready_jmp_buf, 1) == 0) {
-      g_send_app_ready_recovery_in_progress = kStage6RecoveryInline;
-      jstring empty_ready_arg = env->NewStringUTF("");
-      jstring home_feature = env->NewStringUTF("Home");
-      context->native_send_app_ready(env, native_gl_class, empty_ready_arg,
-                                     empty_ready_arg, empty_ready_arg,
-                                     home_feature);
-      g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
-    } else {
-      send_app_ready_recovered = 1;
-      g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
-      std::cerr
-          << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady recovered\n"
-          << std::flush;
-    }
-    if (send_app_ready_recovered == 0) {
-      std::cout
-          << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady returned\n"
-          << std::flush;
-    }
+    jstring empty_ready_arg = env->NewStringUTF("");
+    jstring home_feature = env->NewStringUTF("Home");
+    context->native_send_app_ready(env, native_gl_class, empty_ready_arg,
+                                   empty_ready_arg, empty_ready_arg,
+                                   home_feature);
+    std::cout
+        << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady returned\n"
+        << std::flush;
   }
 
   if (context->native_send_game_loaded &&
       ShouldRunStartupStep("MOCKTAIL_SEND_GAME_LOADED", false)) {
     env = ensure_env();
-    volatile sig_atomic_t send_game_loaded_recovered = 0;
     std::cout << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded\n"
               << std::flush;
-    if (sigsetjmp(g_send_game_loaded_jmp_buf, 1) == 0) {
-      g_send_game_loaded_recovery_in_progress = kStage6RecoveryInline;
-      jstring empty_game_loaded_arg = env->NewStringUTF("");
-      jstring home_feature = env->NewStringUTF("Home");
-      context->native_send_game_loaded(env, native_gl_class, home_feature,
-                                       empty_game_loaded_arg,
-                                       empty_game_loaded_arg);
-      g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
-    } else {
-      send_game_loaded_recovered = 1;
-      g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
-      std::cerr
-          << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded recovered\n"
-          << std::flush;
-    }
-    if (send_game_loaded_recovered == 0) {
-      std::cout
-          << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
-          << std::flush;
-    }
+    jstring empty_game_loaded_arg = env->NewStringUTF("");
+    jstring home_feature = env->NewStringUTF("Home");
+    context->native_send_game_loaded(env, native_gl_class, home_feature,
+                                     empty_game_loaded_arg,
+                                     empty_game_loaded_arg);
+    std::cout
+        << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
+        << std::flush;
   }
 
   int keepalive_ms = GetEnvInt("MOCKTAIL_KEEPALIVE_MS", 0);
@@ -6136,8 +5960,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   bool soft_timeout_enabled = IsEnabled("MOCKTAIL_JNI_ONLOAD_SOFT_TIMEOUT");
   bool soft_timeout_forced =
       IsEnabled("MOCKTAIL_JNI_ONLOAD_SOFT_TIMEOUT_FORCE");
-  g_stage6_jni_env =
-      reinterpret_cast<uintptr_t>(jni_vm->GetJNIEnv());
+
   if (soft_timeout_enabled && !soft_timeout_forced) {
     std::cerr
         << "  [jvm] JNI_OnLoad soft timeout disabled in safe mode (set "
@@ -7569,6 +7392,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   << '\n'
                   << std::flush;
       }
+    }
+    if (lifecycle_shutdown_completed) {
+      mocktail::window::HideForShutdown();
     }
     const mocktail::Status resize_stop_status =
         lifecycle_shutdown_completed

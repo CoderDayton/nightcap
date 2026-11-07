@@ -23,24 +23,7 @@ namespace {
 // unwind.
 thread_local WindowPointerCaptureOwner* t_pointer_query_owner = nullptr;
 
-
 }  // namespace
-
-const char* CursorShapeName(CursorShape shape) {
-  switch (shape) {
-    case CursorShape::kHidden:
-      return "hidden";
-    case CursorShape::kArrow:
-      return "arrow";
-    case CursorShape::kPointer:
-      return "pointer";
-    case CursorShape::kText:
-      return "text";
-    case CursorShape::kCustom:
-      return "custom";
-  }
-  return "unknown";
-}
 
 WindowPointerCaptureOwner::WindowPointerCaptureOwner(
     PointerCaptureBackend* backend, FrameCounter presented_frames,
@@ -134,10 +117,6 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     condition_.notify_all();
   }
   const bool native_lock_active = query_ok && mouse_lock.center;
-  native_lock_observed_ = native_lock_active;
-  if (wait_for_native_unlock_after_right_drag_ && !native_lock_active) {
-    wait_for_native_unlock_after_right_drag_ = false;
-  }
   const bool client_active = query_ok;
   bool native_capture_active = client_active && native_lock_active;
   if (!native_capture_active && client_active && pointer_centered_ &&
@@ -258,11 +237,6 @@ bool WindowPointerCaptureOwner::OnShiftKeyPressed(bool text_input_active) {
   return Pump(text_input_active);
 }
 
-bool WindowPointerCaptureOwner::NeedsRightButtonReleaseRecovery(
-    bool /*observed_pressed*/) const {
-  return false;
-}
-
 bool WindowPointerCaptureOwner::OnFocusGained(bool text_input_active) {
   focused_ = true;
   return Pump(text_input_active);
@@ -272,10 +246,6 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
   focused_ = false;
   desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
-  native_lock_observed_ = false;
-  native_lock_was_active_before_right_drag_ = false;
-  shift_key_pressed_during_right_drag_ = false;
-  wait_for_native_unlock_after_right_drag_ = false;
   // The pointer now belongs to whichever window took focus.
   return Apply(false, CursorShape::kArrow, nullptr, false, false);
 }
@@ -285,10 +255,6 @@ bool WindowPointerCaptureOwner::Shutdown() {
   focused_ = false;
   desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
-  native_lock_observed_ = false;
-  native_lock_was_active_before_right_drag_ = false;
-  shift_key_pressed_during_right_drag_ = false;
-  wait_for_native_unlock_after_right_drag_ = false;
   return Apply(false, CursorShape::kArrow);
 }
 

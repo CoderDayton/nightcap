@@ -21,7 +21,7 @@ success() { echo -e "${GREEN}[ok]${RESET}    $*"; }
 info "Synchronising pinned submodule URLs…"
 git submodule sync --recursive
 
-info "Initialising libjnivm and Vulkan-Headers recursively…"
+info "Initialising Vulkan-Headers recursively…"
 git submodule update --init --recursive
 
 info "Verifying submodule and vendored-linker provenance…"
