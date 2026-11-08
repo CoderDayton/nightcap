@@ -733,6 +733,12 @@ int main(int argc, char* argv[]) {
               << runtime_config.config.fleasion_proxy_port()
               << "; running without Fleasion this session. Start Fleasion, or"
                  " set its routing mode (env or hosts) to match Nightcap's\n";
+    if (mocktail::runtime::SoberInstalled(environment, paths.home()) ==
+        std::optional<bool>(false)) {
+      std::cerr << "  [fleasion] Sober (org.vinegarhq.Sober) is not installed."
+                   " On Linux, Fleasion's Env Proxy mode only starts when"
+                   " Sober is installed\n";
+    }
     // The env override also reaches the updater and canary children, and the
     // reload drops the proxy that Fleasion's env mode would have forced on.
     setenv("MOCKTAIL_FLEASION_ENABLED", "0", 1);

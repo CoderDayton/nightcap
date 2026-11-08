@@ -9,6 +9,14 @@ Release notes on GitHub are taken from the matching section here.
 
 - The window closes as soon as Roblox stops, instead of after audio and display shutdown.
 
+### Fixed
+
+- Fleasion works again on Roblox 2.746. With `integrations.fleasion.enabled`, Nightcap also sets
+  `DFFlagHttpUseEmbeddedCaCerts` to `False`, so Roblox trusts Fleasion's certificate instead of
+  failing every asset request with a TLS error.
+- When Fleasion's Env Proxy isn't running and Sober isn't installed, Nightcap's log and the Fleasion
+  badge in Settings say so. On Linux, Fleasion only starts that proxy when Sober is installed.
+
 ## [0.5.1] - 2026-11-06
 
 ### Added

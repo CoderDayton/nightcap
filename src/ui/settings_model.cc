@@ -1213,11 +1213,12 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
 }
 
 FleasionState GetFleasionState(bool enabled, std::string_view mode,
-                               bool proxy_reachable) {
+                               bool proxy_reachable, bool sober_missing) {
   if (!enabled) return FleasionState::kOff;
   if (mode == "hosts") return FleasionState::kNotChecked;
   if (mode != "env") return FleasionState::kOff;
-  return proxy_reachable ? FleasionState::kRunning : FleasionState::kNotRunning;
+  if (proxy_reachable) return FleasionState::kRunning;
+  return sober_missing ? FleasionState::kNeedsSober : FleasionState::kNotRunning;
 }
 
 std::string FleasionBadge(FleasionState state) {
@@ -1226,6 +1227,8 @@ std::string FleasionBadge(FleasionState state) {
       return "Running";
     case FleasionState::kNotRunning:
       return "Not running";
+    case FleasionState::kNeedsSober:
+      return "Needs Sober";
     case FleasionState::kNotChecked:
       return "Not checked";
     case FleasionState::kOff:
@@ -1242,6 +1245,10 @@ std::string FleasionStatus(FleasionState state, int port) {
     case FleasionState::kNotRunning:
       return "Fleasion's proxy is not running " + where +
              " Start Fleasion first.";
+    case FleasionState::kNeedsSober:
+      return "Fleasion's proxy is not running " + where +
+             " On Linux, Fleasion's Proxy mode only starts when Sober is "
+             "installed.";
     case FleasionState::kNotChecked:
       return "Hosts routing can't be checked from here.";
     case FleasionState::kOff:

@@ -127,15 +127,17 @@ enum class FleasionState {
   kOff,
   kRunning,
   kNotRunning,
+  kNeedsSober,
   kNotChecked,
 };
 
 // `mode` is "env" or "hosts"; anything else, like Fleasion being off, is kOff.
 // `proxy_reachable` is what a connect to Fleasion's proxy port found.
+// `sober_missing` is true only when Sober is known not to be installed.
 FleasionState GetFleasionState(bool enabled, std::string_view mode,
-                               bool proxy_reachable);
+                               bool proxy_reachable, bool sober_missing = false);
 
-// "Running", "Not running" or "Not checked". Empty for kOff.
+// "Running", "Not running", "Needs Sober" or "Not checked". Empty for kOff.
 std::string FleasionBadge(FleasionState state);
 
 // The badge's tooltip. Empty for kOff.

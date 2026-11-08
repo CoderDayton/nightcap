@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -85,6 +86,48 @@ TEST(FleasionTest, ProxyIsUnreachableOnAPortThatIsOutOfRange) {
   EXPECT_FALSE(FleasionProxyReachable(65536, 100));
 }
 
+class SoberInstallTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    root_ = std::filesystem::temp_directory_path() /
+            ("fleasion_sober_" + std::to_string(getpid()));
+    std::filesystem::remove_all(root_);
+    std::filesystem::create_directories(root_ / "home");
+    std::filesystem::create_directories(root_ / "system");
+  }
+  void TearDown() override { std::filesystem::remove_all(root_); }
+
+  void Deploy(const std::filesystem::path& flatpak_root) {
+    std::filesystem::create_directories(
+        flatpak_root / "app/org.vinegarhq.Sober/current/active");
+  }
+
+  std::optional<bool> Installed(MapEnvironment environment = MapEnvironment()) {
+    return SoberInstalled(environment, root_ / "home", root_ / "system");
+  }
+
+  std::filesystem::path root_;
+};
+
+TEST_F(SoberInstallTest, IsMissingWhenNoFlatpakHasIt) {
+  EXPECT_EQ(Installed(), std::optional<bool>(false));
+}
+
+TEST_F(SoberInstallTest, IsFoundInTheSystemInstallation) {
+  Deploy(root_ / "system");
+  EXPECT_EQ(Installed(), std::optional<bool>(true));
+}
+
+TEST_F(SoberInstallTest, IsFoundInTheUserInstallation) {
+  Deploy(root_ / "home/.local/share/flatpak");
+  EXPECT_EQ(Installed(), std::optional<bool>(true));
+}
+
+TEST_F(SoberInstallTest, IsUnknownInsideNightcapsFlatpak) {
+  EXPECT_EQ(Installed(MapEnvironment({{"FLATPAK_ID", "io.github.CoderDayton.nightcap"}})),
+            std::nullopt);
+}
+
 nlohmann::json Merge(const std::string& base) {
   std::string merged;
   std::string error;
@@ -99,6 +142,13 @@ std::string Value(const nlohmann::json& json, const char* key) {
 
 TEST(FleasionTest, RequestsAssetsFromTheBatchApiFleasionRewrites) {
   EXPECT_EQ(Value(Merge("{}"), kFlag), "False");
+}
+
+TEST(FleasionTest, TrustsTheCaBundleThatHoldsFleasionsCertificate) {
+  EXPECT_EQ(Value(Merge("{}"), "DFFlagHttpUseEmbeddedCaCerts"), "False");
+  EXPECT_EQ(Value(Merge(R"({"DFFlagHttpUseEmbeddedCaCerts":"True"})"),
+                  "DFFlagHttpUseEmbeddedCaCerts"),
+            "True");
 }
 
 TEST(FleasionTest, KeepsOtherOverrides) {
