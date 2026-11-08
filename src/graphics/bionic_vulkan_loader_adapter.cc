@@ -1870,13 +1870,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   }
   // BC images need textureCompressionBC, which an Android app never asks for.
   // Software Vulkan transcodes about a hundred times slower than a GPU, so
-  // it keeps decoding.
+  // it keeps decoding. With Compress Textures off the feature stays on, so
+  // textures can still be BC once video memory runs low.
   bool bc_textures = false;
   VkBool32 requested_features2_bc = VK_FALSE;
-  if (etc2_emulated &&
-      mocktail::graphics::Etc2BcTranscodeEnabled(
-          std::getenv("MOCKTAIL_ETC2_BC_TRANSCODE")) &&
-      properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
+  if (etc2_emulated && properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
     VkPhysicalDeviceFeatures supported{};
     if (const auto host_get_features =
             reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
@@ -1955,10 +1953,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
       host_memory_properties != nullptr) {
     host_memory_properties(physical_device, &memory_properties);
   }
+  const bool bc_preferred =
+      bc_textures && mocktail::graphics::Etc2BcTranscodeEnabled(
+                         std::getenv("MOCKTAIL_ETC2_BC_TRANSCODE"));
   State().etc2.RegisterDevice(*device, physical_device, etc2_emulated,
                               memory_properties, host_get_device_proc_addr,
                               enabled.vulkan12.timelineSemaphore == VK_TRUE,
-                              bc_textures);
+                              bc_preferred, bc_textures && !bc_preferred);
   // A physical-device query of a supported device extension needs no
   // enabling on the device, only Vulkan 1.1.
   const auto host_memory_properties2 =

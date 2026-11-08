@@ -11,6 +11,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- With Compress Textures off, big games no longer crash small GPUs by running out of video memory.
+  New textures are compressed while it's low, and stay uncompressed otherwise.
 - Fleasion works again on Roblox 2.746. With `integrations.fleasion.enabled`, Nightcap also sets
   `DFFlagHttpUseEmbeddedCaCerts` to `False`, so Roblox trusts Fleasion's certificate instead of
   failing every asset request with a TLS error.

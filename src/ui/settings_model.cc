@@ -519,7 +519,9 @@ const std::vector<SettingsPage>& SettingsPages() {
                   {"graphics.texture_compression",
                   "Compress Textures",
                   "Keeps textures compressed on the GPU to conserve video memory. "
-                  "Disable if you experience texture glitches. Requires a restart.",
+                  "Disable if you experience texture glitches. When off, "
+                  "new textures are still compressed while video memory is "
+                  "low. Requires a restart.",
                   SettingKind::kToggle,
                   {},
                   "true",
@@ -529,6 +531,7 @@ const std::vector<SettingsPage>& SettingsPages() {
                   "• Up to 50% VRAM savings\n\n"
                   "You gain:\n"
                   "• May fix broken or black textures\n\n"
+                  "New textures are still compressed while video memory is low.\n\n"
                   "Requires a restart to take effect."),
                 {"graphics.smooth_texture_loading",
                  "Smooth Texture Loading",
