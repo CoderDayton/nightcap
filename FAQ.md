@@ -115,8 +115,8 @@ the GPU is low on it.
 ## How do I use Fleasion?
 
 Install [Sober](https://flathub.org/apps/org.vinegarhq.Sober) first, even if
-you don't play through it. On Linux, Fleasion's default Env Proxy mode only
-starts its proxy when Sober is installed.
+you don't play through it. On Linux, Fleasion stops its proxy in both Env Proxy
+and Hosts mode when it finds no Sober install to add its certificate to.
 
 1. Start Fleasion and leave it running.
 2. In Nightcap's Settings, turn on **Use Fleasion** and **Clear Roblox cache on
@@ -125,6 +125,18 @@ starts its proxy when Sober is installed.
 3. Start Nightcap.
 
 If the Fleasion badge in Settings says **Needs Sober**, Sober isn't installed.
+Older builds say **Not running** instead.
+
+Also add this flag in **Advanced → FFlag overrides** (see
+[FFLAGS.md](docs/FFLAGS.md)). Without it, Roblox 2.746 rejects Fleasion's
+certificate and no replaced assets load. Newer builds set it for you, and
+having it in your overrides as well does no harm.
+
+```json
+{
+  "DFFlagHttpUseEmbeddedCaCerts": false
+}
+```
 
 ## Can I run multiple Roblox instances?
 
