@@ -143,6 +143,7 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
     }
   }
   ERR_clear_error();
+  result.base_certificates = count;
   if (count == 0 || PEM_write_bio_X509(output.get(), ca.get()) != 1) {
     result.error = "base bundle must contain PEM certificates";
     return result;
