@@ -398,6 +398,12 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
     }
     capture_anchor_valid_ = true;
     anchor_centered_ = false;
+    // KWin keeps the last warp as the place to drop the pointer when a lock
+    // ends, and ends this lock before the release warp counts. Warp to the
+    // anchor now, where the pointer already is, so that place is this one.
+    if (ShowsCursorWhileCaptured()) {
+      SDL_WarpMouseInWindow(window, capture_anchor_x_, capture_anchor_y_);
+    }
     SDL_SetWindowMouseGrab(window, true);
   }
   // Before relative mode starts: Wayland then locks the pointer where it is.
