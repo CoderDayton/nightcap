@@ -111,6 +111,20 @@ under Graphics, and restart Nightcap. New textures may stutter briefly while
 they load. If textures are still black, turn off **Compress Textures** too;
 that uses more video memory.
 
+## How do I use Fleasion?
+
+Install [Sober](https://flathub.org/apps/org.vinegarhq.Sober) first, even if
+you don't play through it. On Linux, Fleasion's default Env Proxy mode only
+starts its proxy when Sober is installed.
+
+1. Start Fleasion and leave it running.
+2. In Nightcap's Settings, turn on **Use Fleasion** and **Clear Roblox cache on
+   launch**. Without the cache clear, Roblox keeps showing assets it already
+   downloaded.
+3. Start Nightcap.
+
+If the Fleasion badge in Settings says **Needs Sober**, Sober isn't installed.
+
 ## Can I run multiple Roblox instances?
 
 No. Nightcap won't add multi-instance launching. It would mean working around

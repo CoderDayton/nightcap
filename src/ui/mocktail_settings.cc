@@ -715,7 +715,8 @@ void ShowFleasionState(const Row& row, FleasionState state, int port) {
   gtk_widget_remove_css_class(row.badge, "warn");
   if (state == FleasionState::kRunning) {
     gtk_widget_add_css_class(row.badge, "ok");
-  } else if (state == FleasionState::kNotRunning) {
+  } else if (state == FleasionState::kNotRunning ||
+             state == FleasionState::kNeedsSober) {
     gtk_widget_add_css_class(row.badge, "warn");
   }
 }
@@ -728,12 +729,21 @@ struct FleasionProbe {
   Row* row = nullptr;
   int port = 0;
   bool reachable = false;
+  bool sober_missing = false;
 };
 
 void ProbeFleasion(GTask* task, gpointer, gpointer data, GCancellable*) {
   auto* probe = static_cast<FleasionProbe*>(data);
   probe->reachable =
       mocktail::runtime::FleasionProxyReachable(probe->port, 100);
+  if (!probe->reachable) {
+    const mocktail::runtime::ProcessEnvironment environment;
+    probe->sober_missing =
+        mocktail::runtime::SoberInstalled(
+            environment,
+            mocktail::runtime::RuntimePaths::FromEnvironment(environment).home()) ==
+        std::optional<bool>(false);
+  }
   g_task_return_boolean(task, TRUE);
 }
 
@@ -749,7 +759,8 @@ void OnFleasionProbed(GObject*, GAsyncResult* result, gpointer) {
   }
   ShowFleasionState(
       *probe->row,
-      mocktail::ui::GetFleasionState(true, "env", probe->reachable),
+      mocktail::ui::GetFleasionState(true, "env", probe->reachable,
+                                     probe->sober_missing),
       probe->port);
 }
 

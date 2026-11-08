@@ -1499,6 +1499,18 @@ TEST(FleasionStatusTest, HostsRoutingCannotBeChecked) {
             FleasionState::kNotChecked);
 }
 
+TEST(FleasionStatusTest, ProxyRoutingWithoutSoberNeedsSober) {
+  EXPECT_EQ(GetFleasionState(true, "env", false, true),
+            FleasionState::kNeedsSober);
+  EXPECT_EQ(GetFleasionState(true, "env", true, true), FleasionState::kRunning);
+  EXPECT_EQ(GetFleasionState(true, "hosts", false, true),
+            FleasionState::kNotChecked);
+  EXPECT_EQ(FleasionBadge(FleasionState::kNeedsSober), "Needs Sober");
+  EXPECT_EQ(FleasionStatus(FleasionState::kNeedsSober, 58443),
+            "Fleasion's proxy is not running on port 58443. On Linux, Fleasion's "
+            "Proxy mode only starts when Sober is installed.");
+}
+
 TEST(FleasionStatusTest, TheBadgeIsShortAndEmptyWhileOff) {
   EXPECT_EQ(FleasionBadge(FleasionState::kOff), "");
   EXPECT_EQ(FleasionBadge(FleasionState::kRunning), "Running");
