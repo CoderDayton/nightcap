@@ -109,7 +109,8 @@ update.
 Open Settings (`mocktail --settings`), turn off **Smooth Texture Loading**
 under Graphics, and restart Nightcap. New textures may stutter briefly while
 they load. If textures are still black, turn off **Compress Textures** too;
-that uses more video memory.
+that uses more video memory, and Nightcap still compresses new textures while
+the GPU is low on it.
 
 ## How do I use Fleasion?
 

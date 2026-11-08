@@ -294,6 +294,9 @@ struct EncodeStats {
   std::uint64_t by_scale[9] = {};
   // Encoded fast because the budget was dry.
   std::uint64_t fast = 0;
+  // Encoded, unbudgeted, because video memory was low with Compress
+  // Textures off.
+  std::uint64_t low_memory = 0;
   double estimated_ns = 0;
   std::uint64_t since_ns = 0;
 };
@@ -334,9 +337,15 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
       line += part;
     }
   }
-  std::snprintf(part, sizeof(part),
-                " fast %llu; est %.1f ms GPU\n",
-                static_cast<unsigned long long>(stats->fast),
+  std::snprintf(part, sizeof(part), " fast %llu;",
+                static_cast<unsigned long long>(stats->fast));
+  line += part;
+  if (stats->low_memory != 0) {
+    std::snprintf(part, sizeof(part), " low memory %llu;",
+                  static_cast<unsigned long long>(stats->low_memory));
+    line += part;
+  }
+  std::snprintf(part, sizeof(part), " est %.1f ms GPU\n",
                 stats->estimated_ns / 1e6);
   line += part;
   *stats = {};
@@ -348,6 +357,9 @@ struct HostDevice {
   VkDevice device = VK_NULL_HANDLE;
   bool emulated = false;
   bool bc_textures = false;
+  // BC only while video memory is low, which `bc_low_memory` tracks.
+  bool bc_fallback = false;
+  mutable std::atomic<bool> bc_low_memory{false};
   VkPhysicalDeviceMemoryProperties memory{};
   PFN_vkCreateImage create_image = nullptr;
   PFN_vkDestroyImage destroy_image = nullptr;
@@ -449,6 +461,9 @@ struct ImageRecord {
   EmulatedTextureBytes bytes;
   // The host image is BC7/BC4/BC5 and uploads are transcoded on the GPU.
   bool transcoded = false;
+  // Created while new images were BC. Fixed at creation, so images made
+  // before video memory ran low keep decoding on the GPU.
+  bool beside_bc = false;
   // Encode budget taken at creation and not yet spent by an upload.
   double prepaid_ns = 0;
   bool fast_encode = false;
@@ -770,12 +785,19 @@ bool IsSmallMip(const ImageRecord& record, std::uint32_t mip) {
          kSmallTextureMaxExtent;
 }
 
+// New images become BC: always with Compress Textures on, and while video
+// memory is low with it off.
+bool CompressesTextures(const HostDevice& dev) {
+  return dev.bc_textures ||
+         (dev.bc_fallback && dev.bc_low_memory.load(std::memory_order_acquire));
+}
+
 // Uploads the CPU decodes rather than the GPU. A decoded image beside BC
 // ones is one, so its blocks are kept for copies into a BC image.
 bool DecodesOnCpu(const HostDevice& dev, const ImageRecord& record) {
   const bool decoded_beside_bc =
       !record.transcoded && IsColorFormat(record.format.etc_format) &&
-      dev.bc_textures && dev.gpu != nullptr && dev.gpu->CanTranscode();
+      record.beside_bc && dev.gpu != nullptr && dev.gpu->CanTranscode();
   return dev.gpu == nullptr || dev.copy_buffer == nullptr ||
          record.scale != 1 || record.may_override || decoded_beside_bc;
 }
@@ -1867,6 +1889,53 @@ struct VulkanEtc2Emulation::State {
   // textures with mips in a 2-core reporter's log, ~90 MiB).
   VkDeviceSize KeepFree() const {
     return std::max<VkDeviceSize>(video_memory / 10, VkDeviceSize{96} << 20);
+  }
+
+  // Free video memory under which the fallback compresses: twice
+  // KeepFree(), at most 1 GiB, so a large card is not low with gigabytes
+  // free. Decoded textures are up to 8x their BC size, and a 2 GB card ran
+  // out at about 600 MiB of them.
+  VkDeviceSize LowFree() const {
+    return std::min<VkDeviceSize>(KeepFree() * 2, VkDeviceSize{1} << 30);
+  }
+
+  // With Compress Textures off, `bc_low_memory` is set under LowFree() free
+  // by the driver's count and cleared over half as much again; without its
+  // count, set over a fifth of video memory in textures and cleared under a
+  // sixth. The gap keeps it from flipping on every image.
+  void UpdateLowMemory(const HostDevice& dev) {
+    if (!dev.bc_fallback || dev.gpu == nullptr || !dev.gpu->CanTranscode()) {
+      return;
+    }
+    RefreshVideoFree();
+    char text[256];
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const bool was = dev.bc_low_memory.load(std::memory_order_acquire);
+      bool low = false;
+      if (video_free_known) {
+        const VkDeviceSize line = was ? LowFree() + LowFree() / 2 : LowFree();
+        low = video_free < reserved_since_free + line;
+      } else {
+        low = video_memory != 0 &&
+              texture_bytes.decoded >
+                  (was ? video_memory / 6 : video_memory / 5);
+      }
+      if (low == was) {
+        return;
+      }
+      dev.bc_low_memory.store(low, std::memory_order_release);
+      std::snprintf(text, sizeof(text),
+                    low ? "  [vulkan] video memory low (%s free, %s of "
+                          "textures): compressing new textures as "
+                          "BC7/BC4/BC5\n"
+                        : "  [vulkan] video memory recovered (%s free, %s of "
+                          "textures): new textures stay decoded again\n",
+                    video_free_known ? FormatBytes(video_free).c_str()
+                                     : "unknown",
+                    FormatBytes(texture_bytes.decoded).c_str());
+    }
+    std::fputs(text, stderr);
   }
 
   void ReleaseUpscale(VkDeviceSize reserved) {
@@ -3654,7 +3723,7 @@ void VulkanEtc2Emulation::RegisterDevice(
     VkDevice device, VkPhysicalDevice physical_device, bool emulated,
     const VkPhysicalDeviceMemoryProperties& memory,
     PFN_vkGetDeviceProcAddr get_device_proc_addr, bool timeline_semaphore,
-    bool bc_textures) {
+    bool bc_textures, bool bc_fallback) {
   static_cast<void>(physical_device);
   if (device == VK_NULL_HANDLE || get_device_proc_addr == nullptr) {
     return;
@@ -3664,6 +3733,7 @@ void VulkanEtc2Emulation::RegisterDevice(
   dev->device = device;
   dev->emulated = emulated;
   dev->bc_textures = emulated && bc_textures;
+  dev->bc_fallback = emulated && !bc_textures && bc_fallback;
   dev->memory = memory;
   if (emulated) {
     VkDeviceSize video_memory = 0;
@@ -4006,8 +4076,13 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // BC with linear tiling.
   VkFormat bc_format = VK_FORMAT_UNDEFINED;
   const bool bc_format_known = BcHostFormat(create_info->format, &bc_format);
+  if (bc_format_known) {
+    state_->UpdateLowMemory(*dev);
+  }
+  // Read once: another thread may latch low memory while this image is sized.
+  const bool compresses = CompressesTextures(*dev);
   const auto bc_eligible = [&](std::uint32_t at_scale) {
-    return bc_format_known && dev->bc_textures && dev->gpu != nullptr &&
+    return bc_format_known && compresses && dev->gpu != nullptr &&
            dev->gpu->CanTranscode() && !may_override &&
            (at_scale == 1 || dev->gpu->CanScale()) &&
            create_info->imageType == VK_IMAGE_TYPE_2D &&
@@ -4059,7 +4134,9 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   bool transcoded = bc_eligible(scale);
   double prepaid = 0;
   bool fast = false;
-  if (transcoded && state_->encode_budget && dev->speed.transcode_ns > 0) {
+  // The fallback has no measured speed, so it never takes the fast encoder.
+  if (transcoded && dev->bc_textures && state_->encode_budget &&
+      dev->speed.transcode_ns > 0) {
     prepaid = state_->BudgetEncode(*dev, *create_info, scale, &fast);
   }
   if (transcoded) {
@@ -4121,6 +4198,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       record.height = create_info->extent.height;
       record.bytes = bytes;
       record.transcoded = transcoded;
+      record.beside_bc = compresses;
       record.prepaid_ns = prepaid;
       record.fast_encode = fast;
       record.may_override = may_override;
@@ -4142,6 +4220,11 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       totals = state_->texture_bytes;
       now = TraceClockNanos();
       memory_log = state_->TakeMemoryLogLocked(now);
+      if (transcoded && !dev->bc_textures) {
+        ++dev->stats.low_memory;
+        ++dev->stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+        memory_log += TakeEncodeLog(&dev->stats, now);
+      }
     }
     TraceTextureBytes(totals, now);
     if (!memory_log.empty()) {
@@ -5666,6 +5749,14 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
                      : "  [vulkan] BC transcode unavailable or failed its "
                        "self-test; "
                        "textures stay decoded\n");
+  } else if (dev->bc_fallback) {
+    std::fprintf(stderr,
+                 decoder->CanTranscode()
+                     ? "  [vulkan] ETC2/EAC textures stay decoded until video "
+                       "memory runs low\n"
+                     : "  [vulkan] BC transcode unavailable or failed its "
+                       "self-test; textures stay decoded even when video "
+                       "memory runs low\n");
   }
   // Measured before the decoder is published, so CreateImage never sees it
   // without the speed that goes with it. Only BC encodes are budgeted.
