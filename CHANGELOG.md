@@ -16,6 +16,8 @@ Release notes on GitHub are taken from the matching section here.
   failing every asset request with a TLS error.
 - When Fleasion's Env Proxy isn't running and Sober isn't installed, Nightcap's log and the Fleasion
   badge in Settings say so. On Linux, Fleasion only starts that proxy when Sober is installed.
+- On KDE Wayland, the cursor no longer jumps to where the previous right-click camera drag started
+  when you let go of the right mouse button.
 
 ## [0.5.1] - 2026-11-06
 

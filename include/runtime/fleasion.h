@@ -15,6 +15,8 @@ struct FleasionPreparation {
   std::filesystem::path certificate;
   std::filesystem::path base_bundle;
   std::filesystem::path bundle;
+  // Certificates read from `base_bundle`, Fleasion's own included.
+  int base_certificates = 0;
   std::string error;
   explicit operator bool() const { return error.empty(); }
 };

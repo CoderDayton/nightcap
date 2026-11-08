@@ -774,7 +774,9 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "  [fleasion] mode=" << runtime_config.config.fleasion_proxy_mode()
               << " certificate=" << fleasion.certificate
-              << " trust_bundle=" << fleasion.bundle << '\n';
+              << " trust_bundle=" << fleasion.bundle
+              << " base=" << fleasion.base_bundle << " ("
+              << fleasion.base_certificates << " certificates)\n";
     if (runtime_config.config.network_proxy()) {
       std::cout << "  [fleasion] proxy=" << mocktail::runtime::BuildNetworkProxyUrl(
           *runtime_config.config.network_proxy()) << "; start Fleasion before Roblox\n";
