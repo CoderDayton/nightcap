@@ -28,6 +28,8 @@ Release notes on GitHub are taken from the matching section here.
   badge in Settings say so. On Linux, Fleasion only starts that proxy when Sober is installed.
 - On KDE Wayland, the cursor no longer jumps to where the previous right-click camera drag started
   when you let go of the right mouse button.
+- On Roblox 2.746, holding right click over a button or menu no longer freezes the cursor.
+  Nightcap couldn't tell when the camera turns, so it held the cursor on every right click.
 
 ## [0.5.1] - 2026-11-06
 
