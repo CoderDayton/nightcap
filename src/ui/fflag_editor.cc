@@ -594,12 +594,36 @@ void SelectGroupRow(Editor* editor, std::size_t index) {
                                     static_cast<int>(index)));
 }
 
-void OnAddFlags(AdwButtonRow*, gpointer data) {
+void OnAddFlags(GtkWidget*, gpointer data) {
   SelectGroupRow(static_cast<Editor*>(data), 0);
 }
 
-void FillPresetPage(Editor* editor, GtkWidget* page) {
+// A centered page for when there is nothing to list.
+GtkWidget* EmptyPage(const char* icon, const char* title,
+                     const char* description) {
+  GtkWidget* status = adw_status_page_new();
+  adw_status_page_set_icon_name(ADW_STATUS_PAGE(status),
+                                ThemedIconName(icon).c_str());
+  adw_status_page_set_title(ADW_STATUS_PAGE(status), title);
+  adw_status_page_set_description(ADW_STATUS_PAGE(status), description);
+  return status;
+}
+
+GtkWidget* PresetPage(Editor* editor) {
   const Preset* preset = Shown(editor);
+  const std::vector<PresetRow> rows = PresetRows(*preset);
+  if (rows.empty()) {
+    GtkWidget* status = EmptyPage("flag-symbolic", "No Flags Yet",
+                                  "Roblox uses its own settings.");
+    GtkWidget* add = gtk_button_new_with_label("Add Flags");
+    gtk_widget_add_css_class(add, "pill");
+    gtk_widget_add_css_class(add, "suggested-action");
+    gtk_widget_set_halign(add, GTK_ALIGN_CENTER);
+    g_signal_connect(add, "clicked", G_CALLBACK(OnAddFlags), editor);
+    adw_status_page_set_child(ADW_STATUS_PAGE(status), add);
+    return status;
+  }
+  GtkWidget* page = adw_preferences_page_new();
   GtkWidget* group = adw_preferences_group_new();
   const bool active = preset->name == editor->presets.active;
   adw_preferences_group_set_description(
@@ -608,18 +632,9 @@ void FillPresetPage(Editor* editor, GtkWidget* page) {
                "off to play without it. It stays in the list."
              : "Not in use. Use This Preset sends these flags to Roblox "
                "instead.");
-  const std::vector<PresetRow> rows = PresetRows(*preset);
   for (const PresetRow& row : rows) {
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               PresetFlagRow(editor, *preset, row));
-  }
-  if (rows.empty()) {
-    GtkWidget* empty = adw_action_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(empty),
-                                  "No flags yet");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(empty),
-                                "Roblox uses its own settings.");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), empty);
   }
   GtkWidget* add = adw_button_row_new();
   adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add), "Add Flags");
@@ -628,30 +643,25 @@ void FillPresetPage(Editor* editor, GtkWidget* page) {
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add);
   adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                            ADW_PREFERENCES_GROUP(group));
+  return page;
 }
 
-void FillFlagsPage(Editor* editor, GtkWidget* page,
-                   const std::vector<const CatalogFlag*>& flags) {
-  const Preset* target = Target(editor);
-  GtkWidget* group = adw_preferences_group_new();
-  if (target == nullptr) {
-    adw_preferences_group_set_description(
-        ADW_PREFERENCES_GROUP(group),
-        "Make a preset of your own with New Preset or Duplicate to add "
-        "flags to it.");
+GtkWidget* FlagsPage(Editor* editor,
+                     const std::vector<const CatalogFlag*>& flags) {
+  if (flags.empty()) {
+    return EmptyPage("edit-find-symbolic", "No Results",
+                     "Try a different word, like fps or memory.");
   }
+  const Preset* target = Target(editor);
+  GtkWidget* page = adw_preferences_page_new();
+  GtkWidget* group = adw_preferences_group_new();
   for (const CatalogFlag* flag : flags) {
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               CatalogFlagRow(editor, *flag, target));
   }
-  if (flags.empty()) {
-    GtkWidget* none = adw_action_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(none),
-                                  "No flags found");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), none);
-  }
   adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                            ADW_PREFERENCES_GROUP(group));
+  return page;
 }
 
 void SetAction(Editor* editor, const char* name, bool enabled) {
@@ -666,7 +676,7 @@ void FillContent(Editor* editor) {
   // Handlers of the widgets being replaced may still point here.
   std::vector<std::unique_ptr<RowData>> old = std::move(editor->rows);
   editor->rows.clear();
-  GtkWidget* page = adw_preferences_page_new();
+  GtkWidget* page = nullptr;
   const Preset* target = Target(editor);
   const std::string adding =
       target != nullptr ? "Adding to " + target->name : "";
@@ -682,17 +692,16 @@ void FillContent(Editor* editor) {
         (state + " · " + std::to_string(count) +
          (count == 1 ? " flag" : " flags"))
             .c_str());
-    FillPresetPage(editor, page);
+    page = PresetPage(editor);
   } else if (editor->view == View::kGroup) {
     adw_window_title_set_title(editor->title, editor->group.c_str());
     adw_window_title_set_subtitle(editor->title, adding.c_str());
-    FillFlagsPage(editor, page, FindFlags(editor->group, ""));
+    page = FlagsPage(editor, FindFlags(editor->group, ""));
   } else {
     adw_window_title_set_title(editor->title, "Search");
     adw_window_title_set_subtitle(editor->title, adding.c_str());
-    FillFlagsPage(editor, page,
-                  FindFlags("", gtk_editable_get_text(
-                                    GTK_EDITABLE(editor->search))));
+    page = FlagsPage(editor, FindFlags("", gtk_editable_get_text(
+                                               GTK_EDITABLE(editor->search))));
   }
   gtk_widget_set_visible(editor->use,
                          on_preset && preset->name != editor->presets.active);
@@ -1067,6 +1076,7 @@ GtkWidget* BuildSidebar(Editor* editor) {
   adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(header), FALSE);
   adw_header_bar_set_show_start_title_buttons(ADW_HEADER_BAR(header), FALSE);
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), cancel);
+  adw_header_bar_set_show_title(ADW_HEADER_BAR(header), FALSE);
 
   GtkWidget* search = gtk_search_entry_new();
   editor->search = GTK_SEARCH_ENTRY(search);

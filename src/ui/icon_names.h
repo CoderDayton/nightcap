@@ -19,6 +19,8 @@ inline std::string ThemedIconName(const std::string& name) {
        {"extension-symbolic", "applications-system-symbolic"}},
       {"preferences-system-privacy-symbolic",
        {"security-high-symbolic", "view-private-symbolic"}},
+      {"flag-symbolic",
+       {"applications-engineering-symbolic", "preferences-other-symbolic"}},
   };
   GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
   if (gtk_icon_theme_has_icon(theme, name.c_str())) return name;
