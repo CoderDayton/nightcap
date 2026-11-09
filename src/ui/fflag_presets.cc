@@ -19,17 +19,19 @@ using Json = nlohmann::ordered_json;
 
 const std::vector<FlagLevel> kOn = {{"On", "", {"true"}}};
 
+FlagEffect Gain(std::string_view text) { return {text, false}; }
+FlagEffect Cost(std::string_view text) { return {text, true}; }
+
 CatalogFlag Flag(std::vector<std::string_view> names, std::string_view group,
                  std::string_view summary, std::string_view details,
-                 FlagRating rating, std::string_view rating_label,
-                 std::vector<FlagLevel> levels, std::size_t default_level = 0) {
+                 std::vector<FlagEffect> effects, std::vector<FlagLevel> levels,
+                 std::size_t default_level = 0) {
   CatalogFlag flag;
   flag.names = std::move(names);
   flag.group = group;
   flag.summary = summary;
   flag.details = details;
-  flag.rating = rating;
-  flag.rating_label = rating_label;
+  flag.effects = std::move(effects);
   flag.levels = std::move(levels);
   flag.default_level = default_level;
   return flag;
@@ -37,10 +39,10 @@ CatalogFlag Flag(std::vector<std::string_view> names, std::string_view group,
 
 CatalogFlag NumberFlag(std::string_view name, std::string_view group,
                        std::string_view summary, std::string_view details,
-                       std::string_view rating_label, int minimum, int maximum,
-                       int step, int default_number) {
-  CatalogFlag flag = Flag({name}, group, summary, details,
-                          FlagRating::kCaution, rating_label, {});
+                       std::vector<FlagEffect> effects, int minimum,
+                       int maximum, int step, int default_number) {
+  CatalogFlag flag =
+      Flag({name}, group, summary, details, std::move(effects), {});
   flag.minimum = minimum;
   flag.maximum = maximum;
   flag.step = step;
@@ -49,108 +51,119 @@ CatalogFlag NumberFlag(std::string_view name, std::string_view group,
 }
 
 std::vector<CatalogFlag> MakeCatalog() {
-  constexpr FlagRating kSafe = FlagRating::kSafe;
-  constexpr FlagRating kCaution = FlagRating::kCaution;
   return {
-      Flag({"FIntDebugForceMSAASamples"}, "Graphics", "Smooths jagged edges.",
+      Flag({"FIntDebugForceMSAASamples"}, "Graphics",
+           "Smoother edges, for a little FPS.",
            "Edges of parts, buildings and characters look less jagged. "
            "Higher is smoother. Above 4, Roblox starts drawing things wrong, "
            "so 4 is the most offered here.",
-           kSafe, "Safe",
+           {Gain("Smoother edges"), Cost("A little less FPS")},
            {{"Off", "Normal Roblox edges", {"0"}},
             {"Smoother", "Uses a bit more of the graphics card", {"2"}},
             {"Smoothest", "The most that works without problems", {"4"}}},
            1),
       Flag({"DFIntTextureQualityOverride",
             "DFFlagTextureQualityOverrideEnabled"},
-           "Graphics", "How sharp textures look.",
+           "Graphics", "Less video memory, blurrier textures.",
            "Lower uses less video memory, which helps on graphics cards with "
            "4 GB or less. 3 is Roblox's normal quality.",
-           kCaution, "4 GB cards",
+           {Gain("Less video memory"), Cost("Blurrier textures")},
            {{"Lowest", "Blurriest, least video memory", {"0", "true"}},
             {"Low", "Blurry", {"1", "true"}},
             {"Medium", "For 4 GB graphics cards", {"2", "true"}},
             {"Normal", "Roblox's own quality", {"3", "true"}}},
            2),
       Flag({"FIntFRMMaxGrassDistance", "FIntFRMMinGrassDistance"}, "Graphics",
-           "Removes grass.",
-           "Grass is not drawn at all, which is faster on weak PCs.", kSafe,
-           "Safe", {{"On", "", {"0", "0"}}}),
+           "More FPS, no grass.", "Grass is not drawn at all.",
+           {Gain("More FPS"), Cost("No grass")}, {{"On", "", {"0", "0"}}}),
       Flag({"FIntGrassMovementReducedMotionFactor"}, "Graphics",
-           "Stops grass swaying.", "Grass stays still instead of moving.",
-           kSafe, "Safe", {{"On", "", {"0"}}}),
+           "Grass stays still.", "Grass stays still instead of swaying.",
+           {Gain("Still grass")}, {{"On", "", {"0"}}}),
       NumberFlag("DFIntDebugFRMQualityLevelOverride", "Graphics",
-                 "Locks graphics quality and view distance.",
+                 "Locks graphics quality. Lower means more FPS.",
                  "1 is lowest and 21 is highest. The in-game Graphics "
                  "Quality slider stops working, quality no longer drops when "
                  "the frame rate does, and dynamic resolution turns off. Try "
                  "the in-game slider first.",
-                 "Strong PCs", 1, 21, 1, 10),
+                 {Gain("Lower: more FPS"), Gain("Higher: looks better")}, 1,
+                 21, 1, 10),
       NumberFlag("DFIntCSGLevelOfDetailSwitchingDistance", "Graphics",
-                 "Makes far objects simpler sooner.",
+                 "Lower means more FPS, blockier far objects.",
                  "Lower is faster but blockier. Roblox uses 250.",
-                 "Weak PCs", 0, 10000, 10, 250),
+                 {Gain("Lower: more FPS"), Cost("Lower: blockier far objects")},
+                 0, 10000, 10, 250),
       NumberFlag("DFIntCSGLevelOfDetailSwitchingDistanceL12", "Graphics",
-                 "Makes far objects simpler sooner, second step.",
+                 "Lower means more FPS. Second detail step.",
                  "Lower is faster but blockier. Roblox uses 500.",
-                 "Weak PCs", 0, 10000, 10, 500),
+                 {Gain("Lower: more FPS"), Cost("Lower: blockier far objects")},
+                 0, 10000, 10, 500),
       NumberFlag("DFIntCSGLevelOfDetailSwitchingDistanceL23", "Graphics",
-                 "Makes far objects simpler sooner, third step.",
+                 "Lower means more FPS. Third detail step.",
                  "Lower is faster but blockier. Roblox uses 2000.",
-                 "Weak PCs", 0, 10000, 50, 2000),
+                 {Gain("Lower: more FPS"), Cost("Lower: blockier far objects")},
+                 0, 10000, 50, 2000),
       NumberFlag("DFIntCSGLevelOfDetailSwitchingDistanceL34", "Graphics",
-                 "Makes far objects simpler sooner, last step.",
+                 "Lower means more FPS. Last detail step.",
                  "Lower is faster but blockier. Roblox uses 3000.",
-                 "Weak PCs", 0, 10000, 50, 3000),
-      Flag({"DFFlagDebugPauseVoxelizer"}, "Graphics", "Stops lighting updates.",
-           "Faster, but light and shadows can be wrong.", kCaution, "Weak PCs",
-           kOn),
+                 {Gain("Lower: more FPS"), Cost("Lower: blockier far objects")},
+                 0, 10000, 50, 3000),
+      Flag({"DFFlagDebugPauseVoxelizer"}, "Graphics",
+           "More FPS, but lighting stops updating.",
+           "Light and shadows can be wrong.",
+           {Gain("More FPS"), Cost("Wrong light and shadows")}, kOn),
       Flag({"DFFlagDebugForceAnisoOff"}, "Graphics",
-           "Makes far floors blurrier.",
-           "Floors look blurrier further away. Slightly faster.", kCaution,
-           "Weak PCs", kOn),
+           "Slightly more FPS, blurrier far floors.",
+           "Floors look blurrier further away.",
+           {Gain("Slightly more FPS"), Cost("Blurrier far floors")}, kOn),
       Flag({"FIntDebugTextureManagerSkipMips"}, "Graphics",
-           "Drops texture detail to save video memory.", "1 and 2 are mild.",
-           kCaution, "Low video memory",
+           "Less video memory, less texture detail.", "1 and 2 are mild.",
+           {Gain("Less video memory"), Cost("Less texture detail")},
            {{"Mild", "A little less detail", {"1"}},
             {"Less detail", "Saves more video memory", {"2"}}}),
       NumberFlag("FIntTerrainArraySliceSize", "Graphics",
-                 "Terrain texture detail.",
+                 "Lower means less video memory, blurrier terrain.",
                  "Roblox uses 256. Lower uses less video memory.",
-                 "Low video memory", 16, 256, 16, 256),
+                 {Gain("Lower: less video memory"),
+                  Cost("Lower: blurrier terrain")},
+                 16, 256, 16, 256),
       NumberFlag("FIntRenderShadowmapBias", "Graphics",
-                 "Shifts shadows to hide stripes.",
+                 "Higher hides striped shadows.",
                  "Roblox uses 75. Change it only if shadows look striped.",
-                 "Striped shadows", 0, 200, 5, 75),
+                 {Gain("Higher: fewer shadow stripes"),
+                  Cost("Higher: shadows drift from objects")},
+                 0, 200, 5, 75),
 
       Flag({"FFlagDebugDisplayFPS"}, "Performance",
            "Shows an FPS counter in the top-left corner.",
-           "Handy for checking what other flags do.", kSafe, "Safe", kOn),
+           "Handy for checking what other flags do.", {Gain("FPS counter")},
+           kOn),
       Flag({"DFFlagReduceCPUWhenBG"}, "Performance",
-           "Uses less CPU while Roblox is in the background.", "", kSafe,
-           "Safe", kOn),
+           "Uses less CPU while Roblox is in the background.", "",
+           {Gain("Less CPU in the background")}, kOn),
       Flag({"DFFlagEnableMeshPreloading", "DFFlagEnableTexturePreloading",
             "DFFlagEnableSoundPreloading"},
-           "Performance", "Loads what a game asks for up front.",
-           "Less pop-in, but loading takes longer and uses more RAM. Best "
-           "with 16 GB of RAM or more.",
-           kCaution, "16 GB RAM", {{"On", "", {"true", "true", "true"}}}),
+           "Performance", "Less pop-in, longer loading.",
+           "Loads what a game asks for up front. Best with 16 GB of RAM or "
+           "more.",
+           {Gain("Less pop-in"), Cost("Uses more RAM"),
+            Cost("Longer loading")}, {{"On", "", {"true", "true", "true"}}}),
       Flag({"DFIntAnimatorThrottleMaxFramesToSkip",
             "DFIntAnimationLodThrottleMaxFramesToSkip"},
-           "Performance", "Stops far-away animations skipping frames.",
-           "Far-away characters move smoothly, which costs CPU. Roblox uses "
-           "4 and 8.",
-           kCaution, "Strong CPUs", {{"On", "", {"0", "0"}}}),
+           "Performance", "Smoother far animations, more CPU.",
+           "Far-away characters stop skipping frames. Roblox uses 4 and 8.",
+           {Gain("Smoother far animations"), Cost("Uses more CPU")}, {{"On", "", {"0", "0"}}}),
 
       Flag({"FIntRobloxGuiBlurIntensity"}, "Menus and sound",
-           "Turns off the blur behind the Roblox menu.", "", kSafe, "Safe",
-           {{"On", "", {"0"}}}),
+           "Turns off the blur behind the Roblox menu.", "",
+           {Gain("No menu blur")}, {{"On", "", {"0"}}}),
       Flag({"DFFlagDisableDPIScale"}, "Menus and sound",
-           "Makes menus smaller on high-resolution screens.", "", kCaution,
-           "Taste", kOn),
+           "Makes menus smaller on high-resolution screens.", "",
+           {Gain("Smaller menus")}, kOn),
       NumberFlag("DFIntVoiceChatVolumeThousandths", "Menus and sound",
-                 "Voice chat volume.", "1000 is normal.", "Taste", 0, 3000,
-                 100, 1000),
+                 "Voice chat volume.", "1000 is normal.",
+                 {Gain("Higher: louder voice chat"),
+                  Gain("Lower: quieter voice chat")},
+                 0, 3000, 100, 1000),
 
       Flag({"DFFlagDisableFastLogTelemetry",
             "DFIntHttpInfluxHundredthsPercentage",
@@ -162,7 +175,7 @@ std::vector<CatalogFlag> MakeCatalog() {
             "DFIntHttpStatsDnsErrorInfluxReportsPerMillion",
             "DFIntHttp2StatsHundredthsPercent"},
            "Usage stats", "Stops Roblox sending some usage and network stats.",
-           "Nothing changes in game.", kSafe, "Safe",
+           "Nothing changes in game.", {Gain("Sends fewer stats")},
            {{"On", "", {"true", "0", "0", "0", "0", "0", "0", "0", "0"}}}),
   };
 }
@@ -232,25 +245,6 @@ void SetValue(Preset* preset, std::string_view name, std::string value) {
     return;
   }
   preset->flags.push_back({std::string(name), std::move(value), true});
-}
-
-Preset BuiltIn(std::string name, std::vector<PresetFlag> flags) {
-  return {std::move(name), true, std::move(flags)};
-}
-
-std::vector<Preset> BuiltInPresets() {
-  const std::vector<PresetFlag> starter = {
-      {"FFlagDebugDisplayFPS", "true"},
-      {"FIntRobloxGuiBlurIntensity", "0"},
-      {"DFFlagReduceCPUWhenBG", "true"}};
-  std::vector<PresetFlag> weak = starter;
-  weak.push_back({"FIntFRMMaxGrassDistance", "0"});
-  weak.push_back({"FIntFRMMinGrassDistance", "0"});
-  return {BuiltIn("Starter", starter), BuiltIn("Weak PC", weak),
-          BuiltIn("Low video memory",
-                  {{"DFIntTextureQualityOverride", "2"},
-                   {"DFFlagTextureQualityOverrideEnabled", "true"},
-                   {"FIntDebugTextureManagerSkipMips", "1"}})};
 }
 
 // Takes hand edits of fflags.json into `preset`, which fflags.json holds.
@@ -379,7 +373,6 @@ bool HoldsFlags(const Preset& preset, const std::vector<PresetFlag>& flags) {
 bool LoadPresets(std::string_view text, const std::vector<PresetFlag>& fflags,
                  FFlagPresets* presets, std::string* error) {
   FFlagPresets loaded;
-  loaded.presets = BuiltInPresets();
   if (text.find_first_not_of(" \t\r\n") != std::string_view::npos) {
     const Json json = Json::parse(text, nullptr, false);
     if (json.is_discarded() || !json.is_object() ||
@@ -424,12 +417,11 @@ bool LoadPresets(std::string_view text, const std::vector<PresetFlag>& fflags,
   }
 
   Preset* active = loaded.Find(loaded.active);
-  if (active != nullptr && !active->built_in) {
+  if (active != nullptr) {
     TakeIn(active, fflags);
-  } else if (active == nullptr || !HoldsFlags(*active, fflags)) {
-    active = nullptr;
+  } else {
     for (Preset& preset : loaded.presets) {
-      if (!preset.built_in && HoldsFlags(preset, fflags)) {
+      if (HoldsFlags(preset, fflags)) {
         active = &preset;
         TakeIn(active, fflags);
         break;
@@ -453,9 +445,6 @@ std::string PresetsText(const FFlagPresets& presets) {
   json["active"] = presets.active;
   json["presets"] = Json::array();
   for (const Preset& preset : presets.presets) {
-    if (preset.built_in) {
-      continue;
-    }
     Json flags = Json::array();
     for (const PresetFlag& flag : preset.flags) {
       flags.push_back({{"name", flag.name},
@@ -593,6 +582,9 @@ std::vector<const CatalogFlag*> FindFlags(std::string_view group,
       continue;
     }
     std::string haystack = Lower(flag.summary) + "\n" + Lower(flag.details);
+    for (const FlagEffect& effect : flag.effects) {
+      haystack += "\n" + Lower(effect.text);
+    }
     for (std::string_view name : flag.names) {
       haystack += "\n" + Lower(name);
     }

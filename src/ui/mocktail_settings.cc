@@ -31,6 +31,7 @@
 #include "runtime/single_instance_lock.h"
 #include "accessible_rows.h"
 #include "fflag_editor.h"
+#include "icon_names.h"
 #include "ui/settings_model.h"
 #include "ui/sky_pack.h"
 
@@ -39,6 +40,7 @@ namespace {
 using mocktail::ui::ChoiceIndex;
 using mocktail::ui::DeviceChoice;
 using mocktail::ui::FFlagsDocument;
+using mocktail::ui::ThemedIconName;
 using mocktail::ui::NewNumberRow;
 using mocktail::ui::SetAccessibleLabel;
 using mocktail::ui::SpinOf;
@@ -2297,24 +2299,6 @@ void OnPageActivated(GtkListBox*, GtkListBoxRow*, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->split, TRUE);
 }
 
-// Breeze lacks some of Adwaita's icon names, so fall back to ones it has.
-std::string SidebarIconName(const std::string& name) {
-  static const std::pair<const char*, std::array<const char*, 2>> kFallbacks[] = {
-      {"power-profile-performance-symbolic",
-       {"speedometer-symbolic", "utilities-system-monitor-symbolic"}},
-      {"application-x-addon-symbolic",
-       {"extension-symbolic", "applications-system-symbolic"}},
-  };
-  GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
-  if (gtk_icon_theme_has_icon(theme, name.c_str())) return name;
-  for (const auto& [primary, alternates] : kFallbacks) {
-    if (name != primary) continue;
-    for (const char* alternate : alternates) {
-      if (gtk_icon_theme_has_icon(theme, alternate)) return alternate;
-    }
-  }
-  return name;
-}
 
 // KDE's layout adds the window icon to each header bar, doubling the artwork.
 // Empty when the layout has no icon.
@@ -2364,7 +2348,7 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_box_append(GTK_BOX(box),
                    gtk_image_new_from_icon_name(
-                       SidebarIconName(Text(page.icon_name)).c_str()));
+                       ThemedIconName(Text(page.icon_name)).c_str()));
     GtkWidget* label = gtk_label_new(Text(page.title).c_str());
     gtk_label_set_xalign(GTK_LABEL(label), 0);
     gtk_widget_set_hexpand(label, TRUE);
@@ -2712,7 +2696,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   window->widget = window_widget;
   gtk_window_set_title(GTK_WINDOW(window_widget), "Nightcap Settings");
   // Fits a 1366x768 screen with a panel.
-  gtk_window_set_default_size(GTK_WINDOW(window_widget), 960, 700);
+  gtk_window_set_default_size(GTK_WINDOW(window_widget), 1040, 760);
   gtk_widget_set_size_request(window_widget, 360, 420);
   gtk_window_set_icon_name(GTK_WINDOW(window_widget), kApplicationId);
   g_signal_connect(window_widget, "close-request",

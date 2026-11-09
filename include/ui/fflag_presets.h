@@ -12,10 +12,10 @@ namespace ui {
 // The flags the FFlag editor knows, from docs/FFLAGS.md, and the presets it
 // keeps. No GTK here, so it is tested without a display.
 
-enum class FlagRating {
-  kSafe,
-  kCaution,
-  kAvoid,
+// Like "More FPS", or "Uses more RAM" as a cost.
+struct FlagEffect {
+  std::string_view text;
+  bool cost = false;
 };
 
 struct FlagLevel {
@@ -31,8 +31,9 @@ struct CatalogFlag {
   std::string_view group;
   std::string_view summary;
   std::string_view details;
-  FlagRating rating = FlagRating::kSafe;
-  std::string_view rating_label;
+  // A number that can go either way from Roblox's default starts each effect
+  // with "Lower: " or "Higher: ".
+  std::vector<FlagEffect> effects;
   // One level means on or off only. With none, the flag takes a number from
   // `minimum` to `maximum`, and every name gets that number.
   std::vector<FlagLevel> levels;
@@ -65,7 +66,6 @@ struct PresetFlag {
 
 struct Preset {
   std::string name;
-  bool built_in = false;
   std::vector<PresetFlag> flags;
 };
 
@@ -95,7 +95,6 @@ bool HoldsFlags(const Preset& preset, const std::vector<PresetFlag>& flags);
 bool LoadPresets(std::string_view text, const std::vector<PresetFlag>& fflags,
                  FFlagPresets* presets, std::string* error);
 
-// Built-in presets are not written.
 std::string PresetsText(const FFlagPresets& presets);
 
 std::string UniquePresetName(const FFlagPresets& presets,

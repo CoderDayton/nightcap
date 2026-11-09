@@ -7,7 +7,7 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Added
 
-- New FFlag editor in Settings → Advanced. Each known flag says what it does and who it's for,
+- New FFlag editor in Settings → Advanced. Each known flag says what it does, like more FPS,
   flags can be turned off without deleting them, and sets of flags can be saved as presets.
   Edit as Text still edits fflags.json by hand.
 

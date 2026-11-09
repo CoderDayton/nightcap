@@ -146,7 +146,8 @@ Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
 [docs/FFLAGS.md](docs/FFLAGS.md) lists recommended flags, ones to avoid, and
 which flags Nightcap sets itself.
 **Advanced → FFlag overrides** in the [settings window](#settings) edits
-this file: each known flag has a description and a rating, flags can be
+this file: each known flag says what it does, like more FPS or less video
+memory, and what it costs. Flags can be
 turned off without deleting them, and sets of flags are kept as presets in
 `fflags-presets.json` beside it. **Edit as Text** edits the file by hand, and
 does not save text that Nightcap could not load.

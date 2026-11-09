@@ -67,7 +67,18 @@ TEST(FFlagPresetsTest, CatalogEntriesAreWellFormed) {
     SCOPED_TRACE(std::string(flag.names[0]));
     EXPECT_TRUE(groups.count(flag.group)) << flag.group;
     EXPECT_FALSE(flag.summary.empty());
-    EXPECT_FALSE(flag.rating_label.empty());
+    EXPECT_FALSE(flag.effects.empty());
+    const bool either_way = flag.levels.empty() &&
+                            flag.minimum < flag.default_number &&
+                            flag.default_number < flag.maximum;
+    for (const FlagEffect& effect : flag.effects) {
+      EXPECT_FALSE(effect.text.empty());
+      if (either_way) {
+        EXPECT_TRUE(effect.text.rfind("Lower: ", 0) == 0 ||
+                    effect.text.rfind("Higher: ", 0) == 0)
+            << effect.text;
+      }
+    }
     for (std::string_view name : flag.names) {
       EXPECT_TRUE(names.insert(name).second) << name << " is listed twice";
       EXPECT_FALSE(IsRemovedFlag(name));
@@ -86,7 +97,7 @@ TEST(FFlagPresetsTest, CatalogEntriesAreWellFormed) {
   }
 }
 
-TEST(FFlagPresetsTest, EveryLevelAndBuiltInPresetIsWhatNightcapLoads) {
+TEST(FFlagPresetsTest, EveryLevelIsWhatNightcapLoads) {
   for (const CatalogFlag& flag : FlagCatalog()) {
     for (std::size_t level = 0; level < flag.levels.size(); ++level) {
       Preset preset;
@@ -97,13 +108,6 @@ TEST(FFlagPresetsTest, EveryLevelAndBuiltInPresetIsWhatNightcapLoads) {
       EXPECT_EQ(LoaderError(FFlagsText(preset)), "") << flag.names[0];
     }
   }
-  FFlagPresets presets = Load("", "{}");
-  for (const Preset& preset : presets.presets) {
-    if (preset.built_in) {
-      EXPECT_FALSE(preset.flags.empty()) << preset.name;
-      EXPECT_EQ(LoaderError(FFlagsText(preset)), "") << preset.name;
-    }
-  }
 }
 
 TEST(FFlagPresetsTest, FirstOpenMakesMySetupFromFFlags) {
@@ -112,13 +116,11 @@ TEST(FFlagPresetsTest, FirstOpenMakesMySetupFromFFlags) {
   ASSERT_EQ(presets.active, "My setup");
   const Preset* mine = presets.Find("My setup");
   ASSERT_NE(mine, nullptr);
-  EXPECT_FALSE(mine->built_in);
+  EXPECT_EQ(presets.presets.size(), 1u);
   ASSERT_EQ(mine->flags.size(), 2u);
   EXPECT_EQ(mine->flags[0].name, "FFlagDebugDisplayFPS");
   EXPECT_EQ(mine->flags[1].value, "3");
   EXPECT_TRUE(mine->flags[1].on);
-  ASSERT_NE(presets.Find("Starter"), nullptr);
-  EXPECT_TRUE(presets.Find("Starter")->built_in);
 }
 
 TEST(FFlagPresetsTest, AnOffFlagStaysInThePresetButNotInFFlags) {
@@ -156,25 +158,14 @@ TEST(FFlagPresetsTest, HandEditsToFFlagsAreTakenIn) {
   EXPECT_TRUE(Flag(*mine, "FFlagD")->on);
 }
 
-TEST(FFlagPresetsTest, UsingABuiltInPresetKeepsItWhileFFlagsMatch) {
-  FFlagPresets presets = Load("", "{}");
-  presets.active = "Starter";
-  const std::string fflags = FFlagsText(*presets.Find("Starter"));
-  const FFlagPresets again = Load(PresetsText(presets), fflags);
-  EXPECT_EQ(again.active, "Starter");
-}
-
-TEST(FFlagPresetsTest, ABuiltInPresetEditedByHandBecomesTheUsersOwn) {
-  FFlagPresets presets = Load("", "{}");
-  presets.active = "Starter";
-  const FFlagPresets again =
-      Load(PresetsText(presets), R"({"FFlagDebugDisplayFPS": true})");
-  const Preset* active = again.Find(again.active);
-  ASSERT_NE(active, nullptr);
-  EXPECT_FALSE(active->built_in);
-  EXPECT_NE(again.active, "My setup");
-  EXPECT_NE(again.Find("My setup"), nullptr);
-  EXPECT_EQ(active->flags.size(), 1u);
+// Earlier builds had built-in presets, which the file names but never held.
+TEST(FFlagPresetsTest, AnActivePresetNoLongerThereBecomesMySetup) {
+  const FFlagPresets presets =
+      Load(R"({"active": "Starter", "presets": []})",
+           R"({"FFlagDebugDisplayFPS": true})");
+  EXPECT_EQ(presets.active, "My setup");
+  ASSERT_EQ(presets.presets.size(), 1u);
+  EXPECT_EQ(presets.presets[0].flags.size(), 1u);
 }
 
 TEST(FFlagPresetsTest, NotAPresetsFileIsAnError) {
@@ -299,7 +290,6 @@ TEST(FFlagPresetsTest, RemovedAndUnknownFlagsAreRowsOfTheirOwn) {
 TEST(FFlagPresetsTest, NewPresetNamesAreUnique) {
   const FFlagPresets presets = Load("", "{}");
   EXPECT_EQ(UniquePresetName(presets, "My setup"), "My setup 2");
-  EXPECT_EQ(UniquePresetName(presets, "Starter"), "Starter 2");
   EXPECT_EQ(UniquePresetName(presets, "Racing"), "Racing");
 }
 
@@ -310,6 +300,16 @@ TEST(FFlagPresetsTest, SearchLooksAtNamesAndText) {
   ASSERT_FALSE(fps.empty());
   EXPECT_EQ(fps[0]->names[0], "FFlagDebugDisplayFPS");
   EXPECT_TRUE(FindFlags("Graphics", "fps counter").empty());
+  // Effects are searched too, so "fps" finds what raises it.
+  const std::vector<const CatalogFlag*> raises = FindFlags("", "fps");
+  for (std::string_view name : {"DFFlagDebugPauseVoxelizer",
+                                "DFIntCSGLevelOfDetailSwitchingDistance"}) {
+    EXPECT_TRUE(std::any_of(raises.begin(), raises.end(),
+                            [name](const CatalogFlag* flag) {
+                              return flag->names[0] == name;
+                            }))
+        << name;
+  }
   EXPECT_EQ(FindFlags("Graphics", "").size(),
             static_cast<std::size_t>(std::count_if(
                 FlagCatalog().begin(), FlagCatalog().end(),

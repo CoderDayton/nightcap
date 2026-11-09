@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "accessible_rows.h"
+#include "icon_names.h"
 #include "runtime/runtime_config_store.h"
 #include "ui/fflag_presets.h"
 
@@ -78,23 +79,11 @@ std::string FlagMarkup(std::string_view name) {
 
 Preset* Shown(Editor* editor) { return editor->presets.Find(editor->shown); }
 
-// The preset the Add buttons add to: the one last shown, when it is the
-// user's, else the active one, else any of the user's.
+// The preset the Add buttons add to: the one last shown, else the active one.
 Preset* Target(Editor* editor) {
   Preset* shown = Shown(editor);
-  if (shown != nullptr && !shown->built_in) {
-    return shown;
-  }
-  Preset* active = editor->presets.Find(editor->presets.active);
-  if (active != nullptr && !active->built_in) {
-    return active;
-  }
-  for (Preset& preset : editor->presets.presets) {
-    if (!preset.built_in) {
-      return &preset;
-    }
-  }
-  return nullptr;
+  return shown != nullptr ? shown
+                          : editor->presets.Find(editor->presets.active);
 }
 
 void ShowProblem(Editor* editor, const std::string& error) {
@@ -276,26 +265,23 @@ std::string ValueText(const Preset& preset, const PresetRow& row) {
                                : std::string(row.flag->levels[row.level].label);
 }
 
-GtkWidget* Badge(std::string_view text, const char* style) {
-  GtkWidget* badge = gtk_label_new(std::string(text).c_str());
-  gtk_widget_add_css_class(badge, "status-badge");
-  if (style != nullptr) {
-    gtk_widget_add_css_class(badge, style);
+// Shown only when the row is opened, to keep the list plain.
+GtkWidget* EffectsRow(const CatalogFlag& flag) {
+  GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_margin_start(box, 12);
+  gtk_widget_set_margin_end(box, 12);
+  gtk_widget_set_margin_top(box, 10);
+  gtk_widget_set_margin_bottom(box, 10);
+  for (const FlagEffect& effect : flag.effects) {
+    GtkWidget* badge = gtk_label_new(std::string(effect.text).c_str());
+    gtk_widget_add_css_class(badge, "status-badge");
+    gtk_widget_add_css_class(badge, effect.cost ? "warn" : "ok");
+    gtk_box_append(GTK_BOX(box), badge);
   }
-  gtk_widget_set_valign(badge, GTK_ALIGN_CENTER);
-  return badge;
-}
-
-GtkWidget* RatingBadge(const CatalogFlag& flag) {
-  switch (flag.rating) {
-    case FlagRating::kSafe:
-      return Badge(flag.rating_label, "ok");
-    case FlagRating::kCaution:
-      return Badge(flag.rating_label, "warn");
-    case FlagRating::kAvoid:
-      return Badge(flag.rating_label, "error");
-  }
-  return Badge(flag.rating_label, nullptr);
+  GtkWidget* row = gtk_list_box_row_new();
+  gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+  gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+  return row;
 }
 
 GtkWidget* DetailRow(const std::string& text) {
@@ -420,21 +406,17 @@ GtkWidget* RemovedFlagRow(Editor* editor, const Preset& preset,
   adw_action_row_set_subtitle(
       ADW_ACTION_ROW(widget),
       "Roblox no longer has this flag, so it does nothing.");
-  adw_action_row_add_suffix(ADW_ACTION_ROW(widget),
-                            Badge("Does nothing", nullptr));
-  if (!preset.built_in) {
-    GtkWidget* remove = gtk_button_new_with_label("Remove");
-    SetAccessibleLabel(remove, "Remove " + name);
-    gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
-    g_signal_connect(remove, "clicked", G_CALLBACK(OnRemoveRow),
-                     NewRowData(editor, name, nullptr));
-    adw_action_row_add_suffix(ADW_ACTION_ROW(widget), remove);
-  }
+  GtkWidget* remove = gtk_button_new_with_label("Remove");
+  SetAccessibleLabel(remove, "Remove " + name);
+  gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
+  g_signal_connect(remove, "clicked", G_CALLBACK(OnRemoveRow),
+                   NewRowData(editor, name, nullptr));
+  adw_action_row_add_suffix(ADW_ACTION_ROW(widget), remove);
   return widget;
 }
 
 void AddLevelRows(Editor* editor, GtkWidget* expander, const PresetRow& row,
-                  RowData* row_data, bool editable) {
+                  RowData* row_data) {
   const CatalogFlag& flag = *row.flag;
   GtkCheckButton* first = nullptr;
   for (std::size_t level = 0; level < flag.levels.size(); ++level) {
@@ -452,7 +434,6 @@ void AddLevelRows(Editor* editor, GtkWidget* expander, const PresetRow& row,
     }
     gtk_check_button_set_active(GTK_CHECK_BUTTON(check), row.level == level);
     SetAccessibleLabel(check, std::string(choice.label));
-    gtk_widget_set_sensitive(check, editable);
     adw_action_row_add_prefix(ADW_ACTION_ROW(option), check);
     adw_action_row_set_activatable_widget(ADW_ACTION_ROW(option), check);
     GtkWidget* value = gtk_label_new(std::string(choice.values[0]).c_str());
@@ -472,7 +453,6 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
   if (row.removed) {
     return RemovedFlagRow(editor, preset, row);
   }
-  const bool editable = !preset.built_in;
   const PresetFlag& main = preset.flags[row.entries[0]];
   GtkWidget* expander = adw_expander_row_new();
   adw_preferences_row_set_title(ADW_PREFERENCES_ROW(expander),
@@ -487,17 +467,12 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
   GtkWidget* toggle = gtk_switch_new();
   gtk_widget_set_valign(toggle, GTK_ALIGN_CENTER);
   gtk_switch_set_active(GTK_SWITCH(toggle), row.on);
-  gtk_widget_set_sensitive(toggle, editable);
   gtk_widget_set_tooltip_text(
       toggle, "Off keeps the flag here without sending it to Roblox");
   SetAccessibleLabel(toggle, "Send " + main.name + " to Roblox");
   g_signal_connect(toggle, "notify::active", G_CALLBACK(OnRowSwitch),
                    row_data);
   adw_expander_row_add_suffix(ADW_EXPANDER_ROW(expander), toggle);
-  if (row.flag != nullptr) {
-    adw_expander_row_add_suffix(ADW_EXPANDER_ROW(expander),
-                                RatingBadge(*row.flag));
-  }
   const std::string value = ValueText(preset, row);
   if (!value.empty()) {
     row_data->value = gtk_label_new(value.c_str());
@@ -505,6 +480,9 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
     adw_expander_row_add_suffix(ADW_EXPANDER_ROW(expander), row_data->value);
   }
 
+  if (row.flag != nullptr) {
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), EffectsRow(*row.flag));
+  }
   adw_expander_row_add_row(
       ADW_EXPANDER_ROW(expander),
       DetailRow(row.flag != nullptr
@@ -517,7 +495,7 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
                              DetailRow(CurrentValues(preset, row)));
   }
   if (row.flag != nullptr && row.flag->levels.size() == 1 &&
-      row.level == kNoLevel && editable) {
+      row.level == kNoLevel) {
     GtkWidget* recommended = adw_button_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(recommended),
                                   "Use the Recommended Value");
@@ -526,7 +504,7 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
     adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), recommended);
   }
   if (row.flag != nullptr && row.flag->levels.size() > 1) {
-    AddLevelRows(editor, expander, row, row_data, editable);
+    AddLevelRows(editor, expander, row, row_data);
   } else if (row.flag != nullptr && row.flag->levels.empty()) {
     const int current = RowNumber(preset, row, row.flag->default_number);
     // A hand-set number outside the range is shown as it is, not clamped.
@@ -536,19 +514,16 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(number), "Value");
     GtkSpinButton* spin = SpinOf(number);
     gtk_spin_button_set_value(spin, current);
-    gtk_widget_set_sensitive(GTK_WIDGET(spin), editable);
     g_signal_connect(spin, "notify::value", G_CALLBACK(OnNumberChanged),
                      row_data);
     adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), number);
   }
-  if (editable) {
-    GtkWidget* remove = adw_button_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(remove),
-                                  "Remove from Preset");
-    gtk_widget_add_css_class(remove, "destructive-action");
-    g_signal_connect(remove, "activated", G_CALLBACK(OnRemoveRow), row_data);
-    adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), remove);
-  }
+  GtkWidget* remove = adw_button_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(remove),
+                                "Remove from Preset");
+  gtk_widget_add_css_class(remove, "destructive-action");
+  g_signal_connect(remove, "activated", G_CALLBACK(OnRemoveRow), row_data);
+  adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), remove);
   return expander;
 }
 
@@ -559,7 +534,8 @@ void OnAdd(GtkButton* button, gpointer data) {
     return;
   }
   AddCatalogFlag(target, *row_data->flag);
-  gtk_button_set_label(button, "Added");
+  gtk_button_set_icon_name(button, "object-select-symbolic");
+  gtk_widget_set_tooltip_text(GTK_WIDGET(button), "Added");
   SetAccessibleLabel(GTK_WIDGET(button), row_data->name + " added");
   gtk_widget_set_sensitive(GTK_WIDGET(button), FALSE);
   Changed(row_data->editor);
@@ -573,17 +549,20 @@ GtkWidget* CatalogFlagRow(Editor* editor, const CatalogFlag& flag,
   adw_expander_row_set_subtitle(ADW_EXPANDER_ROW(expander),
                                 Escaped(flag.summary).c_str());
   const bool added = target != nullptr && HasCatalogFlag(*target, flag);
-  GtkWidget* add = gtk_button_new_with_label(added ? "Added" : "Add");
+  GtkWidget* add = gtk_button_new_from_icon_name(
+      added ? "object-select-symbolic" : "list-add-symbolic");
+  gtk_widget_add_css_class(add, "flat");
+  gtk_widget_add_css_class(add, "circular");
+  gtk_widget_set_tooltip_text(add, added ? "Added" : "Add to the preset");
   const std::string name(flag.names[0]);
   SetAccessibleLabel(add, added ? name + " added" : "Add " + name);
   gtk_widget_set_valign(add, GTK_ALIGN_CENTER);
-  gtk_widget_set_size_request(add, 84, -1);
   gtk_widget_set_sensitive(add, target != nullptr && !added);
   g_signal_connect(add, "clicked", G_CALLBACK(OnAdd),
                    NewRowData(editor, flag.names[0], &flag));
   adw_expander_row_add_suffix(ADW_EXPANDER_ROW(expander), add);
-  adw_expander_row_add_suffix(ADW_EXPANDER_ROW(expander), RatingBadge(flag));
 
+  adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), EffectsRow(flag));
   adw_expander_row_add_row(ADW_EXPANDER_ROW(expander),
                            DetailRow(DetailText(flag)));
   if (flag.levels.size() > 1) {
@@ -625,13 +604,10 @@ void FillPresetPage(Editor* editor, GtkWidget* page) {
   const bool active = preset->name == editor->presets.active;
   adw_preferences_group_set_description(
       ADW_PREFERENCES_GROUP(group),
-      preset->built_in
-          ? "A ready-made preset. Use it as it is, or duplicate it to change "
-            "it."
-          : active ? "These flags go to Roblox the next time it starts. Turn "
-                     "one off to play without it. It stays in the list."
-                   : "Not in use. Use This Preset sends these flags to "
-                     "Roblox instead.");
+      active ? "These flags go to Roblox the next time it starts. Turn one "
+               "off to play without it. It stays in the list."
+             : "Not in use. Use This Preset sends these flags to Roblox "
+               "instead.");
   const std::vector<PresetRow> rows = PresetRows(*preset);
   for (const PresetRow& row : rows) {
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
@@ -645,13 +621,11 @@ void FillPresetPage(Editor* editor, GtkWidget* page) {
                                 "Roblox uses its own settings.");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), empty);
   }
-  if (!preset->built_in) {
-    GtkWidget* add = adw_button_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add), "Add Flags");
-    adw_button_row_set_start_icon_name(ADW_BUTTON_ROW(add), "list-add-symbolic");
-    g_signal_connect(add, "activated", G_CALLBACK(OnAddFlags), editor);
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add);
-  }
+  GtkWidget* add = adw_button_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add), "Add Flags");
+  adw_button_row_set_start_icon_name(ADW_BUTTON_ROW(add), "list-add-symbolic");
+  g_signal_connect(add, "activated", G_CALLBACK(OnAddFlags), editor);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add);
   adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                            ADW_PREFERENCES_GROUP(group));
 }
@@ -701,9 +675,7 @@ void FillContent(Editor* editor) {
   if (on_preset) {
     const bool active = preset->name == editor->presets.active;
     const std::size_t count = PresetRows(*preset).size();
-    const std::string state = active             ? "In use"
-                              : preset->built_in ? "Built in"
-                                                 : "Not in use";
+    const std::string state = active ? "In use" : "Not in use";
     adw_window_title_set_title(editor->title, preset->name.c_str());
     adw_window_title_set_subtitle(
         editor->title,
@@ -725,10 +697,10 @@ void FillContent(Editor* editor) {
   gtk_widget_set_visible(editor->use,
                          on_preset && preset->name != editor->presets.active);
   gtk_widget_set_visible(editor->menu, on_preset);
-  SetAction(editor, "rename", on_preset && !preset->built_in);
+  SetAction(editor, "rename", on_preset);
   SetAction(editor, "duplicate", on_preset);
-  SetAction(editor, "delete", on_preset && !preset->built_in &&
-                                  preset->name != editor->presets.active);
+  SetAction(editor, "delete",
+            on_preset && preset->name != editor->presets.active);
   adw_toolbar_view_set_content(editor->content, page);
   editor->filling = false;
 }
@@ -978,7 +950,6 @@ void OnDuplicate(GSimpleAction*, GVariant*, gpointer data) {
     return;
   }
   Preset copy = *shown;
-  copy.built_in = false;
   copy.name = UniquePresetName(editor->presets, shown->name + " copy");
   editor->shown = copy.name;
   editor->presets.presets.push_back(std::move(copy));
@@ -993,7 +964,7 @@ void OnDeleteResponse(AdwAlertDialog*, const char* response, gpointer data) {
   }
   std::vector<Preset>& presets = editor->presets.presets;
   for (auto it = presets.begin(); it != presets.end(); ++it) {
-    if (it->name == editor->shown && !it->built_in) {
+    if (it->name == editor->shown) {
       presets.erase(it);
       break;
     }
@@ -1100,7 +1071,7 @@ GtkWidget* BuildSidebar(Editor* editor) {
   GtkWidget* search = gtk_search_entry_new();
   editor->search = GTK_SEARCH_ENTRY(search);
   gtk_search_entry_set_placeholder_text(editor->search,
-                                        "Search, like grass or fps");
+                                        "Search flags");
   SetAccessibleLabel(search, "Search flags");
   gtk_widget_set_margin_start(search, 12);
   gtk_widget_set_margin_end(search, 12);
@@ -1117,7 +1088,8 @@ GtkWidget* BuildSidebar(Editor* editor) {
   for (const FlagGroup& group : FlagGroups()) {
     const std::string count =
         std::to_string(FindFlags(group.name, "").size());
-    GtkWidget* row = SidebarRow(std::string(group.icon_name).c_str(),
+    GtkWidget* row = SidebarRow(
+        ThemedIconName(std::string(group.icon_name)).c_str(),
                                 std::string(group.name), count, false);
     g_object_set_data(G_OBJECT(row), "group",
                       const_cast<char*>(group.name.data()));
