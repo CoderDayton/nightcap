@@ -258,6 +258,10 @@ std::optional<TextPosition> JsonSyntaxFault(std::string_view text);
 // it is JSON.
 std::string JsonSyntaxError(std::string_view text);
 
+// Why Nightcap would not use `text` as fflags.json, or empty. The file's
+// loader has the last word on a save; this names the flag at fault.
+std::string FFlagsContentError(std::string_view text);
+
 // fflags.json as the window edits it: the whole file as one text.
 class FFlagsDocument {
  public:

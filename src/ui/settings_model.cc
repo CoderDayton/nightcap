@@ -384,8 +384,8 @@ std::string Quoted(std::string_view name) {
   return "\"" + std::string(name) + "\"";
 }
 
-// Why Nightcap would not use `text` as fflags.json, or empty. The file's
-// loader has the last word on a save; this names the flag at fault.
+}  // namespace
+
 std::string FFlagsContentError(std::string_view text) {
   const JsonSyntaxProbe probe = ProbeJson(text);
   if (probe.failed) {
@@ -412,6 +412,8 @@ std::string FFlagsContentError(std::string_view text) {
   }
   return {};
 }
+
+namespace {
 
 // Whether `text` is UTF-8 with no NUL byte, which a text view needs.
 bool IsUtf8Text(std::string_view text) {
@@ -1040,8 +1042,8 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"fflags",
                  "FFlag overrides",
-                 "Edit fflags.json. Text that is not valid JSON is not "
-                 "saved.",
+                 "Turn Roblox's hidden settings on and off, and keep sets "
+                 "of them as presets.",
                  SettingKind::kEditor,
                  {},
                  "",
