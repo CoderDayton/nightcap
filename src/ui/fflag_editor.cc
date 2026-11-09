@@ -43,6 +43,8 @@ struct Editor {
   bool dirty = false;
   // Set while widgets are built, so their first values are not changes.
   bool filling = false;
+  // A screen reader can press Cancel again behind an open question.
+  bool asking_discard = false;
 
   AdwDialog* dialog = nullptr;
   AdwNavigationSplitView* split = nullptr;
@@ -180,12 +182,17 @@ void OnCancel(GtkButton*, gpointer data) {
 }
 
 void OnDiscardResponse(AdwAlertDialog*, const char* response, gpointer data) {
+  auto* editor = static_cast<Editor*>(data);
+  editor->asking_discard = false;
   if (g_strcmp0(response, "discard") == 0) {
-    adw_dialog_force_close(static_cast<Editor*>(data)->dialog);
+    adw_dialog_force_close(editor->dialog);
   }
 }
 
 void OnCloseAttempt(AdwDialog* dialog, gpointer data) {
+  auto* editor = static_cast<Editor*>(data);
+  if (editor->asking_discard) return;
+  editor->asking_discard = true;
   AdwDialog* question = adw_alert_dialog_new(
       "Discard changes?", "Your changes to your flags are not saved.");
   adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(question), "keep",

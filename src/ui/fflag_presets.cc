@@ -136,12 +136,12 @@ std::vector<CatalogFlag> MakeCatalog() {
            "Sorts lights on the GPU. Can help weak CPUs.",
            "Only matters in games with Future lighting and many lights.",
            {Gain("Less CPU in lit games"), Cost("A bit more GPU work")}, kOn),
-      Flag({"FIntRenderLocalLightUpdatesMin", "FIntRenderLocalLightUpdatesMax"},
+      Flag({"FIntRenderLocalLightUpdatesMax", "FIntRenderLocalLightUpdatesMin"},
            "Graphics", "More FPS, lights update slower.",
            "How many lights with shadows update each frame. Roblox uses 2 "
            "to 8, more at higher graphics quality.",
            {Gain("More FPS"), Cost("Lights and shadows update slower")},
-           {{"Fewer", "Up to 4 lights a frame", {"1", "4"}},
+           {{"Fewer", "Up to 4 lights a frame", {"4", "1"}},
             {"Fewest", "1 light a frame", {"1", "1"}}}),
 
       Flag({"FFlagDebugDisplayFPS"}, "Performance",
