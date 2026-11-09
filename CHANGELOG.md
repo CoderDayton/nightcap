@@ -5,9 +5,17 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- New FFlag editor in Settings → Advanced. Each known flag says what it does and who it's for,
+  flags can be turned off without deleting them, and sets of flags can be saved as presets.
+  Edit as Text still edits fflags.json by hand.
+
 ### Changed
 
 - The window closes as soon as Roblox stops, instead of after audio and display shutdown.
+- Settings works with screen readers: sidebar pages, sky tiles, number fields and icon buttons
+  now read their names.
 
 ### Fixed
 
