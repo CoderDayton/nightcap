@@ -404,15 +404,9 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
   if (const auto* focus =
           std::get_if<platform::WindowFocusEvent>(&event.payload)) {
     if (!focus->focused && snapshot_.focused) {
+      // Keep any focused TextBox: clipboard managers and emoji pickers take
+      // window focus briefly and then paste or type back into it.
       Status status = ReleasePressedInputsLocked();
-      const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
-      if (text.focused) {
-        Status text_status = text_editor_.EndFocusSession(
-            text.textbox_handle, text.generation, true);
-        if (status.ok()) {
-          status = std::move(text_status);
-        }
-      }
       snapshot_.focused = false;
       if (!status.ok()) {
         ++snapshot_.native_errors;

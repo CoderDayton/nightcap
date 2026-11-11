@@ -57,8 +57,6 @@ class WindowTextInputOwner final {
   // coalesced: SDL only needs the most recent desired text-input state.
   bool Pump();
   bool OnViewportChanged();
-  void OnFocusGained();
-  void OnFocusLost();
   void Shutdown();
 
   bool active() const { return active_; }
@@ -87,7 +85,6 @@ class WindowTextInputOwner final {
   bool active_ = false;
   uint64_t active_generation_ = 0;
   TextInputArea active_area_;
-  bool focused_ = true;
 };
 
 // SDL3 implementation. The opaque window is an SDL_Window* in production.

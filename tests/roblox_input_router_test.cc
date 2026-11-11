@@ -845,15 +845,16 @@ TEST_F(RobloxInputRouterTest, FocusedTextEditingPreeditStreamsToNative) {
   EXPECT_EQ(snapshot.native_errors, 0u);
 }
 
-TEST_F(RobloxInputRouterTest, WindowFocusLossReleasesFocusedTextbox) {
+TEST_F(RobloxInputRouterTest, WindowFocusLossKeepsFocusedTextbox) {
   ASSERT_TRUE(
       router_.BeginTextFocusSession({42, 1, "secret", false, false}).ok());
   const auto result =
       router_.HandleEvent(Event(platform::WindowFocusEvent{false}));
   EXPECT_EQ(result.state, RobloxInputDispatchState::kStateUpdated);
-  EXPECT_EQ(probe_.text_operations, (std::vector<std::string>{"handle"}));
+  EXPECT_TRUE(probe_.text_operations.empty());
+  EXPECT_EQ(router_.Snapshot().text_focus_generation, 1u);
   const auto text = router_.HandleEvent(Event(platform::TextInputEvent{"x"}));
-  EXPECT_EQ(text.state, RobloxInputDispatchState::kIgnoredUnsupported);
+  EXPECT_TRUE(text.dispatched());
 }
 
 TEST_F(RobloxInputRouterTest, DeactivatePreventsAllLaterNativeCalls) {

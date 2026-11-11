@@ -135,24 +135,14 @@ TEST(WindowTextInputOwnerTest, CoalescedNewerHideStopsThePreviousEditor) {
   EXPECT_TRUE(owner.active());
 }
 
-TEST(WindowTextInputOwnerTest, FocusLossAndShutdownClearInputState) {
+TEST(WindowTextInputOwnerTest, ShutdownClearsInputState) {
   RecordingBackend backend;
   WindowTextInputOwner owner(&backend);
   owner.SetEnabled(true);
   ASSERT_TRUE(owner.RequestShowTextInput(1, kArea, kOptions));
   ASSERT_TRUE(owner.Pump());
+  EXPECT_TRUE(owner.active());
 
-  owner.OnFocusLost();
-  EXPECT_FALSE(owner.active());
-  EXPECT_EQ(backend.calls,
-            (std::vector<char>{'F', 'A', 'S', 'T', 'C', 'F'}));
-
-  EXPECT_TRUE(owner.RequestShowTextInput(1, kArea, kOptions));
-  EXPECT_TRUE(owner.Pump());
-  EXPECT_FALSE(owner.active());
-  owner.OnFocusGained();
-  EXPECT_TRUE(owner.RequestShowTextInput(1, kArea, kOptions));
-  ASSERT_TRUE(owner.Pump());
   owner.Shutdown();
   EXPECT_FALSE(owner.active());
   EXPECT_FALSE(owner.RequestShowTextInput(1, kArea, kOptions));
