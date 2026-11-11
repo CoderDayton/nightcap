@@ -2908,7 +2908,7 @@ bool HandleFmodAudioDeviceBooleanMethodV(jobject obj, jmethodID method_id,
   const bool initialized = DispatchFmodAudioDeviceInit(
       obj, channels, sample_rate_hz, block_size_frames, block_count);
   if (!initialized) {
-    std::cerr << "  [mocktail][audio] FMOD AudioDevice.init rejected by "
+    std::cerr << "  [nightcap][audio] FMOD AudioDevice.init rejected by "
                  "host bridge\n";
   }
   if (result != nullptr) {
@@ -2928,7 +2928,7 @@ bool HandleFmodAudioDeviceBooleanMethodA(jobject obj, jmethodID method_id,
       DispatchFmodAudioDeviceInit(obj, args[0].i, args[1].i, args[2].i,
                                   args[3].i);
   if (!initialized) {
-    std::cerr << "  [mocktail][audio] FMOD AudioDevice.init rejected by "
+    std::cerr << "  [nightcap][audio] FMOD AudioDevice.init rejected by "
                  "host bridge\n";
   }
   if (result != nullptr) {
@@ -5124,7 +5124,7 @@ void VM::RegisterWebRtcAudioManagerNative(const char* name,
 bool VM::DispatchWebRtcAudioManagerConstruct(jobject manager,
                                              jlong native_audio_manager) {
   const auto fail = [](const char* reason) {
-    std::cerr << "  [mocktail][audio] WebRTC audio manager parameters_failed "
+    std::cerr << "  [nightcap][audio] WebRTC audio manager parameters_failed "
               << "reason=" << reason << '\n';
     return false;
   };
@@ -5185,7 +5185,7 @@ bool VM::DispatchWebRtcAudioManagerConstruct(jobject manager,
       parameters.output_buffer_size_frames, parameters.input_buffer_size_frames,
       native_audio_manager);
   SetBooleanFieldRaw(manager, "mocktailAudioParametersCached", JNI_TRUE);
-  std::cout << "  [mocktail][audio] WebRTC audio manager parameters "
+  std::cout << "  [nightcap][audio] WebRTC audio manager parameters "
             << "sample_rate_hz=" << parameters.sample_rate_hz
             << " output_channels=" << parameters.output_channels
             << " input_channels=" << parameters.input_channels << '\n'
@@ -5208,7 +5208,7 @@ bool VM::DispatchWebRtcAudioManagerInit(jobject manager) {
   SetBooleanFieldRaw(manager, "initialized",
                      initialized ? JNI_TRUE : JNI_FALSE);
   if (!initialized) {
-    std::cerr << "  [mocktail][audio] WebRTC audio manager init_failed "
+    std::cerr << "  [nightcap][audio] WebRTC audio manager init_failed "
                  "reason=parameters or host manager unavailable\n";
   }
   return initialized;
@@ -5939,7 +5939,7 @@ void VM::InitJNIFunctionTables() {
       const auto* attach_args = static_cast<const JavaVMAttachArgs*>(args);
       if (attach_args != nullptr &&
           g_thread_audio_fp_mode.Enable(attach_args->name)) {
-        std::fprintf(stderr, "  [mocktail][audio] %s: enabled FTZ/DAZ\n",
+        std::fprintf(stderr, "  [nightcap][audio] %s: enabled FTZ/DAZ\n",
                      attach_args->name);
       }
     }

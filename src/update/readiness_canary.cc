@@ -120,22 +120,22 @@ bool HasPositiveNumberAfter(std::string_view log, std::string_view marker) {
 
 bool ValidateAudio(std::string_view log, bool require_clean_shutdown,
                    std::string* error) {
-  if (log.find("[mocktail][audio] fmod_java init_failed") != log.npos ||
-      log.find("[mocktail][audio] fmod_java write_failed") != log.npos ||
-      log.find("[mocktail][audio] fmod_java close_failed") != log.npos) {
+  if (log.find("[nightcap][audio] fmod_java init_failed") != log.npos ||
+      log.find("[nightcap][audio] fmod_java write_failed") != log.npos ||
+      log.find("[nightcap][audio] fmod_java close_failed") != log.npos) {
     *error = "graphics canary observed an FMOD audio failure";
     return false;
   }
   const bool opensl = HasPositiveNumberAfter(
-      log, "[mocktail][audio] OpenSL playback activity: submitted_buffers=");
+      log, "[nightcap][audio] OpenSL playback activity: submitted_buffers=");
   const bool fmod = HasPositiveNumberAfter(
-      log, "[mocktail][audio] fmod_java first_submission submitted_buffers=");
+      log, "[nightcap][audio] fmod_java first_submission submitted_buffers=");
   if (opensl &&
       (!HasPositiveNumberAfter(
            log,
-           "[mocktail][audio] OpenSL playback evidence: consumed_buffers=") ||
+           "[nightcap][audio] OpenSL playback evidence: consumed_buffers=") ||
        (require_clean_shutdown &&
-        (log.find("[mocktail][audio] OpenSL player shutdown: submitted=") ==
+        (log.find("[nightcap][audio] OpenSL player shutdown: submitted=") ==
              log.npos ||
          log.find("clean=true") == log.npos)))) {
     *error =
@@ -146,7 +146,7 @@ bool ValidateAudio(std::string_view log, bool require_clean_shutdown,
       (!HasPositiveNumberAfter(log, "consumed_buffers=") ||
        (require_clean_shutdown &&
         (log.find(
-             "[mocktail][audio] fmod_java shutdown submitted_buffers=") ==
+             "[nightcap][audio] fmod_java shutdown submitted_buffers=") ==
              log.npos ||
          log.find("pending_buffers=0") == log.npos)))) {
     *error = "graphics canary submitted FMOD audio without clean consumption";

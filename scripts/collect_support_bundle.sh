@@ -332,34 +332,34 @@ SanitizeLog() {
           }
           next
         }
-        if (line ~ /\[mocktail\]\[audio\]/) {
+        if (line ~ /\[nightcap\]\[audio\]/) {
           if (lower ~ /(init_failed|write_failed|close_failed|shutdown blocked| failure| failed)/) {
-            print "[mocktail][audio] failure"
+            print "[nightcap][audio] failure"
           } else if (lower ~ /opensl player shutdown/ &&
                      lower ~ /clean=true/) {
-            print "[mocktail][audio] shutdown pending_buffers=0"
+            print "[nightcap][audio] shutdown pending_buffers=0"
           } else if (lower ~ /opensl player shutdown/ &&
                      lower ~ /clean=false/) {
-            print "[mocktail][audio] failure"
+            print "[nightcap][audio] failure"
           } else if (lower ~ /(shutdown|closed)/) {
             if (lower ~ /pending_buffers=0/) {
-              print "[mocktail][audio] shutdown pending_buffers=0"
+              print "[nightcap][audio] shutdown pending_buffers=0"
             } else {
-              print "[mocktail][audio] shutdown pending_buffers=nonzero"
+              print "[nightcap][audio] shutdown pending_buffers=nonzero"
             }
           } else if (lower ~ /(initialized|realized|first_submission)/) {
-            print "[mocktail][audio] initialized"
+            print "[nightcap][audio] initialized"
           } else if (line ~ / backend=/) {
             audio_backend = safe_token_after(line, "backend=")
             if (known_audio_backend(audio_backend)) {
-              print "[mocktail][audio] backend=" audio_backend
+              print "[nightcap][audio] backend=" audio_backend
             }
           }
           next
         }
         if (line ~ /\[audio-menu\]/) next
         if (line ~ /\[main\]/ && lower ~ /audio shutdown blocked/) {
-          print "[mocktail][audio] failure"
+          print "[nightcap][audio] failure"
           next
         }
         if (line ~ /\[input\]/) {
@@ -491,11 +491,11 @@ WriteMarkerSummary() {
   if [[ -s "${source}" ]]; then
     grep -Fq 'first Roblox Vulkan frame presented' "${source}" && first_present=yes || true
     grep -Fq 'JNI_OnLoad' "${source}" && jni_on_load=yes || true
-    if grep -Eq '\[mocktail\]\[audio\].*(failure|init_failed|write_failed|close_failed)|audio shutdown blocked' "${source}"; then
+    if grep -Eq '\[nightcap\]\[audio\].*(failure|init_failed|write_failed|close_failed)|audio shutdown blocked' "${source}"; then
       audio_status=failed
-    elif grep -Eq '\[mocktail\]\[audio\].*(shutdown|closed).*pending_buffers=0|OpenSL player shutdown:.*clean=true' "${source}"; then
+    elif grep -Eq '\[nightcap\]\[audio\].*(shutdown|closed).*pending_buffers=0|OpenSL player shutdown:.*clean=true' "${source}"; then
       audio_status=shutdown-cleanly
-    elif grep -Eq '\[mocktail\]\[audio\].*(initialized|realized|first_submission)' "${source}"; then
+    elif grep -Eq '\[nightcap\]\[audio\].*(initialized|realized|first_submission)' "${source}"; then
       audio_status=started
     else
       audio_status=not-observed
@@ -529,7 +529,7 @@ WriteMarkerSummary() {
       <<<"${window_selection}")"
     actual_video_driver="$(sed -n 's/.* video=\([A-Za-z0-9._+-]*\).*/\1/p' \
       <<<"${window_selection}")"
-    audio_selection="$(grep -E '\[mocktail\]\[audio\] backend=[A-Za-z0-9._+-]+' \
+    audio_selection="$(grep -E '\[nightcap\]\[audio\] backend=[A-Za-z0-9._+-]+' \
       "${source}" | tail -n 1 || true)"
     actual_audio_backend="$(sed -n 's/.*backend=\([A-Za-z0-9._+-]*\).*/\1/p' \
       <<<"${audio_selection}")"
