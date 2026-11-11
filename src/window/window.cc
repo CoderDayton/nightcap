@@ -2470,9 +2470,6 @@ bool PumpEvents() {
       g_state.quit_requested = true;
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-      if (g_text_input_owner != nullptr) {
-        g_text_input_owner->OnFocusLost();
-      }
       if (g_pointer_capture_owner != nullptr &&
           !g_pointer_capture_owner->OnFocusLost()) {
         fprintf(stderr,
@@ -2480,9 +2477,6 @@ bool PumpEvents() {
       }
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
-      if (g_text_input_owner != nullptr) {
-        g_text_input_owner->OnFocusGained();
-      }
       if (g_pointer_capture_owner != nullptr &&
           !g_pointer_capture_owner->OnFocusGained(
               g_text_input_owner != nullptr && g_text_input_owner->active())) {

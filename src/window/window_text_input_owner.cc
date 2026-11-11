@@ -115,10 +115,6 @@ bool WindowTextInputOwner::Pump() {
     has_pending_command_ = false;
   }
 
-  if (!focused_) {
-    return true;
-  }
-
   if (command.type == CommandType::kHide) {
     // A hide can replace both a pending show and the hide of the previous
     // editor. It must also stop that older editor if the new show was never
@@ -156,21 +152,6 @@ bool WindowTextInputOwner::OnViewportChanged() {
     return true;
   }
   return backend_->SetArea(active_area_);
-}
-
-void WindowTextInputOwner::OnFocusGained() { focused_ = true; }
-
-void WindowTextInputOwner::OnFocusLost() {
-  focused_ = false;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    has_pending_command_ = false;
-  }
-  if (active_) {
-    StopAndClear();
-  } else if (backend_ != nullptr) {
-    backend_->FlushTextEvents();
-  }
 }
 
 void WindowTextInputOwner::Shutdown() {
