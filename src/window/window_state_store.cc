@@ -15,6 +15,8 @@
 #include <string_view>
 #include <utility>
 
+#include "mocktail/scoped_file_descriptor.h"
+
 namespace mocktail {
 namespace window {
 namespace {
@@ -24,25 +26,6 @@ constexpr std::uintmax_t kMaximumStateBytes = 32U * 1024U;
 constexpr int kMaximumExtent = 16384;
 constexpr int kMaximumCoordinateMagnitude = 131072;
 std::atomic<std::uint64_t> g_temporary_sequence{0};
-
-class ScopedFileDescriptor final {
- public:
-  explicit ScopedFileDescriptor(int descriptor = -1)
-      : descriptor_(descriptor) {}
-  ~ScopedFileDescriptor() {
-    if (descriptor_ >= 0) {
-      close(descriptor_);
-    }
-  }
-
-  ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
-  ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
-
-  int get() const { return descriptor_; }
-
- private:
-  int descriptor_ = -1;
-};
 
 Status InvalidState(std::string message) {
   return Status::Error(StatusCode::kInvalidArgument, std::move(message));

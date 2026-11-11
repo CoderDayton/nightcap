@@ -82,7 +82,6 @@ build() {
     -DMOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=/usr/share/mocktail/metadata/roblox_compatibility.json \
     -DMOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST=/usr/share/mocktail/metadata/roblox_signing_certificates.json \
     -DMOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST=/usr/share/mocktail/metadata/roblox_download_sources.json \
-    -DMOCKTAIL_ENABLE_UPSTREAM_JNIVM=OFF \
     -DBUILD_TESTING=OFF
   cmake --build build
 }

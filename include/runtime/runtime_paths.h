@@ -92,7 +92,6 @@ class RuntimePaths {
   std::filesystem::path custom_font_overlay_dir() const {
     return data_root_ / "custom_font_overlay";
   }
-  bool use_real_sober_paths() const { return use_real_sober_paths_; }
 
   std::filesystem::path DefaultAssetPath() const;
   ActivePayloadPaths ResolveActivePayload() const;

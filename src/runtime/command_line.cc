@@ -169,57 +169,6 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
   return result;
 }
 
-bool BuildCommandLineReexecArguments(const CommandLineOptions& options,
-                                     int argc, const char* const argv[],
-                                     std::vector<std::string>* arguments,
-                                     std::string* error) {
-  if (arguments == nullptr || argc < 0 || (argc > 0 && argv == nullptr)) {
-    if (error != nullptr) *error = "cannot prepare cgroup re-exec arguments";
-    return false;
-  }
-  arguments->clear();
-  arguments->reserve(static_cast<std::size_t>(argc) + 1);
-  const bool replace_raw_launch = !options.raw_launch_argument.empty();
-  if (replace_raw_launch &&
-      (options.launch_request_json.empty() ||
-       options.launch_argument_index <= 0 ||
-       options.launch_argument_index >= argc ||
-       argv[options.launch_argument_index] == nullptr ||
-       options.raw_launch_argument != argv[options.launch_argument_index])) {
-    if (error != nullptr) *error = "cannot normalize cgroup launch request";
-    return false;
-  }
-  bool replaced = false;
-  for (int index = 1; index < argc; ++index) {
-    if (argv[index] == nullptr) {
-      arguments->clear();
-      if (error != nullptr) *error = "cannot prepare cgroup re-exec arguments";
-      return false;
-    }
-    if (replace_raw_launch && index + 1 == options.launch_argument_index &&
-        (std::string_view(argv[index]) == "--launch-uri" ||
-         std::string_view(argv[index]) == "--launch-request-json")) {
-      arguments->emplace_back("--launch-request-json");
-      arguments->push_back(options.launch_request_json);
-      ++index;
-      replaced = true;
-    } else if (replace_raw_launch && index == options.launch_argument_index) {
-      arguments->emplace_back("--launch-request-json");
-      arguments->push_back(options.launch_request_json);
-      replaced = true;
-    } else {
-      arguments->emplace_back(argv[index]);
-    }
-  }
-  if (replace_raw_launch && !replaced) {
-    arguments->clear();
-    if (error != nullptr) *error = "cannot normalize cgroup launch request";
-    return false;
-  }
-  if (error != nullptr) error->clear();
-  return true;
-}
-
 void ScrubCommandLineLaunchArguments(CommandLineOptions* options, int argc,
                                      char* argv[]) {
   if (options == nullptr || options->raw_launch_argument.empty()) return;

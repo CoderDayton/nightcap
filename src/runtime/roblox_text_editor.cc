@@ -233,8 +233,12 @@ Status RobloxTextEditor::ReplaceFocusedTextFromEngine(
   // Games can clear a TextBox from Lua after consuming its value. An empty
   // engine update must win even when it matches an older host echo; otherwise
   // the stale host buffer remains visible and the next word starts with it.
+  // Non-empty tombstones stay: chat commands such as "/w name " or "/t " clear
+  // the box while echoes of the typed command are still in flight, and those
+  // echoes must not restore it.
   if (authoritative_utf8.empty()) {
-    ClearPendingNativeEchoesLocked();
+    while (ConsumePendingNativeEchoLocked(authoritative_utf8)) {
+    }
     SecureClear(&text_);
     cursor_byte_ = 0;
     selection_anchor_byte_ = 0;

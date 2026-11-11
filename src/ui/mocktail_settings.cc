@@ -11,6 +11,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +29,9 @@
 #include "runtime/running_instance.h"
 #include "runtime/runtime_paths.h"
 #include "runtime/single_instance_lock.h"
+#include "accessible_rows.h"
+#include "fflag_editor.h"
+#include "icon_names.h"
 #include "ui/settings_model.h"
 #include "ui/sky_pack.h"
 
@@ -36,6 +40,10 @@ namespace {
 using mocktail::ui::ChoiceIndex;
 using mocktail::ui::DeviceChoice;
 using mocktail::ui::FFlagsDocument;
+using mocktail::ui::ThemedIconName;
+using mocktail::ui::NewNumberRow;
+using mocktail::ui::SetAccessibleLabel;
+using mocktail::ui::SpinOf;
 using mocktail::ui::FleasionState;
 using mocktail::ui::FrameRate;
 using mocktail::ui::FrameRateMode;
@@ -65,6 +73,9 @@ constexpr char kWindowStyle[] = R"(
 }
 .status-badge.warn {
   background-color: alpha(@warning_color, 0.2); color: @warning_color;
+}
+.status-badge.error {
+  background-color: alpha(@error_color, 0.2); color: @error_color;
 }
 )";
 
@@ -473,6 +484,7 @@ void RefreshSkyRow(Row* row) {
       gtk_widget_add_controller(tile, GTK_EVENT_CONTROLLER(hold));
     }
     gtk_flow_box_append(grid, tile);
+    SetAccessibleLabel(gtk_widget_get_parent(tile), choice.label);
     if (selected) {
       GtkWidget* child = gtk_widget_get_parent(tile);
       gtk_flow_box_select_child(grid, GTK_FLOW_BOX_CHILD(child));
@@ -621,14 +633,14 @@ void RefreshRow(Row* row, bool keep_edit) {
       adw_combo_row_set_selected(ADW_COMBO_ROW(row->widget),
                                  static_cast<guint>(rate.mode));
       if (rate.mode == FrameRateMode::kCustom) {
-        adw_spin_row_set_value(ADW_SPIN_ROW(row->custom), rate.custom);
+        gtk_spin_button_set_value(SpinOf(row->custom), rate.custom);
       }
       gtk_widget_set_visible(row->custom, rate.mode == FrameRateMode::kCustom);
       break;
     }
     case SettingKind::kNumber:
-      adw_spin_row_set_value(
-          ADW_SPIN_ROW(row->widget),
+      gtk_spin_button_set_value(
+          SpinOf(row->widget),
           g_ascii_strtod(
               Text(value.empty() ? setting.default_value : value).c_str(),
               nullptr));
@@ -716,7 +728,8 @@ void ShowFleasionState(const Row& row, FleasionState state, int port) {
   gtk_widget_remove_css_class(row.badge, "warn");
   if (state == FleasionState::kRunning) {
     gtk_widget_add_css_class(row.badge, "ok");
-  } else if (state == FleasionState::kNotRunning) {
+  } else if (state == FleasionState::kNotRunning ||
+             state == FleasionState::kNeedsSober) {
     gtk_widget_add_css_class(row.badge, "warn");
   }
 }
@@ -729,12 +742,21 @@ struct FleasionProbe {
   Row* row = nullptr;
   int port = 0;
   bool reachable = false;
+  bool sober_missing = false;
 };
 
 void ProbeFleasion(GTask* task, gpointer, gpointer data, GCancellable*) {
   auto* probe = static_cast<FleasionProbe*>(data);
   probe->reachable =
       mocktail::runtime::FleasionProxyReachable(probe->port, 100);
+  if (!probe->reachable) {
+    const mocktail::runtime::ProcessEnvironment environment;
+    probe->sober_missing =
+        mocktail::runtime::SoberInstalled(
+            environment,
+            mocktail::runtime::RuntimePaths::FromEnvironment(environment).home()) ==
+        std::optional<bool>(false);
+  }
   g_task_return_boolean(task, TRUE);
 }
 
@@ -750,7 +772,8 @@ void OnFleasionProbed(GObject*, GAsyncResult* result, gpointer) {
   }
   ShowFleasionState(
       *probe->row,
-      mocktail::ui::GetFleasionState(true, "env", probe->reachable),
+      mocktail::ui::GetFleasionState(true, "env", probe->reachable,
+                                     probe->sober_missing),
       probe->port);
 }
 
@@ -959,13 +982,13 @@ void ShowSaved(Row* row, std::size_t before, bool saved,
 std::string SteppedValue(const Row& row) {
   if (row.setting->kind == SettingKind::kNumber) {
     return mocktail::ui::NumberValue(
-        adw_spin_row_get_value(ADW_SPIN_ROW(row.widget)));
+        gtk_spin_button_get_value(SpinOf(row.widget)));
   }
   FrameRate rate;
   rate.mode = static_cast<FrameRateMode>(
       adw_combo_row_get_selected(ADW_COMBO_ROW(row.widget)));
   rate.custom =
-      static_cast<int>(adw_spin_row_get_value(ADW_SPIN_ROW(row.custom)));
+      static_cast<int>(gtk_spin_button_get_value(SpinOf(row.custom)));
   return mocktail::ui::FrameRateSettingValue(*row.setting, rate);
 }
 
@@ -1045,9 +1068,9 @@ void OnSteppedValueChanged(GObject*, GParamSpec*, gpointer user_data) {
       window);
 }
 
-gboolean OnNumberOutput(AdwSpinRow* spin, gpointer user_data) {
+gboolean OnNumberOutput(GtkSpinButton* spin, gpointer user_data) {
   const Row* row = static_cast<const Row*>(user_data);
-  if (adw_spin_row_get_value(spin) != 0) {
+  if (gtk_spin_button_get_value(spin) != 0) {
     return FALSE;
   }
   gtk_editable_set_text(GTK_EDITABLE(spin),
@@ -1055,7 +1078,7 @@ gboolean OnNumberOutput(AdwSpinRow* spin, gpointer user_data) {
   return TRUE;
 }
 
-gint OnNumberInput(AdwSpinRow* spin, double* value, gpointer user_data) {
+gint OnNumberInput(GtkSpinButton* spin, double* value, gpointer user_data) {
   const Row* row = static_cast<const Row*>(user_data);
   if (g_ascii_strcasecmp(gtk_editable_get_text(GTK_EDITABLE(spin)),
                          Text(row->setting->zero_label).c_str()) != 0) {
@@ -1207,6 +1230,8 @@ struct FFlagsEditor {
   GtkTextBuffer* buffer = nullptr;
   AdwBanner* problem = nullptr;
   GtkWidget* save = nullptr;
+  // Runs after a save.
+  std::function<void()> done;
 };
 
 // Closing asks first while there is unsaved text. See OnFFlagsCloseAttempt.
@@ -1231,9 +1256,13 @@ void SaveFFlags(FFlagsEditor* editor) {
     editor->window->document.ForgetUndo();
     gtk_widget_set_visible(editor->window->undo, FALSE);
     SettingsWindow* window = editor->window;
+    std::function<void()> done = std::move(editor->done);
     // The dialog owns `editor` and may free it on close.
     adw_dialog_force_close(editor->dialog);
     OnChangeSaved(window, false);
+    if (done) {
+      done();
+    }
     return;
   }
   // The dialog stays open with the text, so nothing typed is lost.
@@ -1300,16 +1329,14 @@ void OnFFlagsCloseAttempt(AdwDialog* dialog, gpointer user_data) {
   adw_dialog_present(question, GTK_WIDGET(dialog));
 }
 
-void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
-  auto* window = static_cast<SettingsWindow*>(user_data);
-  std::string error;
-  if (!window->fflags.Load(&error)) {
-    ShowError(window, error);
-    return;
-  }
-
+// `text` may differ from the file, such as flags not saved yet in the FFlag
+// editor; Save is then ready at once.
+void OpenFFlagsTextEditor(SettingsWindow* window, GtkWidget* parent,
+                          const std::string& text,
+                          std::function<void()> done) {
   auto* editor = new FFlagsEditor;
   editor->window = window;
+  editor->done = std::move(done);
   editor->dialog = adw_dialog_new();
   adw_dialog_set_title(editor->dialog, "FFlag overrides");
   adw_dialog_set_content_width(editor->dialog, 640);
@@ -1358,9 +1385,9 @@ void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
   editor->buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
   // Undo must not go back past the file's own text.
   gtk_text_buffer_begin_irreversible_action(editor->buffer);
-  gtk_text_buffer_set_text(editor->buffer, window->fflags.Text().c_str(), -1);
+  gtk_text_buffer_set_text(editor->buffer, text.c_str(), -1);
   gtk_text_buffer_end_irreversible_action(editor->buffer);
-  gtk_text_buffer_set_modified(editor->buffer, FALSE);
+  gtk_text_buffer_set_modified(editor->buffer, text != window->fflags.Text());
   GtkTextIter top;
   gtk_text_buffer_get_start_iter(editor->buffer, &top);
   gtk_text_buffer_place_cursor(editor->buffer, &top);
@@ -1368,6 +1395,7 @@ void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
                    G_CALLBACK(OnFFlagsModifiedChanged), editor);
   g_signal_connect(editor->buffer, "changed", G_CALLBACK(OnFFlagsChanged),
                    editor);
+  OnFFlagsModifiedChanged(editor->buffer, editor);
   GtkWidget* scrolled = gtk_scrolled_window_new();
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), view);
 
@@ -1376,8 +1404,36 @@ void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), problem);
   adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), scrolled);
   adw_dialog_set_child(editor->dialog, toolbar);
-  adw_dialog_present(editor->dialog, window->widget);
+  adw_dialog_present(editor->dialog, parent);
   gtk_widget_grab_focus(view);
+}
+
+void OnFFlagsActivated(AdwActionRow*, gpointer user_data) {
+  auto* window = static_cast<SettingsWindow*>(user_data);
+  std::string error;
+  if (!window->fflags.Load(&error)) {
+    ShowError(window, error);
+    return;
+  }
+  mocktail::ui::FFlagEditorHost host;
+  host.parent = window->widget;
+  host.fflags = &window->fflags;
+  host.presets_file =
+      window->fflags.file().parent_path() / "fflags-presets.json";
+  host.show_error = [window](const std::string& message) {
+    ShowError(window, message);
+  };
+  host.saved = [window] {
+    // Undo cannot take back a save of fflags.json.
+    window->document.ForgetUndo();
+    gtk_widget_set_visible(window->undo, FALSE);
+    OnChangeSaved(window, false);
+  };
+  host.edit_as_text = [window](const std::string& text, GtkWidget* parent,
+                               std::function<void()> done) {
+    OpenFFlagsTextEditor(window, parent, text, std::move(done));
+  };
+  mocktail::ui::PresentFFlagEditor(host);
 }
 
 void OnFolderOpened(GObject* source, GAsyncResult* result,
@@ -1871,6 +1927,7 @@ void AddToContainer(GtkWidget* container, GtkWidget* widget) {
 GtkWidget* NewResetButton(Row* row) {
   GtkWidget* button = gtk_button_new_from_icon_name("edit-undo-symbolic");
   gtk_widget_set_tooltip_text(button, "Reset to default");
+  SetAccessibleLabel(button, "Reset " + Text(row->setting->title));
   gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
   gtk_widget_add_css_class(button, "flat");
   gtk_widget_set_visible(button, FALSE);
@@ -2020,27 +2077,27 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
     case SettingKind::kFrameRate:
       row.widget = adw_combo_row_new();
       SetChoices(&row);
-      row.custom = adw_spin_row_new_with_range(
-          1, mocktail::ui::kMaximumCustomFrameRate, 1);
-      adw_spin_row_set_value(ADW_SPIN_ROW(row.custom),
-                             mocktail::ui::kDefaultCustomFrameRate);
+      row.custom =
+          NewNumberRow(1, mocktail::ui::kMaximumCustomFrameRate, 1);
+      gtk_spin_button_set_value(SpinOf(row.custom),
+                                mocktail::ui::kDefaultCustomFrameRate);
       SetRowText(row.custom, "Custom limit", "Frames per second");
       g_signal_connect(row.widget, "notify::selected",
                        G_CALLBACK(OnFrameRateModeChanged), &row);
-      g_signal_connect(row.custom, "notify::value",
+      g_signal_connect(SpinOf(row.custom), "notify::value",
                        G_CALLBACK(OnSteppedValueChanged), &row);
       break;
     case SettingKind::kNumber:
-      row.widget = adw_spin_row_new_with_range(setting.minimum,
-                                               setting.maximum, setting.step);
-      g_signal_connect(row.widget, "notify::value",
+      row.widget =
+          NewNumberRow(setting.minimum, setting.maximum, setting.step);
+      g_signal_connect(SpinOf(row.widget), "notify::value",
                        G_CALLBACK(OnSteppedValueChanged), &row);
       if (!setting.zero_label.empty()) {
-        // A numeric row drops the label's letters.
-        adw_spin_row_set_numeric(ADW_SPIN_ROW(row.widget), FALSE);
-        g_signal_connect(row.widget, "output", G_CALLBACK(OnNumberOutput),
-                         &row);
-        g_signal_connect(row.widget, "input", G_CALLBACK(OnNumberInput), &row);
+        // A numeric spin button drops the label's letters.
+        GtkSpinButton* spin = SpinOf(row.widget);
+        gtk_spin_button_set_numeric(spin, FALSE);
+        g_signal_connect(spin, "output", G_CALLBACK(OnNumberOutput), &row);
+        g_signal_connect(spin, "input", G_CALLBACK(OnNumberInput), &row);
       }
       break;
     case SettingKind::kText:
@@ -2056,6 +2113,7 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       if (setting.kind == SettingKind::kFile) {
         row.pick = gtk_button_new_from_icon_name("document-open-symbolic");
         gtk_widget_set_tooltip_text(row.pick, "Choose a file");
+        SetAccessibleLabel(row.pick, "Choose a file for " + Text(setting.title));
         gtk_widget_set_valign(row.pick, GTK_ALIGN_CENTER);
         gtk_widget_add_css_class(row.pick, "flat");
         // The picker stands in for the pencil.
@@ -2100,6 +2158,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       gtk_widget_set_margin_end(window->sky_grid, 12);
       gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row.widget),
                                  window->sky_grid);
+      SetAccessibleLabel(row.widget, Text(setting.title));
+      SetAccessibleLabel(window->sky_grid, Text(setting.title));
       g_signal_connect(window->sky_grid, "child-activated",
                        G_CALLBACK(OnSkyTileActivated), &row);
       GtkEventController* keys = gtk_event_controller_key_new();
@@ -2240,24 +2300,6 @@ void OnPageActivated(GtkListBox*, GtkListBoxRow*, gpointer user_data) {
       static_cast<SettingsWindow*>(user_data)->split, TRUE);
 }
 
-// Breeze lacks some of Adwaita's icon names, so fall back to ones it has.
-std::string SidebarIconName(const std::string& name) {
-  static const std::pair<const char*, std::array<const char*, 2>> kFallbacks[] = {
-      {"power-profile-performance-symbolic",
-       {"speedometer-symbolic", "utilities-system-monitor-symbolic"}},
-      {"application-x-addon-symbolic",
-       {"extension-symbolic", "applications-system-symbolic"}},
-  };
-  GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
-  if (gtk_icon_theme_has_icon(theme, name.c_str())) return name;
-  for (const auto& [primary, alternates] : kFallbacks) {
-    if (name != primary) continue;
-    for (const char* alternate : alternates) {
-      if (gtk_icon_theme_has_icon(theme, alternate)) return alternate;
-    }
-  }
-  return name;
-}
 
 // KDE's layout adds the window icon to each header bar, doubling the artwork.
 // Empty when the layout has no icon.
@@ -2307,13 +2349,15 @@ GtkWidget* BuildSidebar(SettingsWindow* window) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_box_append(GTK_BOX(box),
                    gtk_image_new_from_icon_name(
-                       SidebarIconName(Text(page.icon_name)).c_str()));
+                       ThemedIconName(Text(page.icon_name)).c_str()));
     GtkWidget* label = gtk_label_new(Text(page.title).c_str());
     gtk_label_set_xalign(GTK_LABEL(label), 0);
     gtk_widget_set_hexpand(label, TRUE);
     gtk_box_append(GTK_BOX(box), label);
     gtk_list_box_append(GTK_LIST_BOX(list), box);
+    SetAccessibleLabel(gtk_widget_get_parent(box), Text(page.title));
   }
+  SetAccessibleLabel(list, "Settings pages");
   g_signal_connect(list, "row-selected", G_CALLBACK(OnPageSelected), window);
   g_signal_connect(list, "row-activated", G_CALLBACK(OnPageActivated),
                    window);
@@ -2425,6 +2469,7 @@ GtkWidget* BuildAboutGroup(SettingsWindow* window) {
   GtkWidget* copy = gtk_button_new_from_icon_name("edit-copy-symbolic");
   gtk_widget_set_valign(copy, GTK_ALIGN_CENTER);
   gtk_widget_set_tooltip_text(copy, "Copy for a bug report");
+  SetAccessibleLabel(copy, "Copy Version");
   gtk_widget_add_css_class(copy, "flat");
   g_signal_connect(copy, "clicked", G_CALLBACK(OnCopyVersion), window);
   adw_action_row_add_suffix(ADW_ACTION_ROW(row), copy);
@@ -2652,7 +2697,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
   window->widget = window_widget;
   gtk_window_set_title(GTK_WINDOW(window_widget), "Nightcap Settings");
   // Fits a 1366x768 screen with a panel.
-  gtk_window_set_default_size(GTK_WINDOW(window_widget), 960, 700);
+  gtk_window_set_default_size(GTK_WINDOW(window_widget), 1040, 760);
   gtk_widget_set_size_request(window_widget, 360, 420);
   gtk_window_set_icon_name(GTK_WINDOW(window_widget), kApplicationId);
   g_signal_connect(window_widget, "close-request",

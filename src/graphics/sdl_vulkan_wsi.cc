@@ -82,26 +82,6 @@ SDL_FunctionPointer SdlVulkanWsi::GetInstanceProcAddress() const {
   return initialized_ ? SDL_Vulkan_GetVkGetInstanceProcAddr() : nullptr;
 }
 
-BackendCapability SdlVulkanWsi::DescribeCapability() const {
-  if (!initialized_) {
-    return {GraphicsBackendKind::kDirectVulkan, CapabilityState::kUnavailable,
-            HardwareAcceleration::kUnknown,
-            "SDL Vulkan loader and WSI are not initialized"};
-  }
-
-  std::string detail =
-      "host Vulkan loader and SDL WSI extensions are loadable: ";
-  for (size_t i = 0; i < required_instance_extensions_.size(); ++i) {
-    if (i != 0) {
-      detail += ",";
-    }
-    detail += required_instance_extensions_[i];
-  }
-  detail += "; physical device and surface presentation are not validated";
-  return {GraphicsBackendKind::kDirectVulkan, CapabilityState::kLoadable,
-          HardwareAcceleration::kUnknown, std::move(detail)};
-}
-
 Status SdlVulkanWsi::CreateSurface(VkInstance instance,
                                    const VkAllocationCallbacks* allocator,
                                    VkSurfaceKHR* surface) const {

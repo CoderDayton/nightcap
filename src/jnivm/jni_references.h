@@ -28,11 +28,12 @@ struct PseudoJavaObject : Object {
 
   ~PseudoJavaObject() override;
 
-  std::unordered_map<std::string, jobject> object_fields;
-  std::unordered_map<std::string, jint> int_fields;
-  std::unordered_map<std::string, jlong> long_fields;
-  std::unordered_map<std::string, jfloat> float_fields;
-  std::unordered_map<std::string, jboolean> boolean_fields;
+  // Keys point into the interned field-name table, which is never freed.
+  std::unordered_map<std::string_view, jobject> object_fields;
+  std::unordered_map<std::string_view, jint> int_fields;
+  std::unordered_map<std::string_view, jlong> long_fields;
+  std::unordered_map<std::string_view, jfloat> float_fields;
+  std::unordered_map<std::string_view, jboolean> boolean_fields;
 };
 
 bool TraceEnabled();

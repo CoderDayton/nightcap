@@ -404,15 +404,9 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
   if (const auto* focus =
           std::get_if<platform::WindowFocusEvent>(&event.payload)) {
     if (!focus->focused && snapshot_.focused) {
+      // Keep any focused TextBox: clipboard managers and emoji pickers take
+      // window focus briefly and then paste or type back into it.
       Status status = ReleasePressedInputsLocked();
-      const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
-      if (text.focused) {
-        Status text_status = text_editor_.EndFocusSession(
-            text.textbox_handle, text.generation, true);
-        if (status.ok()) {
-          status = std::move(text_status);
-        }
-      }
       snapshot_.focused = false;
       if (!status.ok()) {
         ++snapshot_.native_errors;
@@ -880,56 +874,6 @@ RobloxInputDispatchResult RobloxInputRouter::NativeResultLocked(
       break;
   }
   return Result(RobloxInputDispatchState::kDispatched, kind);
-}
-
-const char* RobloxInputDispatchStateName(RobloxInputDispatchState state) {
-  switch (state) {
-    case RobloxInputDispatchState::kDispatched:
-      return "Dispatched";
-    case RobloxInputDispatchState::kStateUpdated:
-      return "StateUpdated";
-    case RobloxInputDispatchState::kIgnoredInactive:
-      return "IgnoredInactive";
-    case RobloxInputDispatchState::kIgnoredUnfocused:
-      return "IgnoredUnfocused";
-    case RobloxInputDispatchState::kIgnoredUnsupported:
-      return "IgnoredUnsupported";
-    case RobloxInputDispatchState::kRejectedInvalid:
-      return "RejectedInvalid";
-    case RobloxInputDispatchState::kNativeError:
-      return "NativeError";
-  }
-  return "Unknown";
-}
-
-const char* RobloxInputEventKindName(RobloxInputEventKind kind) {
-  switch (kind) {
-    case RobloxInputEventKind::kNone:
-      return "None";
-    case RobloxInputEventKind::kMouseMotion:
-      return "MouseMotion";
-    case RobloxInputEventKind::kMouseButton:
-      return "MouseButton";
-    case RobloxInputEventKind::kMouseWheel:
-      return "MouseWheel";
-    case RobloxInputEventKind::kTouch:
-      return "Touch";
-    case RobloxInputEventKind::kKeyboard:
-      return "Keyboard";
-    case RobloxInputEventKind::kText:
-      return "Text";
-    case RobloxInputEventKind::kFocus:
-      return "Focus";
-    case RobloxInputEventKind::kViewport:
-      return "Viewport";
-    case RobloxInputEventKind::kGamepadConnection:
-      return "GamepadConnection";
-    case RobloxInputEventKind::kGamepadButton:
-      return "GamepadButton";
-    case RobloxInputEventKind::kGamepadAxis:
-      return "GamepadAxis";
-  }
-  return "Unknown";
 }
 
 }  // namespace runtime

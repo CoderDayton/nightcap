@@ -33,12 +33,24 @@ bool EndsCompare(const std::uint8_t* code, std::size_t immediate) {
          IsCompareMemory(code[immediate - 5], 0x80);
 }
 
+// A call or jump offset can hold the bytes of pop rbp; ret.
+bool InsideBranchOffset(const std::uint8_t* code, std::size_t at) {
+  for (std::size_t back = 1; back <= 4 && back <= at; ++back) {
+    const std::uint8_t opcode = code[at - back];
+    if (opcode == 0xe8 || opcode == 0xe9) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::size_t FunctionSize(const std::uint8_t* code, const std::uint8_t* end) {
   const auto available = static_cast<std::size_t>(end - code);
   const std::size_t limit =
       available < kMaxFunctionBytes ? available : kMaxFunctionBytes;
   for (std::size_t i = 1; i < limit; ++i) {
-    if (code[i - 1] == 0x5d && code[i] == 0xc3) {
+    if (code[i - 1] == 0x5d && code[i] == 0xc3 &&
+        !InsideBranchOffset(code, i - 1)) {
       return i + 1;
     }
   }

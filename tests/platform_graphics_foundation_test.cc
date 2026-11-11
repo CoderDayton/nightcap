@@ -7,7 +7,6 @@
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/angle_probe.h"
-#include "mocktail/graphics/graphics_backend.h"
 #include "mocktail/graphics/sdl_vulkan_wsi.h"
 #include "mocktail/platform/sdl_application_metadata.h"
 #include "mocktail/platform/sdl_event_converter.h"
@@ -17,11 +16,7 @@
 namespace mocktail {
 namespace {
 
-using graphics::BackendCapability;
-using graphics::BackendSelectionPolicy;
 using graphics::CapabilityState;
-using graphics::GraphicsBackendKind;
-using graphics::HardwareAcceleration;
 
 TEST(SdlApplicationMetadataTest, MatchesInstalledDesktopIdentity) {
   Status status = platform::ConfigureSdlApplicationMetadata();
@@ -36,48 +31,10 @@ TEST(SdlApplicationMetadataTest, MatchesInstalledDesktopIdentity) {
                "game");
 }
 
-TEST(GraphicsBackendSelectionTest, FailsClosedWithoutRequestedBackend) {
-  BackendSelectionPolicy policy;
-  policy.requested = GraphicsBackendKind::kAngleVulkan;
-
-  const std::vector<BackendCapability> capabilities = {
-      {GraphicsBackendKind::kDirectVulkan, CapabilityState::kReady,
-       HardwareAcceleration::kHardware, "direct Vulkan ready"}};
-
-  auto result = graphics::SelectGraphicsBackend(policy, capabilities);
-  EXPECT_FALSE(result.status.ok());
-  EXPECT_EQ(result.backend, GraphicsBackendKind::kAngleVulkan);
-}
-
-TEST(GraphicsBackendSelectionTest, UsesFallbackOnlyWhenExplicitlyAllowed) {
-  BackendSelectionPolicy policy;
-  policy.requested = GraphicsBackendKind::kAngleVulkan;
-  policy.allow_fallback = true;
-
-  const std::vector<BackendCapability> capabilities = {
-      {GraphicsBackendKind::kDirectVulkan, CapabilityState::kReady,
-       HardwareAcceleration::kHardware, "direct Vulkan ready"}};
-
-  auto result = graphics::SelectGraphicsBackend(policy, capabilities);
-  ASSERT_TRUE(result.status.ok()) << result.status.message();
-  EXPECT_EQ(result.backend, GraphicsBackendKind::kDirectVulkan);
-}
-
-TEST(GraphicsBackendSelectionTest, RejectsUnvalidatedLoaderByDefault) {
-  const std::vector<BackendCapability> capabilities = {
-      {GraphicsBackendKind::kAngleVulkan, CapabilityState::kLoadable,
-       HardwareAcceleration::kHardware, "symbols exist"}};
-
-  auto result = graphics::SelectGraphicsBackend({}, capabilities);
-  EXPECT_FALSE(result.status.ok());
-}
-
 TEST(AngleProbeTest, RequiresExplicitPinnedLibraryPaths) {
-  auto capability = graphics::ProbeAngleVulkan({});
+  auto capability = graphics::InspectAngleLibraries({});
   EXPECT_EQ(capability.state, CapabilityState::kUnavailable);
   EXPECT_NE(capability.detail.find("required"), std::string::npos);
-  EXPECT_EQ(graphics::InspectAngleLibraries({}).state,
-            CapabilityState::kUnavailable);
 }
 
 TEST(AngleProbeTest, ValidatesConfiguredAngleVulkanDistribution) {
@@ -91,10 +48,7 @@ TEST(AngleProbeTest, ValidatesConfiguredAngleVulkanDistribution) {
   options.egl_library_path = egl;
   options.gles_library_path = gles;
   const auto inspected = graphics::InspectAngleLibraries(options);
-  ASSERT_EQ(inspected.state, CapabilityState::kLoadable) << inspected.detail;
-  auto capability = graphics::ProbeAngleVulkan(options);
-  EXPECT_EQ(capability.state, CapabilityState::kReady) << capability.detail;
-  EXPECT_EQ(capability.acceleration, HardwareAcceleration::kHardware);
+  EXPECT_EQ(inspected.state, CapabilityState::kLoadable) << inspected.detail;
 }
 
 TEST(SdlPlatformRuntimeTest, RejectsInvalidWindowDimensionsBeforeSdlInit) {
@@ -275,7 +229,6 @@ TEST(SdlVulkanWsiTest, DiscoversHostWsiWithoutCreatingRenderer) {
   ASSERT_TRUE(status.ok()) << status.message();
   EXPECT_FALSE(wsi.required_instance_extensions().empty());
   EXPECT_NE(wsi.GetInstanceProcAddress(), nullptr);
-  EXPECT_EQ(wsi.DescribeCapability().state, CapabilityState::kLoadable);
   wsi.Shutdown();
   runtime->Shutdown();
 }

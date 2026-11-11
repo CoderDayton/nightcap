@@ -409,8 +409,8 @@ std::string Quoted(std::string_view name) {
   return "\"" + std::string(name) + "\"";
 }
 
-// Why Nightcap would not use `text` as fflags.json, or empty. The file's
-// loader has the last word on a save; this names the flag at fault.
+}  // namespace
+
 std::string FFlagsContentError(std::string_view text) {
   const JsonSyntaxProbe probe = ProbeJson(text);
   if (probe.failed) {
@@ -437,6 +437,8 @@ std::string FFlagsContentError(std::string_view text) {
   }
   return {};
 }
+
+namespace {
 
 // Whether `text` is UTF-8 with no NUL byte, which a text view needs.
 bool IsUtf8Text(std::string_view text) {
@@ -544,7 +546,9 @@ const std::vector<SettingsPage>& SettingsPages() {
                   {"graphics.texture_compression",
                   "Compress Textures",
                   "Keeps textures compressed on the GPU to conserve video memory. "
-                  "Disable if you experience texture glitches. Requires a restart.",
+                  "Disable if you experience texture glitches. When off, "
+                  "new textures are still compressed while video memory is "
+                  "low. Requires a restart.",
                   SettingKind::kToggle,
                   {},
                   "true",
@@ -554,6 +558,7 @@ const std::vector<SettingsPage>& SettingsPages() {
                   "• Up to 50% VRAM savings\n\n"
                   "You gain:\n"
                   "• May fix broken or black textures\n\n"
+                  "New textures are still compressed while video memory is low.\n\n"
                   "Requires a restart to take effect."),
                 {"graphics.smooth_texture_loading",
                  "Smooth Texture Loading",
@@ -1118,8 +1123,8 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"fflags",
                  "FFlag overrides",
-                 "Edit fflags.json. Text that is not valid JSON is not "
-                 "saved.",
+                 "Turn Roblox's hidden settings on and off, and keep sets "
+                 "of them as presets.",
                  SettingKind::kEditor,
                  {},
                  "",
@@ -1294,11 +1299,12 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
 }
 
 FleasionState GetFleasionState(bool enabled, std::string_view mode,
-                               bool proxy_reachable) {
+                               bool proxy_reachable, bool sober_missing) {
   if (!enabled) return FleasionState::kOff;
   if (mode == "hosts") return FleasionState::kNotChecked;
   if (mode != "env") return FleasionState::kOff;
-  return proxy_reachable ? FleasionState::kRunning : FleasionState::kNotRunning;
+  if (proxy_reachable) return FleasionState::kRunning;
+  return sober_missing ? FleasionState::kNeedsSober : FleasionState::kNotRunning;
 }
 
 std::string FleasionBadge(FleasionState state) {
@@ -1307,6 +1313,8 @@ std::string FleasionBadge(FleasionState state) {
       return "Running";
     case FleasionState::kNotRunning:
       return "Not running";
+    case FleasionState::kNeedsSober:
+      return "Needs Sober";
     case FleasionState::kNotChecked:
       return "Not checked";
     case FleasionState::kOff:
@@ -1323,6 +1331,10 @@ std::string FleasionStatus(FleasionState state, int port) {
     case FleasionState::kNotRunning:
       return "Fleasion's proxy is not running " + where +
              " Start Fleasion first.";
+    case FleasionState::kNeedsSober:
+      return "Fleasion's proxy is not running " + where +
+             " On Linux, Fleasion's Proxy mode only starts when Sober is "
+             "installed.";
     case FleasionState::kNotChecked:
       return "Hosts routing can't be checked from here.";
     case FleasionState::kOff:

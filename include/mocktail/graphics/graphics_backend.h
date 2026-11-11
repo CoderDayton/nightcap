@@ -2,9 +2,6 @@
 #define MOCKTAIL_GRAPHICS_GRAPHICS_BACKEND_H_
 
 #include <string>
-#include <vector>
-
-#include "mocktail/status.h"
 
 namespace mocktail {
 namespace graphics {
@@ -35,27 +32,6 @@ struct BackendCapability {
   HardwareAcceleration acceleration = HardwareAcceleration::kUnknown;
   std::string detail;
 };
-
-struct BackendSelectionPolicy {
-  GraphicsBackendKind requested = GraphicsBackendKind::kAngleVulkan;
-
-  // Production remains fail-closed. Fallback must be an explicit policy.
-  bool allow_fallback = false;
-  bool require_hardware_acceleration = true;
-  bool require_runtime_validation = true;
-};
-
-struct BackendSelection {
-  Status status;
-  GraphicsBackendKind backend = GraphicsBackendKind::kAngleVulkan;
-  std::string detail;
-};
-
-BackendSelection SelectGraphicsBackend(
-    const BackendSelectionPolicy& policy,
-    const std::vector<BackendCapability>& capabilities);
-
-const char* GraphicsBackendName(GraphicsBackendKind backend);
 
 }  // namespace graphics
 }  // namespace mocktail

@@ -90,6 +90,8 @@ On a weak PC, also add:
 | `FIntDebugTextureManagerSkipMips` | Drops texture detail to save graphics memory. `1`–`2` is mild. | ⚠️ Low graphics memory |
 | `FIntTerrainArraySliceSize` | Terrain texture detail. Default `256`. Lower uses less memory. | ⚠️ Low graphics memory |
 | `FIntRenderShadowmapBias` | Shifts shadows to hide stripes. Default `75`. | ⚠️ Striped shadows |
+| `FFlagFastGPULightCulling3` | Sorts lights on the GPU instead of the CPU. Only matters with Future lighting and many lights. Off by default. | ⚠️ Weak CPUs |
+| `FIntRenderLocalLightUpdatesMin` + `…Max` | Lights with shadows updated each frame, `1` to `8`. Defaults `2` and `8`. Lower is faster, but lights update slower. | ⚠️ Weak PCs |
 | `FFlagDebugSkyGray` | Nightcap turns it on for custom skies. `false` lets games keep their own. | ⚠️ Custom sky users |
 | `DFIntDebugDynamicRenderKiloPixels` | Lowers render resolution. Blurry. | ❌ Last resort |
 | `FFlagDebugGraphicsPreferOpenGL`, `…PreferVulkan` | Nothing useful here. Use **Graphics backend** in settings. | ❌ |
@@ -101,7 +103,6 @@ On a weak PC, also add:
 | `FFlagDebugDisplayFPS` | FPS counter in the top-left. `true` | ✅ |
 | `DFFlagReduceCPUWhenBG` | Less CPU while Roblox is in the background. `true` | ✅ |
 | `DFFlagEnableMeshPreloading`, `DFFlagEnableTexturePreloading`, `DFFlagEnableSoundPreloading` | Loads what a game asks for up front. Less pop-in, longer loading, more RAM. | ⚠️ 16 GB RAM or more |
-| `DFIntAnimationLodThrottlerDistanceMin` + `…Max` | Distance where far-away characters animate less often. Defaults `180` and `380`. Higher is smoother, costs CPU. | ⚠️ Strong CPUs |
 | `DFIntAnimatorThrottleMaxFramesToSkip` + `DFIntAnimationLodThrottleMaxFramesToSkip` | `0` stops far animations skipping frames. Defaults `4` and `8`. Costs CPU. | ⚠️ Strong CPUs |
 | `DFIntMaxFrameBufferSize` | Frames queued ahead. Causes stutter or input lag. | ❌ |
 | `DFIntTaskSchedulerTargetFps` | Frame rate limit. A different value stops Nightcap starting. | ❌ Use **Frame rate limit** in settings |
@@ -113,8 +114,8 @@ On a weak PC, also add:
 | `FIntRobloxGuiBlurIntensity` | `0` turns off the blur behind the Roblox menu. | ✅ |
 | `FStringDebugShowFlagState` | Shows flag values on screen. | ✅ While testing |
 | `DFFlagDisableDPIScale` | Smaller menus on high-resolution screens. | ⚠️ Taste |
-| `FIntFontSizePadding` | More space around menu text. | ⚠️ Taste |
-| `FIntScrollWheelDeltaAmount` | Scroll speed in menus. | ⚠️ Taste |
+| `FIntFontSizePadding` | More space around menu text. Default `1`. | ⚠️ Taste |
+| `FIntScrollWheelDeltaAmount` | Scroll speed in menus. Default `100`. | ⚠️ Taste |
 | `DFIntVoiceChatVolumeThousandths` | Voice chat volume. `1000` is normal. | ⚠️ Taste |
 | `DFIntMaxLoadableAudioChannelCount` | Fewer sounds at once. Sounds cut out. | ❌ |
 
@@ -153,7 +154,7 @@ advantage, like camera zoom or desync, can count as cheating.
 
 ## Flags that no longer work
 
-Common in older guides, gone in 2.742. Delete them:
+Common in older guides, gone by 2.746. Delete them:
 
 `FFlagDebugForceFutureIsBrightPhase2`, `FFlagDebugForceFutureIsBrightPhase3`,
 `DFFlagDebugRenderForceTechnologyVoxel`, `FFlagRenderUnifiedLighting10`,
@@ -164,7 +165,8 @@ Common in older guides, gone in 2.742. Delete them:
 `FFlagEnableDisplaySize9`, `FFlagAdServiceEnabled`, all
 `FFlagDebugDisableTelemetry…` flags,
 `DFFlagSkipHighResolutiontextureMipsOnLowMemoryDevices` (and `2`),
-`FFlagSoundsUsePhysicalVelocity`, `FIntRuntimeMaxNumOfThreads`.
+`FFlagSoundsUsePhysicalVelocity`, `FIntRuntimeMaxNumOfThreads`,
+`DFIntAnimationLodThrottlerDistanceMin` and `…Max`.
 
 Nightcap already blocks crash reports and error logs, so the telemetry flags
 aren't needed.

@@ -166,6 +166,10 @@ class ScopedPresentObserver final {
 
 void ShowIfHidden();
 
+// Saves the window state and hides the window once Roblox has stopped
+// presenting, so the rest of shutdown runs without a window on screen.
+void HideForShutdown();
+
 // The render thread must bind EGL before GLdispatch initializes its TLS.
 bool MakeCurrentOnThread();
 

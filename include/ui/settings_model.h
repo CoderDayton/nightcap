@@ -127,15 +127,17 @@ enum class FleasionState {
   kOff,
   kRunning,
   kNotRunning,
+  kNeedsSober,
   kNotChecked,
 };
 
 // `mode` is "env" or "hosts"; anything else, like Fleasion being off, is kOff.
 // `proxy_reachable` is what a connect to Fleasion's proxy port found.
+// `sober_missing` is true only when Sober is known not to be installed.
 FleasionState GetFleasionState(bool enabled, std::string_view mode,
-                               bool proxy_reachable);
+                               bool proxy_reachable, bool sober_missing = false);
 
-// "Running", "Not running" or "Not checked". Empty for kOff.
+// "Running", "Not running", "Needs Sober" or "Not checked". Empty for kOff.
 std::string FleasionBadge(FleasionState state);
 
 // The badge's tooltip. Empty for kOff.
@@ -259,6 +261,10 @@ std::optional<TextPosition> JsonSyntaxFault(std::string_view text);
 // Why `text` is not JSON, with the line and column of the fault. Empty when
 // it is JSON.
 std::string JsonSyntaxError(std::string_view text);
+
+// Why Nightcap would not use `text` as fflags.json, or empty. The file's
+// loader has the last word on a save; this names the flag at fault.
+std::string FFlagsContentError(std::string_view text);
 
 // fflags.json as the window edits it: the whole file as one text.
 class FFlagsDocument {

@@ -1,5 +1,6 @@
 #include "runtime/webview_helper_launcher.h"
 
+#include "mocktail/scoped_file_descriptor.h"
 #include "runtime/helper_environment.h"
 
 #include <arpa/inet.h>
@@ -121,31 +122,6 @@ constexpr std::size_t kMaximumRequestBytes =
     kProtocolHeader.size() + 20 + 1 + kMaximumWebViewUrlBytes;
 constexpr std::string_view kInternalRoutePrefix = "www:";
 constexpr std::string_view kRobloxWebOrigin = "https://www.roblox.com/";
-
-class ScopedFileDescriptor final {
-public:
-  explicit ScopedFileDescriptor(int descriptor = -1)
-      : descriptor_(descriptor) {}
-  ~ScopedFileDescriptor() {
-    if (descriptor_ >= 0) {
-      close(descriptor_);
-    }
-  }
-
-  ScopedFileDescriptor(const ScopedFileDescriptor &) = delete;
-  ScopedFileDescriptor &operator=(const ScopedFileDescriptor &) = delete;
-
-  int get() const { return descriptor_; }
-
-  int release() {
-    const int descriptor = descriptor_;
-    descriptor_ = -1;
-    return descriptor;
-  }
-
-private:
-  int descriptor_ = -1;
-};
 
 class ScopedCurlUrl final {
 public:

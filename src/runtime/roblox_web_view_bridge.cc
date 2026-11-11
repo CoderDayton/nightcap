@@ -1393,14 +1393,14 @@ void RobloxWebViewBridge::QueueStartConversation(std::string user_id) {
 }
 
 Status RobloxWebViewBridge::DrainHostWindowEvents() {
-  std::deque<PendingHostWindowEvent> events;
-  {
-    std::lock_guard<std::mutex> lock(host_window_event_mutex_);
-    events.swap(pending_host_window_events_);
-  }
-  if (events.empty()) {
+  std::unique_lock<std::mutex> queue_lock(host_window_event_mutex_);
+  if (pending_host_window_events_.empty()) {
     return Status::Ok();
   }
+  // A std::deque allocates when constructed, so make it only when needed.
+  std::deque<PendingHostWindowEvent> events;
+  events.swap(pending_host_window_events_);
+  queue_lock.unlock();
   Status status = BeginDispatch();
   if (!status.ok()) {
     return Status::Ok();

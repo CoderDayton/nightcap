@@ -2,8 +2,8 @@
 name: Flatpak
 
 on:
-  push:
-    tags: ['v*']
+  # On a release tag, release.yml calls this and uploads every asset at once.
+  workflow_call:
   pull_request:
     paths:
       - '.github/workflows/flatpak.yml'
@@ -85,8 +85,8 @@ jobs:
           printf 'channel=%s\npublish=%s\n' "$channel" "$publish" |
             tee -a "$GITHUB_OUTPUT"
 
-      # A queued publish replaces an older queued one, so a tag pushed while
-      # another publish ran can be cancelled before it starts. Queue it again.
+      # A queued publish replaces an older queued one, and a tag whose Flatpak
+      # is cancelled that way never gets its release. Queue it again.
       - name: Requeue a cancelled release
         if: github.event_name == 'schedule' && github.repository == 'CoderDayton/nightcap'
         shell: bash
@@ -96,18 +96,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           read -r id conclusion < <(
-            gh run list --workflow flatpak.yml --event push --limit 20 \
+            gh run list --workflow release.yml --event push --limit 20 \
               --json databaseId,headBranch,conclusion \
               --jq '[.[] | select(.headBranch | startswith("v"))][0]
                     | "\(.databaseId) \(.conclusion)"'
           ) || exit 0
-          # Only a run that never started; one cancelled while running was
+          # Only a Flatpak that never started; one cancelled while running was
           # stopped on purpose.
           started="$(gh run view "$id" --json jobs \
-            --jq '[.jobs[] | select(.conclusion == "success")] | length')"
+            --jq '[.jobs[] | select((.name | startswith("Flatpak /"))
+                                    and .conclusion == "success")] | length')"
           if [[ "$conclusion" == cancelled && "$started" == 0 ]]; then
             echo "::warning::Requeueing cancelled release run $id"
-            gh run rerun "$id" ||
+            gh run rerun "$id" --failed ||
               echo "::warning::Could not requeue run $id; rerun it by hand"
           fi
 
@@ -343,43 +344,3 @@ jobs:
           done
           echo "::error::The CDN still serves an older repository after 20 minutes"
           exit 1
-
-  release:
-    name: Attach bundle to GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: flatpak
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download Flatpak
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: Nightcap-x86_64-flatpak
-          path: release
-
-      - name: Upload to release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          tag="${GITHUB_REF_NAME}"
-          (cd release && sha256sum Nightcap-x86_64.flatpak > Nightcap-x86_64.flatpak.sha256)
-          ./scripts/release_notes.sh "$tag" > release/notes.md
-          # The Release workflow creates the same release; whichever job
-          # arrives second sees "already exists" and continues.
-          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "Nightcap $tag" --notes-file release/notes.md ||
-              gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
-          fi
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
-            --title "Nightcap $tag" --notes-file release/notes.md
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
-            release/Nightcap-x86_64.flatpak \
-            release/Nightcap-x86_64.flatpak.sha256

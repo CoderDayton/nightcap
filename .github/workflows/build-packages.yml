@@ -113,7 +113,6 @@ jobs:
 
               git config --global --add safe.directory /workspace
               git config --global --add safe.directory /workspace/third_party/Vulkan-Headers
-              git config --global --add safe.directory /workspace/third_party/libjnivm
               export MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1
               export MOCKTAIL_ANYLINUX_SHARUN=/tmp/sharun
               export MOCKTAIL_ANYLINUX_C_SOURCE=/tmp/anylinux.c

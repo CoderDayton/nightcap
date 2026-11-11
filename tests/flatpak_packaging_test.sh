@@ -136,8 +136,13 @@ grep -Fq 'CleanupStaleBuilderMounts' "${BUILD_HELPER}" ||
   Fail 'obsolete GitLab CI configuration is still present'
 grep -Fq 'name: Flatpak' "${GITHUB_CI}" ||
   Fail 'GitHub Actions workflow has no stable display name'
-grep -Fq "tags: ['v*']" "${GITHUB_CI}" ||
-  Fail 'GitHub Actions does not publish on release tags'
+# Release tags build the Flatpak through release.yml, which uploads every
+# asset at once.
+grep -Fq 'workflow_call:' "${GITHUB_CI}" ||
+  Fail 'Flatpak workflow cannot be called by the release workflow'
+if grep -Fq "tags: ['v*']" "${GITHUB_CI}" || grep -Fq 'gh release' "${GITHUB_CI}"; then
+  Fail 'Flatpak workflow publishes a release by itself'
+fi
 grep -Fq 'pull_request:' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not validate pull requests'
 grep -Fq 'workflow_dispatch:' "${GITHUB_CI}" ||

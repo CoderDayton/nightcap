@@ -143,6 +143,7 @@ FleasionPreparation PrepareFleasion(const RuntimeConfig& config,
     }
   }
   ERR_clear_error();
+  result.base_certificates = count;
   if (count == 0 || PEM_write_bio_X509(output.get(), ca.get()) != 1) {
     result.error = "base bundle must contain PEM certificates";
     return result;
@@ -183,6 +184,20 @@ bool FleasionProxyReachable(int port, int timeout_ms) {
   return reachable;
 }
 
+std::optional<bool> SoberInstalled(const Environment& environment,
+                                   const std::filesystem::path& home,
+                                   const std::filesystem::path& system_flatpak) {
+  if (environment.HasNonEmpty("FLATPAK_ID")) return std::nullopt;
+  for (const auto& root : {system_flatpak, home / ".local/share/flatpak"}) {
+    std::error_code error;
+    if (std::filesystem::is_directory(
+            root / "app/org.vinegarhq.Sober/current/active", error)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool WebsiteJoinNeedsFreshLaunch(const RuntimeConfig& config) {
   return config.fleasion_enabled() && config.fleasion_clear_cache_on_launch();
 }
@@ -198,6 +213,8 @@ bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
     return false;
   }
   overrides.emplace("FFlagAssetProviderUseAssetDeliveryV3", "False");
+  // Read cacert.pem, which holds Fleasion's CA, not the CAs built into Roblox.
+  overrides.emplace("DFFlagHttpUseEmbeddedCaCerts", "False");
   *merged_json = overrides.dump();
   return true;
 }

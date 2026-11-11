@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "mocktail/graphics/graphics_backend.h"
 #include "mocktail/platform/platform_runtime.h"
 #include "mocktail/status.h"
 
@@ -36,7 +35,6 @@ class SdlVulkanWsi final {
   }
 
   SDL_FunctionPointer GetInstanceProcAddress() const;
-  BackendCapability DescribeCapability() const;
   Status CreateSurface(VkInstance instance,
                        const VkAllocationCallbacks* allocator,
                        VkSurfaceKHR* surface) const;

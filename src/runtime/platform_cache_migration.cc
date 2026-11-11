@@ -1,63 +1,37 @@
 #include "runtime/platform_cache_migration.h"
 
-#define JSON_NOEXCEPTION 1
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 
+#include "mocktail/scoped_file_descriptor.h"
 #include "runtime/environment.h"
+#include "runtime/json_file.h"
 #include "runtime/runtime_paths.h"
 
 namespace mocktail {
 namespace runtime {
 namespace {
 
-constexpr std::uintmax_t kMaximumJsonBytes = 16U * 1024U * 1024U;
 constexpr int kFingerprintSchemaVersion = 1;
 constexpr std::string_view kAndroidDataPrefix =
     "/data/user/0/com.roblox.client";
 constexpr std::string_view kLegacyAndroidDataPrefix =
     "/data/data/com.roblox.client";
-std::atomic<std::uint64_t> g_temporary_sequence{0};
 
-class ScopedFileDescriptor final {
- public:
-  explicit ScopedFileDescriptor(int descriptor = -1)
-      : descriptor_(descriptor) {}
-  ~ScopedFileDescriptor() {
-    if (descriptor_ >= 0) {
-      close(descriptor_);
-    }
-  }
-
-  ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
-  ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
-
-  int get() const { return descriptor_; }
-
- private:
-  int descriptor_ = -1;
-};
-
-enum class ReadStatus { kMissing, kReady, kInvalid };
-
-struct JsonReadResult {
-  ReadStatus status = ReadStatus::kMissing;
-  nlohmann::json value;
-  std::string error;
-};
+JsonFileReadResult ReadJson(const std::filesystem::path& path) {
+  return ReadJsonObjectFile(path, "platform cache metadata");
+}
 
 bool HasPathPrefix(const std::filesystem::path& path,
                    const std::filesystem::path& prefix) {
@@ -90,128 +64,13 @@ std::optional<std::filesystem::path> TranslateAndroidFilesPath(
   return host_path.is_absolute() ? std::optional(host_path) : std::nullopt;
 }
 
-bool WriteAll(int descriptor, std::string_view bytes) {
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    const ssize_t written =
-        write(descriptor, bytes.data() + offset, bytes.size() - offset);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    if (written == 0) {
-      return false;
-    }
-    offset += static_cast<std::size_t>(written);
-  }
-  return true;
-}
-
-JsonReadResult ReadJson(const std::filesystem::path& path) {
-  const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0) {
-    if (errno == ENOENT) {
-      return {};
-    }
-    return {
-        ReadStatus::kInvalid, {}, "cannot safely open platform cache metadata"};
-  }
-  const ScopedFileDescriptor file(descriptor);
-  struct stat status{};
-  if (fstat(file.get(), &status) != 0 || !S_ISREG(status.st_mode) ||
-      status.st_size < 0 ||
-      static_cast<std::uintmax_t>(status.st_size) > kMaximumJsonBytes) {
-    return {ReadStatus::kInvalid,
-            {},
-            "platform cache metadata is not a bounded regular file"};
-  }
-
-  std::string bytes(static_cast<std::size_t>(status.st_size), '\0');
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    const ssize_t count =
-        read(file.get(), bytes.data() + offset, bytes.size() - offset);
-    if (count < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return {ReadStatus::kInvalid, {}, "cannot read platform cache metadata"};
-    }
-    if (count == 0) {
-      return {ReadStatus::kInvalid,
-              {},
-              "platform cache metadata changed while being read"};
-    }
-    offset += static_cast<std::size_t>(count);
-  }
-  nlohmann::json parsed = nlohmann::json::parse(bytes, nullptr, false, true);
-  std::fill(bytes.begin(), bytes.end(), '\0');
-  if (parsed.is_discarded() || !parsed.is_object()) {
-    return {ReadStatus::kInvalid,
-            {},
-            "platform cache metadata is not a JSON object"};
-  }
-  return {ReadStatus::kReady, std::move(parsed), {}};
-}
-
 bool AtomicWriteJson(const std::filesystem::path& path,
                      const nlohmann::json& value, std::string* error) {
-  std::error_code filesystem_error;
-  if (!RuntimePaths::EnsureDirectory(path.parent_path(), &filesystem_error)) {
-    *error = "cannot create platform cache metadata directory";
-    return false;
-  }
-  const std::filesystem::file_status target_status =
-      std::filesystem::symlink_status(path, filesystem_error);
-  if (!filesystem_error && std::filesystem::is_symlink(target_status)) {
-    *error = "platform cache metadata target is a symlink";
-    return false;
-  }
-  if (filesystem_error != std::errc::no_such_file_or_directory &&
-      filesystem_error) {
-    *error = "cannot inspect platform cache metadata target";
-    return false;
-  }
-
-  const std::filesystem::path temporary =
-      path.parent_path() /
-      (".mocktail-platform-cache.tmp." + std::to_string(getpid()) + "." +
-       std::to_string(g_temporary_sequence.fetch_add(1)));
-  const int descriptor =
-      open(temporary.c_str(),
-           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-  if (descriptor < 0) {
-    *error = "cannot create temporary platform cache metadata";
-    return false;
-  }
-  bool stored = false;
-  {
-    const ScopedFileDescriptor file(descriptor);
-    const std::string bytes = value.dump();
-    stored = fchmod(file.get(), S_IRUSR | S_IWUSR) == 0 &&
-             WriteAll(file.get(), bytes) && fsync(file.get()) == 0;
-  }
-  if (!stored || rename(temporary.c_str(), path.c_str()) != 0) {
-    const int saved_errno = errno;
-    (void)unlink(temporary.c_str());
-    errno = saved_errno;
-    *error = "cannot atomically store platform cache metadata";
-    return false;
-  }
-  const int directory_descriptor =
-      open(path.parent_path().c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
-  if (directory_descriptor < 0) {
-    *error = "cannot open platform cache metadata directory for sync";
-    return false;
-  }
-  const ScopedFileDescriptor directory(directory_descriptor);
-  if (fsync(directory.get()) != 0) {
-    *error = "cannot sync platform cache metadata directory";
-    return false;
-  }
-  return true;
+  return WriteJsonFileAtomically(
+      path, value,
+      {"platform cache metadata", "platform cache metadata target",
+       ".mocktail-platform-cache.tmp."},
+      error);
 }
 
 std::string FingerprintRevision(const nlohmann::json& fingerprint) {
@@ -297,12 +156,12 @@ PlatformCacheMigrationResult MigratePlatformProfileCaches(
     return result;
   }
 
-  const JsonReadResult fingerprint = ReadJson(result.fingerprint_file);
-  if (fingerprint.status == ReadStatus::kInvalid) {
+  const JsonFileReadResult fingerprint = ReadJson(result.fingerprint_file);
+  if (fingerprint.status == JsonFileStatus::kInvalid) {
     result.error = fingerprint.error;
     return result;
   }
-  if (fingerprint.status == ReadStatus::kReady) {
+  if (fingerprint.status == JsonFileStatus::kReady) {
     result.previous_revision = FingerprintRevision(fingerprint.value);
   }
   if (result.previous_revision == desired_revision) {
@@ -310,12 +169,12 @@ PlatformCacheMigrationResult MigratePlatformProfileCaches(
   }
   result.transitioned = true;
 
-  JsonReadResult app_storage = ReadJson(result.app_storage_file);
-  if (app_storage.status == ReadStatus::kInvalid) {
+  JsonFileReadResult app_storage = ReadJson(result.app_storage_file);
+  if (app_storage.status == JsonFileStatus::kInvalid) {
     result.error = app_storage.error;
     return result;
   }
-  if (app_storage.status == ReadStatus::kReady) {
+  if (app_storage.status == JsonFileStatus::kReady) {
     result.app_storage_found = true;
     const std::size_t removed =
         app_storage.value.erase("PlayerHydrationBlob") +
@@ -350,12 +209,12 @@ RobloxThemeCacheResult ReadRobloxThemeCache(
     return result;
   }
 
-  const JsonReadResult storage = ReadJson(app_storage_file);
-  if (storage.status == ReadStatus::kInvalid) {
+  const JsonFileReadResult storage = ReadJson(app_storage_file);
+  if (storage.status == JsonFileStatus::kInvalid) {
     result.error = storage.error;
     return result;
   }
-  if (storage.status == ReadStatus::kMissing) {
+  if (storage.status == JsonFileStatus::kMissing) {
     return result;
   }
 
@@ -411,12 +270,12 @@ bool ApplyRobloxThemeCacheOverride(
     return false;
   }
 
-  JsonReadResult storage = ReadJson(app_storage_file);
-  if (storage.status == ReadStatus::kInvalid) {
+  JsonFileReadResult storage = ReadJson(app_storage_file);
+  if (storage.status == JsonFileStatus::kInvalid) {
     *error = storage.error;
     return false;
   }
-  if (storage.status == ReadStatus::kMissing) {
+  if (storage.status == JsonFileStatus::kMissing) {
     storage.value = nlohmann::json::object();
   }
 

@@ -1,6 +1,6 @@
 # Modified by vii from komaruworld/mocktail. See README "About this fork".
 .DEFAULT_GOAL := all
-.PHONY: all build release debug test apk install register-url-handler release-runtime portable portable-test standalone appimage flatpak flatpak-build run-flatpak run run-smoke run-unlimited run-game run-input run-resize run-network auto-run run-gles run-angle update-roblox update-auto update-auto-launch payload-status payload-rollback support-bundle clean submodules help
+.PHONY: all build release debug test apk install register-url-handler release-runtime portable portable-test standalone appimage flatpak flatpak-build run-flatpak run run-smoke run-unlimited run-game run-input run-resize run-network auto-run run-gles run-angle update-roblox update-auto update-auto-launch payload-status payload-rollback support-bundle bench bench-startup bench-compare clean submodules help
 
 BUILD_DIR  := build
 TEST_BUILD_DIR ?= build-test
@@ -160,7 +160,20 @@ payload-rollback: build ## Atomically restore the previous-good payload
 support-bundle: ## Create a private sanitized diagnostics archive
 	@./scripts/collect_support_bundle.sh --context manual --reason manual-request
 
-submodules: ## Initialise git submodules (libjnivm, Vulkan-Headers)
+bench: build ## Simulated JNI session benchmark (ARGS="--profile ingame --json out.json")
+	@cmake --build "$(BUILD_DIR)" --target jnivm_session_benchmark -j"$(JOBS)"
+	@./$(BUILD_DIR)/jnivm_session_benchmark $(ARGS)
+
+bench-compare: ## Benchmark BASE=<ref> against the working tree (MODE=sim|real|all)
+	@./scripts/bench_compare.sh --base "$(or $(BASE),HEAD)" --mode "$(or $(MODE),sim)" \
+		--profile "$(or $(PROFILE),ingame)" $(ARGS)
+
+bench-startup: build ## Real startup, FPS, CPU, memory (HEAP=1, ARGS="--profile ingame")
+	@cmake --build "$(BUILD_DIR)" --target mocktail_heap_counter -j"$(JOBS)"
+	@python3 -I scripts/startup_benchmark.py run --bin "$(BINARY)" \
+		$(if $(filter 1,$(HEAP)),--heap-counter "$(BUILD_DIR)/libmocktail_heap_counter.so") $(ARGS)
+
+submodules: ## Initialise git submodules (Vulkan-Headers)
 	@./scripts/add_submodules.sh
 
 clean: ## Remove the build and test build directories

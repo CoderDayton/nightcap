@@ -23,8 +23,6 @@
 #include <limits>
 #include <list>
 #include <mutex>
-#include <new>
-#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -142,7 +140,7 @@ struct JniMethodDescriptor {
   JniMethod method = JniMethod::kUnknown;
 };
 
-static std::list<JniMethodDescriptor> g_method_descriptors;
+std::list<JniMethodDescriptor> g_method_descriptors;
 
 const char* MethodName(jmethodID method_id) {
   if (__builtin_expect(method_id == nullptr, 0)) {
@@ -441,13 +439,15 @@ jlong StaticLongResultForMethod(jmethodID method_id) {
 }
 
 jobject ExactMessageBusStaticObject(jclass clazz, jmethodID method_id) {
+  if (MethodOf(method_id) != JniMethod::kF ||
+      std::strcmp(MethodSignature(method_id),
+                  "()Lcom/roblox/universalapp/messagebus/MessageBus;") != 0) {
+    return nullptr;
+  }
   const std::shared_ptr<Class> object_class = ClassFromJClass(clazz);
   if (object_class == nullptr ||
       object_class->GetName() !=
-          "com/roblox/universalapp/messagebus/MessageBus" ||
-      MethodOf(method_id) != JniMethod::kF ||
-      std::strcmp(MethodSignature(method_id),
-                  "()Lcom/roblox/universalapp/messagebus/MessageBus;") != 0) {
+          "com/roblox/universalapp/messagebus/MessageBus") {
     return nullptr;
   }
   return SingletonObject("com/roblox/universalapp/messagebus/MessageBus");
@@ -567,12 +567,21 @@ void RecordNativeHelperCallback(jobject obj, const char* name) {
   SetBooleanFieldRaw(obj, name, JNI_TRUE);
 }
 
+// Integer method match first; the class-name compare is the expensive step.
+bool IsReceiverMethod(jobject obj, jmethodID method_id, JniMethod method,
+                      const char* signature, std::string_view class_name) {
+  return obj != nullptr && method_id != nullptr &&
+         MethodOf(method_id) == method &&
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == class_name;
+}
+
 bool IsJavaStringGetBytesMethod(jobject obj, jmethodID method_id) {
   if (obj == nullptr || method_id == nullptr ||
-      ObjectClassName(obj) != "java/lang/String" ||
       MethodOf(method_id) != JniMethod::kGetBytes ||
       std::strcmp(MethodSignature(method_id),
-                  "(Ljava/lang/String;)[B") != 0) {
+                  "(Ljava/lang/String;)[B") != 0 ||
+      ObjectClassName(obj) != "java/lang/String") {
     return false;
   }
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
@@ -643,27 +652,27 @@ std::string CookieValueAfterEquals(const std::string& text,
 std::string NormalizeCookieHeader(const std::string& content) {
   constexpr const char* kCookieName = ".ROBLOSECURITY";
   constexpr const char* kCookiePrefix = ".ROBLOSECURITY=";
+  const auto with_prefix = [](const std::string& value) {
+    return value.empty() ? std::string() : std::string(kCookiePrefix) + value;
+  };
   std::string text = TrimString(content);
   if (text.empty()) {
     return {};
   }
   std::size_t prefixed_pos = text.find(kCookiePrefix);
   if (prefixed_pos != std::string::npos) {
-    std::string value = CookieValueAfterEquals(text, prefixed_pos);
-    return value.empty() ? std::string() : std::string(kCookiePrefix) + value;
+    return with_prefix(CookieValueAfterEquals(text, prefixed_pos));
   }
   std::size_t name_pos = text.find(kCookieName);
   if (name_pos != std::string::npos) {
     const std::size_t after_name = name_pos + std::strlen(kCookieName);
     if (after_name < text.size() && text[after_name] == '\t') {
       std::size_t end = text.find_first_of(";\r\n\t", after_name + 1);
-      std::string value = TrimString(text.substr(
+      return with_prefix(TrimString(text.substr(
           after_name + 1,
-          end == std::string::npos ? std::string::npos : end - after_name - 1));
-      return value.empty() ? std::string() : std::string(kCookiePrefix) + value;
+          end == std::string::npos ? std::string::npos : end - after_name - 1)));
     }
-    std::string value = CookieValueAfterEquals(text, name_pos);
-    return value.empty() ? std::string() : std::string(kCookiePrefix) + value;
+    return with_prefix(CookieValueAfterEquals(text, name_pos));
   }
   if (text.find('=') == std::string::npos &&
       text.find('\t') == std::string::npos &&
@@ -821,25 +830,21 @@ bool SyncRobloxCookiesFromEngine(VM* vm) {
 }
 
 bool IsRobloxCookieSyncMethod(jobject obj, jmethodID method_id) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == JniMethod::kSyncCookiesFromEngine &&
-         std::strcmp(MethodSignature(method_id), "()V") == 0 &&
-         ObjectClassName(obj) == "com/roblox/client/startup/MainGameActivity";
+  return IsReceiverMethod(obj, method_id, JniMethod::kSyncCookiesFromEngine,
+                          "()V", "com/roblox/client/startup/MainGameActivity");
 }
 
 bool IsRobloxDidLogInMethod(jobject obj, jmethodID method_id) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == JniMethod::kGameActivityOnDidLogInReceived &&
-         std::strcmp(MethodSignature(method_id), "(Ljava/lang/String;)V") == 0 &&
-         ObjectClassName(obj) == "com/roblox/client/startup/NativeHelper";
+  return IsReceiverMethod(obj, method_id,
+                          JniMethod::kGameActivityOnDidLogInReceived,
+                          "(Ljava/lang/String;)V",
+                          "com/roblox/client/startup/NativeHelper");
 }
 
 bool IsNativeHelperNotification(jobject obj, jmethodID method_id,
                                 JniMethod method) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), "()V") == 0 &&
-         ObjectClassName(obj) == "com/roblox/client/startup/NativeHelper";
+  return IsReceiverMethod(obj, method_id, method, "()V",
+                          "com/roblox/client/startup/NativeHelper");
 }
 
 bool IsRobloxDidSwitchAccountMethod(jobject obj, jmethodID method_id) {
@@ -885,9 +890,8 @@ void HandleRobloxDidLogOut(jobject obj, const char* name) {
 
 bool CookieObjectResultForMethodV(jmethodID method_id, va_list args,
                                   jobject* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kGetCookie ||
@@ -907,9 +911,8 @@ bool CookieObjectResultForMethodV(jmethodID method_id, va_list args,
 
 bool CookieObjectResultForMethodA(jmethodID method_id, const jvalue* args,
                                   jobject* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kGetCookie ||
@@ -927,9 +930,8 @@ bool CookieObjectResultForMethodA(jmethodID method_id, const jvalue* args,
 }
 
 bool CookieBooleanResultForMethod(jmethodID method_id, jboolean* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kSetCookiesFromDisk) {
@@ -940,9 +942,8 @@ bool CookieBooleanResultForMethod(jmethodID method_id, jboolean* result) {
 }
 
 bool FmodBooleanResultForMethod(jmethodID method_id, jboolean* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kCheckInit) {
@@ -1066,9 +1067,8 @@ bool LocalStorageDeleteUserValues(jlong user_id) {
 
 bool LocalStorageObjectResultForMethodV(jmethodID method_id, va_list args,
                                         jobject* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kGetSecureValue) {
@@ -1118,9 +1118,8 @@ bool LocalStorageObjectResultForMethodV(jmethodID method_id, va_list args,
 
 bool LocalStorageObjectResultForMethodA(jmethodID method_id, const jvalue* args,
                                         jobject* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kGetSecureValue) {
@@ -1170,9 +1169,8 @@ bool LocalStorageObjectResultForMethodA(jmethodID method_id, const jvalue* args,
 
 bool LocalStorageBooleanResultForMethodV(jmethodID method_id, va_list args,
                                          jboolean* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kSetCurrentUser) {
@@ -1256,9 +1254,8 @@ bool LocalStorageBooleanResultForMethodV(jmethodID method_id, va_list args,
 
 bool LocalStorageBooleanResultForMethodA(jmethodID method_id, const jvalue* args,
                                          jboolean* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kSetCurrentUser) {
@@ -1341,9 +1338,8 @@ bool LocalStorageBooleanResultForMethodA(jmethodID method_id, const jvalue* args
 }
 
 bool LocalStorageLongResultForMethod(jmethodID method_id, jlong* result) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name || !result) {
+  if (!result) {
     return false;
   }
   if (method == JniMethod::kGetCurrentUser) {
@@ -1570,12 +1566,9 @@ void HandleVoidMethod(jobject obj, jmethodID method_id, va_list args) {
 }
 
 bool IsMemStorageCallbackMethod(jobject obj, jmethodID method_id) {
-  return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) ==
-             "com/roblox/engine/jni/memstorage/Callback" &&
-         MethodOf(method_id) == JniMethod::kOnItemSet &&
-         std::strcmp(MethodSignature(method_id),
-                     "(Ljava/lang/String;)V") == 0;
+  return IsReceiverMethod(obj, method_id, JniMethod::kOnItemSet,
+                          "(Ljava/lang/String;)V",
+                          "com/roblox/engine/jni/memstorage/Callback");
 }
 
 bool HandleMemStorageCallbackVoidMethodV(jobject obj, jmethodID method_id,
@@ -1606,13 +1599,10 @@ bool HandleMemStorageCallbackVoidMethodA(jobject obj, jmethodID method_id,
 }
 
 bool IsRobloxCookieSetHandlerMethod(jobject obj, jmethodID method_id) {
-  return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) ==
-             "com/roblox/universalapp/cookie/"
-             "JNICookieProtocol$OnSetCookieHandler" &&
-         MethodOf(method_id) == JniMethod::kOnSetCookie &&
-         std::strcmp(MethodSignature(method_id),
-                     "([Ljava/lang/String;Ljava/lang/String;)V") == 0;
+  return IsReceiverMethod(obj, method_id, JniMethod::kOnSetCookie,
+                          "([Ljava/lang/String;Ljava/lang/String;)V",
+                          "com/roblox/universalapp/cookie/"
+                          "JNICookieProtocol$OnSetCookieHandler");
 }
 
 bool HandleRobloxCookieSetVoidMethodV(jobject obj, jmethodID method_id,
@@ -1946,12 +1936,8 @@ jobject SystemServiceObject(const std::string& service_name) {
 }
 
 jobject AndroidObjectForMethod(jmethodID method_id) {
-  const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
   EnsureAndroidObjectGraph();
-  if (!name) {
-    return nullptr;
-  }
   if (method == JniMethod::kCurrentActivity ||
       method == JniMethod::kGetActivity) {
     return SingletonObject("com/roblox/client/startup/MainGameActivity");
@@ -2055,9 +2041,6 @@ jobject AndroidObjectForMethod(jmethodID method_id) {
 jobject ObjectResultForReceiverMethod(jobject obj, jmethodID method_id) {
   const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name) {
-    return nullptr;
-  }
   EnsureAndroidObjectGraph();
   if (method == JniMethod::kGetBaseUrl ||
       method == JniMethod::kGetBaseURL ||
@@ -2246,9 +2229,6 @@ jobject ObjectResultForMethodV(jobject obj, jmethodID method_id, va_list args) {
 jboolean BooleanResultForReceiverMethod(jobject obj, jmethodID method_id) {
   const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name) {
-    return JNI_FALSE;
-  }
   if (method == JniMethod::kIsValid) {
     jboolean value = BooleanFieldValue(obj, "isValid");
     return value ? value : BooleanFieldValue(obj, "valid");
@@ -2286,15 +2266,13 @@ jboolean BooleanResultForReceiverMethod(jobject obj, jmethodID method_id) {
 bool PackageManagerBooleanResultForMethodV(jobject obj, jmethodID method_id,
                                            va_list args, jboolean* result) {
   if (result == nullptr ||
-      ObjectClassName(obj) != "android/content/pm/PackageManager" ||
-      MethodOf(method_id) != JniMethod::kHasSystemFeature) {
+      MethodOf(method_id) != JniMethod::kHasSystemFeature ||
+      ObjectClassName(obj) != "android/content/pm/PackageManager") {
     return false;
   }
   const jstring feature = va_arg(args, jstring);
   const std::string feature_name = StringFromJString(feature);
-  const PlatformIdentity identity =
-      CurrentVM() != nullptr ? CurrentVM()->GetPlatformIdentitySnapshot()
-                             : PlatformIdentity{};
+  const PlatformIdentity identity = CurrentPlatformIdentity();
   if (feature_name == "android.hardware.type.pc") {
     *result = identity.pc_hardware ? JNI_TRUE : JNI_FALSE;
   } else if (feature_name == "android.hardware.touchscreen" ||
@@ -2314,16 +2292,14 @@ bool PackageManagerBooleanResultForMethodA(jobject obj, jmethodID method_id,
                                            const jvalue* args,
                                            jboolean* result) {
   if (result == nullptr ||
-      ObjectClassName(obj) != "android/content/pm/PackageManager" ||
-      MethodOf(method_id) != JniMethod::kHasSystemFeature) {
+      MethodOf(method_id) != JniMethod::kHasSystemFeature ||
+      ObjectClassName(obj) != "android/content/pm/PackageManager") {
     return false;
   }
   const std::string feature_name =
       args != nullptr ? StringFromJString(reinterpret_cast<jstring>(args[0].l))
                       : std::string();
-  const PlatformIdentity identity =
-      CurrentVM() != nullptr ? CurrentVM()->GetPlatformIdentitySnapshot()
-                             : PlatformIdentity{};
+  const PlatformIdentity identity = CurrentPlatformIdentity();
   if (feature_name == "android.hardware.type.pc") {
     *result = identity.pc_hardware ? JNI_TRUE : JNI_FALSE;
   } else if (feature_name.rfind("android.hardware.touchscreen", 0) == 0) {
@@ -2337,9 +2313,6 @@ bool PackageManagerBooleanResultForMethodA(jobject obj, jmethodID method_id,
 jint IntResultForReceiverMethod(jobject obj, jmethodID method_id) {
   const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name) {
-    return 0;
-  }
   if (method == JniMethod::kSize ||
       method == JniMethod::kLength) {
     return IntFieldValue(obj, name);
@@ -2360,24 +2333,20 @@ jint IntResultForReceiverMethod(jobject obj, jmethodID method_id) {
 
 bool IsFmodAudioDeviceMethod(jobject obj, jmethodID method_id,
                              JniMethod method, const char* signature) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0 &&
-         ObjectClassName(obj) == "org/fmod/AudioDevice";
+  return IsReceiverMethod(obj, method_id, method, signature,
+                          "org/fmod/AudioDevice");
 }
 
 bool IsWebRtcAudioManagerMethod(jobject obj, jmethodID method_id,
                                 JniMethod method, const char* signature) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0 &&
-         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioManager";
+  return IsReceiverMethod(obj, method_id, method, signature,
+                          "org/webrtc/voiceengine/WebRtcAudioManager");
 }
 
 bool HandleWebRtcAudioManagerBooleanMethod(jobject obj, jmethodID method_id,
                                            jboolean* result) {
-  VM* vm = CurrentVM();
   if (IsWebRtcAudioManagerMethod(obj, method_id, JniMethod::kInit, "()Z")) {
+    VM* vm = CurrentVM();
     *result = vm != nullptr && vm->DispatchWebRtcAudioManagerInit(obj)
                   ? JNI_TRUE
                   : JNI_FALSE;
@@ -2409,12 +2378,13 @@ bool HandleWebRtcAudioManagerBooleanMethod(jobject obj, jmethodID method_id,
 
 bool HandleWebRtcAudioManagerVoidMethodV(jobject obj, jmethodID method_id,
                                          va_list args) {
-  VM* vm = CurrentVM();
   if (IsWebRtcAudioManagerMethod(obj, method_id, JniMethod::kDispose, "()V")) {
+    VM* vm = CurrentVM();
     if (vm != nullptr) vm->DispatchWebRtcAudioManagerDispose(obj);
   } else if (IsWebRtcAudioManagerMethod(obj, method_id, JniMethod::kSetMicrophoneMute,
                                         "(Z)V")) {
     const bool muted = va_arg(args, jint) != JNI_FALSE;
+    VM* vm = CurrentVM();
     if (vm != nullptr) vm->DispatchWebRtcAudioManagerMicrophoneMute(obj, muted);
   } else {
     return false;
@@ -2424,11 +2394,12 @@ bool HandleWebRtcAudioManagerVoidMethodV(jobject obj, jmethodID method_id,
 
 bool HandleWebRtcAudioManagerVoidMethodA(jobject obj, jmethodID method_id,
                                          const jvalue* args) {
-  VM* vm = CurrentVM();
   if (IsWebRtcAudioManagerMethod(obj, method_id, JniMethod::kDispose, "()V")) {
+    VM* vm = CurrentVM();
     if (vm != nullptr) vm->DispatchWebRtcAudioManagerDispose(obj);
   } else if (IsWebRtcAudioManagerMethod(obj, method_id, JniMethod::kSetMicrophoneMute,
                                         "(Z)V")) {
+    VM* vm = CurrentVM();
     if (vm != nullptr && args != nullptr) {
       vm->DispatchWebRtcAudioManagerMicrophoneMute(obj, args[0].z != JNI_FALSE);
     }
@@ -2440,18 +2411,14 @@ bool HandleWebRtcAudioManagerVoidMethodA(jobject obj, jmethodID method_id,
 
 bool IsWebRtcAudioRecordMethod(jobject obj, jmethodID method_id,
                                JniMethod method, const char *signature) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0 &&
-         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioRecord";
+  return IsReceiverMethod(obj, method_id, method, signature,
+                          "org/webrtc/voiceengine/WebRtcAudioRecord");
 }
 
 bool IsWebRtcAudioTrackMethod(jobject obj, jmethodID method_id,
                               JniMethod method, const char *signature) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0 &&
-         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioTrack";
+  return IsReceiverMethod(obj, method_id, method, signature,
+                          "org/webrtc/voiceengine/WebRtcAudioTrack");
 }
 
 constexpr char kRobloxNativeGlJavaInterfaceClass[] =
@@ -2582,37 +2549,33 @@ bool SnapshotRobloxTextInputShow(jlong text_box, jboolean show_native_input,
 bool IsRobloxTextInputStaticMethod(jclass clazz, jmethodID method_id,
                                    JniMethod method,
                                    const char* signature) {
+  if (MethodOf(method_id) != method ||
+      std::strcmp(MethodSignature(method_id), signature) != 0) {
+    return false;
+  }
   const auto cls = ClassFromJClass(clazz);
-  return cls != nullptr &&
-         cls->GetName() == kRobloxNativeGlJavaInterfaceClass &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0;
+  return cls != nullptr && cls->GetName() == kRobloxNativeGlJavaInterfaceClass;
 }
 
 bool IsRobloxTextInputInstanceMethod(jobject obj, jmethodID method_id,
                                      JniMethod method,
                                      const char* signature) {
-  return obj != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0 &&
-         ObjectClassName(obj) == kRobloxNativeHelperClass;
+  return IsReceiverMethod(obj, method_id, method, signature,
+                          kRobloxNativeHelperClass);
 }
 
 bool IsRobloxEngineJavaTextInputMethod(jobject obj, jmethodID method_id,
                                        JniMethod method,
                                        const char* signature) {
-  return obj != nullptr && method_id != nullptr &&
-         MethodOf(method_id) == method &&
-         std::strcmp(MethodSignature(method_id), signature) == 0 &&
-         ObjectClassName(obj) == kRobloxEngineJavaCallbackClass;
+  return IsReceiverMethod(obj, method_id, method, signature,
+                          kRobloxEngineJavaCallbackClass);
 }
 
 bool HandleRobloxExperienceLifecycleVoidMethod(jobject obj,
                                                 jmethodID method_id) {
-  if (obj == nullptr || method_id == nullptr ||
-      MethodOf(method_id) != JniMethod::kGameActivityOnLuaAppDidReturn ||
-      std::strcmp(MethodSignature(method_id), "()V") != 0 ||
-      ObjectClassName(obj) != kRobloxNativeHelperClass) {
+  if (!IsReceiverMethod(obj, method_id,
+                        JniMethod::kGameActivityOnLuaAppDidReturn, "()V",
+                        kRobloxNativeHelperClass)) {
     return false;
   }
   VM* vm = CurrentVM();
@@ -2624,11 +2587,13 @@ bool HandleRobloxExperienceLifecycleVoidMethod(jobject obj,
 
 bool HandleRobloxExperienceLifecycleStaticVoidMethod(jclass clazz,
                                                       jmethodID method_id) {
-  const std::shared_ptr<Class> method_class = ClassFromJClass(clazz);
-  if (method_class == nullptr || method_id == nullptr ||
-      method_class->GetName() != kRobloxNativeGlJavaInterfaceClass ||
-      MethodOf(method_id) != JniMethod::kGameDidLeave ||
+  if (method_id == nullptr || MethodOf(method_id) != JniMethod::kGameDidLeave ||
       std::strcmp(MethodSignature(method_id), "()V") != 0) {
+    return false;
+  }
+  const std::shared_ptr<Class> method_class = ClassFromJClass(clazz);
+  if (method_class == nullptr ||
+      method_class->GetName() != kRobloxNativeGlJavaInterfaceClass) {
     return false;
   }
   VM* vm = CurrentVM();
@@ -2639,19 +2604,22 @@ bool HandleRobloxExperienceLifecycleStaticVoidMethod(jclass clazz,
 }
 
 bool IsRobloxPromptNativePurchase(jclass clazz, jmethodID method_id) {
-  const std::shared_ptr<Class> method_class = ClassFromJClass(clazz);
-  if (method_class == nullptr || method_id == nullptr ||
-      method_class->GetName() != kRobloxNativeGlJavaInterfaceClass) {
+  if (method_id == nullptr) {
     return false;
   }
   const JniMethod method = MethodOf(method_id);
   const std::string_view signature(MethodSignature(method_id));
-  return (method == JniMethod::kPromptNativePurchase ||
-          method == JniMethod::kPromptNativePurchaseWithPayload ||
-          method == JniMethod::kPromptNativePurchaseWithPaymentSessionId) &&
-         signature.rfind("(JLjava/lang/String;", 0) == 0 &&
-         signature.size() >= 2 &&
-         signature.substr(signature.size() - 2) == ")V";
+  if (!((method == JniMethod::kPromptNativePurchase ||
+         method == JniMethod::kPromptNativePurchaseWithPayload ||
+         method == JniMethod::kPromptNativePurchaseWithPaymentSessionId) &&
+        signature.rfind("(JLjava/lang/String;", 0) == 0 &&
+        signature.size() >= 2 &&
+        signature.substr(signature.size() - 2) == ")V")) {
+    return false;
+  }
+  const std::shared_ptr<Class> method_class = ClassFromJClass(clazz);
+  return method_class != nullptr &&
+         method_class->GetName() == kRobloxNativeGlJavaInterfaceClass;
 }
 
 void DispatchRobloxPromptNativePurchase(jmethodID method_id, jlong player_id,
@@ -3013,11 +2981,12 @@ bool HandleWebRtcAudioRecordBooleanMethodV(jobject obj, jmethodID method_id,
                                            va_list args, jboolean *result) {
   bool handled = true;
   bool value = false;
-  VM *vm = CurrentVM();
   if (IsWebRtcAudioRecordMethod(obj, method_id, JniMethod::kStartRecording, "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioRecordStart(obj);
   } else if (IsWebRtcAudioRecordMethod(obj, method_id, JniMethod::kStopRecording,
                                        "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioRecordStop(obj);
   } else if (IsWebRtcAudioRecordMethod(obj, method_id, JniMethod::kEnableBuiltInAEC,
                                        "(Z)Z") ||
@@ -3049,11 +3018,12 @@ bool HandleWebRtcAudioRecordBooleanMethodA(jobject obj, jmethodID method_id,
                                            jboolean *result) {
   bool handled = true;
   bool value = false;
-  VM *vm = CurrentVM();
   if (IsWebRtcAudioRecordMethod(obj, method_id, JniMethod::kStartRecording, "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioRecordStart(obj);
   } else if (IsWebRtcAudioRecordMethod(obj, method_id, JniMethod::kStopRecording,
                                        "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioRecordStop(obj);
   } else if (IsWebRtcAudioRecordMethod(obj, method_id, JniMethod::kEnableBuiltInAEC,
                                        "(Z)Z") ||
@@ -3078,7 +3048,6 @@ bool HandleWebRtcAudioRecordBooleanMethodA(jobject obj, jmethodID method_id,
 
 bool HandleWebRtcAudioTrackIntMethodV(jobject obj, jmethodID method_id,
                                       va_list args, jint *result) {
-  VM *vm = CurrentVM();
   jint value = 0;
   if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kInitPlayout, "(IID)I")) {
     const jint sample_rate_hz = va_arg(args, jint);
@@ -3086,6 +3055,7 @@ bool HandleWebRtcAudioTrackIntMethodV(jobject obj, jmethodID method_id,
     const jdouble buffer_size_factor = va_arg(args, jdouble);
     void *direct_buffer = nullptr;
     std::size_t direct_buffer_capacity = 0;
+    VM *vm = CurrentVM();
     value = vm != nullptr
                 ? vm->DispatchWebRtcAudioTrackInit(
                       obj, sample_rate_hz, channels, buffer_size_factor,
@@ -3093,6 +3063,7 @@ bool HandleWebRtcAudioTrackIntMethodV(jobject obj, jmethodID method_id,
                 : -1;
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kGetBufferSizeInFrames,
                                       "()I")) {
+    VM *vm = CurrentVM();
     value =
         vm != nullptr ? vm->DispatchWebRtcAudioTrackBufferSizeFrames(obj) : 0;
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kGetStreamMaxVolume,
@@ -3113,11 +3084,11 @@ bool HandleWebRtcAudioTrackIntMethodV(jobject obj, jmethodID method_id,
 
 bool HandleWebRtcAudioTrackIntMethodA(jobject obj, jmethodID method_id,
                                       const jvalue *args, jint *result) {
-  VM *vm = CurrentVM();
   jint value = 0;
   if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kInitPlayout, "(IID)I")) {
     void *direct_buffer = nullptr;
     std::size_t direct_buffer_capacity = 0;
+    VM *vm = CurrentVM();
     value = vm != nullptr && args != nullptr
                 ? vm->DispatchWebRtcAudioTrackInit(obj, args[0].i, args[1].i,
                                                    args[2].d, &direct_buffer,
@@ -3125,6 +3096,7 @@ bool HandleWebRtcAudioTrackIntMethodA(jobject obj, jmethodID method_id,
                 : -1;
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kGetBufferSizeInFrames,
                                       "()I")) {
+    VM *vm = CurrentVM();
     value =
         vm != nullptr ? vm->DispatchWebRtcAudioTrackBufferSizeFrames(obj) : 0;
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kGetStreamMaxVolume,
@@ -3143,11 +3115,12 @@ bool HandleWebRtcAudioTrackIntMethodA(jobject obj, jmethodID method_id,
 
 bool HandleWebRtcAudioTrackBooleanMethodV(jobject obj, jmethodID method_id,
                                           va_list args, jboolean *result) {
-  VM *vm = CurrentVM();
   bool value = false;
   if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kStartPlayout, "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioTrackStart(obj);
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kStopPlayout, "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioTrackStop(obj);
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kSetStreamVolume,
                                       "(I)Z")) {
@@ -3165,11 +3138,12 @@ bool HandleWebRtcAudioTrackBooleanMethodV(jobject obj, jmethodID method_id,
 bool HandleWebRtcAudioTrackBooleanMethodA(jobject obj, jmethodID method_id,
                                           const jvalue * /*args*/,
                                           jboolean *result) {
-  VM *vm = CurrentVM();
   bool value = false;
   if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kStartPlayout, "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioTrackStart(obj);
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kStopPlayout, "()Z")) {
+    VM *vm = CurrentVM();
     value = vm != nullptr && vm->DispatchWebRtcAudioTrackStop(obj);
   } else if (IsWebRtcAudioTrackMethod(obj, method_id, JniMethod::kSetStreamVolume,
                                       "(I)Z")) {
@@ -3524,9 +3498,6 @@ void HandleStaticVoidMethodV(JNIEnv *env, jclass clazz, jmethodID methodID,
   }
   const char *name = MethodName(methodID);
   const JniMethod method = MethodOf(methodID);
-  if (!name) {
-    return;
-  }
   const std::shared_ptr<Class> method_class = ClassFromJClass(clazz);
   if (method == JniMethod::kOpenNativeOverlay &&
       std::strcmp(MethodSignature(methodID),
@@ -3617,9 +3588,6 @@ void HandleStaticVoidMethodA(JNIEnv *env, jclass clazz, jmethodID methodID,
   }
   const char *name = MethodName(methodID);
   const JniMethod method = MethodOf(methodID);
-  if (!name) {
-    return;
-  }
   if (method == JniMethod::kInit) {
     g_fmod_initialized = true;
     if (TraceEnabled()) {
@@ -3699,13 +3667,9 @@ void HandleStaticVoidMethodA(JNIEnv *env, jclass clazz, jmethodID methodID,
 }
 
 bool IsRobloxOpenWebActivityMethod(jobject obj, jmethodID method_id) {
-  const char* name = MethodName(method_id);
-  const JniMethod method = MethodOf(method_id);
-  const char* signature = MethodSignature(method_id);
-  return obj != nullptr && name != nullptr && signature != nullptr &&
-         ObjectClassName(obj) == "com/roblox/client/startup/MainGameActivity" &&
-         method == JniMethod::kOpenWebActivity &&
-         std::strcmp(signature, "(Ljava/lang/String;Ljava/lang/String;)V") == 0;
+  return IsReceiverMethod(obj, method_id, JniMethod::kOpenWebActivity,
+                          "(Ljava/lang/String;Ljava/lang/String;)V",
+                          "com/roblox/client/startup/MainGameActivity");
 }
 
 bool HandleRobloxOpenWebActivityMethodV(jobject obj, jmethodID method_id,
@@ -3737,17 +3701,15 @@ bool HandleRobloxOpenWebActivityMethodA(jobject obj, jmethodID method_id,
 }
 
 bool IsAndroidSetWindowFlagsMethod(jobject obj, jmethodID method_id) {
-  const char* name = MethodName(method_id);
-  const JniMethod method = MethodOf(method_id);
-  const char* signature = MethodSignature(method_id);
+  if (obj == nullptr || MethodOf(method_id) != JniMethod::kSetWindowFlags ||
+      std::strcmp(MethodSignature(method_id), "(II)V") != 0) {
+    return false;
+  }
   const std::string_view class_name = ObjectClassName(obj);
-  return obj != nullptr && name != nullptr && signature != nullptr &&
-         (class_name == "android/app/Activity" ||
-          class_name == "com/roblox/client/RobloxActivity" ||
-          class_name == "com/roblox/client/startup/MainGameActivity" ||
-          class_name == "com/google/androidgamesdk/GameActivity") &&
-         method == JniMethod::kSetWindowFlags &&
-         std::strcmp(signature, "(II)V") == 0;
+  return class_name == "android/app/Activity" ||
+         class_name == "com/roblox/client/RobloxActivity" ||
+         class_name == "com/roblox/client/startup/MainGameActivity" ||
+         class_name == "com/google/androidgamesdk/GameActivity";
 }
 
 bool HandleAndroidSetWindowFlagsMethodV(jobject obj, jmethodID method_id,
@@ -3779,9 +3741,6 @@ bool HandleAndroidSetWindowFlagsMethodA(jobject obj, jmethodID method_id,
 void HandleVoidMethodA(jobject obj, jmethodID method_id, const jvalue *args) {
   const char *name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name) {
-    return;
-  }
   if (HandleAndroidSetWindowFlagsMethodA(obj, method_id, args)) {
     return;
   }
@@ -3979,9 +3938,6 @@ jboolean JNICALL CallStaticBooleanMethod(JNIEnv* /*env*/, jclass clazz, jmethodI
 jlong LongResultForReceiverMethod(jobject obj, jmethodID method_id) {
   const char* name = MethodName(method_id);
   const JniMethod method = MethodOf(method_id);
-  if (!name) {
-    return 0;
-  }
   if (method == JniMethod::kOpen) {
     jint id = IntFieldValue(obj, "nextDialogId");
     id = id <= 0 ? 1 : id;
@@ -4369,9 +4325,6 @@ jshort JNICALL CallShortMethod(JNIEnv* /*env*/, jobject obj,
 
 jfloat FloatResultForReceiverMethod(jobject obj, jmethodID method_id) {
   const char* name = MethodName(method_id);
-  if (!name) {
-    return 0.0f;
-  }
   jfloat value = FloatFieldValue(obj, name);
   if (value != 0.0f) {
     return value;
@@ -5393,17 +5346,6 @@ bool VM::DispatchWebRtcAudioRecordStop(const void *identity) {
          binding.callbacks.stop(binding.context.get(), identity);
 }
 
-void VM::DispatchWebRtcAudioRecordClose(const void *identity) {
-  WebRtcAudioRecordBinding binding;
-  {
-    std::lock_guard<std::mutex> lock(webrtc_audio_record_mutex_);
-    binding = webrtc_audio_record_binding_;
-  }
-  if (binding.context != nullptr && binding.callbacks.close != nullptr) {
-    binding.callbacks.close(binding.context.get(), identity);
-  }
-}
-
 void VM::RegisterWebRtcAudioRecordNative(const char *name,
                                          const char *signature,
                                          void *function) {
@@ -5556,17 +5498,6 @@ bool VM::DispatchWebRtcAudioTrackStop(const void *identity) {
   }
   return binding.context != nullptr && binding.callbacks.stop != nullptr &&
          binding.callbacks.stop(binding.context.get(), identity);
-}
-
-void VM::DispatchWebRtcAudioTrackClose(const void *identity) {
-  WebRtcAudioTrackBinding binding;
-  {
-    std::lock_guard<std::mutex> lock(webrtc_audio_track_mutex_);
-    binding = webrtc_audio_track_binding_;
-  }
-  if (binding.context != nullptr && binding.callbacks.close != nullptr) {
-    binding.callbacks.close(binding.context.get(), identity);
-  }
 }
 
 void VM::RegisterWebRtcAudioTrackNative(const char *name, const char *signature,
@@ -6240,8 +6171,8 @@ void VM::InitJNIFunctionTables() {
 
   native_interface_.GetStaticMethodID =
       [](JNIEnv* /*env*/, jclass clazz, const char* name, const char* sig) -> jmethodID {
-    auto cls = ClassFromJClass(clazz);
     if (TraceEnabled()) {
+      auto cls = ClassFromJClass(clazz);
       std::cout << "  [JNI] GetStaticMethodID for class "
                 << (cls ? cls->GetName() : "unknown") << ": "
                 << (name ? name : "null") << " " << (sig ? sig : "null")
@@ -6252,8 +6183,8 @@ void VM::InitJNIFunctionTables() {
 
   native_interface_.GetMethodID =
       [](JNIEnv* /*env*/, jclass clazz, const char* name, const char* sig) -> jmethodID {
-    auto cls = ClassFromJClass(clazz);
     if (TraceEnabled()) {
+      auto cls = ClassFromJClass(clazz);
       std::cout << "  [JNI] GetMethodID for class "
                 << (cls ? cls->GetName() : "unknown") << ": "
                 << (name ? name : "null") << " " << (sig ? sig : "null")
@@ -6264,8 +6195,8 @@ void VM::InitJNIFunctionTables() {
 
   native_interface_.GetStaticFieldID =
       [](JNIEnv* /*env*/, jclass clazz, const char* name, const char* sig) -> jfieldID {
-    auto cls = ClassFromJClass(clazz);
     if (TraceEnabled()) {
+      auto cls = ClassFromJClass(clazz);
       std::cout << "  [JNI] GetStaticFieldID for class "
                 << (cls ? cls->GetName() : "unknown") << ": "
                 << (name ? name : "null") << " " << (sig ? sig : "null")
@@ -6276,8 +6207,8 @@ void VM::InitJNIFunctionTables() {
 
   native_interface_.GetFieldID =
       [](JNIEnv* /*env*/, jclass clazz, const char* name, const char* sig) -> jfieldID {
-    auto cls = ClassFromJClass(clazz);
     if (TraceEnabled()) {
+      auto cls = ClassFromJClass(clazz);
       std::cout << "  [JNI] GetFieldID for class "
                 << (cls ? cls->GetName() : "unknown") << ": "
                 << (name ? name : "null") << " " << (sig ? sig : "null")
@@ -6332,8 +6263,8 @@ void VM::InitJNIFunctionTables() {
   };
 
   native_interface_.IsAssignableFrom =
-      [](JNIEnv* /*env*/, jclass sub, jclass sup) -> jboolean {
-    return (sub == sup || sup == nullptr) ? JNI_TRUE : JNI_TRUE;
+      [](JNIEnv* /*env*/, jclass /*sub*/, jclass /*sup*/) -> jboolean {
+    return JNI_TRUE;
   };
 
   native_interface_.IsInstanceOf =

@@ -141,12 +141,14 @@ class VulkanEtc2Emulation final {
   // `bc_textures`: the device has textureCompressionBC enabled, so once the
   // transcode self-test passes, images become BC7/BC4/BC5. Upscaled images,
   // texture overrides, and usages or flags BC lacks stay decoded.
+  // `bc_fallback`: textureCompressionBC is enabled but `bc_textures` is off,
+  // so new images are BC only while video memory is low.
   void RegisterDevice(VkDevice device, VkPhysicalDevice physical_device,
                       bool emulated,
                       const VkPhysicalDeviceMemoryProperties& memory,
                       PFN_vkGetDeviceProcAddr get_device_proc_addr,
                       bool timeline_semaphore = false,
-                      bool bc_textures = false);
+                      bool bc_textures = false, bool bc_fallback = false);
   // False when VK_EXT_memory_budget is unavailable. With it, small texture
   // upscaling also leaves a tenth of video memory, and at least 96 MiB, free
   // by the driver's count.

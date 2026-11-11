@@ -172,27 +172,5 @@ Status WindowResizeReadinessGate::FailLocked(std::string reason) {
   return FailedPrecondition(snapshot_.failure_reason);
 }
 
-const char* WindowResizeReadinessStateName(WindowResizeReadinessState state) {
-  switch (state) {
-    case WindowResizeReadinessState::kDisabled:
-      return "Disabled";
-    case WindowResizeReadinessState::kWaitingForFirstPresent:
-      return "WaitingForFirstPresent";
-    case WindowResizeReadinessState::kReadyToRequestResize:
-      return "ReadyToRequestResize";
-    case WindowResizeReadinessState::kResizeRequested:
-      return "ResizeRequested";
-    case WindowResizeReadinessState::kSurfaceCommitted:
-      return "SurfaceCommitted";
-    case WindowResizeReadinessState::kPostRebindPresented:
-      return "PostRebindPresented";
-    case WindowResizeReadinessState::kStopped:
-      return "Stopped";
-    case WindowResizeReadinessState::kFailed:
-      return "Failed";
-  }
-  return "Unknown";
-}
-
 }  // namespace window
 }  // namespace mocktail

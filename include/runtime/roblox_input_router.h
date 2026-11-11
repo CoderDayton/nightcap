@@ -253,9 +253,6 @@ class RobloxInputRouter final {
   bool raw_mouse_ = false;
 };
 
-const char* RobloxInputDispatchStateName(RobloxInputDispatchState state);
-const char* RobloxInputEventKindName(RobloxInputEventKind kind);
-
 }  // namespace runtime
 }  // namespace mocktail
 

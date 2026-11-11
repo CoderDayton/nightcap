@@ -853,6 +853,95 @@ TEST(VulkanEtc2GpuEmulationTest, KeepsTheImageDecodedWhenBcCreationFails) {
   CloseTestDevices(&devices);
 }
 
+// With Compress Textures off, textures stay decoded until video memory runs
+// low, new ones are BC7 while it is low, so a small GPU does not run out, and
+// decoded again once it frees up. Without the fallback they stay decoded.
+TEST(VulkanEtc2GpuEmulationTest, CompressesNewTexturesWhileVideoMemoryIsLow) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  constexpr VkDeviceSize kDecoded = VkDeviceSize{256} * 256 * 4;
+  constexpr VkDeviceSize kBc7 = VkDeviceSize{64} * 64 * 16;
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    for (const bool fallback : {true, false}) {
+      SCOPED_TRACE(fallback ? "fallback" : "no fallback");
+      // A 1 MiB card: a fifth of it, about 205 KiB of textures, is low.
+      EXPECT_EQ(setenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB", "1", 1), 0);
+      VulkanEtc2Emulation emulation;
+      emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                               vk.get_device_proc_addr, false, false,
+                               fallback);
+      EXPECT_EQ(unsetenv("MOCKTAIL_ETC2_VIDEO_MEMORY_MB"), 0);
+      emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+      ::testing::internal::CaptureStderr();
+      const bool enabled =
+          emulation.EnableGpuDecode(vk.device, vk.queue, vk.family);
+      const std::string enable_log = ::testing::internal::GetCapturedStderr();
+      ASSERT_TRUE(enabled) << enable_log;
+      // A device whose BC transcode fails its self-test has no fallback.
+      if (fallback &&
+          enable_log.find("stay decoded until video memory runs low") ==
+              std::string::npos) {
+        emulation.DestroyDevice(vk.device);
+        break;
+      }
+      VkImageCreateInfo image_info{};
+      image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      image_info.imageType = VK_IMAGE_TYPE_2D;
+      image_info.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+      image_info.extent = {256, 256, 1};
+      image_info.mipLevels = 1;
+      image_info.arrayLayers = 1;
+      image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+      image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+      image_info.usage =
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      VkImage images[3] = {};
+      ::testing::internal::CaptureStderr();
+      for (VkImage& image : images) {
+        ASSERT_EQ(
+            emulation.CreateImage(vk.device, &image_info, nullptr, &image),
+            VK_SUCCESS);
+      }
+      const std::string log = ::testing::internal::GetCapturedStderr();
+      const std::string line = "compressing new textures";
+      if (fallback) {
+        EXPECT_EQ(emulation.TextureBytes().decoded, kDecoded + 2 * kBc7);
+        const std::size_t first = log.find(line);
+        EXPECT_NE(first, std::string::npos) << log;
+        EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
+      } else {
+        EXPECT_EQ(emulation.TextureBytes().decoded, 3 * kDecoded);
+        EXPECT_EQ(log.find(line), std::string::npos) << log;
+      }
+      for (VkImage image : images) {
+        emulation.DestroyImage(vk.device, image, nullptr);
+      }
+      if (fallback) {
+        // Freed below a sixth of the card: the next one is decoded again.
+        VkImage after = VK_NULL_HANDLE;
+        ::testing::internal::CaptureStderr();
+        ASSERT_EQ(
+            emulation.CreateImage(vk.device, &image_info, nullptr, &after),
+            VK_SUCCESS);
+        const std::string after_log = ::testing::internal::GetCapturedStderr();
+        EXPECT_EQ(emulation.TextureBytes().decoded, kDecoded);
+        EXPECT_NE(after_log.find("new textures stay decoded again"),
+                  std::string::npos)
+            << after_log;
+        emulation.DestroyImage(vk.device, after, nullptr);
+      }
+      emulation.DestroyDevice(vk.device);
+    }
+  }
+  CloseTestDevices(&devices);
+}
+
 // A small texture is upscaled on the CPU and then encoded as BC7 on the GPU.
 TEST(VulkanEtc2GpuEmulationTest, UpscalesASmallUploadIntoBc7) {
   std::vector<VulkanTestDevice> devices = OpenTestDevices();

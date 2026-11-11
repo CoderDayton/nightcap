@@ -34,8 +34,6 @@ enum class CursorShape : std::uint8_t {
   kCustom,
 };
 
-const char* CursorShapeName(CursorShape shape);
-
 using CursorImagePtr = std::shared_ptr<const CursorImage>;
 
 struct PointerPosition {
@@ -96,7 +94,6 @@ class WindowPointerCaptureOwner final {
   // camera drag is active. Refresh the native state after dispatching that
   // key so the subsequent RMB release preserves the intentional lock.
   bool OnShiftKeyPressed(bool text_input_active);
-  bool NeedsRightButtonReleaseRecovery(bool observed_pressed) const;
   // A capture's end warps the pointer to its anchor, and SDL reports that as
   // motion whose delta must not reach Roblox. True once, for the first moving
   // event stamped (on the owner's clock) at or after the release.
@@ -170,10 +167,6 @@ class WindowPointerCaptureOwner final {
   // Written by the experience composition, read on the SDL thread.
   std::atomic<bool> game_session_active_{false};
   std::atomic<bool> vr_active_{false};
-  bool native_lock_observed_ = false;
-  bool native_lock_was_active_before_right_drag_ = false;
-  bool shift_key_pressed_during_right_drag_ = false;
-  bool wait_for_native_unlock_after_right_drag_ = false;
   bool capture_release_motion_pending_ = false;
   std::uint64_t capture_release_ms_ = 0;
   bool native_unlock_pending_ = false;
