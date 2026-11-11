@@ -317,6 +317,28 @@ TEST(RobloxTextEditorTest, EmptyEngineUpdateOverridesOlderEmptyHostEcho) {
   EXPECT_TRUE(display_probe.calls.back().text.empty());
 }
 
+TEST(RobloxTextEditorTest, LateHostEchoCannotRestoreChatCommandClear) {
+  Probe probe;
+  DisplayProbe display_probe;
+  RobloxTextEditor editor(Sink(&probe), DisplaySink(&display_probe));
+  ASSERT_TRUE(editor.BeginFocusSession(Session(42, 7, "")).ok());
+  ASSERT_TRUE(editor.HandleTextInput({"/"}).status.ok());
+  ASSERT_TRUE(editor.HandleTextInput({"t"}).status.ok());
+  ASSERT_TRUE(editor.HandleTextInput({" "}).status.ok());
+
+  // The chat script switches to team chat and clears the box before the
+  // engine has echoed the typed command back.
+  ASSERT_TRUE(editor.ReplaceFocusedTextFromEngine(7, {}).ok());
+  ASSERT_TRUE(editor.ReplaceFocusedTextFromEngine(7, "/t").ok());
+  ASSERT_TRUE(editor.ReplaceFocusedTextFromEngine(7, "/t ").ok());
+
+  EXPECT_EQ(editor.Snapshot().text_bytes, 0u);
+  EXPECT_TRUE(display_probe.calls.back().text.empty());
+
+  ASSERT_TRUE(editor.HandleTextInput({"hi"}).status.ok());
+  EXPECT_EQ(display_probe.calls.back().text, "hi");
+}
+
 TEST(RobloxTextEditorTest, UnknownEngineUpdateCancelsActiveComposition) {
   Probe probe;
   DisplayProbe display_probe;
