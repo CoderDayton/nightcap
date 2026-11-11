@@ -295,6 +295,56 @@ TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
   return position;
 }
 
+// SDL_ttf 3.2's surface text engine sizes each glyph from its outline. COLR
+// emoji such as Roblox's TwemojiMozilla have an empty base outline, so they
+// keep their advance but draw nothing. Fill those clusters from the font's own
+// renderer, which uses the color layers.
+void DrawBlankColorClusters(TTF_Text* layout, TTF_Font* font,
+                            const std::string& text, SDL_Color color,
+                            SDL_Surface* surface) {
+  if (layout == nullptr || font == nullptr || surface == nullptr ||
+      surface->pixels == nullptr) {
+    return;
+  }
+  const auto* pixels = static_cast<const std::uint8_t*>(surface->pixels);
+  const auto has_ink = [surface, pixels](const SDL_Rect& rect) {
+    const int right = std::min(surface->w, rect.x + rect.w);
+    const int bottom = std::min(surface->h, rect.y + rect.h);
+    for (int y = std::max(0, rect.y); y < bottom; ++y) {
+      for (int x = std::max(0, rect.x); x < right; ++x) {
+        if (pixels[static_cast<std::size_t>(y) *
+                       static_cast<std::size_t>(surface->pitch) +
+                   static_cast<std::size_t>(x) * 4 + 3] != 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  TTF_SubString substring{};
+  bool found = TTF_GetTextSubString(layout, 0, &substring);
+  while (found && (substring.flags & TTF_SUBSTRING_TEXT_END) == 0) {
+    // Single-byte clusters are ASCII, which never comes from a color font.
+    if (substring.length > 1 && substring.offset >= 0 &&
+        static_cast<std::size_t>(substring.offset) +
+                static_cast<std::size_t>(substring.length) <=
+            text.size() &&
+        !has_ink(substring.rect)) {
+      SDL_Surface* glyph = TTF_RenderText_Blended(
+          font, text.data() + substring.offset,
+          static_cast<std::size_t>(substring.length), color);
+      if (glyph != nullptr) {
+        SDL_Rect destination{substring.rect.x, substring.rect.y, 0, 0};
+        (void)SDL_BlitSurface(glyph, nullptr, surface, &destination);
+        SDL_DestroySurface(glyph);
+      }
+    }
+    TTF_SubString next{};
+    found = TTF_GetNextTextSubString(layout, &substring, &next);
+    substring = next;
+  }
+}
+
 }  // namespace
 
 RobloxTextSurfaceOverlay::~RobloxTextSurfaceOverlay() { (void)Shutdown(); }
@@ -539,6 +589,11 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
               TTF_SetTextColor(layout, text_color.r, text_color.g, text_color.b,
                                255) &&
               TTF_DrawSurfaceText(layout, 0, 0, rendered);
+    if (success) {
+      DrawBlankColorClusters(
+          layout, fonts.front(), text.value,
+          {text_color.r, text_color.g, text_color.b, 255}, rendered);
+    }
   }
 
   Status status = Status::Ok();
