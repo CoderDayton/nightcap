@@ -175,6 +175,22 @@ bool IsColorFormat(VkFormat format) {
   }
 }
 
+VkFormat LinearTwin(VkFormat format) {
+  switch (format) {
+    case VK_FORMAT_R8G8B8A8_SRGB:
+      return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_SRGB:
+      return VK_FORMAT_B8G8R8A8_UNORM;
+    default:
+      return format;
+  }
+}
+
+bool PreferSrgbSwapchain() {
+  static const bool enabled = EnvString("MOCKTAIL_VR_SRGB", "0") == "1";
+  return enabled;
+}
+
 bool FormatIsCopyCompatible(VkFormat a, VkFormat b) {
   if (a == b) return true;
   if ((a == VK_FORMAT_R8G8B8A8_UNORM && b == VK_FORMAT_R8G8B8A8_SRGB) ||
@@ -1327,10 +1343,15 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
     }
     const std::vector<std::int64_t> candidates =
         graphics_api_ == VrGraphicsApi::kVulkan
-            ? std::vector<std::int64_t>{VK_FORMAT_R8G8B8A8_UNORM,
-                                        VK_FORMAT_B8G8R8A8_UNORM,
-                                        VK_FORMAT_R8G8B8A8_SRGB,
-                                        VK_FORMAT_B8G8R8A8_SRGB}
+            ? (PreferSrgbSwapchain()
+                   ? std::vector<std::int64_t>{VK_FORMAT_R8G8B8A8_SRGB,
+                                               VK_FORMAT_B8G8R8A8_SRGB,
+                                               VK_FORMAT_R8G8B8A8_UNORM,
+                                               VK_FORMAT_B8G8R8A8_UNORM}
+                   : std::vector<std::int64_t>{VK_FORMAT_R8G8B8A8_UNORM,
+                                               VK_FORMAT_B8G8R8A8_UNORM,
+                                               VK_FORMAT_R8G8B8A8_SRGB,
+                                               VK_FORMAT_B8G8R8A8_SRGB})
             : std::vector<std::int64_t>{GL_RGBA8, GL_SRGB8_ALPHA8};
     for (const auto candidate : candidates) {
       if (chosen != 0) break;
@@ -3631,6 +3652,16 @@ void OpenXrBackend::RecordEyeCopiesLocked(VkCommandBuffer command,
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination[eye],
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     } else {
+      static bool warned_reencode = false;
+      if (!warned_reencode && PreferSrgbSwapchain() &&
+          swapchain.format != LinearTwin(swapchain.format) &&
+          binding.format == LinearTwin(binding.format)) {
+        warned_reencode = true;
+        Log("  [vr-backend] WARNING: eye format %d -> sRGB swapchain %d needs "
+            "a channel swap, so the blit re-encodes gamma\n",
+            static_cast<int>(binding.format),
+            static_cast<int>(swapchain.format));
+      }
       VkImageBlit region{};
       region.srcSubresource = subresource;
       region.dstSubresource = subresource;

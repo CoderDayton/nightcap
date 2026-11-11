@@ -1211,7 +1211,8 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   pointer_hand.aim_position[2] = pointer_hand.grip_position[2];
 
   if (internal::ApplyAimToWorldFrame(static_cast<float*>(result), pointer_hand,
-                                     scale, -static_cast<float>(degrees))) {
+                                     scale, -static_cast<float>(degrees),
+                                     index - 1)) {
     static std::atomic<bool> logged[2]{};
     if (!logged[index - 1].exchange(true))
       std::fprintf(
@@ -1596,8 +1597,59 @@ void *RobloxVrDeviceBridge::ValidatedGraphicsDevice(void *self) const {
   return device;
 }
 
+namespace {
+
+struct GripCorrectionAngles {
+  float pitch = 0.f;
+  float yaw = 0.f;
+  float roll = 0.f;
+};
+
+float ReadGripAngleEnv(const char *name) {
+  const char *value = std::getenv(name);
+  if (!value || !*value)
+    return 0.f;
+  char *end = nullptr;
+  const float parsed = std::strtof(value, &end);
+  if (end == value || !std::isfinite(parsed) || std::abs(parsed) > 180.f) {
+    std::fprintf(stderr, "  [vr-input] ignoring invalid %s\n", name);
+    return 0.f;
+  }
+  return parsed;
+}
+
+pose::Quat GripCorrection(int hand, bool *active) {
+  static const GripCorrectionAngles angles = [] {
+    GripCorrectionAngles result;
+    result.pitch = ReadGripAngleEnv("MOCKTAIL_VR_GRIP_PITCH_DEG");
+    result.yaw = ReadGripAngleEnv("MOCKTAIL_VR_GRIP_YAW_DEG");
+    result.roll = ReadGripAngleEnv("MOCKTAIL_VR_GRIP_ROLL_DEG");
+    if (result.pitch != 0.f || result.yaw != 0.f || result.roll != 0.f)
+      std::fprintf(stderr,
+                   "  [vr-input] grip correction: pitch=%.2f yaw=%.2f "
+                   "roll=%.2f deg\n",
+                   result.pitch, result.yaw, result.roll);
+    return result;
+  }();
+  *active = angles.pitch != 0.f || angles.yaw != 0.f || angles.roll != 0.f;
+  if (!*active)
+    return {0, 0, 0, 1};
+  const float mirror = hand == 0 ? -1.f : 1.f;
+  const float half = pose::kPi / 360.f;
+  const float px = angles.pitch * half;
+  const float py = mirror * angles.yaw * half;
+  const float pz = mirror * angles.roll * half;
+  const pose::Quat rx{std::sin(px), 0, 0, std::cos(px)};
+  const pose::Quat ry{0, std::sin(py), 0, std::cos(py)};
+  const pose::Quat rz{0, 0, std::sin(pz), std::cos(pz)};
+  return pose::QuatMultiply(pose::QuatMultiply(ry, rx), rz);
+}
+
+}
+
 bool internal::ApplyAimToWorldFrame(float *frame, const VrHandPose &hand,
-                                    float head_scale, float degrees) {
+                                    float head_scale, float degrees,
+                                    int hand_index) {
   if (!frame || !hand.grip_valid || !hand.aim_valid ||
       !std::isfinite(head_scale) || head_scale <= 0 ||
       !std::isfinite(degrees) || std::abs(degrees) > 360)
@@ -1617,6 +1669,10 @@ bool internal::ApplyAimToWorldFrame(float *frame, const VrHandPose &hand,
                             hand.aim_orientation[2], hand.aim_orientation[3]},
                            &aim))
     return false;
+  bool corrected_hand = false;
+  const pose::Quat correction = GripCorrection(hand_index, &corrected_hand);
+  if (corrected_hand)
+    grip = pose::QuatMultiply(grip, correction);
   const float angle = degrees * pose::kPi / 360.f;
   grip = pose::QuatMultiply(grip, {std::sin(angle), 0, 0, std::cos(angle)});
   const auto inverse = pose::QuatConjugate(grip);
@@ -1762,7 +1818,7 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
       continue;
     const pose::Quat pitched =
         ComputeHandRecordOrientation(source, NativeHandPitchDeg());
-    const float orientation[4] = {pitched.x, pitched.y, pitched.z, pitched.w};
+    float orientation[4] = {pitched.x, pitched.y, pitched.z, pitched.w};
     const std::size_t record =
         hand == 0 ? kLeftHandRecordOffset : kRightHandRecordOffset;
     const float grip_pos[3] = {source.grip_position[0] * world_scale,
@@ -1770,6 +1826,21 @@ bool internal::ApplyXrPose(void *state, const ScriptedPoseSample &pose) {
                                source.grip_position[2] * world_scale};
     std::memcpy(bytes + record + kRecordPositionOffset, grip_pos,
                 sizeof(grip_pos));
+    bool corrected_hand = false;
+    const pose::Quat correction = GripCorrection(hand, &corrected_hand);
+    if (corrected_hand) {
+      pose::Quat corrected;
+      if (pose::QuatNormalize(
+              pose::QuatMultiply({orientation[0], orientation[1],
+                                  orientation[2], orientation[3]},
+                                 correction),
+              &corrected)) {
+        orientation[0] = corrected.x;
+        orientation[1] = corrected.y;
+        orientation[2] = corrected.z;
+        orientation[3] = corrected.w;
+      }
+    }
     std::memcpy(bytes + record + kRecordOrientationOffset, orientation,
                 sizeof(orientation));
     bytes[record + kRecordValidOffset] = 1;
