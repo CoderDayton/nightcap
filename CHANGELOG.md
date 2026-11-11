@@ -14,6 +14,7 @@ Release notes on GitHub are taken from the matching section here.
 ### Changed
 
 - The window closes as soon as Roblox stops, instead of after audio and display shutdown.
+- Upscaling small textures takes about a third less GPU time. The upscaled pixels are the same.
 - Settings works with screen readers: sidebar pages, sky tiles, number fields and icon buttons
   now read their names.
 

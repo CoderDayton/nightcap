@@ -292,12 +292,16 @@ unsigned DecodeWorkerCount() {
 // Images whose encode the budget decided since `since_ns`, by host scale.
 struct EncodeStats {
   std::uint64_t by_scale[9] = {};
+  // [0] transcoded at 1x, [1] upscaled, by SizeBucket.
+  std::uint64_t by_size[2][3] = {};
   // Encoded fast because the budget was dry.
   std::uint64_t fast = 0;
   // Encoded, unbudgeted, because video memory was low with Compress
   // Textures off.
   std::uint64_t low_memory = 0;
   double estimated_ns = 0;
+  // The part of estimated_ns that is upscaling.
+  double upscale_ns = 0;
   std::uint64_t since_ns = 0;
 };
 
@@ -318,6 +322,27 @@ std::uint64_t VideoMemoryOverrideMib(const char* value) {
 // A line every kEncodeLogIntervalNs while images are created, so a session
 // log shows how often the budget fell back to fast encodes on the
 // reporter's GPU.
+// Index of an image's largest side: at most 64, at most 256, or larger.
+std::size_t SizeBucket(const VkExtent3D& extent) {
+  const std::uint32_t side = std::max(extent.width, extent.height);
+  return side <= 64 ? 0 : side <= 256 ? 1 : 2;
+}
+
+// Counts an image's encode by scale and size, or takes it back.
+void CountEncode(EncodeStats* stats, std::uint32_t scale,
+                 const VkExtent3D& extent, bool add) {
+  std::uint64_t& by_scale = stats->by_scale[std::min<std::uint32_t>(scale, 8)];
+  std::uint64_t& by_size =
+      stats->by_size[scale > 1 ? 1 : 0][SizeBucket(extent)];
+  if (add) {
+    ++by_scale;
+    ++by_size;
+  } else {
+    by_scale -= by_scale > 0 ? 1 : 0;
+    by_size -= by_size > 0 ? 1 : 0;
+  }
+}
+
 std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
   if (stats->since_ns == 0) {
     stats->since_ns = now;
@@ -330,12 +355,35 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
   std::snprintf(part, sizeof(part), "%.1f s:",
                 static_cast<double>(now - stats->since_ns) / 1e9);
   line += part;
-  for (std::uint32_t scale = 8; scale >= 1; --scale) {
-    if (stats->by_scale[scale] != 0) {
-      std::snprintf(part, sizeof(part), " %ux %llu,", scale,
-                    static_cast<unsigned long long>(stats->by_scale[scale]));
+  static constexpr const char* kSizes[3] = {"<=64px", "<=256px", ">256px"};
+  for (std::uint32_t kind = 0; kind < 2; ++kind) {
+    std::uint64_t total = 0;
+    for (std::uint64_t count : stats->by_size[kind]) {
+      total += count;
+    }
+    std::snprintf(part, sizeof(part), "%s %llu (",
+                  kind == 0 ? " transcode" : ", upscale",
+                  static_cast<unsigned long long>(total));
+    line += part;
+    for (std::size_t size = 0; size < 3; ++size) {
+      std::snprintf(part, sizeof(part), "%s%s %llu", size == 0 ? "" : ", ",
+                    kSizes[size],
+                    static_cast<unsigned long long>(stats->by_size[kind][size]));
       line += part;
     }
+    if (kind == 1) {
+      bool first = true;
+      for (std::uint32_t scale = 8; scale >= 2; --scale) {
+        if (stats->by_scale[scale] != 0) {
+          std::snprintf(part, sizeof(part), "%s%ux %llu",
+                        first ? "; " : ", ", scale,
+                        static_cast<unsigned long long>(stats->by_scale[scale]));
+          line += part;
+          first = false;
+        }
+      }
+    }
+    line += ")";
   }
   std::snprintf(part, sizeof(part), " fast %llu;",
                 static_cast<unsigned long long>(stats->fast));
@@ -345,8 +393,8 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
                   static_cast<unsigned long long>(stats->low_memory));
     line += part;
   }
-  std::snprintf(part, sizeof(part), " est %.1f ms GPU\n",
-                stats->estimated_ns / 1e6);
+  std::snprintf(part, sizeof(part), " est %.1f ms GPU (upscale %.1f ms)\n",
+                stats->estimated_ns / 1e6, stats->upscale_ns / 1e6);
   line += part;
   *stats = {};
   stats->since_ns = now;
@@ -2018,7 +2066,7 @@ struct VulkanEtc2Emulation::State {
           own;
       const double cost =
           own * dev.speed.transcode_ns + top * dev.speed.upscale_ns;
-      ++dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+      CountEncode(&dev.stats, scale, info.extent, true);
       if (dev.budget.Take(cost, now)) {
         prepaid = cost;
       } else {
@@ -2077,12 +2125,12 @@ struct VulkanEtc2Emulation::State {
   }
 
   void RefundEncode(const HostDevice& dev, double prepaid,
-                    std::uint32_t scale, bool fast) {
+                    std::uint32_t scale, bool fast,
+                    const VkExtent3D& extent) {
     if (prepaid > 0) {
       std::lock_guard<std::mutex> lock(mutex);
       dev.budget.Refund(prepaid);
-      std::uint64_t& counted = dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
-      counted -= counted > 0 ? 1 : 0;
+      CountEncode(&dev.stats, scale, extent, false);
       if (fast) {
         dev.stats.fast -= dev.stats.fast > 0 ? 1 : 0;
       }
@@ -2939,6 +2987,7 @@ struct VulkanEtc2Emulation::State {
     // Upscales are charged and encoded in full; only transcodes go fast.
     const bool fast = record != images.end() && record->second.fast_encode;
     double encode_ns = 0;
+    double upscale_part = 0;
     const auto blocks = [](const Etc2GpuJob& job) {
       return static_cast<double>(job.blocks_wide) * job.blocks_high *
              job.layers;
@@ -2947,7 +2996,9 @@ struct VulkanEtc2Emulation::State {
       for (GpuUpload& gpu : group) {
         gpu.job.fast = fast;
         if (encode_budget && gpu.encode) {
-          encode_ns += blocks(gpu.encoding) * dev.speed.upscale_ns;
+          const double cost = blocks(gpu.encoding) * dev.speed.upscale_ns;
+          encode_ns += cost;
+          upscale_part += cost;
         } else if (encode_budget && gpu.job.transcode) {
           encode_ns += blocks(gpu.job) * (fast ? dev.speed.fast_transcode_ns
                                                : dev.speed.transcode_ns);
@@ -2963,6 +3014,7 @@ struct VulkanEtc2Emulation::State {
       }
       dev.budget.Charge(encode_ns - prepaid, TraceClockNanos());
       dev.stats.estimated_ns += encode_ns;
+      dev.stats.upscale_ns += upscale_part;
     }
     CommandRecord& command = commands[command_buffer];
     for (const std::vector<GpuUpload>& group : groups) {
@@ -4153,7 +4205,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   size_host();
   VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (transcoded && result != VK_SUCCESS) {
-    state_->RefundEncode(*dev, prepaid, scale, fast);
+    state_->RefundEncode(*dev, prepaid, scale, fast, create_info->extent);
     prepaid = 0;
     fast = false;
     transcoded = false;
@@ -4222,7 +4274,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       memory_log = state_->TakeMemoryLogLocked(now);
       if (transcoded && !dev->bc_textures) {
         ++dev->stats.low_memory;
-        ++dev->stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+        CountEncode(&dev->stats, scale, create_info->extent, true);
         memory_log += TakeEncodeLog(&dev->stats, now);
       }
     }

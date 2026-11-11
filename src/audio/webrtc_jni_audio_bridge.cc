@@ -95,7 +95,7 @@ bool InitManager(void* opaque_context, const void* identity) {
     inserted = context->initialized_managers.insert(identity).second;
   }
   if (inserted) {
-    std::cout << "  [mocktail][audio] WebRTC audio manager initialized\n"
+    std::cout << "  [nightcap][audio] WebRTC audio manager initialized\n"
               << std::flush;
   }
   return true;
@@ -106,7 +106,7 @@ void DisposeManager(void* opaque_context, const void* identity) {
   if (context == nullptr) return;
   std::lock_guard<std::mutex> lock(context->mutex);
   if (context->initialized_managers.erase(identity) != 0) {
-    std::cout << "  [mocktail][audio] WebRTC audio manager disposed\n"
+    std::cout << "  [nightcap][audio] WebRTC audio manager disposed\n"
               << std::flush;
   }
   // Record/track objects own their streams and stop them independently.
@@ -116,7 +116,7 @@ void SetMicrophoneMute(void* opaque_context, bool muted) {
   auto* context = static_cast<WebRtcJniAudioBridgeContext*>(opaque_context);
   if (context == nullptr) return;
   if (context->microphone_muted->exchange(muted, std::memory_order_acq_rel) != muted) {
-    std::cerr << "  [mocktail][audio] WebRTC microphone muted=" << muted << '\n';
+    std::cerr << "  [nightcap][audio] WebRTC microphone muted=" << muted << '\n';
   }
 }
 
@@ -135,7 +135,7 @@ void OnCapturedAudio(void* opaque_session, std::size_t size_bytes) {
       peak = std::max(peak, std::abs(word >= 32768 ? word - 65536 : word));
     }
     if (peak != 0 && session->audible_buffers.fetch_add(1) == 0) {
-      std::cerr << "  [mocktail][audio] WebRTC microphone first nonzero PCM"
+      std::cerr << "  [nightcap][audio] WebRTC microphone first nonzero PCM"
                 << " peak=" << peak << "/32768\n";
     }
     if (session->microphone_muted != nullptr &&
@@ -146,7 +146,7 @@ void OnCapturedAudio(void* opaque_session, std::size_t size_bytes) {
     session->data_callback(session->data_context, session->identity,
                            size_bytes);
     if (session->delivered_buffers.fetch_add(1) == 0) {
-      std::cerr << "  [mocktail][audio] WebRTC microphone first JNI delivery"
+      std::cerr << "  [nightcap][audio] WebRTC microphone first JNI delivery"
                 << " bytes=" << size_bytes << '\n';
     }
   }
@@ -158,7 +158,7 @@ void CloseCaptureSession(const std::shared_ptr<CaptureSession>& session) {
   }
   (void)session->capture->Stop();
   session->capture->Shutdown();
-  std::cerr << "  [mocktail][audio] WebRTC microphone capture summary"
+  std::cerr << "  [nightcap][audio] WebRTC microphone capture summary"
             << " buffers=" << session->delivered_buffers.load()
             << " nonzero=" << session->audible_buffers.load()
             << " muted=" << session->muted_buffers.load() << '\n';
@@ -210,7 +210,7 @@ int Init(void* opaque_context, const void* identity, int sample_rate_hz,
   options.data_context = session.get();
   const Status status = CreateSdlAudioCapture(options, &session->capture);
   if (!status.ok()) {
-    std::cerr << "  [mocktail][audio] WebRTC microphone init_failed reason="
+    std::cerr << "  [nightcap][audio] WebRTC microphone init_failed reason="
               << status.message() << '\n';
     return -1;
   }
@@ -237,7 +237,7 @@ int Init(void* opaque_context, const void* identity, int sample_rate_hz,
     CloseCaptureSession(session);
     return -1;
   }
-  std::cout << "  [mocktail][audio] WebRTC microphone initialized "
+  std::cout << "  [nightcap][audio] WebRTC microphone initialized "
             << "sample_rate_hz=" << sample_rate_hz
             << " channels=" << channels << " frames_per_buffer=" << frames
             << '\n'
@@ -266,11 +266,11 @@ bool Start(void* opaque_context, const void* identity) {
   }
   const Status status = session->capture->Start();
   if (!status.ok()) {
-    std::cerr << "  [mocktail][audio] WebRTC microphone start_failed reason="
+    std::cerr << "  [nightcap][audio] WebRTC microphone start_failed reason="
               << status.message() << '\n';
     return false;
   }
-  std::cout << "  [mocktail][audio] WebRTC microphone recording\n"
+  std::cout << "  [nightcap][audio] WebRTC microphone recording\n"
             << std::flush;
   return true;
 }
@@ -291,7 +291,7 @@ bool Stop(void* opaque_context, const void* identity) {
     context->capture_sessions.erase(found);
   }
   CloseCaptureSession(session);
-  std::cout << "  [mocktail][audio] WebRTC microphone stopped\n"
+  std::cout << "  [nightcap][audio] WebRTC microphone stopped\n"
             << std::flush;
   return true;
 }
@@ -442,7 +442,7 @@ int InitPlayout(void* opaque_context, const void* identity,
   options.data_needed_context = session.get();
   status = CreateSdlAudioSink(options, &session->sink);
   if (!status.ok()) {
-    std::cerr << "  [mocktail][audio] WebRTC playout init_failed reason="
+    std::cerr << "  [nightcap][audio] WebRTC playout init_failed reason="
               << status.message() << '\n';
     return -1;
   }
@@ -462,7 +462,7 @@ int InitPlayout(void* opaque_context, const void* identity,
 
   *direct_buffer = session->buffer.data();
   *direct_buffer_capacity = session->buffer.size();
-  std::cout << "  [mocktail][audio] WebRTC playout initialized "
+  std::cout << "  [nightcap][audio] WebRTC playout initialized "
             << "sample_rate_hz=" << sample_rate_hz
             << " channels=" << channels
             << " frames_per_buffer=" << frames_per_buffer << '\n'
@@ -521,11 +521,11 @@ bool StartPlayout(void* opaque_context, const void* identity) {
   if (!status.ok()) {
     std::lock_guard<std::mutex> lock(session->mutex);
     session->running = false;
-    std::cerr << "  [mocktail][audio] WebRTC playout start_failed reason="
+    std::cerr << "  [nightcap][audio] WebRTC playout start_failed reason="
               << status.message() << '\n';
     return false;
   }
-  std::cout << "  [mocktail][audio] WebRTC playout playing\n" << std::flush;
+  std::cout << "  [nightcap][audio] WebRTC playout playing\n" << std::flush;
   return true;
 }
 
@@ -554,7 +554,7 @@ bool StopPlayout(void* opaque_context, const void* identity) {
     }
   }
   ClosePlayoutSession(session);
-  std::cout << "  [mocktail][audio] WebRTC playout stopped\n" << std::flush;
+  std::cout << "  [nightcap][audio] WebRTC playout stopped\n" << std::flush;
   return true;
 }
 
@@ -613,7 +613,7 @@ Status InstallWebRtcJniAudioBridge(jnivm::VM* vm) {
 
   if (requested == "disabled") {
     context->recording_enabled = false;
-    std::cout << "  [mocktail][audio] microphone capture disabled\n"
+    std::cout << "  [nightcap][audio] microphone capture disabled\n"
               << std::flush;
   } else {
     std::vector<SdlRecordingDevice> devices;
@@ -622,12 +622,12 @@ Status InstallWebRtcJniAudioBridge(jnivm::VM* vm) {
     if (!status.ok()) {
       return status;
     }
-    std::cout << "  [mocktail][audio] SDL recording devices:\n"
+    std::cout << "  [nightcap][audio] SDL recording devices:\n"
               << "    - default (follows the host system default)\n";
     for (const SdlRecordingDevice& device : devices) {
       std::cout << "    - id:" << device.id << " " << device.name << '\n';
     }
-    std::cout << "  [mocktail][audio] selected input=" << resolved_name
+    std::cout << "  [nightcap][audio] selected input=" << resolved_name
               << '\n'
               << std::flush;
   }

@@ -34,18 +34,18 @@ printf '%s\n' \
   '[runtime] request https://example.invalid/private?ticket=join-secret' \
   '[runtime] player=Savva phone=555-1234 city=Moscow' \
   '[window] graphics backend=Savva video=Alice egl=system gles=system' \
-  '[mocktail][audio] backend=Bob' \
+  '[nightcap][audio] backend=Bob' \
   '[window] caption=Alice-Laptop' \
   '[window] initialized title=Savva private window width=1280' \
   '[audio-menu] device 0: Savva Bluetooth Headset' \
-  '[mocktail][audio] selected output=Savva Bluetooth Headset' \
+  '[nightcap][audio] selected output=Savva Bluetooth Headset' \
   '[FATAL] account mail user@example.test from 192.0.2.44 id 123456789 UUID 123e4567-e89b-12d3-a456-426614174000' \
   '[window] graphics backend=direct-vulkan video=x11 egl=system gles=system' \
   '[vulkan] Android WSI -> SDL3 host adapter ready' \
   '[window] first Roblox Vulkan frame presented' \
   '[input] typed production input ready: mouse=1 touch=1 keyboard=1' \
-  '[mocktail][audio] fmod_java initialized channels=2 sample_rate_hz=48000 block_size_frames=512 block_count=4' \
-  '[mocktail][audio] OpenSL player shutdown: submitted=8 consumed=8 clean=true' \
+  '[nightcap][audio] fmod_java initialized channels=2 sample_rate_hz=48000 block_size_frames=512 block_count=4' \
+  '[nightcap][audio] OpenSL player shutdown: submitted=8 consumed=8 clean=true' \
   'setStage: (stage:UGCGame)' \
   '[I/Roblox] [DFLog::NetworkClient] Disconnect reason received: 319' \
   '[I/Roblox] Roblox was not able to verify the integrity of the game due to a network issue. Please reconnect.' \

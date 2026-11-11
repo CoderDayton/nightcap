@@ -197,11 +197,14 @@ The session log shows the measured speed once:
 [vulkan] BC encode speed: transcode 10.0 ns/block (fast 4.9), upscale 8.9 ns/block; small texture upscale 4x; encode budget on
 ```
 
-It also shows, every 5 seconds while textures are created, how many landed at
-each factor, how many used the fast encoder, and the estimated GPU time:
+It also shows, every 5 seconds while textures are created, how many were
+transcoded at 1x and how many upscaled, each split by the image's largest
+side, how many upscales got each factor, how many used the fast encoder, and
+the estimated GPU time with the upscaling share. For example (the numbers
+are made up):
 
 ```text
-[vulkan] BC encodes over 5.0 s: 1x 390, fast 22; est 38.1 ms GPU
+[vulkan] BC encodes over 5.0 s: transcode 350 (<=64px 300, <=256px 40, >256px 10), upscale 40 (<=64px 30, <=256px 10, >256px 0; 4x 30, 2x 10); fast 22; est 38.1 ms GPU (upscale 9.4 ms)
 ```
 
 At the first texture and then every 5 seconds while textures are created, it

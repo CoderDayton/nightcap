@@ -384,7 +384,7 @@ void OnQueueEvent(void* context, OpenSlBufferQueueEvent event,
         if (player->submission_reported.compare_exchange_strong(
                 expected, true, std::memory_order_relaxed)) {
           std::fprintf(stderr,
-                       "[mocktail][audio] OpenSL playback activity: "
+                       "[nightcap][audio] OpenSL playback activity: "
                        "submitted_buffers=1\n");
         }
       }
@@ -397,7 +397,7 @@ void OnQueueEvent(void* context, OpenSlBufferQueueEvent event,
       if (player->consumption_reported.compare_exchange_strong(
               expected, true, std::memory_order_relaxed)) {
         std::fprintf(stderr,
-                     "[mocktail][audio] OpenSL playback evidence: "
+                     "[nightcap][audio] OpenSL playback evidence: "
                      "consumed_buffers=%llu\n",
                      static_cast<unsigned long long>(consumed));
       }
@@ -449,7 +449,7 @@ abi::Result ObjectRealize(abi::Object self, abi::Boolean async) {
     std::unique_ptr<AudioSink> sink;
     Status status = CreateSdlAudioSink(sink_options, &sink);
     if (!status.ok()) {
-      std::fprintf(stderr, "[mocktail][audio] OpenSL player realize failed: %s\n",
+      std::fprintf(stderr, "[nightcap][audio] OpenSL player realize failed: %s\n",
                    status.message().c_str());
       return ToOpenSlResult(status);
     }
@@ -461,12 +461,12 @@ abi::Result ObjectRealize(abi::Object self, abi::Boolean async) {
     status = OpenSlSimpleBufferQueueAdapter::Create(
         std::move(sink), queue_options, &object->queue_adapter);
     if (!status.ok()) {
-      std::fprintf(stderr, "[mocktail][audio] OpenSL queue realize failed: %s\n",
+      std::fprintf(stderr, "[nightcap][audio] OpenSL queue realize failed: %s\n",
                    status.message().c_str());
       return ToOpenSlResult(status);
     }
     std::fprintf(stderr,
-                 "[mocktail][audio] OpenSL player realized: rate_hz=%d "
+                 "[nightcap][audio] OpenSL player realized: rate_hz=%d "
                  "channels=%u format=%s queue_capacity=%u\n",
                  object->pcm_spec.sample_rate_hz,
                  static_cast<unsigned>(object->pcm_spec.channels),
@@ -613,7 +613,7 @@ void ObjectDestroy(abi::Object self) {
     }
     std::fprintf(
         stderr,
-        "[mocktail][audio] OpenSL player shutdown: submitted=%llu "
+        "[nightcap][audio] OpenSL player shutdown: submitted=%llu "
         "consumed=%llu discarded=%llu clean=%s\n",
         static_cast<unsigned long long>(stats.submitted_buffers),
         static_cast<unsigned long long>(stats.consumed_buffers),
@@ -621,7 +621,7 @@ void ObjectDestroy(abi::Object self) {
         clean ? "true" : "false");
   } else if (is_player) {
     std::fprintf(stderr,
-                 "[mocktail][audio] OpenSL unrealized player destroyed\n");
+                 "[nightcap][audio] OpenSL unrealized player destroyed\n");
   }
   object->magic = 0;
   delete object;
