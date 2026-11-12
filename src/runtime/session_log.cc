@@ -688,7 +688,7 @@ std::string SessionLog::Header(const Environment& environment,
   const unsigned int threads = std::thread::hardware_concurrency();
 
   std::ostringstream output;
-  output << "[mocktail] version=" << build.version
+  output << "[nightcap] version=" << build.version
          << " commit=" << build.git_commit;
   if (build.git_dirty == "true") {
     output << " dirty=true";
@@ -697,7 +697,7 @@ std::string SessionLog::Header(const Environment& environment,
   }
   output << " build=" << build.build_type << " compiler=\"" << build.compiler
          << "\"\n"
-         << "[mocktail] started=" << IsoLocalTimestamp(started_at_)
+         << "[nightcap] started=" << IsoLocalTimestamp(started_at_)
          << " package=" << PackageKind(environment, executable)
          << " target=" << build.target;
   if (has_system) {
@@ -705,7 +705,7 @@ std::string SessionLog::Header(const Environment& environment,
            << system.machine << '"';
   }
   output << " pid=" << getpid() << '\n'
-         << "[mocktail] cpu=\"" << CpuModel() << "\" threads=";
+         << "[nightcap] cpu=\"" << CpuModel() << "\" threads=";
   if (threads == 0) {
     output << "unknown";
   } else {
@@ -715,10 +715,10 @@ std::string SessionLog::Header(const Environment& environment,
          << "\" gpu_driver=\"" << graphics.drivers
          << "\" display=" << DisplayServer(environment) << " graphics="
          << (graphics_backend.empty() ? "unknown" : graphics_backend) << '\n'
-         << "[mocktail] executable=" << DisplayPath(executable, paths)
+         << "[nightcap] executable=" << DisplayPath(executable, paths)
          << " config=" << DisplayPath(paths.config_file(), paths) << '\n'
-         << "[mocktail] log=" << DisplayPath(path_, paths) << '\n';
-  if (!warning_.empty()) output << "[mocktail] warning=" << warning_ << '\n';
+         << "[nightcap] log=" << DisplayPath(path_, paths) << '\n';
+  if (!warning_.empty()) output << "[nightcap] warning=" << warning_ << '\n';
   return output.str();
 }
 

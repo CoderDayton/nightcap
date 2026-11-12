@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -246,6 +248,387 @@ class Etc2GpuTranscodeTest : public ::testing::Test {
   std::vector<VulkanTestDevice> devices_;
 };
 
+// Runs a cleanup when it goes out of scope, so a failed ASSERT frees too.
+struct Deferred {
+  std::function<void()> run;
+  ~Deferred() { run(); }
+};
+
+// Benchmark, run by hand with --gtest_also_run_disabled_tests: the GPU time
+// of each stage of a batch, as the emulation records them, so the stage that
+// costs most can be found. 256 small textures go through decode, a 4x scale
+// and the BC7 texel encode; 64 large ones are transcoded straight from ETC2.
+TEST_F(Etc2GpuTranscodeTest, DISABLED_BenchmarkStages) {
+  constexpr std::uint32_t kSmall = 256;
+  constexpr std::uint32_t kSmallBlocks = 8;
+  constexpr std::uint32_t kTarget = kSmallBlocks * 4 * 4;
+  constexpr std::uint32_t kLarge = 64;
+  constexpr std::uint32_t kLargeBlocks = 64;
+  const auto align = [](VkDeviceSize size) { return (size + 255) / 256 * 256; };
+  VkDeviceSize total = 0;
+  std::vector<VkDeviceSize> headers;
+  std::vector<Etc2GpuJob> decodes, scales, encodes, transcodes;
+  for (std::uint32_t i = 0; i < kSmall; ++i) {
+    headers.push_back(total);
+    Etc2GpuJob decode;
+    decode.format = EtcFormat::kEtc2Rgb8;
+    decode.blocks_wide = decode.blocks_high = kSmallBlocks;
+    decode.source_row_blocks = kSmallBlocks;
+    decode.source_layer_blocks = kSmallBlocks * kSmallBlocks;
+    decode.source_offset = total + kEtc2ScaleHeaderBytes;
+    total += align(kEtc2ScaleHeaderBytes + decode.source_layer_blocks * 8);
+    decode.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(decode));
+    Etc2GpuJob scale;
+    scale.format = EtcFormat::kEtc2Rgb8;
+    scale.scale = true;
+    scale.scale_width = scale.scale_height = kTarget;
+    scale.blocks_wide = scale.blocks_high = kTarget / 4;
+    scale.source_offset = headers.back();
+    scale.scale_texels_offset = decode.destination_offset;
+    scale.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(scale));
+    Etc2GpuJob encoding;
+    encoding.format = EtcFormat::kEtc2Rgb8;
+    encoding.rgba_source = encoding.transcode = true;
+    encoding.blocks_wide = encoding.blocks_high = kTarget / 4;
+    encoding.source_row_blocks = kTarget / 4;
+    encoding.source_layer_blocks = (kTarget / 4) * (kTarget / 4);
+    encoding.source_offset = scale.destination_offset;
+    encoding.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(encoding));
+    decodes.push_back(decode);
+    scales.push_back(scale);
+    encodes.push_back(encoding);
+  }
+  std::vector<VkDeviceSize> large_sources;
+  for (std::uint32_t i = 0; i < kLarge; ++i) {
+    Etc2GpuJob job;
+    job.format = EtcFormat::kEtc2Rgb8;
+    job.transcode = true;
+    job.blocks_wide = job.blocks_high = kLargeBlocks;
+    job.source_row_blocks = kLargeBlocks;
+    job.source_layer_blocks = kLargeBlocks * kLargeBlocks;
+    job.source_offset = total;
+    large_sources.push_back(total);
+    total += align(job.source_layer_blocks * 8);
+    job.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(job));
+    transcodes.push_back(job);
+  }
+  // The first textures again at 2x and a size that is no whole factor, so a
+  // change to the scale shader can be checked for the same output.
+  std::vector<Etc2GpuJob> checks;
+  for (const std::uint32_t target : {64U, 120U, 47U}) {
+    for (std::uint32_t i = 0; i < 8; ++i) {
+      Etc2GpuJob scale = scales[i];
+      scale.scale_width = target;
+      scale.scale_height = target - 8;
+      scale.blocks_wide = (target + 3) / 4;
+      scale.blocks_high = (target - 8 + 3) / 4;
+      scale.destination_offset = total;
+      total += align(Etc2GpuOutputBytes(scale));
+      checks.push_back(scale);
+    }
+  }
+  std::vector<Etc2GpuJob> fast_encodes = encodes;
+  std::vector<Etc2GpuJob> fast_transcodes = transcodes;
+  for (Etc2GpuJob& job : fast_encodes) job.fast = true;
+  for (Etc2GpuJob& job : fast_transcodes) job.fast = true;
+
+  for (const VulkanTestDevice& vk : devices_) {
+    std::unique_ptr<Etc2GpuDecoder> decoder = Decoder(vk);
+    ASSERT_NE(decoder, nullptr);
+    HostBuffer upload =
+        CreateHostBuffer(vk, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    const Deferred free_upload{[&] { DestroyHostBuffer(vk, upload); }};
+    BindAndMap(vk, &upload);
+    std::mt19937_64 random(7);
+    auto* bytes = static_cast<std::uint8_t*>(upload.mapped);
+    for (VkDeviceSize i = 0; i < total; ++i) {
+      bytes[i] = static_cast<std::uint8_t>(random());
+    }
+    const std::uint32_t header[4] = {kSmallBlocks * 4, kSmallBlocks * 4, 0, 0};
+    for (VkDeviceSize offset : headers) {
+      std::memcpy(bytes + offset, header, sizeof(header));
+    }
+    VkBuffer work = VK_NULL_HANDLE;
+    VkDeviceMemory work_memory = VK_NULL_HANDLE;
+    const Deferred free_work{[&] {
+      vk.Device<PFN_vkDestroyBuffer>("vkDestroyBuffer")(vk.device, work,
+                                                        nullptr);
+      vk.Device<PFN_vkFreeMemory>("vkFreeMemory")(vk.device, work_memory,
+                                                  nullptr);
+    }};
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = total;
+    info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    ASSERT_EQ(vk.Device<PFN_vkCreateBuffer>("vkCreateBuffer")(
+                  vk.device, &info, nullptr, &work),
+              VK_SUCCESS);
+    VkMemoryRequirements requirements{};
+    vk.Device<PFN_vkGetBufferMemoryRequirements>(
+        "vkGetBufferMemoryRequirements")(vk.device, work, &requirements);
+    VkMemoryAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = FindMemoryType(
+        vk, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    ASSERT_EQ(vk.Device<PFN_vkAllocateMemory>("vkAllocateMemory")(
+                  vk.device, &allocate, nullptr, &work_memory),
+              VK_SUCCESS);
+    vk.Device<PFN_vkBindBufferMemory>("vkBindBufferMemory")(vk.device, work,
+                                                            work_memory, 0);
+    Etc2GpuBinding binding;
+    ASSERT_TRUE(decoder->CreateBinding(work, work, &binding));
+    const Deferred free_binding{[&] { decoder->DestroyBinding(binding); }};
+    const auto compute_barrier = [&](VkCommandBuffer command_buffer,
+                                     VkPipelineStageFlags stage,
+                                     VkAccessFlags access) {
+      VkMemoryBarrier barrier{};
+      barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+      barrier.srcAccessMask = access;
+      barrier.dstAccessMask =
+          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      vk.Device<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(
+          command_buffer, stage, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+          &barrier, 0, nullptr, 0, nullptr);
+    };
+    // Fills every stage's input once.
+    {
+      TestCommands setup = BeginTestCommands(vk);
+      const Deferred free_setup{[&] { DestroyTestCommands(vk, setup); }};
+      const VkBufferCopy copy{0, 0, total};
+      vk.Device<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(setup.buffer,
+                                                        upload.buffer, work,
+                                                        1, &copy);
+      compute_barrier(setup.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_TRANSFER_WRITE_BIT);
+      ASSERT_TRUE(decoder->Record(setup.buffer, binding, decodes.data(),
+                                  decodes.size()));
+      compute_barrier(setup.buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_SHADER_WRITE_BIT);
+      ASSERT_TRUE(decoder->Record(setup.buffer, binding, scales.data(),
+                                  scales.size()));
+      ASSERT_TRUE(decoder->Record(setup.buffer, binding, checks.data(),
+                                  checks.size()));
+      vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(setup.buffer);
+      ASSERT_TRUE(SubmitAndWait(vk, {setup.buffer}));
+    }
+    {
+      HostBuffer back =
+          CreateHostBuffer(vk, total, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+      const Deferred free_back{[&] { DestroyHostBuffer(vk, back); }};
+      BindAndMap(vk, &back);
+      TestCommands read = BeginTestCommands(vk);
+      const Deferred free_read{[&] { DestroyTestCommands(vk, read); }};
+      const VkBufferCopy copy{0, 0, total};
+      vk.Device<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(read.buffer, work,
+                                                        back.buffer, 1, &copy);
+      HostReadBarrier(vk, read.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_TRANSFER_WRITE_BIT);
+      vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(read.buffer);
+      ASSERT_TRUE(SubmitAndWait(vk, {read.buffer}));
+      std::uint64_t hash = 1469598103934665603ULL;
+      const auto* out = static_cast<const std::uint8_t*>(back.mapped);
+      for (const std::vector<Etc2GpuJob>* list : {&scales, &checks}) {
+        for (const Etc2GpuJob& job : *list) {
+          for (VkDeviceSize b = 0; b < Etc2GpuOutputBytes(job); ++b) {
+            hash = (hash ^ out[job.destination_offset + b]) * 1099511628211ULL;
+          }
+        }
+      }
+      std::printf("%s: scale output hash %016llx\n", vk.name.c_str(),
+                  static_cast<unsigned long long>(hash));
+    }
+    // The fastest of 15 submits, less an empty submit's round trip.
+    const auto time = [&](const std::vector<Etc2GpuJob>* jobs) {
+      TestCommands commands = BeginTestCommands(vk);
+      if (jobs != nullptr) {
+        EXPECT_TRUE(decoder->Record(commands.buffer, binding, jobs->data(),
+                                    jobs->size()));
+      }
+      vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+      double best = 1e18;
+      for (int run = 0; run < 15; ++run) {
+        const auto start = std::chrono::steady_clock::now();
+        EXPECT_TRUE(SubmitAndWait(vk, {commands.buffer}));
+        best = std::min(best, std::chrono::duration<double, std::micro>(
+                                  std::chrono::steady_clock::now() - start)
+                                  .count());
+      }
+      DestroyTestCommands(vk, commands);
+      return best;
+    };
+    const double empty = time(nullptr);
+    const auto report = [&](const char* name,
+                            const std::vector<Etc2GpuJob>& jobs) {
+      double blocks = 0;
+      for (const Etc2GpuJob& job : jobs) {
+        blocks += double(job.blocks_wide) * job.blocks_high * job.layers;
+      }
+      const double us = std::max(0.0, time(&jobs) - empty);
+      std::printf("%s: %-22s %4zu dispatches %8.0f out blocks %8.1f us "
+                  "%6.2f ns/block\n",
+                  vk.name.c_str(), name, jobs.size(), blocks, us,
+                  us * 1000 / blocks);
+    };
+    std::printf("%s: empty submit %.1f us\n", vk.name.c_str(), empty);
+    report("decode 32px", decodes);
+    report("scale to 128px", scales);
+    report("encode texels", encodes);
+    report("encode texels fast", fast_encodes);
+    report("transcode 256px", transcodes);
+    report("transcode 256px fast", fast_transcodes);
+  }
+}
+
+// Small decode, transcode, scale and encode jobs, recorded as batches that
+// read their parameters from entries in the source buffer, write exactly
+// what they write as dispatches of their own.
+TEST_F(Etc2GpuTranscodeTest, BatchedJobsMatchSeparateJobs) {
+  const auto align = [](VkDeviceSize size) { return (size + 255) / 256 * 256; };
+  VkDeviceSize total = 0;
+  std::vector<VkDeviceSize> headers;
+  std::vector<std::uint32_t> header_sizes;
+  std::vector<Etc2GpuJob> first, scales, encodes;
+  const std::pair<std::uint32_t, std::uint32_t> kSizes[] = {
+      {8, 8}, {4, 4}, {3, 5}, {1, 1}, {16, 2}, {2, 7}};
+  // Up, down and to no whole factor; small enough to batch.
+  const std::uint32_t kTargets[] = {16, 8, 10, 4, 12, 9};
+  for (std::size_t i = 0; i < std::size(kSizes); ++i) {
+    const auto [wide, high] = kSizes[i];
+    Etc2GpuJob decode;
+    decode.format = EtcFormat::kEtc2Rgb8;
+    decode.blocks_wide = wide;
+    decode.blocks_high = high;
+    decode.source_row_blocks = wide;
+    decode.source_layer_blocks = wide * high;
+    headers.push_back(total);
+    header_sizes.push_back(wide * 4);
+    header_sizes.push_back(high * 4);
+    decode.source_offset = total + kEtc2ScaleHeaderBytes;
+    total += align(kEtc2ScaleHeaderBytes + VkDeviceSize{wide} * high * 8);
+    decode.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(decode));
+    Etc2GpuJob transcode = decode;
+    transcode.transcode = true;
+    transcode.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(transcode));
+    Etc2GpuJob scale;
+    scale.format = EtcFormat::kEtc2Rgb8;
+    scale.scale = true;
+    scale.scale_width = kTargets[i];
+    scale.scale_height = kTargets[i] - (i % 2);
+    scale.blocks_wide = (scale.scale_width + 3) / 4;
+    scale.blocks_high = (scale.scale_height + 3) / 4;
+    scale.source_offset = headers.back();
+    scale.scale_texels_offset = decode.destination_offset;
+    scale.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(scale));
+    Etc2GpuJob encode;
+    encode.format = EtcFormat::kEtc2Rgb8;
+    encode.rgba_source = encode.transcode = true;
+    encode.blocks_wide = scale.blocks_wide;
+    encode.blocks_high = scale.blocks_high;
+    encode.source_row_blocks = scale.blocks_wide;
+    encode.source_layer_blocks = scale.blocks_wide * scale.blocks_high;
+    encode.source_offset = scale.destination_offset;
+    encode.destination_offset = total;
+    total += align(Etc2GpuOutputBytes(encode));
+    first.push_back(decode);
+    first.push_back(transcode);
+    scales.push_back(scale);
+    encodes.push_back(encode);
+  }
+  std::vector<Etc2GpuJob> all = first;
+  all.insert(all.end(), scales.begin(), scales.end());
+  all.insert(all.end(), encodes.begin(), encodes.end());
+  const VkDeviceSize entries = total;
+  total += align(all.size() * Etc2GpuDecoder::kJobEntryBytes);
+  std::vector<VkDeviceSize> entry_offsets;
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    entry_offsets.push_back(entries + i * Etc2GpuDecoder::kJobEntryBytes);
+  }
+
+  for (const VulkanTestDevice& vk : devices_) {
+    SCOPED_TRACE(vk.name);
+    std::unique_ptr<Etc2GpuDecoder> decoder = Decoder(vk);
+    ASSERT_NE(decoder, nullptr);
+    for (const Etc2GpuJob& job : all) {
+      EXPECT_TRUE(Etc2GpuDecoder::Batchable(job));
+    }
+    std::vector<std::uint8_t> outputs[2];
+    for (const bool batched : {false, true}) {
+      HostBuffer buffer = CreateHostBuffer(
+          vk, total,
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+      BindAndMap(vk, &buffer);
+      auto* bytes = static_cast<std::uint8_t*>(buffer.mapped);
+      std::mt19937_64 random(11);
+      for (VkDeviceSize b = 0; b < total; ++b) {
+        bytes[b] = static_cast<std::uint8_t>(random());
+      }
+      for (std::size_t i = 0; i < headers.size(); ++i) {
+        const std::uint32_t header[4] = {header_sizes[2 * i],
+                                         header_sizes[2 * i + 1], 0, 0};
+        std::memcpy(bytes + headers[i], header, sizeof(header));
+      }
+      Etc2GpuBinding binding;
+      ASSERT_TRUE(decoder->CreateBinding(buffer.buffer, buffer.buffer, &binding));
+      TestCommands commands = BeginTestCommands(vk);
+      const auto barrier = [&](VkPipelineStageFlags stage, VkAccessFlags access) {
+        VkMemoryBarrier memory{};
+        memory.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memory.srcAccessMask = access;
+        memory.dstAccessMask =
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vk.Device<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(
+            commands.buffer, stage, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+            &memory, 0, nullptr, 0, nullptr);
+      };
+      if (batched) {
+        ASSERT_TRUE(decoder->RecordJobEntries(commands.buffer, buffer.buffer,
+                                              entries, all.data(), all.size()));
+        barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+      }
+      std::size_t at = 0;
+      for (const std::vector<Etc2GpuJob>* phase : {&first, &scales, &encodes}) {
+        if (batched) {
+          EXPECT_TRUE(decoder->RecordBatch(commands.buffer, binding,
+                                           phase->data(), &entry_offsets[at],
+                                           phase->size()));
+        } else {
+          EXPECT_TRUE(decoder->Record(commands.buffer, binding, phase->data(),
+                                      phase->size()));
+        }
+        at += phase->size();
+        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+      }
+      HostReadBarrier(vk, commands.buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_SHADER_WRITE_BIT);
+      vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(commands.buffer);
+      ASSERT_TRUE(SubmitAndWait(vk, {commands.buffer}));
+      for (const Etc2GpuJob& job : all) {
+        outputs[batched].insert(outputs[batched].end(),
+                                bytes + job.destination_offset,
+                                bytes + job.destination_offset +
+                                    Etc2GpuOutputBytes(job));
+      }
+      DestroyTestCommands(vk, commands);
+      decoder->DestroyBinding(binding);
+      DestroyHostBuffer(vk, buffer);
+    }
+    EXPECT_TRUE(outputs[0] == outputs[1]);
+
+    Etc2GpuJob layered = first[1];
+    layered.layers = 2;
+    EXPECT_FALSE(Etc2GpuDecoder::Batchable(layered));
+  }
+}
+
 TEST(Etc2GpuTranscodeSizeTest, OutputIsOneBcBlockPerEtcBlock) {
   Etc2GpuJob job;
   job.format = EtcFormat::kEtc2Rgb8;
@@ -340,8 +723,9 @@ TEST_F(Etc2GpuTranscodeTest, ScalesTexelsLikeTheCpu) {
     std::uint32_t height;
     bool exact;
   };
-  constexpr Case kCases[] = {
-      {192, 160, false}, {190, 158, false}, {48, 40, true}, {12, 10, true}};
+  constexpr Case kCases[] = {{192, 160, false}, {190, 158, false},
+                             {96, 80, false},   {101, 67, false},
+                             {48, 40, true},    {12, 10, true}};
   for (const VulkanTestDevice& vk : devices_) {
     SCOPED_TRACE(vk.name);
     std::unique_ptr<Etc2GpuDecoder> decoder = Decoder(vk);
@@ -368,6 +752,7 @@ TEST_F(Etc2GpuTranscodeTest, ScalesTexelsLikeTheCpu) {
       ASSERT_EQ(out.size(), Etc2GpuOutputBytes(job));
       const std::uint32_t pitch = job.blocks_wide * 4;
       double squared = 0;
+      int worst = 0;
       for (std::uint32_t y = 0; y < job.blocks_high * 4; ++y) {
         for (std::uint32_t x = 0; x < pitch; ++x) {
           const std::uint8_t* got = out.data() + (std::size_t{y} * pitch + x) * 4;
@@ -381,11 +766,14 @@ TEST_F(Etc2GpuTranscodeTest, ScalesTexelsLikeTheCpu) {
               ASSERT_EQ(got[ch], want[ch]) << x << "," << y;
             }
             squared += (got[ch] - want[ch]) * double(got[ch] - want[ch]);
+            worst = std::max(worst, std::abs(got[ch] - want[ch]));
           }
         }
       }
       const double mse = squared / (out.size());
       EXPECT_GE(10 * std::log10(255.0 * 255.0 / std::max(mse, 1e-9)), 50.0);
+      // Float rounding only; PSNR alone lets a shifted tap row through.
+      EXPECT_LE(worst, 1);
     }
   }
 }
@@ -431,11 +819,14 @@ TEST_F(Etc2GpuTranscodeTest, ScalesTexelsAtAnOffsetAndPitch) {
     const std::vector<std::uint8_t> out = Transcode(vk, *decoder, source, job);
     ASSERT_EQ(out.size(), expected.size());
     double squared = 0;
+    int worst = 0;
     for (std::size_t i = 0; i < out.size(); ++i) {
       squared += (out[i] - expected[i]) * double(out[i] - expected[i]);
+      worst = std::max(worst, std::abs(out[i] - expected[i]));
     }
     const double mse = squared / out.size();
     EXPECT_GE(10 * std::log10(255.0 * 255.0 / std::max(mse, 1e-9)), 50.0);
+    EXPECT_LE(worst, 1);
   }
 }
 

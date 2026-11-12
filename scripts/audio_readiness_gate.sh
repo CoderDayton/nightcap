@@ -16,14 +16,14 @@ if [[ ! -f "${log_path}" ]]; then
   exit 2
 fi
 
-readonly activity_pattern='\[mocktail\]\[audio\] OpenSL playback activity: submitted_buffers=[1-9][0-9]*'
-readonly consumption_pattern='\[mocktail\]\[audio\] OpenSL playback evidence: consumed_buffers=[1-9][0-9]*'
-readonly emitted_shutdown_pattern='\[mocktail\]\[audio\] OpenSL player shutdown: submitted=[1-9][0-9]* .*clean=true'
-readonly unclean_shutdown_pattern='\[mocktail\]\[audio\] OpenSL player shutdown: submitted=[1-9][0-9]* .*clean=false'
-readonly fmod_activity_pattern='\[mocktail\]\[audio\] fmod_java first_submission submitted_buffers=[1-9][0-9]*'
-readonly fmod_consumption_pattern='\[mocktail\]\[audio\] fmod_java (closed|shutdown) .*consumed_buffers=[1-9][0-9]*'
-readonly fmod_shutdown_pattern='\[mocktail\]\[audio\] fmod_java shutdown submitted_buffers=[1-9][0-9]* .*consumed_buffers=[1-9][0-9]* .*pending_buffers=0'
-readonly fmod_failure_pattern='\[mocktail\]\[audio\] fmod_java (init|write|close)_failed'
+readonly activity_pattern='\[nightcap\]\[audio\] OpenSL playback activity: submitted_buffers=[1-9][0-9]*'
+readonly consumption_pattern='\[nightcap\]\[audio\] OpenSL playback evidence: consumed_buffers=[1-9][0-9]*'
+readonly emitted_shutdown_pattern='\[nightcap\]\[audio\] OpenSL player shutdown: submitted=[1-9][0-9]* .*clean=true'
+readonly unclean_shutdown_pattern='\[nightcap\]\[audio\] OpenSL player shutdown: submitted=[1-9][0-9]* .*clean=false'
+readonly fmod_activity_pattern='\[nightcap\]\[audio\] fmod_java first_submission submitted_buffers=[1-9][0-9]*'
+readonly fmod_consumption_pattern='\[nightcap\]\[audio\] fmod_java (closed|shutdown) .*consumed_buffers=[1-9][0-9]*'
+readonly fmod_shutdown_pattern='\[nightcap\]\[audio\] fmod_java shutdown submitted_buffers=[1-9][0-9]* .*consumed_buffers=[1-9][0-9]* .*pending_buffers=0'
+readonly fmod_failure_pattern='\[nightcap\]\[audio\] fmod_java (init|write|close)_failed'
 readonly window_shutdown_pattern='\[window\] Shutdown window='
 
 opensl_emitted=0

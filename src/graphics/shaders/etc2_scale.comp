@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 // Scales RGBA8 texels as ScaleRgba does on the CPU: the adaptive upscale of
 // UpscaleRgba (texture_override.cc) when the image grows, otherwise the box
 // resample of ResampleRgba. Keep them in step; the GPU tests compare them.
@@ -11,8 +12,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Source { uint src[]; };
 layout(set = 0, binding = 1, std430) writeonly buffer Destination { uint dst[]; };
 
-layout(push_constant) uniform Job {
-  uint unused0;
+struct Job {
   uint blocks_wide;
   uint blocks_high;
   uint src_offset;
@@ -20,7 +20,10 @@ layout(push_constant) uniform Job {
   uint height;
   uint dst_offset;
   uint texels_offset;
-} job;
+};
+Job job;
+
+#include "etc2_job.glsl"
 
 const float kAmount = 1.2;
 const float kRadius = 1.5;
@@ -29,6 +32,20 @@ const float kRadius = 1.5;
 const float kFlat = 6.0;
 const float kEdge = 3.0 * kFlat;
 const int kTaps = 12;
+// Source rows an 8x8 tile's filters reach while growing: a source step is at
+// most an output step, so the first taps of its 8 rows are at most 7 apart.
+const int kTileRows = 7 + kTaps;
+
+// Each tile's axis filters, and its source rows filtered across, so a texel
+// does a column of taps instead of all kTaps x kTaps.
+shared int s_first_x[8];
+shared int s_first_y[8];
+shared float s_cubic_x[8][kTaps];
+shared float s_blurred_x[8][kTaps];
+shared float s_cubic_y[8][kTaps];
+shared float s_blurred_y[8][kTaps];
+shared vec4 s_plain[kTileRows][8];
+shared vec4 s_soft[kTileRows][8];
 
 uint g_sw;
 uint g_sh;
@@ -92,8 +109,12 @@ void AxisFilters(uint i, uint source, uint size, out int first,
     }
     for (int c = 0; c < 4; ++c) {
       int index = Clamp(base + c, source) - first;
-      if (index >= 0 && index < kTaps) {
-        tap[index] += Cubic(at - float(base + c));
+      float weight = Cubic(at - float(base + c));
+      // A constant index, so tap stays in registers.
+      for (int t = 0; t < kTaps; ++t) {
+        if (t == index) {
+          tap[t] += weight;
+        }
       }
     }
     for (int t = 0; t < kTaps; ++t) {
@@ -112,9 +133,11 @@ float Distance(vec4 a, vec4 b) {
 
 // The 3x3 neighbourhood of a source texel holds only two flat colours.
 bool TwoTone(uint x, uint y) {
+  // The darkest and brightest colours are kept by value, not by index, so
+  // the array stays in registers.
   vec4 around[9];
-  int low = 0;
-  int high = 0;
+  vec4 low;
+  vec4 high;
   float low_sum = 0.0;
   float high_sum = 0.0;
   for (int i = 0; i < 9; ++i) {
@@ -122,18 +145,18 @@ bool TwoTone(uint x, uint y) {
                               uint(Clamp(int(y) + i / 3 - 1, g_sh)));
     float sum = around[i].x + around[i].y + around[i].z + around[i].w;
     if (i == 0 || sum < low_sum) {
-      low = i;
+      low = around[i];
       low_sum = sum;
     }
     if (i == 0 || sum > high_sum) {
-      high = i;
+      high = around[i];
       high_sum = sum;
     }
   }
-  bool two = Distance(around[low], around[high]) > kEdge;
+  bool two = Distance(low, high) > kEdge;
   for (int i = 0; i < 9 && two; ++i) {
-    two = Distance(around[i], around[low]) <= kFlat ||
-          Distance(around[i], around[high]) <= kFlat;
+    two = Distance(around[i], low) <= kFlat ||
+          Distance(around[i], high) <= kFlat;
   }
   return two;
 }
@@ -143,41 +166,8 @@ uint Pack(vec4 v) {
   return c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u);
 }
 
-uint Upscale(uint x, uint y) {
-  uint near_x = x * g_sw / job.width;
-  uint near_y = y * g_sh / job.height;
-  if (TwoTone(near_x, near_y)) {
-    return Word(near_x, near_y);
-  }
-  int first_x;
-  int first_y;
-  float cubic_x[kTaps];
-  float cubic_y[kTaps];
-  float blurred_x[kTaps];
-  float blurred_y[kTaps];
-  AxisFilters(x, g_sw, job.width, first_x, cubic_x, blurred_x);
-  AxisFilters(y, g_sh, job.height, first_y, cubic_y, blurred_y);
-  vec4 plain = vec4(0.0);
-  vec4 soft = vec4(0.0);
-  for (int ty = 0; ty < kTaps; ++ty) {
-    if (cubic_y[ty] == 0.0 && blurred_y[ty] == 0.0) {
-      continue;
-    }
-    uint sy = uint(min(first_y + ty, int(g_sh) - 1));
-    vec4 plain_row = vec4(0.0);
-    vec4 soft_row = vec4(0.0);
-    for (int tx = 0; tx < kTaps; ++tx) {
-      if (cubic_x[tx] == 0.0 && blurred_x[tx] == 0.0) {
-        continue;
-      }
-      vec4 p = Premultiplied(uint(min(first_x + tx, int(g_sw) - 1)), sy);
-      plain_row += cubic_x[tx] * p;
-      soft_row += blurred_x[tx] * p;
-    }
-    plain += cubic_y[ty] * plain_row;
-    soft += blurred_y[ty] * soft_row;
-  }
-  // Sharpening stays inside the range of the 2x2 source footprint.
+// Sharpening stays inside the range of the 2x2 source footprint.
+uint Sharpen(uint x, uint y, vec4 plain, vec4 soft) {
   uint x0 = uint(Clamp(int(floor(SourcePosition(x, g_sw, job.width))), g_sw));
   uint y0 = uint(Clamp(int(floor(SourcePosition(y, g_sh, job.height))), g_sh));
   uint x1 = min(x0 + 1u, g_sw - 1u);
@@ -192,6 +182,93 @@ uint Upscale(uint x, uint y) {
   float scale = v.a > 0.0 ? 255.0 / v.a : 0.0;
   v.rgb *= scale;
   return Pack(min(v, vec4(255.0)) + 0.5);
+}
+
+// The texels of this invocation's 8x8 tile, sharing the filters and the
+// row pass. Every invocation of the group calls it, for the barriers.
+void UpscaleTile(uint px, uint py, uint out_word, bool inside) {
+  uint local = gl_LocalInvocationID.y * 8u + gl_LocalInvocationID.x;
+  uvec2 base = gl_WorkGroupID.xy * 8u;
+  if (local < 16u) {
+    bool across = local < 8u;
+    uint i = local % 8u;
+    uint at = across ? min(base.x + i, job.width - 1u)
+                     : min(base.y + i, job.height - 1u);
+    int first;
+    float cubic[kTaps];
+    float blurred[kTaps];
+    AxisFilters(at, across ? g_sw : g_sh, across ? job.width : job.height,
+                first, cubic, blurred);
+    for (int t = 0; t < kTaps; ++t) {
+      if (across) {
+        s_cubic_x[i][t] = cubic[t];
+        s_blurred_x[i][t] = blurred[t];
+      } else {
+        s_cubic_y[i][t] = cubic[t];
+        s_blurred_y[i][t] = blurred[t];
+      }
+    }
+    if (across) {
+      s_first_x[i] = first;
+    } else {
+      s_first_y[i] = first;
+    }
+  }
+  barrier();
+  int row0 = s_first_y[0];
+  int row_end = s_first_y[0];
+  for (int i = 1; i < 8; ++i) {
+    row0 = min(row0, s_first_y[i]);
+    row_end = max(row_end, s_first_y[i]);
+  }
+  // Never more than kTileRows; the min keeps a broken bound in the array.
+  int rows = min(row_end + kTaps - row0, kTileRows);
+  for (uint item = local; item < uint(rows) * 8u; item += 64u) {
+    uint r = item / 8u;
+    uint ox = item % 8u;
+    uint sy = uint(min(row0 + int(r), int(g_sh) - 1));
+    vec4 plain_row = vec4(0.0);
+    vec4 soft_row = vec4(0.0);
+    for (int tx = 0; tx < kTaps; ++tx) {
+      float cubic = s_cubic_x[ox][tx];
+      float blurred = s_blurred_x[ox][tx];
+      if (cubic == 0.0 && blurred == 0.0) {
+        continue;
+      }
+      vec4 p = Premultiplied(uint(min(s_first_x[ox] + tx, int(g_sw) - 1)), sy);
+      plain_row += cubic * p;
+      soft_row += blurred * p;
+    }
+    s_plain[r][ox] = plain_row;
+    s_soft[r][ox] = soft_row;
+  }
+  barrier();
+  if (!inside) {
+    return;
+  }
+  uint x = min(px, job.width - 1u);
+  uint y = min(py, job.height - 1u);
+  uint near_x = x * g_sw / job.width;
+  uint near_y = y * g_sh / job.height;
+  if (TwoTone(near_x, near_y)) {
+    dst[out_word] = Word(near_x, near_y);
+    return;
+  }
+  uint ox = gl_LocalInvocationID.x;
+  uint oy = gl_LocalInvocationID.y;
+  vec4 plain = vec4(0.0);
+  vec4 soft = vec4(0.0);
+  for (int ty = 0; ty < kTaps; ++ty) {
+    float cubic = s_cubic_y[oy][ty];
+    float blurred = s_blurred_y[oy][ty];
+    if (cubic == 0.0 && blurred == 0.0) {
+      continue;
+    }
+    uint r = uint(s_first_y[oy] + ty - row0);
+    plain += cubic * s_plain[r][ox];
+    soft += blurred * s_soft[r][ox];
+  }
+  dst[out_word] = Sharpen(x, y, plain, soft);
 }
 
 uint Resample(uint x, uint y) {
@@ -212,12 +289,17 @@ uint Resample(uint x, uint y) {
 }
 
 void main() {
+  job = Job(JobWord(1u), JobWord(2u), JobWord(3u), JobWord(4u), JobWord(5u),
+            JobWord(6u), JobWord(7u));
   uint px = gl_GlobalInvocationID.x;
   uint py = gl_GlobalInvocationID.y;
   uint pitch = job.blocks_wide * 4u;
-  if (px >= pitch || py >= job.blocks_high * 4u) {
+  // A batch sizes its dispatch for its largest job; this group's is smaller.
+  if (gl_WorkGroupID.x * 8u >= pitch ||
+      gl_WorkGroupID.y * 8u >= job.blocks_high * 4u) {
     return;
   }
+  bool inside = px < pitch && py < job.blocks_high * 4u;
   g_sw = src[job.src_offset];
   g_sh = src[job.src_offset + 1u];
   g_pitch = src[job.src_offset + 2u];
@@ -225,13 +307,20 @@ void main() {
     g_pitch = g_sw;
   }
   uint out_word = job.dst_offset + py * pitch + px;
+  // The same for the whole dispatch, so these returns keep a group together.
   if (g_sw == 0u || g_sh == 0u || job.width == 0u || job.height == 0u) {
-    dst[out_word] = 0u;
+    if (inside) {
+      dst[out_word] = 0u;
+    }
     return;
   }
-  uint x = min(px, job.width - 1u);
-  uint y = min(py, job.height - 1u);
   bool grow = job.width >= g_sw && job.height >= g_sh &&
               (job.width > g_sw || job.height > g_sh);
-  dst[out_word] = grow ? Upscale(x, y) : Resample(x, y);
+  if (!grow) {
+    if (inside) {
+      dst[out_word] = Resample(min(px, job.width - 1u), min(py, job.height - 1u));
+    }
+    return;
+  }
+  UpscaleTile(px, py, out_word, inside);
 }

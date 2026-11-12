@@ -102,16 +102,16 @@ TEST(SessionLogTest, CapturesBothStreamsAndUpdatesLatest) {
   ASSERT_EQ(stat(session_path.c_str(), &metadata), 0);
   EXPECT_EQ(metadata.st_mode & 0777, 0600);
   const std::string contents = ReadFile(session_path);
-  EXPECT_EQ(contents.rfind("[mocktail] version=", 0), 0U);
+  EXPECT_EQ(contents.rfind("[nightcap] version=", 0), 0U);
   EXPECT_NE(contents.find("session-stdout-marker"), std::string::npos);
   EXPECT_NE(contents.find("session-stderr-marker"), std::string::npos);
   EXPECT_NE(contents.find(" commit="), std::string::npos);
   EXPECT_NE(contents.find(" target="), std::string::npos);
-  EXPECT_NE(contents.find("[mocktail] cpu=\""), std::string::npos);
+  EXPECT_NE(contents.find("[nightcap] cpu=\""), std::string::npos);
   EXPECT_NE(contents.find(" ram="), std::string::npos);
   EXPECT_NE(contents.find(" gpu=\""), std::string::npos);
   EXPECT_NE(contents.find(" gpu_driver=\""), std::string::npos);
-  EXPECT_NE(contents.find("[mocktail] log="), std::string::npos);
+  EXPECT_NE(contents.find("[nightcap] log="), std::string::npos);
 }
 
 TEST(SessionLogTest, PreservesSessionsStartedInTheSameSecond) {

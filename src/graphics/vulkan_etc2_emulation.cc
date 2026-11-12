@@ -292,12 +292,16 @@ unsigned DecodeWorkerCount() {
 // Images whose encode the budget decided since `since_ns`, by host scale.
 struct EncodeStats {
   std::uint64_t by_scale[9] = {};
+  // [0] transcoded at 1x, [1] upscaled, by SizeBucket.
+  std::uint64_t by_size[2][3] = {};
   // Encoded fast because the budget was dry.
   std::uint64_t fast = 0;
   // Encoded, unbudgeted, because video memory was low with Compress
   // Textures off.
   std::uint64_t low_memory = 0;
   double estimated_ns = 0;
+  // The part of estimated_ns that is upscaling.
+  double upscale_ns = 0;
   std::uint64_t since_ns = 0;
 };
 
@@ -318,6 +322,27 @@ std::uint64_t VideoMemoryOverrideMib(const char* value) {
 // A line every kEncodeLogIntervalNs while images are created, so a session
 // log shows how often the budget fell back to fast encodes on the
 // reporter's GPU.
+// Index of an image's largest side: at most 64, at most 256, or larger.
+std::size_t SizeBucket(const VkExtent3D& extent) {
+  const std::uint32_t side = std::max(extent.width, extent.height);
+  return side <= 64 ? 0 : side <= 256 ? 1 : 2;
+}
+
+// Counts an image's encode by scale and size, or takes it back.
+void CountEncode(EncodeStats* stats, std::uint32_t scale,
+                 const VkExtent3D& extent, bool add) {
+  std::uint64_t& by_scale = stats->by_scale[std::min<std::uint32_t>(scale, 8)];
+  std::uint64_t& by_size =
+      stats->by_size[scale > 1 ? 1 : 0][SizeBucket(extent)];
+  if (add) {
+    ++by_scale;
+    ++by_size;
+  } else {
+    by_scale -= by_scale > 0 ? 1 : 0;
+    by_size -= by_size > 0 ? 1 : 0;
+  }
+}
+
 std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
   if (stats->since_ns == 0) {
     stats->since_ns = now;
@@ -330,12 +355,35 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
   std::snprintf(part, sizeof(part), "%.1f s:",
                 static_cast<double>(now - stats->since_ns) / 1e9);
   line += part;
-  for (std::uint32_t scale = 8; scale >= 1; --scale) {
-    if (stats->by_scale[scale] != 0) {
-      std::snprintf(part, sizeof(part), " %ux %llu,", scale,
-                    static_cast<unsigned long long>(stats->by_scale[scale]));
+  static constexpr const char* kSizes[3] = {"<=64px", "<=256px", ">256px"};
+  for (std::uint32_t kind = 0; kind < 2; ++kind) {
+    std::uint64_t total = 0;
+    for (std::uint64_t count : stats->by_size[kind]) {
+      total += count;
+    }
+    std::snprintf(part, sizeof(part), "%s %llu (",
+                  kind == 0 ? " transcode" : ", upscale",
+                  static_cast<unsigned long long>(total));
+    line += part;
+    for (std::size_t size = 0; size < 3; ++size) {
+      std::snprintf(part, sizeof(part), "%s%s %llu", size == 0 ? "" : ", ",
+                    kSizes[size],
+                    static_cast<unsigned long long>(stats->by_size[kind][size]));
       line += part;
     }
+    if (kind == 1) {
+      bool first = true;
+      for (std::uint32_t scale = 8; scale >= 2; --scale) {
+        if (stats->by_scale[scale] != 0) {
+          std::snprintf(part, sizeof(part), "%s%ux %llu",
+                        first ? "; " : ", ", scale,
+                        static_cast<unsigned long long>(stats->by_scale[scale]));
+          line += part;
+          first = false;
+        }
+      }
+    }
+    line += ")";
   }
   std::snprintf(part, sizeof(part), " fast %llu;",
                 static_cast<unsigned long long>(stats->fast));
@@ -345,8 +393,8 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
                   static_cast<unsigned long long>(stats->low_memory));
     line += part;
   }
-  std::snprintf(part, sizeof(part), " est %.1f ms GPU\n",
-                stats->estimated_ns / 1e6);
+  std::snprintf(part, sizeof(part), " est %.1f ms GPU (upscale %.1f ms)\n",
+                stats->estimated_ns / 1e6, stats->upscale_ns / 1e6);
   line += part;
   *stats = {};
   stats->since_ns = now;
@@ -693,7 +741,16 @@ struct GpuUpload {
   Etc2GpuJob decoding;
   bool encode = false;
   Etc2GpuJob encoding;
+  // Batch entries in staging for decoding, job and encoding, in that order.
+  VkDeviceSize entries = 0;
 };
+
+// Whether any of the upload's jobs runs batched, reading its staged entry.
+bool UsesBatch(const GpuUpload& gpu) {
+  return (gpu.decode && Etc2GpuDecoder::Batchable(gpu.decoding)) ||
+         Etc2GpuDecoder::Batchable(gpu.job) ||
+         (gpu.encode && Etc2GpuDecoder::Batchable(gpu.encoding));
+}
 
 // Decode, scale and optional BC encode of a scale source. The caller sets the
 // source buffer, offset and span.
@@ -2018,7 +2075,7 @@ struct VulkanEtc2Emulation::State {
           own;
       const double cost =
           own * dev.speed.transcode_ns + top * dev.speed.upscale_ns;
-      ++dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+      CountEncode(&dev.stats, scale, info.extent, true);
       if (dev.budget.Take(cost, now)) {
         prepaid = cost;
       } else {
@@ -2077,12 +2134,12 @@ struct VulkanEtc2Emulation::State {
   }
 
   void RefundEncode(const HostDevice& dev, double prepaid,
-                    std::uint32_t scale, bool fast) {
+                    std::uint32_t scale, bool fast,
+                    const VkExtent3D& extent) {
     if (prepaid > 0) {
       std::lock_guard<std::mutex> lock(mutex);
       dev.budget.Refund(prepaid);
-      std::uint64_t& counted = dev.stats.by_scale[std::min<std::uint32_t>(scale, 8)];
-      counted -= counted > 0 ? 1 : 0;
+      CountEncode(&dev.stats, scale, extent, false);
       if (fast) {
         dev.stats.fast -= dev.stats.fast > 0 ? 1 : 0;
       }
@@ -2873,11 +2930,14 @@ struct VulkanEtc2Emulation::State {
     copies->assign(1, {});
     for (std::size_t index = 0; index < gpus.size(); ++index) {
       GpuUpload& gpu = gpus[index];
+      const VkDeviceSize entry_bytes =
+          UsesBatch(gpu) ? align(3 * Etc2GpuDecoder::kJobEntryBytes) : 0;
       const VkDeviceSize need =
           align(gpu.source_span) +
           (gpu.decode ? align(Etc2GpuOutputBytes(gpu.decoding)) : 0) +
           align(Etc2GpuOutputBytes(gpu.job)) +
-          (gpu.encode ? align(Etc2GpuOutputBytes(gpu.encoding)) : 0);
+          (gpu.encode ? align(Etc2GpuOutputBytes(gpu.encoding)) : 0) +
+          entry_bytes;
       if ((gpu.job.transcode || gpu.job.scale) && !groups.back().empty() &&
           totals.back() + need > MaxGpuStagingBytes()) {
         groups.emplace_back();
@@ -2896,6 +2956,7 @@ struct VulkanEtc2Emulation::State {
       gpu.encoding.source_offset = gpu.job.destination_offset;
       gpu.encoding.destination_offset =
           gpu.job.destination_offset + align(Etc2GpuOutputBytes(gpu.job));
+      gpu.entries = totals.back() + need - entry_bytes;
       totals.back() += need;
       const Etc2GpuJob& last = gpu.encode ? gpu.encoding : gpu.job;
       Region region = rewritten[index];
@@ -2928,6 +2989,7 @@ struct VulkanEtc2Emulation::State {
         }
         gpu.encoding.source_offset += staging.offset;
         gpu.encoding.destination_offset += staging.offset;
+        gpu.entries += staging.offset;
       }
       (*copies)[group].staging = staging.block->buffer;
       for (Region& region : (*copies)[group].regions) {
@@ -2939,6 +3001,7 @@ struct VulkanEtc2Emulation::State {
     // Upscales are charged and encoded in full; only transcodes go fast.
     const bool fast = record != images.end() && record->second.fast_encode;
     double encode_ns = 0;
+    double upscale_part = 0;
     const auto blocks = [](const Etc2GpuJob& job) {
       return static_cast<double>(job.blocks_wide) * job.blocks_high *
              job.layers;
@@ -2947,7 +3010,9 @@ struct VulkanEtc2Emulation::State {
       for (GpuUpload& gpu : group) {
         gpu.job.fast = fast;
         if (encode_budget && gpu.encode) {
-          encode_ns += blocks(gpu.encoding) * dev.speed.upscale_ns;
+          const double cost = blocks(gpu.encoding) * dev.speed.upscale_ns;
+          encode_ns += cost;
+          upscale_part += cost;
         } else if (encode_budget && gpu.job.transcode) {
           encode_ns += blocks(gpu.job) * (fast ? dev.speed.fast_transcode_ns
                                                : dev.speed.transcode_ns);
@@ -2963,6 +3028,7 @@ struct VulkanEtc2Emulation::State {
       }
       dev.budget.Charge(encode_ns - prepaid, TraceClockNanos());
       dev.stats.estimated_ns += encode_ns;
+      dev.stats.upscale_ns += upscale_part;
     }
     CommandRecord& command = commands[command_buffer];
     for (const std::vector<GpuUpload>& group : groups) {
@@ -3031,32 +3097,68 @@ struct VulkanEtc2Emulation::State {
                                 upload.source_span};
         dev.copy_buffer(command_buffer, upload.source, upload.staging, 1, &copy);
       }
+      // After every copy: interleaved with them, the writes cost about 1 us
+      // each.
+      for (const GpuUpload& upload : uploads) {
+        const Etc2GpuJob entries[3] = {upload.decoding, upload.job,
+                                       upload.encoding};
+        if (UsesBatch(upload)) {
+          ok = ok && dev.gpu->RecordJobEntries(command_buffer, upload.staging,
+                                               upload.entries, entries, 3);
+        }
+      }
       barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-      bool decode = false;
-      for (const GpuUpload& upload : uploads) {
-        ok = ok && (!upload.decode ||
-                    dev.gpu->Record(command_buffer, upload.binding,
-                                    &upload.decoding, 1));
-        decode = decode || upload.decode;
-      }
-      if (decode) {
-        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-      }
-      bool encode = false;
-      for (const GpuUpload& upload : uploads) {
-        ok = ok && dev.gpu->Record(command_buffer, upload.binding, &upload.job, 1);
-        encode = encode || upload.encode;
-      }
-      if (encode) {
-        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+      // Small jobs share dispatches, by staging block; see RecordBatch.
+      const auto record_phase = [&](std::size_t phase) {
+        struct Batch {
+          Etc2GpuBinding binding;
+          std::vector<Etc2GpuJob> jobs;
+          std::vector<VkDeviceSize> entries;
+        };
+        std::vector<Batch> batches;
         for (const GpuUpload& upload : uploads) {
-          ok = ok && (!upload.encode ||
-                      dev.gpu->Record(command_buffer, upload.binding,
-                                      &upload.encoding, 1));
+          const Etc2GpuJob* job =
+              phase == 0   ? (upload.decode ? &upload.decoding : nullptr)
+              : phase == 1 ? &upload.job
+                           : (upload.encode ? &upload.encoding : nullptr);
+          if (job == nullptr) {
+            continue;
+          }
+          if (!Etc2GpuDecoder::Batchable(*job)) {
+            ok = ok && dev.gpu->Record(command_buffer, upload.binding, job, 1);
+            continue;
+          }
+          auto batch = std::find_if(
+              batches.begin(), batches.end(), [&](const Batch& candidate) {
+                return candidate.binding.set == upload.binding.set;
+              });
+          if (batch == batches.end()) {
+            batch = batches.insert(batches.end(), Batch{upload.binding, {}, {}});
+          }
+          batch->jobs.push_back(*job);
+          batch->entries.push_back(upload.entries +
+                                   phase * Etc2GpuDecoder::kJobEntryBytes);
         }
+        for (const Batch& batch : batches) {
+          ok = ok && dev.gpu->RecordBatch(command_buffer, batch.binding,
+                                          batch.jobs.data(),
+                                          batch.entries.data(),
+                                          batch.jobs.size());
+        }
+      };
+      record_phase(0);
+      if (std::any_of(uploads.begin(), uploads.end(),
+                      [](const GpuUpload& upload) { return upload.decode; })) {
+        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+      }
+      record_phase(1);
+      if (std::any_of(uploads.begin(), uploads.end(),
+                      [](const GpuUpload& upload) { return upload.encode; })) {
+        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        record_phase(2);
       }
       barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -4153,7 +4255,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   size_host();
   VkResult result = dev->create_image(device, &host_info, allocator, image);
   if (transcoded && result != VK_SUCCESS) {
-    state_->RefundEncode(*dev, prepaid, scale, fast);
+    state_->RefundEncode(*dev, prepaid, scale, fast, create_info->extent);
     prepaid = 0;
     fast = false;
     transcoded = false;
@@ -4222,7 +4324,7 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
       memory_log = state_->TakeMemoryLogLocked(now);
       if (transcoded && !dev->bc_textures) {
         ++dev->stats.low_memory;
-        ++dev->stats.by_scale[std::min<std::uint32_t>(scale, 8)];
+        CountEncode(&dev->stats, scale, create_info->extent, true);
         memory_log += TakeEncodeLog(&dev->stats, now);
       }
     }

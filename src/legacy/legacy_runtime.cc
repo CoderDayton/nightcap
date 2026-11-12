@@ -76,6 +76,7 @@
 #include "runtime/custom_font.h"
 #include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_cursor_hook.h"
+#include "runtime/roblox_sky_hook.h"
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
@@ -2127,6 +2128,20 @@ void InstallCursorHooks(uintptr_t base) {
   }
 }
 
+// Must run before any libroblox code does: it patches the texture load.
+void InstallSkyHook(uintptr_t base) {
+  if (!mocktail::runtime::OverlayHasCustomSky(ActiveAssetOverlayDir())) {
+    return;
+  }
+  std::string error;
+  if (!mocktail::runtime::InstallRobloxSkyHook(base, &error)) {
+    std::cerr << "  [sky] custom sky unavailable for this Roblox version, "
+                 "games keep their own skies: "
+              << error << '\n'
+              << std::flush;
+  }
+}
+
 extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
                                                     uintptr_t base) {
   if (realpath == nullptr || std::strstr(realpath, "libroblox.so") == nullptr ||
@@ -2136,6 +2151,7 @@ extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
 
   g_libroblox_base = base;
   InstallCursorHooks(base);
+  InstallSkyHook(base);
   DisableOverlaidAssetMappings(base);
   g_mocktail_abort_libroblox_base = base;
   g_libroblox_base_static = base;

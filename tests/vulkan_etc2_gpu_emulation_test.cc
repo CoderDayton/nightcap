@@ -4876,5 +4876,109 @@ TEST(VulkanEtc2GpuEmulationTest, DecodesAPunchThroughUploadOnTheGpu) {
   ExpectGpuUploadMatchesCpu(c);
 }
 
+struct UploadBenchTexture {
+  TestImage image;
+  HostBuffer source;
+};
+
+struct UploadBenchTimes {
+  double total = 0;
+  double prepare = 0;
+  double decode = 0;
+  double copy = 0;
+};
+
+// One command buffer uploading textures [first, first + count), timed from
+// PrepareSubmit until the GPU is done.
+UploadBenchTimes TimeUploadBatch(const VulkanTestDevice& vk,
+                                 VulkanEtc2Emulation* emulation,
+                                 const std::vector<UploadBenchTexture>& textures,
+                                 std::size_t first, std::size_t count,
+                                 std::uint32_t size) {
+  using Clock = std::chrono::steady_clock;
+  using Millis = std::chrono::duration<double, std::milli>;
+  UploadBenchTimes times;
+  TestCommands commands = BeginTestCommands(vk);
+  for (std::size_t i = first; i < first + count; ++i) {
+    UploadLevel(emulation, vk, commands.buffer, textures[i].source.buffer,
+                textures[i].image.image, size);
+  }
+  EXPECT_EQ(vk.Device<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(
+                commands.buffer),
+            VK_SUCCESS);
+  const auto start = Clock::now();
+  const auto wait =
+      emulation->PrepareSubmit(&commands.buffer, 1, true, vk.queue);
+  times.prepare = Millis(Clock::now() - start).count();
+  if (wait.semaphore != VK_NULL_HANDLE) {
+    VkSemaphoreWaitInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    info.semaphoreCount = 1;
+    info.pSemaphores = &wait.semaphore;
+    info.pValues = &wait.value;
+    EXPECT_EQ(vk.Device<PFN_vkWaitSemaphores>("vkWaitSemaphores")(
+                  vk.device, &info, UINT64_MAX),
+              VK_SUCCESS);
+  }
+  auto at = Clock::now();
+  EXPECT_TRUE(SubmitAndWait(vk, wait.decode_commands));
+  times.decode = Millis(Clock::now() - at).count();
+  at = Clock::now();
+  EXPECT_TRUE(SubmitAndWait(vk, {commands.buffer}));
+  times.copy = Millis(Clock::now() - at).count();
+  times.total = Millis(Clock::now() - start).count();
+  emulation->ReleaseCommandBuffer(commands.buffer);
+  DestroyTestCommands(vk, commands);
+  return times;
+}
+
+// Run by hand with --gtest_also_run_disabled_tests. New textures arrive
+// in one submit, as a game streams them in, timed until
+// the GPU is done. Textures of 64 px or less are upscaled 4x; 256 px is a
+// plain transcode. The median of 5 sessions; each first uploads a batch of
+// other textures untimed, so staging is already allocated.
+TEST(VulkanEtc2GpuEmulationTest, DISABLED_BenchmarkUploadBatch) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  constexpr std::uint32_t kTextures = 64;
+  for (VulkanTestDevice& vk : devices) {
+    if (!vk.bc_textures || !vk.timeline) {
+      continue;
+    }
+    for (const std::uint32_t size : {32U, 64U, 256U}) {
+      std::vector<UploadBenchTimes> runs;
+      for (int session = 0; session < 5; ++session) {
+        VulkanEtc2Emulation emulation;
+        StartBcEmulation(&emulation, vk, true);
+        std::vector<UploadBenchTexture> textures;
+        for (std::uint32_t i = 0; i < 2 * kTextures; ++i) {
+          textures.push_back(
+              {CreateTestImage(&emulation, vk,
+                               VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, size, 1),
+               CreateRandomEtcSource(&emulation, vk, size)});
+        }
+        TimeUploadBatch(vk, &emulation, textures, kTextures, kTextures, size);
+        runs.push_back(
+            TimeUploadBatch(vk, &emulation, textures, 0, kTextures, size));
+        for (const UploadBenchTexture& texture : textures) {
+          DestroyEtcSource(&emulation, vk, texture.source);
+          DestroyTestImage(&emulation, vk, texture.image);
+        }
+        emulation.DestroyDevice(vk.device);
+      }
+      std::sort(runs.begin(), runs.end(),
+                [](const UploadBenchTimes& a, const UploadBenchTimes& b) {
+                  return a.total < b.total;
+                });
+      const UploadBenchTimes& median = runs[runs.size() / 2];
+      std::printf("%s: %u new %u px textures: %.2f ms (fastest %.2f); "
+                  "prepare %.2f, decode %.2f, copy %.2f\n",
+                  vk.name.c_str(), kTextures, size, median.total,
+                  runs.front().total, median.prepare, median.decode,
+                  median.copy);
+    }
+  }
+  CloseTestDevices(&devices);
+}
+
 }
 }

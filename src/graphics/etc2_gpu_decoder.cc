@@ -33,6 +33,7 @@ struct Etc2GpuDecoder::Procs {
   PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets = nullptr;
   PFN_vkCmdPushConstants cmd_push_constants = nullptr;
   PFN_vkCmdDispatch cmd_dispatch = nullptr;
+  PFN_vkCmdUpdateBuffer cmd_update_buffer = nullptr;
   PFN_vkCreateBuffer create_buffer = nullptr;
   PFN_vkDestroyBuffer destroy_buffer = nullptr;
   PFN_vkGetBufferMemoryRequirements get_buffer_memory_requirements = nullptr;
@@ -67,6 +68,19 @@ struct PushConstants {
 
 // PushConstants::flags bit for Etc2GpuJob::fast.
 constexpr std::uint32_t kFastFlag = 1;
+// PushConstants::flags bit for a batch: the table holds each job's entry.
+constexpr std::uint32_t kBatchFlag = 2;
+
+struct BatchPushConstants {
+  PushConstants head;
+  std::uint32_t table[Etc2GpuDecoder::kMaxBatchJobs];
+};
+static_assert(sizeof(PushConstants) == Etc2GpuDecoder::kJobEntryBytes);
+// The least maxPushConstantsSize Vulkan allows.
+static_assert(sizeof(BatchPushConstants) == 128);
+
+// Batched jobs of at most this many workgroups.
+constexpr std::uint32_t kMaxBatchGroups = 16;
 
 constexpr std::uint32_t kGroupBlocks = 8;
 // Broken BC packing decodes to noise, far below this; real encodes of random
@@ -189,6 +203,7 @@ std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
             &p.cmd_bind_descriptor_sets) ||
       !Load(get, device, "vkCmdPushConstants", &p.cmd_push_constants) ||
       !Load(get, device, "vkCmdDispatch", &p.cmd_dispatch) ||
+      !Load(get, device, "vkCmdUpdateBuffer", &p.cmd_update_buffer) ||
       !Load(get, device, "vkCreateBuffer", &p.create_buffer) ||
       !Load(get, device, "vkDestroyBuffer", &p.destroy_buffer) ||
       !Load(get, device, "vkGetBufferMemoryRequirements",
@@ -239,7 +254,7 @@ std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
   }
 
   VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(PushConstants)};
+                           sizeof(BatchPushConstants)};
   VkPipelineLayoutCreateInfo pipeline_layout{};
   pipeline_layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   pipeline_layout.setLayoutCount = 1;
@@ -363,14 +378,51 @@ void Etc2GpuDecoder::DestroyBinding(const Etc2GpuBinding& binding) {
   }
 }
 
-bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
-                            const Etc2GpuBinding& binding,
-                            const Etc2GpuJob* jobs, std::size_t count) {
-  for (std::size_t i = 0; i < count; ++i) {
-    const Etc2GpuJob& job = jobs[i];
-    const VkDeviceSize layer_bytes = OutputLayerBytes(job);
-    if (job.scale) {
-      if (scale_pipeline_ == VK_NULL_HANDLE || job.transcode ||
+namespace {
+
+PushConstants PushFor(const Etc2GpuJob& job) {
+  // The transcode shader's format code for RGBA8 texels.
+  constexpr std::uint32_t kRgbaTexels = 7;
+  // The scale shader reads the target size where the others read the
+  // source strides, and runs one invocation per texel.
+  return PushConstants{
+      job.rgba_source ? kRgbaTexels : static_cast<std::uint32_t>(job.format),
+      job.blocks_wide,
+      job.blocks_high,
+      static_cast<std::uint32_t>(job.source_offset / 4),
+      job.scale ? job.scale_width : job.source_row_blocks,
+      job.scale ? job.scale_height : job.source_layer_blocks,
+      static_cast<std::uint32_t>(job.destination_offset / 4),
+      static_cast<std::uint32_t>(
+          !job.scale ? OutputLayerBytes(job) / 4
+          : job.scale_texels_offset != 0
+              ? job.scale_texels_offset / 4
+              : (job.source_offset + kEtc2ScaleHeaderBytes) / 4),
+      job.transcode && job.fast ? kFastFlag : 0};
+}
+
+std::uint32_t GroupsWide(const Etc2GpuJob& job) {
+  const std::uint32_t group = job.scale ? kGroupBlocks / 4 : kGroupBlocks;
+  return (job.blocks_wide + group - 1) / group;
+}
+
+std::uint32_t GroupsHigh(const Etc2GpuJob& job) {
+  const std::uint32_t group = job.scale ? kGroupBlocks / 4 : kGroupBlocks;
+  return (job.blocks_high + group - 1) / group;
+}
+
+}  // namespace
+
+VkPipeline Etc2GpuDecoder::PipelineFor(const Etc2GpuJob& job) const {
+  return job.scale       ? scale_pipeline_
+         : job.transcode ? transcode_pipeline_
+                         : pipeline_;
+}
+
+bool Etc2GpuDecoder::Valid(const Etc2GpuJob& job) const {
+  const VkDeviceSize layer_bytes = OutputLayerBytes(job);
+  if (job.scale) {
+    return !(scale_pipeline_ == VK_NULL_HANDLE || job.transcode ||
           job.rgba_source || job.layers != 1 || job.scale_width == 0 ||
           job.scale_height == 0 || job.blocks_wide != (job.scale_width + 3) / 4 ||
           job.blocks_high != (job.scale_height + 3) / 4 ||
@@ -379,12 +431,9 @@ bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
           job.source_offset / 4 > kMaxWordOffset ||
           job.scale_texels_offset / 4 > kMaxWordOffset ||
           job.destination_offset / 4 > kMaxWordOffset ||
-          layer_bytes / 4 > kMaxWordOffset) {
-        return false;
-      }
-      continue;
-    }
-    if ((job.transcode && transcode_pipeline_ == VK_NULL_HANDLE) ||
+          layer_bytes / 4 > kMaxWordOffset);
+  }
+  return !((job.transcode && transcode_pipeline_ == VK_NULL_HANDLE) ||
         (job.rgba_source &&
          (!job.transcode || BcFormatFor(job.format) != BcFormat::kBc7)) ||
         job.blocks_wide == 0 || job.blocks_high == 0 || job.layers == 0 ||
@@ -395,16 +444,21 @@ bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
                 job.blocks_wide ||
         job.source_offset / 4 > kMaxWordOffset ||
         job.destination_offset / 4 > kMaxWordOffset ||
-        layer_bytes / 4 > kMaxWordOffset) {
+        layer_bytes / 4 > kMaxWordOffset);
+}
+
+bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
+                            const Etc2GpuBinding& binding,
+                            const Etc2GpuJob* jobs, std::size_t count) {
+  for (std::size_t i = 0; i < count; ++i) {
+    if (!Valid(jobs[i])) {
       return false;
     }
   }
   VkPipeline bound = VK_NULL_HANDLE;
   for (std::size_t i = 0; i < count; ++i) {
     const Etc2GpuJob& job = jobs[i];
-    const VkPipeline wanted = job.scale       ? scale_pipeline_
-                              : job.transcode ? transcode_pipeline_
-                                              : pipeline_;
+    const VkPipeline wanted = PipelineFor(job);
     if (wanted != bound) {
       procs_->cmd_bind_pipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 wanted);
@@ -416,31 +470,106 @@ bool Etc2GpuDecoder::Record(VkCommandBuffer command_buffer,
       }
       bound = wanted;
     }
-    // The transcode shader's format code for RGBA8 texels.
-    constexpr std::uint32_t kRgbaTexels = 7;
-    // The scale shader reads the target size where the others read the
-    // source strides, and runs one invocation per texel.
-    const PushConstants push{
-        job.rgba_source ? kRgbaTexels : static_cast<std::uint32_t>(job.format),
-        job.blocks_wide,
-        job.blocks_high,
-        static_cast<std::uint32_t>(job.source_offset / 4),
-        job.scale ? job.scale_width : job.source_row_blocks,
-        job.scale ? job.scale_height : job.source_layer_blocks,
-        static_cast<std::uint32_t>(job.destination_offset / 4),
-        static_cast<std::uint32_t>(
-            !job.scale ? OutputLayerBytes(job) / 4
-            : job.scale_texels_offset != 0
-                ? job.scale_texels_offset / 4
-                : (job.source_offset + kEtc2ScaleHeaderBytes) / 4),
-        job.transcode && job.fast ? kFastFlag : 0};
+    // The shaders statically read the batch table, so set the whole range.
+    BatchPushConstants push{};
+    push.head = PushFor(job);
     procs_->cmd_push_constants(command_buffer, pipeline_layout_,
                                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
                                &push);
-    const std::uint32_t group = job.scale ? kGroupBlocks / 4 : kGroupBlocks;
-    procs_->cmd_dispatch(command_buffer,
-                         (job.blocks_wide + group - 1) / group,
-                         (job.blocks_high + group - 1) / group, job.layers);
+    procs_->cmd_dispatch(command_buffer, GroupsWide(job), GroupsHigh(job),
+                         job.layers);
+  }
+  return true;
+}
+
+bool Etc2GpuDecoder::Batchable(const Etc2GpuJob& job) {
+  return job.layers == 1 && job.blocks_wide > 0 && job.blocks_high > 0 &&
+         GroupsWide(job) * GroupsHigh(job) <= kMaxBatchGroups;
+}
+
+bool Etc2GpuDecoder::RecordJobEntries(VkCommandBuffer command_buffer,
+                                      VkBuffer buffer, VkDeviceSize offset,
+                                      const Etc2GpuJob* jobs,
+                                      std::size_t count) {
+  // vkCmdUpdateBuffer writes at most 65536 bytes at a time.
+  constexpr std::size_t kPerUpdate = 65536 / kJobEntryBytes;
+  if (offset % 4 != 0) {
+    return false;
+  }
+  std::vector<PushConstants> entries;
+  for (std::size_t first = 0; first < count; first += kPerUpdate) {
+    const std::size_t n = std::min(kPerUpdate, count - first);
+    entries.clear();
+    for (std::size_t i = first; i < first + n; ++i) {
+      entries.push_back(PushFor(jobs[i]));
+    }
+    procs_->cmd_update_buffer(command_buffer, buffer,
+                              offset + first * kJobEntryBytes,
+                              n * kJobEntryBytes, entries.data());
+  }
+  return true;
+}
+
+bool Etc2GpuDecoder::RecordBatch(VkCommandBuffer command_buffer,
+                                 const Etc2GpuBinding& binding,
+                                 const Etc2GpuJob* jobs,
+                                 const VkDeviceSize* entry_offsets,
+                                 std::size_t count) {
+  for (std::size_t i = 0; i < count; ++i) {
+    if (!Valid(jobs[i]) || !Batchable(jobs[i]) || entry_offsets[i] % 4 != 0 ||
+        entry_offsets[i] / 4 > kMaxWordOffset) {
+      return false;
+    }
+  }
+  bool bound_set = false;
+  for (const VkPipeline pipeline :
+       {pipeline_, transcode_pipeline_, scale_pipeline_}) {
+    BatchPushConstants push{};
+    push.head.flags = kBatchFlag;
+    std::uint32_t n = 0;
+    std::uint32_t wide = 0;
+    std::uint32_t high = 0;
+    const auto flush = [&] {
+      if (n == 0) {
+        return;
+      }
+      procs_->cmd_push_constants(command_buffer, pipeline_layout_,
+                                 VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
+                                 &push);
+      procs_->cmd_dispatch(command_buffer, wide, high, n);
+      n = wide = high = 0;
+    };
+    bool bound = false;
+    for (std::size_t i = 0; i < count; ++i) {
+      if (PipelineFor(jobs[i]) != pipeline) {
+        continue;
+      }
+      if (!bound) {
+        procs_->cmd_bind_pipeline(command_buffer,
+                                  VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        if (!bound_set) {
+          procs_->cmd_bind_descriptor_sets(
+              command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_,
+              0, 1, &binding.set, 0, nullptr);
+          bound_set = true;
+        }
+        bound = true;
+      }
+      const std::uint32_t job_wide = GroupsWide(jobs[i]);
+      const std::uint32_t job_high = GroupsHigh(jobs[i]);
+      // Every slot runs the largest extent; keep mixed shapes from growing it.
+      if (std::max(wide, job_wide) * std::max(high, job_high) >
+          kMaxBatchGroups) {
+        flush();
+      }
+      push.table[n++] = static_cast<std::uint32_t>(entry_offsets[i] / 4);
+      wide = std::max(wide, job_wide);
+      high = std::max(high, job_high);
+      if (n == kMaxBatchJobs) {
+        flush();
+      }
+    }
+    flush();
   }
   return true;
 }

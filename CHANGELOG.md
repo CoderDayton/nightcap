@@ -16,6 +16,9 @@ Release notes on GitHub are taken from the matching section here.
 ### Changed
 
 - The window closes as soon as Roblox stops, instead of after audio and display shutdown.
+- Small textures load with less GPU time. Upscaling them takes about a third less, and small textures and
+  mip levels now share GPU work instead of each running alone, so a batch of new 32 px textures finishes
+  in about half the time. They look the same as before.
 - Settings works with screen readers: sidebar pages, sky tiles, number fields and icon buttons
   now read their names.
 
@@ -46,7 +49,7 @@ Release notes on GitHub are taken from the matching section here.
 
 - Unknown settings in `config.yaml` are skipped instead of stopping Nightcap from starting.
 - With automatic updates off, a Roblox version this build can't run falls back to the one before it.
-- Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
+- Your picked sky now shows in every game, in place of the game's own. You'll need to pick it again once.
 - Roblox downloads from GitHub first, with APKPure as a backup.
 - The default "throughput" physics workers no longer lower shadow detail or texture sharpness. Nightcap
   also stops setting Roblox flags that don't exist or that it named wrong, so Roblox ignored them.
