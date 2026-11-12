@@ -1134,25 +1134,8 @@ int main(int argc, char* argv[]) {
                 << command_line_error << '\n';
       return EXIT_FAILURE;
     }
-    std::string sky_overrides = audio_capture_overrides;
-    if (runtime_config.config.asset_overlay() &&
-        mocktail::runtime::OverlayHasCustomSky(paths.asset_overlay_dir())) {
-      bool gray_sky = false;
-      if (!mocktail::runtime::MergeCustomSkyClientSettingsOverrides(
-              audio_capture_overrides, &sky_overrides, &gray_sky,
-              &command_line_error)) {
-        std::cerr << "[FATAL] Cannot apply the custom sky: "
-                  << command_line_error << '\n';
-        return EXIT_FAILURE;
-      }
-      std::cout << (gray_sky
-                        ? "  [runtime] custom sky: FFlagDebugSkyGray on, so "
-                          "every game draws it\n"
-                        : "  [runtime] custom sky: FFlagDebugSkyGray kept off "
-                          "by an override, so games keep their own skies\n");
-    }
     if (setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
-               sky_overrides.c_str(), 1) != 0) {
+               audio_capture_overrides.c_str(), 1) != 0) {
       std::cerr << "[FATAL] Cannot export runtime client-settings policy\n";
       return EXIT_FAILURE;
     }

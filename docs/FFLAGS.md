@@ -92,7 +92,6 @@ On a weak PC, also add:
 | `FIntRenderShadowmapBias` | Shifts shadows to hide stripes. Default `75`. | ⚠️ Striped shadows |
 | `FFlagFastGPULightCulling3` | Sorts lights on the GPU instead of the CPU. Only matters with Future lighting and many lights. Off by default. | ⚠️ Weak CPUs |
 | `FIntRenderLocalLightUpdatesMin` + `…Max` | Lights with shadows updated each frame, `1` to `8`. Defaults `2` and `8`. Lower is faster, but lights update slower. | ⚠️ Weak PCs |
-| `FFlagDebugSkyGray` | Nightcap turns it on for custom skies. `false` lets games keep their own. | ⚠️ Custom sky users |
 | `DFIntDebugDynamicRenderKiloPixels` | Lowers render resolution. Blurry. | ❌ Last resort |
 | `FFlagDebugGraphicsPreferOpenGL`, `…PreferVulkan` | Nothing useful here. Use **Graphics backend** in settings. | ❌ |
 
@@ -202,7 +201,6 @@ You don't need to set these.
 - `FFlagDebugLuauCodegenAll`: on in menus, off in games, for faster menus.
   Setting it yourself applies your value everywhere. See
   [PERFORMANCE.md](PERFORMANCE.md#native-code-in-the-menus).
-- `FFlagDebugSkyGray` = `true` when you pick a custom sky.
 
 **Must match, or Nightcap won't start:**
 

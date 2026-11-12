@@ -185,8 +185,7 @@ TEST_F(SkyPackTest, InstallsSixPngFacesAsSky512Tex) {
   EXPECT_TRUE(HasCustomSky(overlay_));
 }
 
-// The gray-sky flag and the start screen draw indoor512, so it gets the sky
-// too, and goes with it.
+// Reflections come from indoor512, so it gets the sky too, and goes with it.
 TEST_F(SkyPackTest, TheSkyAlsoReplacesTheIndoorSky) {
   WritePack(source_, "Aurora_", ".png", kPng);
   std::string error;
