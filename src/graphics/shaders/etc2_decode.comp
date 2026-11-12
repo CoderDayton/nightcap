@@ -6,7 +6,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Source { uint src[]; };
 layout(set = 0, binding = 1, std430) writeonly buffer Destination { uint dst[]; };
 
-layout(push_constant) uniform Job {
+struct Job {
   uint format;
   uint blocks_wide;
   uint blocks_high;
@@ -15,14 +15,18 @@ layout(push_constant) uniform Job {
   uint src_layer_blocks;
   uint dst_offset;
   uint dst_layer_words;
-} job;
+};
+Job job;
 
 #include "etc2_common.glsl"
+#include "etc2_job.glsl"
 
 void main() {
+  job = Job(JobWord(0u), JobWord(1u), JobWord(2u), JobWord(3u), JobWord(4u),
+            JobWord(5u), JobWord(6u), JobWord(7u));
   uint bx = gl_GlobalInvocationID.x;
   uint by = gl_GlobalInvocationID.y;
-  uint layer = gl_GlobalInvocationID.z;
+  uint layer = JobLayer();
   if (bx >= job.blocks_wide || by >= job.blocks_high) {
     return;
   }

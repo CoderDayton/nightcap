@@ -4881,14 +4881,23 @@ struct UploadBenchTexture {
   HostBuffer source;
 };
 
+struct UploadBenchTimes {
+  double total = 0;
+  double prepare = 0;
+  double decode = 0;
+  double copy = 0;
+};
+
 // One command buffer uploading textures [first, first + count), timed from
 // PrepareSubmit until the GPU is done.
-double TimeUploadBatch(const VulkanTestDevice& vk,
-                       VulkanEtc2Emulation* emulation,
-                       const std::vector<UploadBenchTexture>& textures,
-                       std::size_t first, std::size_t count,
-                       std::uint32_t size) {
+UploadBenchTimes TimeUploadBatch(const VulkanTestDevice& vk,
+                                 VulkanEtc2Emulation* emulation,
+                                 const std::vector<UploadBenchTexture>& textures,
+                                 std::size_t first, std::size_t count,
+                                 std::uint32_t size) {
   using Clock = std::chrono::steady_clock;
+  using Millis = std::chrono::duration<double, std::milli>;
+  UploadBenchTimes times;
   TestCommands commands = BeginTestCommands(vk);
   for (std::size_t i = first; i < first + count; ++i) {
     UploadLevel(emulation, vk, commands.buffer, textures[i].source.buffer,
@@ -4900,8 +4909,7 @@ double TimeUploadBatch(const VulkanTestDevice& vk,
   const auto start = Clock::now();
   const auto wait =
       emulation->PrepareSubmit(&commands.buffer, 1, true, vk.queue);
-  std::vector<VkCommandBuffer> submitted = wait.decode_commands;
-  submitted.push_back(commands.buffer);
+  times.prepare = Millis(Clock::now() - start).count();
   if (wait.semaphore != VK_NULL_HANDLE) {
     VkSemaphoreWaitInfo info{};
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
@@ -4912,12 +4920,16 @@ double TimeUploadBatch(const VulkanTestDevice& vk,
                   vk.device, &info, UINT64_MAX),
               VK_SUCCESS);
   }
-  EXPECT_TRUE(SubmitAndWait(vk, submitted));
-  const double ms =
-      std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+  auto at = Clock::now();
+  EXPECT_TRUE(SubmitAndWait(vk, wait.decode_commands));
+  times.decode = Millis(Clock::now() - at).count();
+  at = Clock::now();
+  EXPECT_TRUE(SubmitAndWait(vk, {commands.buffer}));
+  times.copy = Millis(Clock::now() - at).count();
+  times.total = Millis(Clock::now() - start).count();
   emulation->ReleaseCommandBuffer(commands.buffer);
   DestroyTestCommands(vk, commands);
-  return ms;
+  return times;
 }
 
 // Run by hand with --gtest_also_run_disabled_tests. New textures arrive
@@ -4933,7 +4945,7 @@ TEST(VulkanEtc2GpuEmulationTest, DISABLED_BenchmarkUploadBatch) {
       continue;
     }
     for (const std::uint32_t size : {32U, 64U, 256U}) {
-      std::vector<double> runs;
+      std::vector<UploadBenchTimes> runs;
       for (int session = 0; session < 5; ++session) {
         VulkanEtc2Emulation emulation;
         StartBcEmulation(&emulation, vk, true);
@@ -4953,10 +4965,16 @@ TEST(VulkanEtc2GpuEmulationTest, DISABLED_BenchmarkUploadBatch) {
         }
         emulation.DestroyDevice(vk.device);
       }
-      std::sort(runs.begin(), runs.end());
-      std::printf("%s: %u new %u px textures: %.2f ms (fastest %.2f)\n",
-                  vk.name.c_str(), kTextures, size, runs[runs.size() / 2],
-                  runs.front());
+      std::sort(runs.begin(), runs.end(),
+                [](const UploadBenchTimes& a, const UploadBenchTimes& b) {
+                  return a.total < b.total;
+                });
+      const UploadBenchTimes& median = runs[runs.size() / 2];
+      std::printf("%s: %u new %u px textures: %.2f ms (fastest %.2f); "
+                  "prepare %.2f, decode %.2f, copy %.2f\n",
+                  vk.name.c_str(), kTextures, size, median.total,
+                  runs.front().total, median.prepare, median.decode,
+                  median.copy);
     }
   }
   CloseTestDevices(&devices);

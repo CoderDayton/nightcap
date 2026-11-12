@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 // Scales RGBA8 texels as ScaleRgba does on the CPU: the adaptive upscale of
 // UpscaleRgba (texture_override.cc) when the image grows, otherwise the box
 // resample of ResampleRgba. Keep them in step; the GPU tests compare them.
@@ -11,8 +12,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Source { uint src[]; };
 layout(set = 0, binding = 1, std430) writeonly buffer Destination { uint dst[]; };
 
-layout(push_constant) uniform Job {
-  uint unused0;
+struct Job {
   uint blocks_wide;
   uint blocks_high;
   uint src_offset;
@@ -20,7 +20,10 @@ layout(push_constant) uniform Job {
   uint height;
   uint dst_offset;
   uint texels_offset;
-} job;
+};
+Job job;
+
+#include "etc2_job.glsl"
 
 const float kAmount = 1.2;
 const float kRadius = 1.5;
@@ -286,9 +289,16 @@ uint Resample(uint x, uint y) {
 }
 
 void main() {
+  job = Job(JobWord(1u), JobWord(2u), JobWord(3u), JobWord(4u), JobWord(5u),
+            JobWord(6u), JobWord(7u));
   uint px = gl_GlobalInvocationID.x;
   uint py = gl_GlobalInvocationID.y;
   uint pitch = job.blocks_wide * 4u;
+  // A batch sizes its dispatch for its largest job; this group's is smaller.
+  if (gl_WorkGroupID.x * 8u >= pitch ||
+      gl_WorkGroupID.y * 8u >= job.blocks_high * 4u) {
+    return;
+  }
   bool inside = px < pitch && py < job.blocks_high * 4u;
   g_sw = src[job.src_offset];
   g_sh = src[job.src_offset + 1u];
