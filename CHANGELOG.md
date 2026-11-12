@@ -47,7 +47,7 @@ Release notes on GitHub are taken from the matching section here.
 
 - Unknown settings in `config.yaml` are skipped instead of stopping Nightcap from starting.
 - With automatic updates off, a Roblox version this build can't run falls back to the one before it.
-- Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
+- Your picked sky now shows in every game, in place of the game's own. You'll need to pick it again once.
 - Roblox downloads from GitHub first, with APKPure as a backup.
 - The default "throughput" physics workers no longer lower shadow detail or texture sharpness. Nightcap
   also stops setting Roblox flags that don't exist or that it named wrong, so Roblox ignored them.

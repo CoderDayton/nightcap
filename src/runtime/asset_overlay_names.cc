@@ -1,9 +1,6 @@
 #include "runtime/asset_overlay_names.h"
 
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <system_error>
 
@@ -79,26 +76,6 @@ bool OverlayHasCustomSky(const std::filesystem::path& overlay_dir) {
       }
     }
   }
-  return true;
-}
-
-bool MergeCustomSkyClientSettingsOverrides(std::string_view base_json,
-                                           std::string* merged_json,
-                                           bool* gray_sky, std::string* error) {
-  nlohmann::json overrides = nlohmann::json::parse(
-      base_json.empty() ? std::string_view("{}") : base_json, nullptr, false,
-      true);
-  if (overrides.is_discarded() || !overrides.is_object()) {
-    *error = "client-settings overrides must be a JSON object";
-    return false;
-  }
-  const auto flag = overrides.emplace("FFlagDebugSkyGray", "True").first;
-  std::string value = flag->is_string() ? flag->get<std::string>()
-                                        : flag->dump();
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-  *gray_sky = value == "true";
-  *merged_json = overrides.dump();
   return true;
 }
 

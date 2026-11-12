@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "mocktail/cursor_image.h"
+#include "runtime/roblox_code_patch.h"
 
 namespace mocktail {
 namespace runtime {
@@ -54,14 +55,6 @@ std::vector<std::string> StockSystemCursorAssetNames();
 // A fully transparent 64x64 PNG that replaces each stock cursor texture, so
 // Roblox draws nothing under the system cursor.
 const std::uint8_t* TransparentCursorPng(std::size_t* size);
-
-// One loaded ELF segment, addressed as the code that runs from it sees it.
-struct CursorHookSegment {
-  std::uintptr_t address = 0;
-  const std::uint8_t* data = nullptr;
-  std::size_t size = 0;
-  bool executable = false;
-};
 
 // Where the hooks go in Roblox's per-frame cursor draw.
 struct CursorRenderSite {

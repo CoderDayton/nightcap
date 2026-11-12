@@ -251,7 +251,7 @@ Path FacePath(const Path& overlay_dir, std::string_view face) {
   return SkyFolder(overlay_dir) / ("sky512_" + std::string(face) + ".tex");
 }
 
-// The start screen and the gray-sky flag draw indoor512.
+// Reflections come from indoor512.
 Path IndoorPath(const Path& overlay_dir, std::string_view face) {
   return SkyFolder(overlay_dir) / ("indoor512_" + std::string(face) + ".tex");
 }
@@ -493,7 +493,7 @@ class Importer {
       if (!scan_->cancelled) result_->skipped.push_back(hint + ": " + error);
       return;
     }
-    // Beside a sky512 set, indoor512 is the start screen's sky.
+    // Beside a sky512 set, indoor512 is its reflection map.
     std::set<Path> has_sky512;
     for (const auto& [key, set] : sets) {
       if (key.second == "sky512" && set.complete()) has_sky512.insert(key.first);

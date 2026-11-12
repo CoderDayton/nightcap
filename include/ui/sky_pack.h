@@ -14,8 +14,8 @@ namespace mocktail {
 namespace ui {
 
 // The skybox in the asset overlay: the six sky512_<face>.tex files Roblox
-// loads in a game, and the indoor512_<face>.tex files the start screen and
-// FFlagDebugSkyGray draw, unless those were put there by hand.
+// draws, and the indoor512_<face>.tex files its reflections come from, unless
+// those were put there by hand.
 
 std::filesystem::path SkyFolder(const std::filesystem::path& overlay_dir);
 

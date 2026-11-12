@@ -359,6 +359,12 @@ target_link_libraries(roblox_cursor_hook_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(roblox_sky_hook_test roblox_sky_hook_test.cc)
+target_link_libraries(roblox_sky_hook_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(running_instance_test running_instance_test.cc)
 target_link_libraries(running_instance_test PRIVATE
   Mocktail::Runtime
@@ -1362,6 +1368,7 @@ gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(asset_overlay_names_test)
 gtest_discover_tests(custom_font_test)
 gtest_discover_tests(roblox_cursor_hook_test)
+gtest_discover_tests(roblox_sky_hook_test)
 gtest_discover_tests(roblox_mouse_behavior_query_test)
 gtest_discover_tests(cursor_picture_source_test)
 gtest_discover_tests(running_instance_test)
