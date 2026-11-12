@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-12
+
 ### Added
 
 - New FFlag editor in Settings → Advanced. Each known flag says what it does, like more FPS.
@@ -33,6 +35,11 @@ Release notes on GitHub are taken from the matching section here.
   when you let go of the right mouse button.
 - On Roblox 2.746, holding right click over a button or menu no longer freezes the cursor.
   Nightcap couldn't tell when the camera turns, so it held the cursor on every right click.
+- The sky picked in Settings → Appearance shows in games again, in place of the game's own sky.
+  Since 0.5.1, picking a sky made every game draw a plain gray one instead.
+- Emoji in the chat box show up instead of blank spaces.
+- Starting a whisper or team chat with `/w name` or `/t` no longer puts the command back in the chat box.
+- Clipboard managers and emoji pickers no longer close the chat box when they take focus for a moment.
 
 ## [0.5.1] - 2026-11-06
 
@@ -47,7 +54,7 @@ Release notes on GitHub are taken from the matching section here.
 
 - Unknown settings in `config.yaml` are skipped instead of stopping Nightcap from starting.
 - With automatic updates off, a Roblox version this build can't run falls back to the one before it.
-- Your picked sky now shows in every game, in place of the game's own. You'll need to pick it again once.
+- Your picked sky now shows in every game and on the start screen. You'll need to pick it again once.
 - Roblox downloads from GitHub first, with APKPure as a backup.
 - The default "throughput" physics workers no longer lower shadow detail or texture sharpness. Nightcap
   also stops setting Roblox flags that don't exist or that it named wrong, so Roblox ignored them.
@@ -550,7 +557,8 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.2
 [0.5.1]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.1
 [0.5.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.4.0
