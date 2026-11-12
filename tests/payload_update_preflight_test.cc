@@ -173,6 +173,8 @@ TEST(BackgroundPayloadUpdateTest, TellsTheUpdaterWhichProcessStartedIt) {
   const auto capture = temporary.root() / "parent";
   ScopedVariable captured("MOCKTAIL_TEST_UPDATE_PARENT_CAPTURE",
                           capture.string());
+  // Keeps the first run alive, so a second one cannot truncate the capture.
+  ScopedVariable delay("MOCKTAIL_TEST_UPDATE_SLEEP_MS", "5000");
   const auto environment = NativeEnvironment();
   BackgroundPayloadUpdate update;
   update.Start(environment, RuntimePaths::FromEnvironment(environment),
@@ -193,6 +195,7 @@ TEST(BackgroundPayloadUpdateTest, RunsTheUpdaterAtLowCpuAndDiskPriority) {
   const auto capture = temporary.root() / "priority";
   ScopedVariable captured("MOCKTAIL_TEST_UPDATE_NICE_CAPTURE",
                           capture.string());
+  ScopedVariable delay("MOCKTAIL_TEST_UPDATE_SLEEP_MS", "5000");
   errno = 0;
   const int own_nice = getpriority(PRIO_PROCESS, 0);
   ASSERT_EQ(errno, 0);
