@@ -10,7 +10,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Source { uint src[]; };
 layout(set = 0, binding = 1, std430) writeonly buffer Destination { uint dst[]; };
 
-layout(push_constant) uniform Job {
+struct Job {
   uint format;
   uint blocks_wide;
   uint blocks_high;
@@ -21,9 +21,11 @@ layout(push_constant) uniform Job {
   uint dst_layer_words;
   // Bit 0: fast encode, one fit per mode and fewer modes.
   uint flags;
-} job;
+};
+Job job;
 
 #include "etc2_common.glsl"
+#include "etc2_job.glsl"
 
 const uint kPartition2[64] = uint[64](
     0xCCCCu, 0x8888u, 0xEEEEu, 0xECC8u, 0xC880u, 0xFEECu, 0xFEC8u, 0xEC80u,
@@ -912,9 +914,11 @@ uvec2 EncodeBc4(int values[16], bool is_signed) {
 }
 
 void main() {
+  job = Job(JobWord(0u), JobWord(1u), JobWord(2u), JobWord(3u), JobWord(4u),
+            JobWord(5u), JobWord(6u), JobWord(7u), JobWord(8u));
   uint bx = gl_GlobalInvocationID.x;
   uint by = gl_GlobalInvocationID.y;
-  uint layer = gl_GlobalInvocationID.z;
+  uint layer = JobLayer();
   if (bx >= job.blocks_wide || by >= job.blocks_high) {
     return;
   }

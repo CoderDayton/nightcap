@@ -80,6 +80,20 @@ class Etc2GpuDecoder final {
   bool Record(VkCommandBuffer command_buffer, const Etc2GpuBinding& binding,
               const Etc2GpuJob* jobs, std::size_t count);
 
+  // A 1-workgroup BC7 transcode on its own dispatch runs about 20x slower per
+  // block, so RecordBatch runs small jobs together. Each reads its entry from
+  // the binding's source buffer, written by RecordJobEntries (the buffer needs
+  // TRANSFER_DST); a transfer-to-compute barrier must come between them.
+  static constexpr VkDeviceSize kJobEntryBytes = 36;
+  static constexpr std::size_t kMaxBatchJobs = 23;
+  static bool Batchable(const Etc2GpuJob& job);
+  bool RecordJobEntries(VkCommandBuffer command_buffer, VkBuffer buffer,
+                        VkDeviceSize offset, const Etc2GpuJob* jobs,
+                        std::size_t count);
+  bool RecordBatch(VkCommandBuffer command_buffer,
+                   const Etc2GpuBinding& binding, const Etc2GpuJob* jobs,
+                   const VkDeviceSize* entry_offsets, std::size_t count);
+
   // Checks decoding against the CPU decoder and returns false on any
   // difference. A transcode that decodes too far from the CPU result only
   // turns transcoding off.
@@ -101,6 +115,8 @@ class Etc2GpuDecoder final {
  private:
   Etc2GpuDecoder() = default;
   void DisableTranscode();
+  bool Valid(const Etc2GpuJob& job) const;
+  VkPipeline PipelineFor(const Etc2GpuJob& job) const;
   // Bound to the first memory type with `want`, else with `fallback`.
   bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                     const VkPhysicalDeviceMemoryProperties& memory,
