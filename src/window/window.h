@@ -105,6 +105,15 @@ bool RequestShowTextInput(uint64_t generation, const TextInputArea& area,
                           const TextInputOptions& options);
 bool RequestHideTextInput(uint64_t generation);
 
+// In-headset keyboard support. TextInputRequested reports whether Roblox
+// currently wants an on-screen keyboard (between showKeyboard and the matching
+// hideKeyboard). The Queue calls are safe from any thread; PumpEvents delivers
+// them on the main thread as the same platform events a physical keyboard
+// produces, so the focused TextBox edits them identically.
+bool TextInputRequested();
+void QueueVirtualTextInput(const char* utf8);
+void QueueVirtualKeyPress(uint32_t scancode, bool ctrl = false);
+
 void* GetEGLDisplay();
 
 void* GetEGLSurface();

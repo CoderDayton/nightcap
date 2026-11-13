@@ -628,7 +628,8 @@ void RefreshRow(Row* row, bool keep_edit) {
       break;
     }
     case SettingKind::kFrameRate: {
-      const FrameRate rate = mocktail::ui::ParseFrameRate(value);
+      const FrameRate rate =
+          mocktail::ui::FrameRateSettingState(setting, value);
       adw_combo_row_set_selected(ADW_COMBO_ROW(row->widget),
                                  static_cast<guint>(rate.mode));
       if (rate.mode == FrameRateMode::kCustom) {
@@ -988,7 +989,7 @@ std::string SteppedValue(const Row& row) {
       adw_combo_row_get_selected(ADW_COMBO_ROW(row.widget)));
   rate.custom =
       static_cast<int>(gtk_spin_button_get_value(SpinOf(row.custom)));
-  return mocktail::ui::FrameRateValue(rate);
+  return mocktail::ui::FrameRateSettingValue(*row.setting, rate);
 }
 
 void SaveStepped(SettingsWindow* window) {

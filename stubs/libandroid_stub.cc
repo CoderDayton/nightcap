@@ -27,6 +27,7 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -44,6 +45,7 @@ struct AAsset {
   std::string path;
   std::string apk_entry;
   std::vector<unsigned char> data;
+  bool loaded = false;
   bool transcoded = false;
   bool is_overlay = false;
   size_t offset = 0;
@@ -208,7 +210,13 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
   }
-  const std::string_view requested_view = StripAssetUriPrefix(filename);
+  std::string_view requested_view = StripAssetUriPrefix(filename);
+  std::string normalized_storage;
+  if (requested_view.find("..") != std::string_view::npos) {
+    std::filesystem::path p(requested_view);
+    normalized_storage = p.lexically_normal().string();
+    requested_view = normalized_storage;
+  }
   if (HasUnsafePathSegment(requested_view)) {
     return {};
   }
@@ -216,6 +224,13 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
   const std::string requested(requested_view);
   const char* root_env = GetEnvNonEmpty("MOCKTAIL_ASSET_ROOT");
   const std::string root = root_env != nullptr ? root_env : "rbx_bin/assets";
+  std::string root_parent;
+  {
+    std::filesystem::path rp(root);
+    if (rp.filename() == "content") {
+      root_parent = rp.parent_path().string();
+    }
+  }
   const char* overlay_env = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY_DIR");
   const char* overlay_switch = GetEnvNonEmpty("MOCKTAIL_ASSET_OVERLAY");
   const std::string overlay =
@@ -263,7 +278,7 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
     }
   }
 
-  const std::vector<std::string> root_candidates = {
+  std::vector<std::string> root_candidates = {
       root + "/" + requested,
       root + "/" + stripped,
       root + "/content/" + requested,
@@ -271,6 +286,14 @@ ResolvedAsset ResolveAssetPath(const char* filename) {
       root + "/ExtraContent/" + requested,
       root + "/ExtraContent/" + stripped,
   };
+  if (!root_parent.empty()) {
+    root_candidates.push_back(root_parent + "/" + requested);
+    root_candidates.push_back(root_parent + "/" + stripped);
+    root_candidates.push_back(root_parent + "/content/" + requested);
+    root_candidates.push_back(root_parent + "/content/" + stripped);
+    root_candidates.push_back(root_parent + "/ExtraContent/" + requested);
+    root_candidates.push_back(root_parent + "/ExtraContent/" + stripped);
+  }
   for (const std::string& candidate : root_candidates) {
     if (FileExists(candidate)) {
       return CacheResolvedAsset(cache_key, {candidate, false});
@@ -425,6 +448,22 @@ const unsigned char* SystemCursorAsset(const char* filename, size_t* size) {
   return fn != nullptr ? fn(filename, size) : nullptr;
 }
 
+bool EnsureLoaded(AAsset* asset) {
+  if (asset->loaded) {
+    return true;
+  }
+  if (!LoadFile(asset->path, &asset->data)) {
+    asset->data.clear();
+    return false;
+  }
+  asset->loaded = true;
+  if (MocktailUsesDirectVulkan()) {
+    asset->transcoded = libc_shim::TranscodeEtc1SkyTextureForVulkan(
+        asset->path.c_str(), &asset->data);
+  }
+  return true;
+}
+
 }  // namespace
 
 extern "C" {
@@ -441,6 +480,7 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
     auto* asset = new AAsset;
     asset->apk_entry = ApkEntryName(filename);
     asset->data.assign(cursor, cursor + cursor_size);
+    asset->loaded = true;
     if (AssetTraceEnabled()) {
       std::fprintf(stderr, "[asset] open %s -> system cursor (%zu bytes)\n",
                    filename, asset->data.size());
@@ -459,7 +499,9 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   asset->path = resolved.path;
   asset->apk_entry = ApkEntryName(filename);
   asset->is_overlay = resolved.is_overlay;
-  if (!LoadFile(resolved.path, &asset->data)) {
+  // Sky textures are transcoded on open; everything else is read on first use.
+  if (libc_shim::IsBundledSkyTexture(resolved.path.c_str()) &&
+      !EnsureLoaded(asset)) {
     delete asset;
     return nullptr;
   }
@@ -467,14 +509,9 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
     LogOverlayServed(filename, resolved.path);
   }
   LogSkyOpen(filename, resolved.is_overlay, asset->data);
-  if (MocktailUsesDirectVulkan()) {
-    asset->transcoded =
-        libc_shim::TranscodeEtc1SkyTextureForVulkan(resolved.path.c_str(),
-                                                    &asset->data);
-  }
   if (AssetTraceEnabled()) {
-    std::fprintf(stderr, "[asset] open %s -> %s (%zu bytes%s)\n", filename,
-                 resolved.path.c_str(), asset->data.size(),
+    std::fprintf(stderr, "[asset] open %s -> %s%s\n", filename,
+                 resolved.path.c_str(),
                  resolved.is_overlay ? " [overlay]" : "");
   }
   return asset;
@@ -490,7 +527,7 @@ void AAsset_close(AAsset* asset) {
 }
 
 int AAsset_read(AAsset* asset, void* buf, size_t count) {
-  if (asset == nullptr || buf == nullptr) {
+  if (asset == nullptr || buf == nullptr || !EnsureLoaded(asset)) {
     return -1;
   }
   const size_t remaining = asset->offset <= asset->data.size()
@@ -509,7 +546,7 @@ int AAsset_read(AAsset* asset, void* buf, size_t count) {
 }
 
 const void* AAsset_getBuffer(AAsset* asset) {
-  if (asset == nullptr) {
+  if (asset == nullptr || !EnsureLoaded(asset)) {
     return nullptr;
   }
   if (AssetTraceEnabled() && asset->path.find("shader") != std::string::npos) {
@@ -521,6 +558,9 @@ const void* AAsset_getBuffer(AAsset* asset) {
 }
 
 off_t AAsset_getLength(AAsset* asset) {
+  if (asset != nullptr) {
+    EnsureLoaded(asset);
+  }
   if (asset != nullptr && AssetTraceEnabled() &&
       asset->path.find("shader") != std::string::npos) {
     std::fprintf(stderr, "[asset] getLength %s -> %zu bytes\n",
@@ -532,7 +572,8 @@ off_t AAsset_getLength(AAsset* asset) {
 off_t AAsset_getLength64(AAsset* asset) { return AAsset_getLength(asset); }
 
 off_t AAsset_getRemainingLength(AAsset* asset) {
-  if (asset == nullptr || asset->offset > asset->data.size()) {
+  if (asset == nullptr || !EnsureLoaded(asset) ||
+      asset->offset > asset->data.size()) {
     return 0;
   }
   if (AssetTraceEnabled() && asset->path.find("shader") != std::string::npos) {
@@ -547,7 +588,7 @@ off_t AAsset_getRemainingLength64(AAsset* asset) {
 }
 
 off_t AAsset_seek(AAsset* asset, off_t offset, int whence) {
-  if (asset == nullptr) {
+  if (asset == nullptr || !EnsureLoaded(asset)) {
     return -1;
   }
   off_t base = 0;
@@ -596,8 +637,17 @@ int AAsset_openFileDescriptor(AAsset* asset, off_t* outStart,
       !OpenStoredApkEntryDescriptor(asset->apk_entry, &fd, &start,
                                     &descriptor_length)) {
     fd = ::open(asset->path.c_str(), O_RDONLY | O_CLOEXEC);
+    struct stat st;
+    if (fd >= 0 && !asset->loaded && ::fstat(fd, &st) == 0) {
+      descriptor_length = st.st_size;
+    }
   }
   if (fd < 0) {
+    if (AssetTraceEnabled()) {
+      std::fprintf(stderr,
+                   "[asset] openFileDescriptor failed for %s (errno=%d)\n",
+                   asset->path.c_str(), errno);
+    }
     return -1;
   }
   if (outStart != nullptr) {

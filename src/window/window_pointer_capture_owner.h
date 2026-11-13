@@ -87,6 +87,9 @@ class WindowPointerCaptureOwner final {
   // is none, and capturing there freezes the cursor over Roblox's own UI.
   // Starts false: the app surface is what the client shows first.
   void SetGameSessionActive(bool active);
+  // In VR the controllers aim and the desktop window only mirrors the left
+  // eye, so neither Roblox's mouse lock nor RMB drag may trap the pointer.
+  void SetVrActive(bool active);
   // Shift can enable Roblox's persistent mouse lock while a transient RMB
   // camera drag is active. Refresh the native state after dispatching that
   // key so the subsequent RMB release preserves the intentional lock.
@@ -163,6 +166,7 @@ class WindowPointerCaptureOwner final {
   bool right_drag_panning_ = false;
   // Written by the experience composition, read on the SDL thread.
   std::atomic<bool> game_session_active_{false};
+  std::atomic<bool> vr_active_{false};
   bool capture_release_motion_pending_ = false;
   std::uint64_t capture_release_ms_ = 0;
   bool native_unlock_pending_ = false;
