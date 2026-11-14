@@ -15,6 +15,7 @@ namespace {
 using mocktail::runtime::DisableAssetNameMappings;
 using mocktail::runtime::OverlayRbxAssetNames;
 using mocktail::runtime::OverlayHasCustomSky;
+using mocktail::runtime::WithoutShippedAssets;
 
 class TemporaryDirectory {
  public:
@@ -130,6 +131,29 @@ TEST(AssetOverlayNamesTest, LeavesDataAloneWithoutAMatch) {
             0u);
   EXPECT_EQ(table, before);
   EXPECT_EQ(DisableAssetNameMappings(nullptr, 0, {"alpha"}), 0u);
+}
+
+TEST(AssetOverlayNamesTest, KeepsNamesOfFilesRobloxShipsMapped) {
+  TemporaryDirectory assets;
+  ASSERT_FALSE(assets.path().empty());
+  WriteFile(assets.path() / "content/sky/sun.jpg");
+  WriteFile(assets.path() / "ExtraContent/textures/sky/white.png");
+  const std::vector<std::string> names = {
+      "rbxasset://sky/sun.jpg",
+      "rbxasset://textures/MouseLockedCursor.png",
+      "rbxasset://textures/sky/white.png",
+  };
+  const std::vector<std::string> downloaded = {
+      "rbxasset://textures/MouseLockedCursor.png",
+  };
+
+  EXPECT_EQ(WithoutShippedAssets(names, assets.path()), downloaded);
+  EXPECT_EQ(WithoutShippedAssets(names, assets.path() / "content"),
+            (std::vector<std::string>{
+                "rbxasset://textures/MouseLockedCursor.png",
+                "rbxasset://textures/sky/white.png",
+            }));
+  EXPECT_EQ(WithoutShippedAssets(names, {}), names);
 }
 
 void WriteFaces(const std::filesystem::path& overlay, const char* prefix) {

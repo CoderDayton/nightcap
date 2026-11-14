@@ -1999,8 +1999,10 @@ std::filesystem::path PrepareCustomFontOverlay() {
 // before any libroblox code does: the segment loses PROT_EXEC while it is
 // written.
 void DisableOverlaidAssetMappings(uintptr_t base) {
-  std::vector<std::string> names =
-      mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir());
+  const char* asset_root = std::getenv("MOCKTAIL_ASSET_ROOT");
+  std::vector<std::string> names = mocktail::runtime::WithoutShippedAssets(
+      mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir()),
+      asset_root != nullptr ? asset_root : DefaultAssetPath());
   for (std::string& name : mocktail::runtime::OverlayRbxAssetNames(
            PrepareCustomFontOverlay())) {
     if (std::find(names.begin(), names.end(), name) == names.end()) {
