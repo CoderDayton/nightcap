@@ -2128,11 +2128,16 @@ void InstallCursorHooks(uintptr_t base) {
 
 // Must run before any libroblox code does: it patches the texture load.
 void InstallSkyHook(uintptr_t base) {
-  if (!mocktail::runtime::OverlayHasCustomSky(ActiveAssetOverlayDir())) {
+  const std::filesystem::path overlay = ActiveAssetOverlayDir();
+  mocktail::runtime::SkyReplacements replace;
+  replace.faces = mocktail::runtime::OverlayHasCustomSky(overlay);
+  replace.sun = mocktail::runtime::OverlayHasSkyBody(overlay, "sun");
+  replace.moon = mocktail::runtime::OverlayHasSkyBody(overlay, "moon");
+  if (!replace.faces && !replace.sun && !replace.moon) {
     return;
   }
   std::string error;
-  if (!mocktail::runtime::InstallRobloxSkyHook(base, &error)) {
+  if (!mocktail::runtime::InstallRobloxSkyHook(base, replace, &error)) {
     std::cerr << "  [sky] custom sky unavailable for this Roblox version, "
                  "games keep their own skies: "
               << error << '\n'

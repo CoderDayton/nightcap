@@ -33,6 +33,8 @@ constexpr std::size_t kRelocatedPrologueBytes = 6;
 
 constexpr std::array<std::string_view, 6> kFaces = {"bk", "dn", "ft",
                                                     "lf", "rt", "up"};
+constexpr std::array<std::string_view, 2> kBodies = {"sun", "moon"};
+constexpr std::string_view kStockBodyPrefix = "rbxasset://sky/";
 
 // Roblox's Content: a type, worked out from the ID while its low four bits
 // are 0, then a libc++ std::string in its long form.
@@ -61,6 +63,22 @@ std::array<std::string, kFaces.size()>& g_face_ids =
 std::array<GuestContent, kFaces.size()> g_face_content;
 // Hash of the content last logged for each face: one line per sky, not per load.
 std::array<std::atomic<std::size_t>, kFaces.size()> g_face_logged;
+std::array<std::string, kBodies.size()>& g_body_ids =
+    *new std::array<std::string, kBodies.size()>;
+std::array<GuestContent, kBodies.size()> g_body_content;
+std::array<std::atomic<std::size_t>, kBodies.size()> g_body_logged;
+SkyReplacements g_replace;
+
+bool LogsAgain(std::atomic<std::size_t>& logged, std::string_view replaced) {
+  const std::size_t hash = std::hash<std::string_view>{}(replaced) | 1;
+  return logged.exchange(hash) != hash;
+}
+
+void SetContent(const std::string& id, GuestContent* content) {
+  content->capacity = (id.size() + 1) | 1;
+  content->size = id.size();
+  content->data = id.c_str();
+}
 
 bool Fail(std::string* error, const char* message) {
   if (error != nullptr) {
@@ -73,29 +91,60 @@ std::uintptr_t LoadHook(std::uintptr_t out, std::uintptr_t manager,
                         std::uintptr_t content, std::uintptr_t fallback,
                         std::uintptr_t d, std::uintptr_t e, float f,
                         std::uintptr_t debug_name, std::uintptr_t g) {
-  const std::string_view face = SkyFaceOfLoad(GuestString(debug_name));
-  if (!face.empty()) {
-    for (std::size_t index = 0; index < kFaces.size(); ++index) {
-      if (kFaces[index] != face) {
-        continue;
-      }
-      const std::string_view replaced =
-          content != 0 ? GuestString(content + 8) : std::string_view();
-      const std::size_t hash = std::hash<std::string_view>{}(replaced) | 1;
-      if (g_face_logged[index].exchange(hash) != hash) {
-        std::fprintf(stderr, "  [sky] custom sky face %s drawn in place of %.*s\n",
-                     kFaces[index].data(), static_cast<int>(replaced.size()),
-                     replaced.data());
-      }
-      content = reinterpret_cast<std::uintptr_t>(&g_face_content[index]);
-      break;
+  const std::string_view name = GuestString(debug_name);
+  const std::string_view replaced =
+      content != 0 ? GuestString(content + 8) : std::string_view();
+  const std::string_view face = g_replace.faces ? SkyFaceOfLoad(name) : "";
+  for (std::size_t index = 0; !face.empty() && index < kFaces.size(); ++index) {
+    if (kFaces[index] != face) {
+      continue;
     }
+    if (LogsAgain(g_face_logged[index], replaced)) {
+      std::fprintf(stderr, "  [sky] custom sky face %s drawn in place of %.*s\n",
+                   kFaces[index].data(), static_cast<int>(replaced.size()),
+                   replaced.data());
+    }
+    content = reinterpret_cast<std::uintptr_t>(&g_face_content[index]);
+    break;
+  }
+  const std::string_view body = SkyBodyOfLoad(name, replaced);
+  for (std::size_t index = 0; !body.empty() && index < kBodies.size(); ++index) {
+    if (kBodies[index] != body ||
+        !(index == 0 ? g_replace.sun : g_replace.moon)) {
+      continue;
+    }
+    if (LogsAgain(g_body_logged[index], replaced)) {
+      std::fprintf(stderr, "  [sky] custom %s drawn in place of %.*s\n",
+                   kBodies[index].data(), static_cast<int>(replaced.size()),
+                   replaced.data());
+    }
+    content = reinterpret_cast<std::uintptr_t>(&g_body_content[index]);
+    break;
   }
   return g_original_load(out, manager, content, fallback, d, e, f, debug_name,
                          g);
 }
 
 }  // namespace
+
+std::string_view SkyBodyOfLoad(std::string_view debug_name,
+                               std::string_view content) {
+  if (content.empty() ||
+      content.substr(0, kStockBodyPrefix.size()) == kStockBodyPrefix) {
+    return {};
+  }
+  if (debug_name == "sky.sun") {
+    return kBodies[0];
+  }
+  if (debug_name == "sky.moon" || debug_name == "Sky.Moon") {
+    return kBodies[1];
+  }
+  return {};
+}
+
+std::string CustomSkyBodyContent(std::string_view body) {
+  return std::string(kStockBodyPrefix) + std::string(body) + ".jpg";
+}
 
 std::string_view SkyFaceOfLoad(std::string_view debug_name) {
   if (debug_name.size() != kNamePrefix.size() + 2 ||
@@ -172,7 +221,8 @@ std::optional<std::uintptr_t> LocateSkyTextureLoad(
   return load;
 }
 
-bool InstallRobloxSkyHook(std::uintptr_t image_base, std::string* error) {
+bool InstallRobloxSkyHook(std::uintptr_t image_base,
+                          const SkyReplacements& replace, std::string* error) {
   if (g_installed.load(std::memory_order_acquire)) {
     return Fail(error, "already installed");
   }
@@ -217,12 +267,13 @@ bool InstallRobloxSkyHook(std::uintptr_t image_base, std::string* error) {
 
   for (std::size_t index = 0; index < kFaces.size(); ++index) {
     g_face_ids[index] = CustomSkyFaceContent(kFaces[index]);
-    GuestContent& content = g_face_content[index];
-    // The low bit marks the long form; Roblox never frees or grows this one.
-    content.capacity = (g_face_ids[index].size() + 1) | 1;
-    content.size = g_face_ids[index].size();
-    content.data = g_face_ids[index].c_str();
+    SetContent(g_face_ids[index], &g_face_content[index]);
   }
+  for (std::size_t index = 0; index < kBodies.size(); ++index) {
+    g_body_ids[index] = CustomSkyBodyContent(kBodies[index]);
+    SetContent(g_body_ids[index], &g_body_content[index]);
+  }
+  g_replace = replace;
   g_original_load = reinterpret_cast<LoadFunction>(stub_address);
 
   // A jump over push rbp, mov rbp,rsp; the byte left of push r15 becomes nop.

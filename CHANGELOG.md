@@ -7,8 +7,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
-- A custom sun or moon in the asset overlay folder (`content/sky/sun.jpg`, `moon.jpg`) shows in games.
-  Before, Roblox failed to load either one and drew a plain glow instead.
+- A custom sun or moon in the asset overlay folder (`content/sky/sun.jpg`, `moon.jpg`) shows in games,
+  also in place of a game's own. Before, Roblox failed to load either one and drew a plain glow instead.
 
 ## [0.5.2] - 2026-11-12
 

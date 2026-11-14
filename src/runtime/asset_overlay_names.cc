@@ -89,6 +89,14 @@ std::size_t DisableAssetNameMappings(std::uint8_t* data, std::size_t size,
   return changed;
 }
 
+bool OverlayHasSkyBody(const std::filesystem::path& overlay_dir,
+                       std::string_view body) {
+  if (overlay_dir.empty()) return false;
+  std::error_code error;
+  return std::filesystem::is_regular_file(
+      overlay_dir / "content" / "sky" / (std::string(body) + ".jpg"), error);
+}
+
 bool OverlayHasCustomSky(const std::filesystem::path& overlay_dir) {
   if (overlay_dir.empty()) return false;
   const std::filesystem::path sky =
