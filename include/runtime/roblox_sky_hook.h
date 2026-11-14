@@ -22,6 +22,17 @@ std::string_view SkyFaceOfLoad(std::string_view debug_name);
 
 std::string CustomSkyFaceContent(std::string_view face);
 
+std::string_view SkyBodyOfLoad(std::string_view debug_name,
+                               std::string_view content);
+
+std::string CustomSkyBodyContent(std::string_view body);
+
+struct SkyReplacements {
+  bool faces = false;
+  bool sun = false;
+  bool moon = false;
+};
+
 // Found through the "Sky.Skybox" names its callers build. Fails rather than
 // guess when they disagree or its opening is not the one the hook relocates.
 std::optional<std::uintptr_t> LocateSkyTextureLoad(
@@ -29,7 +40,8 @@ std::optional<std::uintptr_t> LocateSkyTextureLoad(
 
 // No code may have run from the image at `image_base` yet. Returns false,
 // changing nothing, when the code does not match.
-bool InstallRobloxSkyHook(std::uintptr_t image_base, std::string* error);
+bool InstallRobloxSkyHook(std::uintptr_t image_base,
+                          const SkyReplacements& replace, std::string* error);
 
 }
 }

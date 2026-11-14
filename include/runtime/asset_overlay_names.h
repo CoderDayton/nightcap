@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mocktail {
@@ -21,9 +22,15 @@ std::vector<std::string> OverlayRbxAssetNames(
 std::size_t DisableAssetNameMappings(std::uint8_t* data, std::size_t size,
                                      const std::vector<std::string>& names);
 
+std::vector<std::string> WithoutShippedAssets(
+    std::vector<std::string> names, const std::filesystem::path& asset_root);
+
 // A sky picked in Settings replaces all six sky512 and indoor512 faces.
 // indoor512 alone only feeds reflections and leaves the drawn sky alone.
 bool OverlayHasCustomSky(const std::filesystem::path& overlay_dir);
+
+bool OverlayHasSkyBody(const std::filesystem::path& overlay_dir,
+                       std::string_view body);
 
 }
 }

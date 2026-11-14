@@ -11,8 +11,10 @@
 namespace {
 
 using mocktail::runtime::CursorHookSegment;
+using mocktail::runtime::CustomSkyBodyContent;
 using mocktail::runtime::CustomSkyFaceContent;
 using mocktail::runtime::LocateSkyTextureLoad;
+using mocktail::runtime::SkyBodyOfLoad;
 using mocktail::runtime::SkyFaceOfLoad;
 
 TEST(RobloxSkyHookTest, NamesTheFaceOfASkyLoad) {
@@ -36,6 +38,34 @@ TEST(RobloxSkyHookTest, LeavesOtherLoadsAlone) {
 TEST(RobloxSkyHookTest, FaceContentIsTheFileTheOverlayReplaces) {
   EXPECT_EQ(CustomSkyFaceContent("bk"),
             "rbxasset://textures/sky/sky512_bk.tex");
+}
+
+TEST(RobloxSkyHookTest, NamesTheSunOrMoonAGameSets) {
+  EXPECT_EQ(SkyBodyOfLoad("sky.sun", "rbxassetid://5392574622"), "sun");
+  EXPECT_EQ(SkyBodyOfLoad("sky.moon", "rbxassetid://62326944"), "moon");
+  EXPECT_EQ(SkyBodyOfLoad("Sky.Moon", "rbxassetid://62326944"), "moon");
+}
+
+TEST(RobloxSkyHookTest, LeavesTheDefaultSunAndMoonToTheOverlay) {
+  EXPECT_EQ(SkyBodyOfLoad("sky.sun", "rbxasset://sky/sun.jpg"), "");
+  EXPECT_EQ(SkyBodyOfLoad("sky.sun", "rbxasset://sky/moon.jpg"), "");
+  EXPECT_EQ(SkyBodyOfLoad("Sky.Moon", "rbxasset://sky/moon.jpg"), "");
+}
+
+TEST(RobloxSkyHookTest, KeepsAHiddenSunHidden) {
+  EXPECT_EQ(SkyBodyOfLoad("sky.sun", ""), "");
+  EXPECT_EQ(SkyBodyOfLoad("sky.moon", ""), "");
+}
+
+TEST(RobloxSkyHookTest, NamesNoBodyForOtherLoads) {
+  EXPECT_EQ(SkyBodyOfLoad("Sky.SkyboxBk", "rbxassetid://1"), "");
+  EXPECT_EQ(SkyBodyOfLoad("sky.sunrays", "rbxassetid://1"), "");
+  EXPECT_EQ(SkyBodyOfLoad("sky.cloud", "rbxassetid://1"), "");
+}
+
+TEST(RobloxSkyHookTest, BodyContentIsTheOverlayFile) {
+  EXPECT_EQ(CustomSkyBodyContent("sun"), "rbxasset://sky/sun.jpg");
+  EXPECT_EQ(CustomSkyBodyContent("moon"), "rbxasset://sky/moon.jpg");
 }
 
 // A code segment with the load function and callers that build a

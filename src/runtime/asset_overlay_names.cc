@@ -32,6 +32,32 @@ std::vector<std::string> OverlayRbxAssetNames(
   return names;
 }
 
+std::vector<std::string> WithoutShippedAssets(
+    std::vector<std::string> names, const std::filesystem::path& asset_root) {
+  if (asset_root.empty()) {
+    return names;
+  }
+  constexpr std::string_view kScheme = "rbxasset://";
+  const auto shipped = [&](const std::string& name) {
+    if (name.compare(0, kScheme.size(), kScheme) != 0) {
+      return false;
+    }
+    const std::filesystem::path relative = name.substr(kScheme.size());
+    for (const std::filesystem::path& candidate :
+         {asset_root / relative, asset_root / "content" / relative,
+          asset_root / "ExtraContent" / relative}) {
+      std::error_code error;
+      if (std::filesystem::is_regular_file(candidate, error)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  names.erase(std::remove_if(names.begin(), names.end(), shipped),
+              names.end());
+  return names;
+}
+
 std::size_t DisableAssetNameMappings(std::uint8_t* data, std::size_t size,
                                      const std::vector<std::string>& names) {
   std::size_t changed = 0;
@@ -61,6 +87,14 @@ std::size_t DisableAssetNameMappings(std::uint8_t* data, std::size_t size,
     }
   }
   return changed;
+}
+
+bool OverlayHasSkyBody(const std::filesystem::path& overlay_dir,
+                       std::string_view body) {
+  if (overlay_dir.empty()) return false;
+  std::error_code error;
+  return std::filesystem::is_regular_file(
+      overlay_dir / "content" / "sky" / (std::string(body) + ".jpg"), error);
 }
 
 bool OverlayHasCustomSky(const std::filesystem::path& overlay_dir) {
