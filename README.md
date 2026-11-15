@@ -60,6 +60,9 @@ chmod +x Nightcap-x86_64.AppImage
 ./Nightcap-x86_64.AppImage
 ```
 
+On first run it offers to add Nightcap to your app menu. If you move the
+AppImage, run it once from its new place and the entry follows it.
+
 ## Install on Arch Linux from the AUR
 
 [`nightcap-bin`](https://aur.archlinux.org/packages/nightcap-bin) installs the
