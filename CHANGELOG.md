@@ -5,6 +5,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- The AppImage offers to add Nightcap to the app menu the first time it runs, with Settings and Roblox
+  links. The entry hides once the AppImage is deleted and is removed on the next Nightcap start.
+
 ### Fixed
 
 - A custom sun or moon in the asset overlay folder (`content/sky/sun.jpg`, `moon.jpg`) shows in games,

@@ -263,6 +263,55 @@ int ShowDialog(std::string_view requested_message,
   return EXIT_SUCCESS;
 }
 
+constexpr int kQuestionDeclined = 2;
+constexpr int kQuestionDismissed = 3;
+
+struct QuestionState {
+  GMainLoop* loop = nullptr;
+  int exit_code = kQuestionDismissed;
+};
+
+void OnQuestionResponse(AdwAlertDialog*, const char* response,
+                        gpointer user_data) {
+  auto* state = static_cast<QuestionState*>(user_data);
+  const std::string_view chosen(response);
+  if (chosen == "accept") state->exit_code = EXIT_SUCCESS;
+  if (chosen == "decline") state->exit_code = kQuestionDeclined;
+}
+
+void OnQuestionClosed(AdwDialog*, gpointer user_data) {
+  g_main_loop_quit(static_cast<QuestionState*>(user_data)->loop);
+}
+
+int AskQuestion(const char* heading, std::string_view body,
+                const char* decline_label, const char* accept_label) {
+  if (!InitializeUi(UiStyle::kDialog) ||
+      !g_utf8_validate(heading, -1, nullptr) ||
+      !g_utf8_validate(decline_label, -1, nullptr) ||
+      !g_utf8_validate(accept_label, -1, nullptr)) {
+    return EXIT_FAILURE;
+  }
+  const std::string message = ValidMessage(body);
+  QuestionState state;
+  state.loop = g_main_loop_new(nullptr, FALSE);
+  AdwDialog* dialog = adw_alert_dialog_new(heading, message.c_str());
+  g_object_ref_sink(dialog);
+  adw_dialog_set_content_width(dialog, 420);
+  AdwAlertDialog* alert = ADW_ALERT_DIALOG(dialog);
+  adw_alert_dialog_set_prefer_wide_layout(alert, TRUE);
+  adw_alert_dialog_add_response(alert, "decline", decline_label);
+  adw_alert_dialog_add_response(alert, "accept", accept_label);
+  adw_alert_dialog_set_close_response(alert, "dismiss");
+  adw_alert_dialog_set_default_response(alert, "accept");
+  g_signal_connect(dialog, "response", G_CALLBACK(OnQuestionResponse), &state);
+  g_signal_connect(dialog, "closed", G_CALLBACK(OnQuestionClosed), &state);
+  adw_dialog_present(dialog, nullptr);
+  g_main_loop_run(state.loop);
+  g_object_unref(dialog);
+  g_main_loop_unref(state.loop);
+  return state.exit_code;
+}
+
 std::string ValidProgressMessage(std::string_view message) {
   if (message.empty() ||
       !g_utf8_validate(message.data(), static_cast<gssize>(message.size()),
@@ -425,6 +474,9 @@ int main(int argc, char* argv[]) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "--warning") {
     return ShowDialog(argv[2], "Signed out", "Continue");
+  }
+  if (argc == 6 && std::string_view(argv[1]) == "--question") {
+    return AskQuestion(argv[2], argv[3], argv[4], argv[5]);
   }
   return EXIT_FAILURE;
 }

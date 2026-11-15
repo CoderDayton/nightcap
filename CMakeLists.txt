@@ -295,6 +295,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_cookie_store.cc
   src/runtime/roblox_game_session_native_adapter.cc
   src/runtime/desktop_notification.cc
+  src/runtime/appimage_menu_entry.cc
   src/runtime/roblox_store_purchase.cc
   src/runtime/roblox_web_view_bridge.cc
   src/runtime/roblox_permissions_bridge.cc

@@ -28,6 +28,7 @@
 #include "mocktail/audio/fmod_jni_audio_bridge.h"
 #include "mocktail/audio/webrtc_jni_audio_bridge.h"
 #include "mocktail/audio/roblox_output_device_bridge.h"
+#include "runtime/appimage_menu_entry.h"
 #include "runtime/asset_overlay_names.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
@@ -395,6 +396,46 @@ void ConfigureHostDriverEnvironment() {
   // Avoid busy-spin vblank waits on NVIDIA Linux driver.
   set_if_unset("__GL_YIELD", "USLEEP");
   set_if_unset("__GL_THREADED_OPTIMIZATIONS", "1");
+}
+
+void UpdateAppImageMenu(const mocktail::runtime::Environment& environment,
+                        const mocktail::runtime::RuntimePaths& paths) {
+  using mocktail::runtime::AppImageMenuAction;
+  const mocktail::runtime::AppImageMenuOutcome outcome =
+      mocktail::runtime::UpdateAppImageMenuEntry(
+          mocktail::runtime::AppImageMenuPathsFor(environment, paths),
+          mocktail::runtime::RunningAppImage(environment),
+          mocktail::runtime::AppImageIcon(environment), [&environment] {
+            return mocktail::runtime::AskYesNo(
+                environment, "Add Nightcap to the app menu?",
+                "Nightcap will show in your app menu and can open Roblox "
+                "links. If you delete this AppImage, the entry goes away.",
+                "No Thanks", "Add");
+          });
+  switch (outcome.action) {
+    case AppImageMenuAction::kAdded:
+      std::cout << "  [appimage] added to the app menu: " << outcome.detail
+                << '\n';
+      break;
+    case AppImageMenuAction::kMoved:
+      std::cout << "  [appimage] app menu entry now opens this AppImage: "
+                << outcome.detail << '\n';
+      break;
+    case AppImageMenuAction::kRemoved:
+      std::cout << "  [appimage] removed the app menu entry of a deleted "
+                   "AppImage: "
+                << outcome.detail << '\n';
+      break;
+    case AppImageMenuAction::kDeclined:
+      std::cout << "  [appimage] app menu entry declined, not asking again\n";
+      break;
+    case AppImageMenuAction::kFailed:
+      std::cerr << "  [appimage] cannot update the app menu entry: "
+                << outcome.detail << '\n';
+      break;
+    case AppImageMenuAction::kNone:
+      break;
+  }
 }
 
 }  // namespace
@@ -1460,6 +1501,7 @@ int main(int argc, char* argv[]) {
                 << broker_status.message() << '\n';
       return EXIT_FAILURE;
     }
+    UpdateAppImageMenu(environment, paths);
   }
   failure_dialog.SetMessage(
       "Roblox closed unexpectedly because of an internal error.");
