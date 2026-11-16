@@ -15,6 +15,11 @@ Release notes on GitHub are taken from the matching section here.
 - A custom sun or moon in the asset overlay folder (`content/sky/sun.jpg`, `moon.jpg`) shows in games,
   also in place of a game's own. Before, Roblox failed to load either one and drew a plain glow instead.
 - Text in Roblox's stats menus (Shift+F5 and the others) shows again with a custom font.
+- With Vulkan, Roblox no longer sits on a black window for up to 15 s on first launch or after a driver
+  update. The texture encoder's shaders now compile in the background, and textures load uncompressed
+  until they are ready.
+- When Roblox stops with an error, Nightcap no longer crashes while exiting, so desktops stop
+  showing a crash report on top of Nightcap's own error dialog.
 
 ## [0.5.2] - 2026-11-12
 

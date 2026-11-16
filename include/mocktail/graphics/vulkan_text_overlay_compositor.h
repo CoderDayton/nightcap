@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 
 namespace mocktail {
 namespace graphics {
@@ -51,6 +52,7 @@ class VulkanTextOverlayCompositor final {
                            const VkBindSparseInfo* bind_info, VkFence fence,
                            PFN_vkQueueBindSparse fallback);
   VkResult QueueWaitIdle(VkQueue queue, PFN_vkQueueWaitIdle fallback);
+  void WithQueue(VkQueue queue, const std::function<void()>& work);
   VkResult DeviceWaitIdle(VkDevice device, PFN_vkDeviceWaitIdle fallback);
 
   // After wait collapse, fallback receives only compositor-owned semaphores.
