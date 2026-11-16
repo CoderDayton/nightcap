@@ -1,6 +1,30 @@
 <!-- Modified by vii from komaruworld/mocktail. See README "About this fork". -->
 # FAQ
 
+## How does Nightcap run Roblox, and is it safe?
+
+Nightcap runs Roblox's official Android app. Its files stay exactly as Roblox
+ships them; Nightcap never edits them on disk.
+
+The Android app is built for Android, not Linux, so Nightcap loads it with its
+own loader and gives it Linux versions of the Android parts it calls: the
+system library, graphics, audio, input and the Java side of the app. Every
+project that runs the Android client on Linux has to work this way, Sober
+included.
+
+By default Nightcap changes nothing inside Roblox's code. A few optional
+features change how the client looks, and they do it in memory while it runs:
+
+- A font or sky picked in Settings → Appearance.
+- Custom assets (cursors, fonts and sky from the asset folder).
+- System cursor and Desktop-drawn game cursor in Settings → Input.
+
+Each one first checks that the code matches the exact Roblox build it was made
+for, and does nothing if it doesn't. None of them give an advantage in a game.
+
+Flags in the FFlag editor go through Roblox's own flag settings, the same way
+Bloxstrap sets them on Windows.
+
 ## How do I turn Discord RPC off?
 
 RPC is on by default. It never signs in to Discord and never reads an
