@@ -616,7 +616,16 @@ bool Etc2GpuDecoder::RecordBatch(VkCommandBuffer command_buffer,
 
 bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
                               const VkPhysicalDeviceMemoryProperties& memory,
-                              std::string* error) {
+                              std::string* error,
+                              std::function<bool()>* transcode_check) {
+  const bool transcode_only = transcode_check != nullptr;
+  if (transcode_only) {
+    *transcode_check = nullptr;
+    if (!TranscodeBuilt()) {
+      *error = "transcode pipeline unavailable";
+      return false;
+    }
+  }
   constexpr std::uint32_t kBlocks = 32;
   constexpr EtcFormat kFormats[] = {
       EtcFormat::kEtc2Rgb8,    EtcFormat::kEtc2Rgb8A1,     EtcFormat::kEtc2Rgba8,
@@ -648,7 +657,11 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
                     EtcBlockBytes(format);
     jobs.push_back(job);
   }
-  if (TranscodeBuilt()) {
+  if (transcode_only) {
+    for (Etc2GpuJob& job : jobs) {
+      job.transcode = true;
+    }
+  } else if (TranscodeBuilt()) {
     const std::size_t decoded_jobs = jobs.size();
     for (std::size_t i = 0; i < decoded_jobs; ++i) {
       Etc2GpuJob job = jobs[i];
@@ -744,6 +757,20 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
       p.queue_submit(queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
       p.queue_wait_idle(queue) != VK_SUCCESS) {
     return finish(false, "self-test submit failed");
+  }
+  if (transcode_only) {
+    std::vector<std::uint8_t> output(bytes, bytes + total);
+    *transcode_check = [jobs, source = std::move(source),
+                        output = std::move(output)] {
+      for (const Etc2GpuJob& job : jobs) {
+        if (!TranscodeCloseToCpu(job, source.data() + job.source_offset,
+                                 output.data() + job.destination_offset)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    return finish(true, nullptr);
   }
 
   std::vector<std::uint8_t> tight;

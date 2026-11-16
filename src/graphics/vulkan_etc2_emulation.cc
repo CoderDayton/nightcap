@@ -469,11 +469,13 @@ struct HostDevice {
   // Guarded by State::mutex.
   mutable Etc2EncodeBudget budget{kEncodeBudgetShare, kEncodeBudgetBurstNs};
   mutable EncodeStats stats;
-  VkQueue decode_queue = VK_NULL_HANDLE;
   std::uint32_t decode_family = 0;
   std::future<bool> encoder_build;
+  std::future<bool> encoder_check;
   std::chrono::steady_clock::time_point encoder_started;
+  std::chrono::steady_clock::duration encoder_blocking{};
   std::atomic<bool> encoder_pending{false};
+  std::atomic<bool> encoder_busy{false};
 };
 
 template <typename Function>
@@ -4018,9 +4020,13 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   HostDevice* const building = state_->FindMutable(device);
   if (building != nullptr && building->encoder_build.valid()) {
     building->encoder_build.wait();
-    if (building->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
-      state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
-    }
+  }
+  if (building != nullptr && building->encoder_check.valid()) {
+    building->encoder_check.wait();
+  }
+  if (building != nullptr &&
+      building->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
+    state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
   }
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
@@ -5878,30 +5884,41 @@ void ReportEncoder(HostDevice& dev, Etc2GpuDecoder& decoder, VkQueue queue,
   }
 }
 
-void CompleteEncoder(HostDevice& dev, bool encode_budget,
-                     std::uint32_t upscale) {
+std::function<bool()> StartEncoder(HostDevice& dev, VkQueue queue,
+                                   bool encode_budget, std::uint32_t upscale) {
   const auto started = std::chrono::steady_clock::now();
   Etc2GpuDecoder& decoder = *dev.gpu;
   const bool built = dev.encoder_build.get();
   decoder.UseBuiltTranscode();
+  std::function<bool()> check;
   std::string error;
-  if (built && !decoder.SelfTest(dev.decode_queue, dev.decode_family,
-                                 dev.memory, &error)) {
+  if (built && !decoder.SelfTest(queue, dev.decode_family, dev.memory, &error,
+                                 &check)) {
     decoder.DisableTranscode();
   }
-  ReportEncoder(dev, decoder, dev.decode_queue, dev.decode_family,
-                encode_budget, upscale);
-  decoder.EnableTranscode();
-  const auto now = std::chrono::steady_clock::now();
+  ReportEncoder(dev, decoder, queue, dev.decode_family, encode_budget,
+                upscale);
+  dev.encoder_blocking += std::chrono::steady_clock::now() - started;
+  return check;
+}
+
+void EndEncoder(HostDevice& dev, bool passed) {
+  Etc2GpuDecoder& decoder = *dev.gpu;
+  if (passed) {
+    decoder.EnableTranscode();
+  } else {
+    decoder.DisableTranscode();
+  }
   const auto ms = [](auto span) {
     return static_cast<long long>(
         std::chrono::duration_cast<std::chrono::milliseconds>(span).count());
   };
   std::fprintf(stderr,
                "  [vulkan] BC7 encoder %s %lld ms after the device started; "
-               "setup took %lld ms\n",
-               decoder.CanTranscode() ? "ready" : "unavailable",
-               ms(now - dev.encoder_started), ms(now - started));
+               "setup held the queue for %lld ms\n",
+               decoder.CanTranscode() ? "ready" : "failed its self-test",
+               ms(std::chrono::steady_clock::now() - dev.encoder_started),
+               ms(dev.encoder_blocking));
 }
 
 }
@@ -5946,7 +5963,6 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
     return true;
   }
   Etc2GpuDecoder* const building = decoder.get();
-  dev->decode_queue = queue;
   dev->decode_family = queue_family;
   dev->encoder_started = std::chrono::steady_clock::now();
   dev->encoder_build = std::async(std::launch::async, [building] {
@@ -5956,7 +5972,9 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
   const std::chrono::milliseconds wait = *state_->encoder_build_wait;
   if (wait.count() > 0 &&
       dev->encoder_build.wait_for(wait) == std::future_status::ready) {
-    CompleteEncoder(*dev, state_->encode_budget, state_->upscale);
+    const std::function<bool()> check =
+        StartEncoder(*dev, queue, state_->encode_budget, state_->upscale);
+    EndEncoder(*dev, check && check());
     return true;
   }
   dev->encoder_pending.store(true, std::memory_order_release);
@@ -5973,26 +5991,54 @@ bool VulkanEtc2Emulation::EncoderPending() const {
 }
 
 void VulkanEtc2Emulation::FinishEncoder(VkQueue queue) {
-  if (queue != VK_NULL_HANDLE && EncoderPending()) {
-    HostDevice* finished = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(state_->devices_mutex);
-      for (const std::unique_ptr<HostDevice>& dev : state_->devices) {
-        if (dev->encoder_pending.load(std::memory_order_acquire) &&
-            dev->decode_queue == queue &&
-            dev->encoder_build.wait_for(std::chrono::seconds(0)) ==
-                std::future_status::ready &&
-            dev->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
-          state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
-          finished = dev.get();
-          break;
-        }
-      }
+  if (queue == VK_NULL_HANDLE || !EncoderPending()) {
+    return;
+  }
+  const auto ready = [](const std::future<bool>& future) {
+    return future.wait_for(std::chrono::seconds(0)) ==
+           std::future_status::ready;
+  };
+  State::QueueFamily owner;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto found = state_->queue_families.find(queue);
+    if (found == state_->queue_families.end()) {
+      return;
     }
-    if (finished != nullptr) {
-      CompleteEncoder(*finished, state_->encode_budget, state_->upscale);
+    owner = found->second;
+  }
+  HostDevice* const dev = state_->FindMutable(owner.device);
+  if (dev == nullptr ||
+      !dev->encoder_pending.load(std::memory_order_acquire) ||
+      owner.family != dev->decode_family ||
+      dev->encoder_busy.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  struct Release {
+    std::atomic<bool>& busy;
+    ~Release() { busy.store(false, std::memory_order_release); }
+  } release{dev->encoder_busy};
+  bool passed = false;
+  if (dev->encoder_check.valid()) {
+    if (!ready(dev->encoder_check)) {
+      return;
+    }
+    passed = dev->encoder_check.get();
+  } else {
+    if (!ready(dev->encoder_build)) {
+      return;
+    }
+    std::function<bool()> check =
+        StartEncoder(*dev, queue, state_->encode_budget, state_->upscale);
+    if (check) {
+      dev->encoder_check = std::async(std::launch::async, std::move(check));
+      return;
     }
   }
+  if (dev->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
+    state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
+  }
+  EndEncoder(*dev, passed);
 }
 
 Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(

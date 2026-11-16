@@ -4990,6 +4990,7 @@ TEST(VulkanEtc2GpuEmulationTest, EncoderBuiltInTheBackgroundStartsAtASubmit) {
     if (!vk.bc_textures) {
       continue;
     }
+    ScopedEncodeBudget budget;
     VulkanEtc2Emulation emulation;
     emulation.SetEncoderBuildWait(std::chrono::milliseconds(0));
     emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,

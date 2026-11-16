@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -100,7 +101,8 @@ class Etc2GpuDecoder final {
   // turns transcoding off.
   bool SelfTest(VkQueue queue, std::uint32_t queue_family,
                 const VkPhysicalDeviceMemoryProperties& memory,
-                std::string* error);
+                std::string* error,
+                std::function<bool()>* transcode_check = nullptr);
 
   // Times transcode and upscale jobs on `queue`. Without `encode` only the
   // decode and scale of an upscale are timed, and transcode_ns stays 0.
