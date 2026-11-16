@@ -2000,11 +2000,14 @@ std::filesystem::path PrepareCustomFontOverlay() {
 // written.
 void DisableOverlaidAssetMappings(uintptr_t base) {
   const char* asset_root = std::getenv("MOCKTAIL_ASSET_ROOT");
+  const std::filesystem::path shipped_root =
+      asset_root != nullptr ? asset_root : DefaultAssetPath();
   std::vector<std::string> names = mocktail::runtime::WithoutShippedAssets(
       mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir()),
-      asset_root != nullptr ? asset_root : DefaultAssetPath());
-  for (std::string& name : mocktail::runtime::OverlayRbxAssetNames(
-           PrepareCustomFontOverlay())) {
+      shipped_root);
+  for (std::string& name : mocktail::runtime::WithoutShippedAssets(
+           mocktail::runtime::OverlayRbxAssetNames(PrepareCustomFontOverlay()),
+           shipped_root)) {
     if (std::find(names.begin(), names.end(), name) == names.end()) {
       names.push_back(std::move(name));
     }
