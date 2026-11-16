@@ -42,6 +42,7 @@ class FailureSupportBundleGuard {
 
   void SetExitCode(int exit_code);
   void Disarm();
+  void Finish();
 
  private:
   const Environment* environment_ = nullptr;

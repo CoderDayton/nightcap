@@ -1565,6 +1565,13 @@ int main(int argc, char* argv[]) {
     std::cerr.flush();
     std::_Exit(EXIT_SUCCESS);
   }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    failure_dialog = mocktail::runtime::FailureDialogMonitor();
+    support_bundle_guard.Finish();
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(runtime_status);
+  }
   if (runtime_status == EXIT_SUCCESS) {
     failure_dialog.MarkSuccessful();
     support_bundle_guard.Disarm();

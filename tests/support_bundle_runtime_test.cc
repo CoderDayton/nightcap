@@ -133,5 +133,25 @@ TEST(SupportBundleRuntimeTest, RejectsUnstructuredReason) {
   EXPECT_FALSE(result.attempted);
 }
 
+TEST(SupportBundleRuntimeTest, GuardCollectsOnceWhenFinishedEarly) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path state = temporary.root() / "state";
+  const std::filesystem::path output = temporary.root() / "support-output";
+  ASSERT_TRUE(std::filesystem::create_directories(state));
+  const MapEnvironment environment({
+      {"HOME", (temporary.root() / "home").string()},
+      {"MOCKTAIL_STATE_ROOT", state.string()},
+      {"MOCKTAIL_SUPPORT_OUTPUT_ROOT", output.string()},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  {
+    FailureSupportBundleGuard guard(environment, paths, true);
+    guard.SetExitCode(1);
+    guard.Finish();
+    EXPECT_FALSE(OnlyBundle(output).empty());
+  }
+  EXPECT_FALSE(OnlyBundle(output).empty());
+}
+
 }  // namespace
 }  // namespace mocktail::runtime
