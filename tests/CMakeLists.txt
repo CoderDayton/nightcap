@@ -1239,6 +1239,12 @@ target_link_libraries(bionic_signal_runtime_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(crash_reporter_test crash_reporter_test.cc)
+target_link_libraries(crash_reporter_test PRIVATE
+  Mocktail::Compat
+  GTest::gtest_main
+)
+
 add_executable(bionic_semaphore_runtime_test
   bionic_semaphore_runtime_test.cc
 )
@@ -1479,6 +1485,7 @@ gtest_discover_tests(bionic_large_file_runtime_test)
 gtest_discover_tests(bionic_pthread_create_runtime_test)
 gtest_discover_tests(bionic_sysconf_test)
 gtest_discover_tests(bionic_signal_runtime_test)
+gtest_discover_tests(crash_reporter_test)
 gtest_discover_tests(bionic_semaphore_runtime_test)
 gtest_discover_tests(bionic_rwlock_runtime_test)
 gtest_discover_tests(bionic_abi_exports_test)

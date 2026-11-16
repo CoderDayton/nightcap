@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "compat/crash_reporter.h"
 #include "compat/elf_build_id.h"
 #include "compat/file_digest_record.h"
 #include "compat/host_abi_profile.h"
@@ -761,6 +762,9 @@ int main(int argc, char* argv[]) {
                 << session_log.error() << '\n';
     }
     std::cout << process_launch_diagnostics << std::flush;
+    if (!mocktail::compat::InstallCrashReporter()) {
+      std::cerr << "  [crash] reporter unavailable\n";
+    }
     mocktail::runtime::InstallCpuLimitDiagnostics();
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kStartup);

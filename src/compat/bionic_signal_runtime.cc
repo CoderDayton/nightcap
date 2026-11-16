@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "compat/crash_reporter.h"
+
 namespace mocktail::compat {
 namespace {
 
@@ -46,9 +48,13 @@ int BionicSigactionCall(int signal_number, const BionicSigaction* action,
     host_action_pointer = &host_action;
   }
 
+  struct sigaction* const host_old_pointer =
+      old_action != nullptr ? &host_old_action : nullptr;
   const int result =
-      sigaction(signal_number, host_action_pointer,
-                old_action != nullptr ? &host_old_action : nullptr);
+      CrashReporterOwns(signal_number)
+          ? SetGuestCrashAction(signal_number, host_action_pointer,
+                                host_old_pointer)
+          : sigaction(signal_number, host_action_pointer, host_old_pointer);
   if (result != 0 || old_action == nullptr) {
     return result;
   }

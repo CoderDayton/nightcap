@@ -19,6 +19,7 @@ add_library(mocktail_compat STATIC
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_prctl_runtime.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_rwlock_runtime.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_signal_runtime.cc
+  ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/crash_reporter.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_socket_runtime.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_semaphore_runtime.cc
   ${MOCKTAIL_ELF_COMPAT_ROOT}/src/compat/bionic_pthread_create_runtime.cc
