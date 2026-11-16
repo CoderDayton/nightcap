@@ -9,6 +9,8 @@ Release notes on GitHub are taken from the matching section here.
 
 - The AppImage offers to add Nightcap to the app menu the first time it runs, with Settings and Roblox
   links. The entry hides once the AppImage is deleted and is removed on the next Nightcap start.
+- When Nightcap or Roblox crashes, the session log now shows where: the signal, the thread and a
+  backtrace of library offsets, so a crash report no longer needs a core dump.
 
 ### Fixed
 
