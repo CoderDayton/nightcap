@@ -173,7 +173,7 @@ VkDeviceSize Etc2GpuOutputBytes(const Etc2GpuJob& job) {
 
 std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
     VkDevice device, PFN_vkGetDeviceProcAddr get_device_proc_addr,
-    std::string* error) {
+    std::string* error, bool build_transcode) {
   std::unique_ptr<Etc2GpuDecoder> decoder(new Etc2GpuDecoder());
   decoder->device_ = device;
   decoder->procs_ = std::make_unique<Procs>();
@@ -284,11 +284,11 @@ std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
   shader.pCode = kEtc2TranscodeSpv;
   if (p.create_shader_module(device, &shader, nullptr,
                              &decoder->transcode_shader_) == VK_SUCCESS) {
-    pipeline.stage.module = decoder->transcode_shader_;
-    if (p.create_compute_pipelines(device, VK_NULL_HANDLE, 1, &pipeline,
-                                   nullptr, &decoder->transcode_pipeline_) !=
-        VK_SUCCESS) {
-      decoder->transcode_pipeline_ = VK_NULL_HANDLE;
+    if (!build_transcode) {
+      decoder->transcode_awaited_.store(true, std::memory_order_release);
+    } else if (decoder->BuildTranscode()) {
+      decoder->UseBuiltTranscode();
+      decoder->EnableTranscode();
     }
   }
   shader.codeSize = sizeof(kEtc2ScaleSpv);
@@ -305,11 +305,50 @@ std::unique_ptr<Etc2GpuDecoder> Etc2GpuDecoder::Create(
   return decoder;
 }
 
+bool Etc2GpuDecoder::BuildTranscode() {
+  if (transcode_shader_ == VK_NULL_HANDLE) {
+    return false;
+  }
+  VkComputePipelineCreateInfo pipeline{};
+  pipeline.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  pipeline.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  pipeline.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  pipeline.stage.module = transcode_shader_;
+  pipeline.stage.pName = "main";
+  pipeline.layout = pipeline_layout_;
+  VkPipeline built = VK_NULL_HANDLE;
+  if (procs_->create_compute_pipelines(device_, VK_NULL_HANDLE, 1, &pipeline,
+                                       nullptr, &built) != VK_SUCCESS) {
+    return false;
+  }
+  built_transcode_ = built;
+  return true;
+}
+
+void Etc2GpuDecoder::UseBuiltTranscode() {
+  if (built_transcode_ == VK_NULL_HANDLE) {
+    transcode_awaited_.store(false, std::memory_order_release);
+    return;
+  }
+  transcode_pipeline_.store(built_transcode_, std::memory_order_release);
+  built_transcode_ = VK_NULL_HANDLE;
+}
+
+void Etc2GpuDecoder::EnableTranscode() {
+  if (TranscodeBuilt()) {
+    transcode_live_.store(true, std::memory_order_release);
+  }
+  transcode_awaited_.store(false, std::memory_order_release);
+}
+
 Etc2GpuDecoder::~Etc2GpuDecoder() {
   if (procs_ == nullptr) {
     return;
   }
   DisableTranscode();
+  if (built_transcode_ != VK_NULL_HANDLE) {
+    procs_->destroy_pipeline(device_, built_transcode_, nullptr);
+  }
   if (transcode_shader_ != VK_NULL_HANDLE) {
     procs_->destroy_shader_module(device_, transcode_shader_, nullptr);
   }
@@ -415,7 +454,7 @@ std::uint32_t GroupsHigh(const Etc2GpuJob& job) {
 
 VkPipeline Etc2GpuDecoder::PipelineFor(const Etc2GpuJob& job) const {
   return job.scale       ? scale_pipeline_
-         : job.transcode ? transcode_pipeline_
+         : job.transcode ? transcode_pipeline_.load(std::memory_order_acquire)
                          : pipeline_;
 }
 
@@ -433,7 +472,7 @@ bool Etc2GpuDecoder::Valid(const Etc2GpuJob& job) const {
           job.destination_offset / 4 > kMaxWordOffset ||
           layer_bytes / 4 > kMaxWordOffset);
   }
-  return !((job.transcode && transcode_pipeline_ == VK_NULL_HANDLE) ||
+  return !((job.transcode && !TranscodeBuilt()) ||
         (job.rgba_source &&
          (!job.transcode || BcFormatFor(job.format) != BcFormat::kBc7)) ||
         job.blocks_wide == 0 || job.blocks_high == 0 || job.layers == 0 ||
@@ -523,7 +562,8 @@ bool Etc2GpuDecoder::RecordBatch(VkCommandBuffer command_buffer,
   }
   bool bound_set = false;
   for (const VkPipeline pipeline :
-       {pipeline_, transcode_pipeline_, scale_pipeline_}) {
+       {pipeline_, transcode_pipeline_.load(std::memory_order_acquire),
+        scale_pipeline_}) {
     BatchPushConstants push{};
     push.head.flags = kBatchFlag;
     std::uint32_t n = 0;
@@ -608,7 +648,7 @@ bool Etc2GpuDecoder::SelfTest(VkQueue queue, std::uint32_t queue_family,
                     EtcBlockBytes(format);
     jobs.push_back(job);
   }
-  if (transcode_pipeline_ != VK_NULL_HANDLE) {
+  if (TranscodeBuilt()) {
     const std::size_t decoded_jobs = jobs.size();
     for (std::size_t i = 0; i < decoded_jobs; ++i) {
       Etc2GpuJob job = jobs[i];
@@ -767,7 +807,7 @@ bool Etc2GpuDecoder::MeasureSpeed(VkQueue queue, std::uint32_t queue_family,
                                   const VkPhysicalDeviceMemoryProperties& memory,
                                   bool encode, Etc2GpuSpeed* speed,
                                   std::string* error) {
-  if ((encode && transcode_pipeline_ == VK_NULL_HANDLE) ||
+  if ((encode && !TranscodeBuilt()) ||
       scale_pipeline_ == VK_NULL_HANDLE) {
     *error = "transcode or scale pipeline unavailable";
     return false;
@@ -1062,9 +1102,12 @@ bool Etc2GpuDecoder::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
 }
 
 void Etc2GpuDecoder::DisableTranscode() {
-  if (transcode_pipeline_ != VK_NULL_HANDLE) {
-    procs_->destroy_pipeline(device_, transcode_pipeline_, nullptr);
-    transcode_pipeline_ = VK_NULL_HANDLE;
+  transcode_live_.store(false, std::memory_order_release);
+  transcode_awaited_.store(false, std::memory_order_release);
+  const VkPipeline pipeline =
+      transcode_pipeline_.exchange(VK_NULL_HANDLE, std::memory_order_acq_rel);
+  if (pipeline != VK_NULL_HANDLE) {
+    procs_->destroy_pipeline(device_, pipeline, nullptr);
   }
 }
 

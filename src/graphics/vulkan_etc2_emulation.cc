@@ -14,9 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <future>
 #include <map>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <mutex>
 #include <set>
@@ -467,6 +469,11 @@ struct HostDevice {
   // Guarded by State::mutex.
   mutable Etc2EncodeBudget budget{kEncodeBudgetShare, kEncodeBudgetBurstNs};
   mutable EncodeStats stats;
+  VkQueue decode_queue = VK_NULL_HANDLE;
+  std::uint32_t decode_family = 0;
+  std::future<bool> encoder_build;
+  std::chrono::steady_clock::time_point encoder_started;
+  std::atomic<bool> encoder_pending{false};
 };
 
 template <typename Function>
@@ -854,7 +861,7 @@ bool CompressesTextures(const HostDevice& dev) {
 bool DecodesOnCpu(const HostDevice& dev, const ImageRecord& record) {
   const bool decoded_beside_bc =
       !record.transcoded && IsColorFormat(record.format.etc_format) &&
-      record.beside_bc && dev.gpu != nullptr && dev.gpu->CanTranscode();
+      record.beside_bc && dev.gpu != nullptr && dev.gpu->TranscodeExpected();
   return dev.gpu == nullptr || dev.copy_buffer == nullptr ||
          record.scale != 1 || record.may_override || decoded_beside_bc;
 }
@@ -1855,6 +1862,8 @@ struct VulkanEtc2Emulation::State {
   };
   std::unordered_map<VkQueue, QueueFamily> queue_families;
   std::atomic<bool> has_commands{false};
+  std::optional<std::chrono::milliseconds> encoder_build_wait;
+  std::atomic<int> encoders_pending{0};
   std::mutex pool_mutex;
   std::map<std::pair<VkDevice, std::uint32_t>, VkCommandPool> pools;
   // Blocks of every device, in creation order. Guarded by `mutex`; a block's
@@ -4006,6 +4015,13 @@ void VulkanEtc2Emulation::SetMemoryBudgetQuery(VkDevice device,
 }
 
 void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
+  HostDevice* const building = state_->FindMutable(device);
+  if (building != nullptr && building->encoder_build.valid()) {
+    building->encoder_build.wait();
+    if (building->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
+      state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
+    }
+  }
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
   {
@@ -4183,9 +4199,9 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   }
   // Read once: another thread may latch low memory while this image is sized.
   const bool compresses = CompressesTextures(*dev);
+  const bool can_transcode = dev->gpu != nullptr && dev->gpu->CanTranscode();
   const auto bc_eligible = [&](std::uint32_t at_scale) {
-    return bc_format_known && compresses && dev->gpu != nullptr &&
-           dev->gpu->CanTranscode() && !may_override &&
+    return bc_format_known && compresses && can_transcode && !may_override &&
            (at_scale == 1 || dev->gpu->CanScale()) &&
            create_info->imageType == VK_IMAGE_TYPE_2D &&
            create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
@@ -5812,6 +5828,84 @@ void VulkanEtc2Emulation::RegisterQueue(VkDevice device, VkQueue queue,
   state_->queue_families[queue] = {device, queue_family};
 }
 
+void VulkanEtc2Emulation::SetEncoderBuildWait(std::chrono::milliseconds wait) {
+  state_->encoder_build_wait = wait;
+}
+
+namespace {
+
+void ReportEncoder(HostDevice& dev, Etc2GpuDecoder& decoder, VkQueue queue,
+                   std::uint32_t queue_family, bool encode_budget,
+                   std::uint32_t upscale) {
+  std::string error;
+  if (dev.bc_textures) {
+    std::fprintf(stderr,
+                 decoder.TranscodeBuilt()
+                     ? "  [vulkan] ETC2/EAC textures stay compressed as "
+                       "BC7/BC4/BC5\n"
+                     : "  [vulkan] BC transcode unavailable or failed its "
+                       "self-test; "
+                       "textures stay decoded\n");
+  } else if (dev.bc_fallback) {
+    std::fprintf(stderr,
+                 decoder.TranscodeBuilt()
+                     ? "  [vulkan] ETC2/EAC textures stay decoded until video "
+                       "memory runs low\n"
+                     : "  [vulkan] BC transcode unavailable or failed its "
+                       "self-test; textures stay decoded even when video "
+                       "memory runs low\n");
+  }
+  if (dev.bc_textures && decoder.TranscodeBuilt() && decoder.CanScale() &&
+      encode_budget) {
+    Etc2GpuSpeed speed;
+    if (decoder.MeasureSpeed(queue, queue_family, dev.memory, true, &speed,
+                             &error)) {
+      dev.speed = speed;
+      std::fprintf(stderr,
+                   "  [vulkan] BC encode speed: transcode %.1f ns/block "
+                   "(fast %.1f), upscale %.1f ns/block; small texture upscale "
+                   "%ux; encode budget on\n",
+                   speed.transcode_ns, speed.fast_transcode_ns,
+                   speed.upscale_ns, upscale);
+    } else {
+      std::fprintf(stderr,
+                   "  [vulkan] BC encode speed probe failed (%s); encodes "
+                   "are not budgeted\n",
+                   error.c_str());
+    }
+  } else if (dev.bc_textures && !encode_budget) {
+    std::fprintf(stderr, "  [vulkan] BC encode budget off\n");
+  }
+}
+
+void CompleteEncoder(HostDevice& dev, bool encode_budget,
+                     std::uint32_t upscale) {
+  const auto started = std::chrono::steady_clock::now();
+  Etc2GpuDecoder& decoder = *dev.gpu;
+  const bool built = dev.encoder_build.get();
+  decoder.UseBuiltTranscode();
+  std::string error;
+  if (built && !decoder.SelfTest(dev.decode_queue, dev.decode_family,
+                                 dev.memory, &error)) {
+    decoder.DisableTranscode();
+  }
+  ReportEncoder(dev, decoder, dev.decode_queue, dev.decode_family,
+                encode_budget, upscale);
+  decoder.EnableTranscode();
+  const auto now = std::chrono::steady_clock::now();
+  const auto ms = [](auto span) {
+    return static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(span).count());
+  };
+  std::fprintf(stderr,
+               "  [vulkan] BC7 encoder %s %lld ms after the device started; "
+               "setup took %lld ms\n",
+               decoder.CanTranscode() ? "ready" : "unavailable",
+               ms(now - dev.encoder_started), ms(now - started));
+}
+
+}
+
 bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
                                           std::uint32_t queue_family) {
   HostDevice* dev = state_->FindMutable(device);
@@ -5831,9 +5925,11 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
       dev->end_command_buffer == nullptr || dev->pipeline_barrier == nullptr) {
     return false;
   }
+  const bool background = (dev->bc_textures || dev->bc_fallback) &&
+                          state_->encoder_build_wait.has_value();
   std::string error;
-  std::unique_ptr<Etc2GpuDecoder> decoder =
-      Etc2GpuDecoder::Create(device, dev->get_device_proc_addr, &error);
+  std::unique_ptr<Etc2GpuDecoder> decoder = Etc2GpuDecoder::Create(
+      device, dev->get_device_proc_addr, &error, !background);
   if (decoder == nullptr ||
       !decoder->SelfTest(queue, queue_family, dev->memory, &error)) {
     std::fprintf(stderr,
@@ -5843,48 +5939,60 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
     return false;
   }
   std::fprintf(stderr, "  [vulkan] ETC2 GPU decode enabled\n");
-  if (dev->bc_textures) {
-    std::fprintf(stderr,
-                 decoder->CanTranscode()
-                     ? "  [vulkan] ETC2/EAC textures stay compressed as "
-                       "BC7/BC4/BC5\n"
-                     : "  [vulkan] BC transcode unavailable or failed its "
-                       "self-test; "
-                       "textures stay decoded\n");
-  } else if (dev->bc_fallback) {
-    std::fprintf(stderr,
-                 decoder->CanTranscode()
-                     ? "  [vulkan] ETC2/EAC textures stay decoded until video "
-                       "memory runs low\n"
-                     : "  [vulkan] BC transcode unavailable or failed its "
-                       "self-test; textures stay decoded even when video "
-                       "memory runs low\n");
+  if (!background) {
+    ReportEncoder(*dev, *decoder, queue, queue_family, state_->encode_budget,
+                  state_->upscale);
+    dev->gpu = std::move(decoder);
+    return true;
   }
-  // Measured before the decoder is published, so CreateImage never sees it
-  // without the speed that goes with it. Only BC encodes are budgeted.
-  if (dev->bc_textures && decoder->CanTranscode() && decoder->CanScale() &&
-      state_->encode_budget) {
-    Etc2GpuSpeed speed;
-    if (decoder->MeasureSpeed(queue, queue_family, dev->memory, true, &speed,
-                              &error)) {
-      dev->speed = speed;
-      std::fprintf(stderr,
-                   "  [vulkan] BC encode speed: transcode %.1f ns/block "
-                   "(fast %.1f), upscale %.1f ns/block; small texture upscale "
-                   "%ux; encode budget on\n",
-                   speed.transcode_ns, speed.fast_transcode_ns,
-                   speed.upscale_ns, state_->upscale);
-    } else {
-      std::fprintf(stderr,
-                   "  [vulkan] BC encode speed probe failed (%s); encodes "
-                   "are not budgeted\n",
-                   error.c_str());
-    }
-  } else if (dev->bc_textures && !state_->encode_budget) {
-    std::fprintf(stderr, "  [vulkan] BC encode budget off\n");
-  }
+  Etc2GpuDecoder* const building = decoder.get();
+  dev->decode_queue = queue;
+  dev->decode_family = queue_family;
+  dev->encoder_started = std::chrono::steady_clock::now();
+  dev->encoder_build = std::async(std::launch::async, [building] {
+    return building->BuildTranscode();
+  });
   dev->gpu = std::move(decoder);
+  const std::chrono::milliseconds wait = *state_->encoder_build_wait;
+  if (wait.count() > 0 &&
+      dev->encoder_build.wait_for(wait) == std::future_status::ready) {
+    CompleteEncoder(*dev, state_->encode_budget, state_->upscale);
+    return true;
+  }
+  dev->encoder_pending.store(true, std::memory_order_release);
+  state_->encoders_pending.fetch_add(1, std::memory_order_acq_rel);
+  std::fprintf(stderr,
+               "  [vulkan] BC7 encoder still compiling after %lld ms; textures "
+               "load uncompressed until it is ready\n",
+               static_cast<long long>(wait.count()));
   return true;
+}
+
+bool VulkanEtc2Emulation::EncoderPending() const {
+  return state_->encoders_pending.load(std::memory_order_acquire) > 0;
+}
+
+void VulkanEtc2Emulation::FinishEncoder(VkQueue queue) {
+  if (queue != VK_NULL_HANDLE && EncoderPending()) {
+    HostDevice* finished = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(state_->devices_mutex);
+      for (const std::unique_ptr<HostDevice>& dev : state_->devices) {
+        if (dev->encoder_pending.load(std::memory_order_acquire) &&
+            dev->decode_queue == queue &&
+            dev->encoder_build.wait_for(std::chrono::seconds(0)) ==
+                std::future_status::ready &&
+            dev->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
+          state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
+          finished = dev.get();
+          break;
+        }
+      }
+    }
+    if (finished != nullptr) {
+      CompleteEncoder(*finished, state_->encode_budget, state_->upscale);
+    }
+  }
 }
 
 Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(

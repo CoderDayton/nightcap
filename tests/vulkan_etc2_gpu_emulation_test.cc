@@ -4980,5 +4980,67 @@ TEST(VulkanEtc2GpuEmulationTest, DISABLED_BenchmarkUploadBatch) {
   CloseTestDevices(&devices);
 }
 
+TEST(VulkanEtc2GpuEmulationTest, EncoderBuiltInTheBackgroundStartsAtASubmit) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.SetEncoderBuildWait(std::chrono::milliseconds(0));
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+
+    constexpr std::uint32_t kSize = 256;
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    info.extent = {kSize, kSize, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    constexpr VkDeviceSize kDecoded = VkDeviceSize{kSize} * kSize * 4;
+    constexpr VkDeviceSize kBc7 = VkDeviceSize{kSize} * kSize;
+
+    VkImage early = VK_NULL_HANDLE;
+    ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &early),
+              VK_SUCCESS);
+    EXPECT_EQ(emulation.TextureBytes().decoded, kDecoded);
+
+    VkImage late = VK_NULL_HANDLE;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    VkDeviceSize late_bytes = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+      emulation.FinishEncoder(vk.queue);
+      ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &late),
+                VK_SUCCESS);
+      late_bytes = emulation.TextureBytes().decoded - kDecoded;
+      if (late_bytes == kBc7) {
+        break;
+      }
+      emulation.DestroyImage(vk.device, late, nullptr);
+      late = VK_NULL_HANDLE;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(late_bytes, kBc7);
+    if (late != VK_NULL_HANDLE) {
+      emulation.DestroyImage(vk.device, late, nullptr);
+    }
+    emulation.DestroyImage(vk.device, early, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
 }
 }

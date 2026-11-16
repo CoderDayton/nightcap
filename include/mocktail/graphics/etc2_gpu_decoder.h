@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -68,7 +69,7 @@ class Etc2GpuDecoder final {
  public:
   static std::unique_ptr<Etc2GpuDecoder> Create(
       VkDevice device, PFN_vkGetDeviceProcAddr get_device_proc_addr,
-      std::string* error);
+      std::string* error, bool build_transcode = true);
   ~Etc2GpuDecoder();
   Etc2GpuDecoder(const Etc2GpuDecoder&) = delete;
   Etc2GpuDecoder& operator=(const Etc2GpuDecoder&) = delete;
@@ -107,14 +108,27 @@ class Etc2GpuDecoder final {
                     const VkPhysicalDeviceMemoryProperties& memory,
                     bool encode, Etc2GpuSpeed* speed, std::string* error);
 
-  bool CanTranscode() const { return transcode_pipeline_ != VK_NULL_HANDLE; }
+  bool CanTranscode() const {
+    return transcode_live_.load(std::memory_order_acquire);
+  }
   bool CanScale() const { return scale_pipeline_ != VK_NULL_HANDLE; }
+
+  bool BuildTranscode();
+  void UseBuiltTranscode();
+  bool TranscodeBuilt() const {
+    return transcode_pipeline_.load(std::memory_order_acquire) !=
+           VK_NULL_HANDLE;
+  }
+  void EnableTranscode();
+  bool TranscodeExpected() const {
+    return CanTranscode() || transcode_awaited_.load(std::memory_order_acquire);
+  }
+  void DisableTranscode();
 
   struct Procs;
 
  private:
   Etc2GpuDecoder() = default;
-  void DisableTranscode();
   bool Valid(const Etc2GpuJob& job) const;
   VkPipeline PipelineFor(const Etc2GpuJob& job) const;
   // Bound to the first memory type with `want`, else with `fallback`.
@@ -130,7 +144,10 @@ class Etc2GpuDecoder final {
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipeline pipeline_ = VK_NULL_HANDLE;
   VkShaderModule transcode_shader_ = VK_NULL_HANDLE;
-  VkPipeline transcode_pipeline_ = VK_NULL_HANDLE;
+  std::atomic<VkPipeline> transcode_pipeline_{VK_NULL_HANDLE};
+  std::atomic<bool> transcode_live_{false};
+  std::atomic<bool> transcode_awaited_{false};
+  VkPipeline built_transcode_ = VK_NULL_HANDLE;
   VkShaderModule scale_shader_ = VK_NULL_HANDLE;
   VkPipeline scale_pipeline_ = VK_NULL_HANDLE;
 };

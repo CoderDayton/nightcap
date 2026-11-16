@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -161,6 +162,9 @@ class VulkanEtc2Emulation final {
                      std::uint32_t queue_family);
   bool EnableGpuDecode(VkDevice device, VkQueue queue,
                        std::uint32_t queue_family);
+  void SetEncoderBuildWait(std::chrono::milliseconds wait);
+  bool EncoderPending() const;
+  void FinishEncoder(VkQueue queue);
 
   VkResult CreateImage(VkDevice device, const VkImageCreateInfo* create_info,
                        const VkAllocationCallbacks* allocator, VkImage* image);
