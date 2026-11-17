@@ -145,8 +145,32 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   // Roblox can keep Shift Lock active while chat has text focus. Honor that
   // native lock so camera motion stays relative and cannot leave the window.
   // Text editing only suppresses the host's fallback RMB camera capture.
+  const bool position_lock_reported =
+      query_ok && mouse_lock.reports_current_position &&
+      mouse_lock.current_position && !mouse_lock.center &&
+      game_session_active_ && !text_input_active;
+  if (!position_lock_reported) {
+    position_lock_pending_ = false;
+    position_lock_active_ = false;
+  } else if (!position_lock_active_) {
+    if (right_button_held_ || presented_frames_ == nullptr) {
+      position_lock_pending_ = false;
+    } else {
+      const std::uint64_t frames = PresentedFrames();
+      const std::uint64_t now = NowMs();
+      if (!position_lock_pending_) {
+        position_lock_pending_ = true;
+        position_lock_frame_ = frames;
+        position_lock_ms_ = now;
+      }
+      position_lock_active_ =
+          frames - position_lock_frame_ >= kPositionLockFrames &&
+          now - position_lock_ms_ >= kPositionLockMs;
+    }
+  }
   const bool capture_requested =
-      native_capture_active || (right_drag_active && !text_input_active);
+      native_capture_active || position_lock_active_ ||
+      (right_drag_active && !text_input_active);
   // When capture is released, Roblox still draws its own cursor. Show the
   // system pointer only when the native client cannot provide one, or when
   // Roblox reports a stock cursor the desktop has its own shape for.
@@ -246,6 +270,8 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
   focused_ = false;
   desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
+  position_lock_pending_ = false;
+  position_lock_active_ = false;
   // The pointer now belongs to whichever window took focus.
   return Apply(false, CursorShape::kArrow, nullptr, false, false);
 }
@@ -255,6 +281,8 @@ bool WindowPointerCaptureOwner::Shutdown() {
   focused_ = false;
   desktop_shows_roblox_cursor_.store(false, std::memory_order_relaxed);
   right_button_held_ = false;
+  position_lock_pending_ = false;
+  position_lock_active_ = false;
   return Apply(false, CursorShape::kArrow);
 }
 
