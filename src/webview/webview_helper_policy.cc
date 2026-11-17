@@ -271,7 +271,10 @@ UriPolicyResult EvaluateNavigationUri(const char* uri) {
   if (uri == nullptr) {
     return result;
   }
-  if (std::string_view(uri) == "about:blank") {
+  const std::string_view text(uri);
+  if (text == "about:srcdoc" || text == "about:blank" ||
+      (text.size() > 11 && text.substr(0, 11) == "about:blank" &&
+       (text[11] == '#' || text[11] == '?'))) {
     result.allowed = true;
     result.scheme = "about";
     result.host = "none";

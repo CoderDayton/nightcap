@@ -167,8 +167,12 @@ TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
       EvaluateNavigationUri("HTTPS://client-api.arkoselabs.com:443/");
   EXPECT_TRUE(captcha.allowed);
   EXPECT_FALSE(captcha.privileged_bridge_allowed);
-  EXPECT_TRUE(EvaluateNavigationUri("about:blank").allowed);
-  EXPECT_FALSE(EvaluateNavigationUri("about:blank").privileged_bridge_allowed);
+  for (const char* frame :
+       {"about:blank", "about:blank#fragment", "about:blank?x", "about:srcdoc"}) {
+    EXPECT_TRUE(EvaluateNavigationUri(frame).allowed) << frame;
+    EXPECT_FALSE(EvaluateNavigationUri(frame).privileged_bridge_allowed)
+        << frame;
+  }
   EXPECT_TRUE(EvaluateNavigationUri("https://apis.roblox.com/")
                   .privileged_bridge_allowed);
   EXPECT_FALSE(EvaluateNavigationUri("https://evilroblox.com/")
@@ -181,7 +185,8 @@ TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
            "javascript:alert(1)",
            "https://user@www.roblox.com/login",
            "https://www.roblox.com:444/login",
-           "about:blank#fragment",
+           "about:config",
+           "about:blankx",
            "https:///missing-host",
        }) {
     EXPECT_FALSE(EvaluateNavigationUri(rejected).allowed) << rejected;
