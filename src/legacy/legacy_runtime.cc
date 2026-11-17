@@ -2003,10 +2003,15 @@ std::filesystem::path PrepareCustomFontOverlay() {
 // before any libroblox code does: the segment loses PROT_EXEC while it is
 // written.
 void DisableOverlaidAssetMappings(uintptr_t base) {
-  std::vector<std::string> names =
-      mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir());
-  for (std::string& name : mocktail::runtime::OverlayRbxAssetNames(
-           PrepareCustomFontOverlay())) {
+  const char* asset_root = std::getenv("MOCKTAIL_ASSET_ROOT");
+  const std::filesystem::path shipped_root =
+      asset_root != nullptr ? asset_root : DefaultAssetPath();
+  std::vector<std::string> names = mocktail::runtime::WithoutShippedAssets(
+      mocktail::runtime::OverlayRbxAssetNames(ActiveAssetOverlayDir()),
+      shipped_root);
+  for (std::string& name : mocktail::runtime::WithoutShippedAssets(
+           mocktail::runtime::OverlayRbxAssetNames(PrepareCustomFontOverlay()),
+           shipped_root)) {
     if (std::find(names.begin(), names.end(), name) == names.end()) {
       names.push_back(std::move(name));
     }
@@ -2130,11 +2135,16 @@ void InstallCursorHooks(uintptr_t base) {
 
 // Must run before any libroblox code does: it patches the texture load.
 void InstallSkyHook(uintptr_t base) {
-  if (!mocktail::runtime::OverlayHasCustomSky(ActiveAssetOverlayDir())) {
+  const std::filesystem::path overlay = ActiveAssetOverlayDir();
+  mocktail::runtime::SkyReplacements replace;
+  replace.faces = mocktail::runtime::OverlayHasCustomSky(overlay);
+  replace.sun = mocktail::runtime::OverlayHasSkyBody(overlay, "sun");
+  replace.moon = mocktail::runtime::OverlayHasSkyBody(overlay, "moon");
+  if (!replace.faces && !replace.sun && !replace.moon) {
     return;
   }
   std::string error;
-  if (!mocktail::runtime::InstallRobloxSkyHook(base, &error)) {
+  if (!mocktail::runtime::InstallRobloxSkyHook(base, replace, &error)) {
     std::cerr << "  [sky] custom sky unavailable for this Roblox version, "
                  "games keep their own skies: "
               << error << '\n'
@@ -5210,6 +5220,13 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       if (std::strcmp(name, "libvulkan.so") == 0) {
         bionic_vulkan_adapter_handle = h;
       }
+    } else if (std::strcmp(name, "libvulkan.so") == 0) {
+      std::cerr << "[FATAL] Nightcap's Vulkan adapter could not load: "
+                << ::dlerror()
+                << ". A system library it needs is missing or newer than "
+                   "the one Nightcap was built against; update or rebuild "
+                   "Nightcap, or switch the renderer to OpenGL.\n";
+      return EXIT_FAILURE;
     } else {
       std::cerr << "  [warn]  Could not preload " << name
                 << ": " << ::dlerror() << '\n';

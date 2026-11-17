@@ -53,6 +53,18 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.5.2" date="2026-11-12">
+      <description>
+        <ul>
+          <li>An FFlag editor in Settings → Advanced, with descriptions and presets.</li>
+          <li>The sky picked in Settings shows in games again.</li>
+          <li>Small textures load with less GPU time.</li>
+          <li>With Compress Textures off, big games no longer run small GPUs out of video memory.</li>
+          <li>Fleasion works again on Roblox 2.746.</li>
+          <li>Chat box and mouse fixes.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-11-06">
       <description>
         <ul>

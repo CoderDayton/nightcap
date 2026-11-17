@@ -2,6 +2,7 @@
 #define MOCKTAIL_RUNTIME_FAILURE_DIALOG_H_
 
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 #include "runtime/environment.h"
@@ -16,6 +17,10 @@ bool ShowFailureDialog(const Environment& environment,
                        std::string_view message);
 bool ShowWarningDialog(const Environment& environment,
                        std::string_view message);
+std::optional<bool> AskYesNo(const Environment& environment,
+                             std::string_view heading, std::string_view body,
+                             std::string_view decline,
+                             std::string_view accept);
 
 // The helper starts before guest threads, so it can report errors and fatal
 // exits even when the main process can no longer show a dialog.

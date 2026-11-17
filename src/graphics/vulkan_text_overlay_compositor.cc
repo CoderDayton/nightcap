@@ -872,6 +872,18 @@ VkResult VulkanTextOverlayCompositor::QueueSubmit(
   });
 }
 
+void VulkanTextOverlayCompositor::WithQueue(
+    VkQueue queue, const std::function<void()>& work) {
+  if (impl_ == nullptr || queue == VK_NULL_HANDLE) {
+    work();
+    return;
+  }
+  impl_->CallWithSharedQueueIfNeeded(queue, [&] {
+    work();
+    return VK_SUCCESS;
+  });
+}
+
 VkResult VulkanTextOverlayCompositor::QueueSubmit2(
     VkQueue queue, std::uint32_t submit_count, const VkSubmitInfo2* submits,
     VkFence fence, PFN_vkQueueSubmit2 fallback) {

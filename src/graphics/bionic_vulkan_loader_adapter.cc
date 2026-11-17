@@ -1786,6 +1786,13 @@ struct Etc2SubmitRewrite {
 // instead: a VkTimelineSemaphoreSubmitInfo would have to be rebuilt, and a
 // VkDeviceGroupSubmitInfo's pWaitSemaphoreDeviceIndices would be left one
 // entry short of the grown wait list.
+void FinishEtc2Encoder(VkQueue queue) {
+  if (State().etc2.EncoderPending()) {
+    State().text_overlay.WithQueue(
+        queue, [queue] { State().etc2.FinishEncoder(queue); });
+  }
+}
+
 const VkSubmitInfo* PrepareEtc2Submit(VkQueue queue, std::uint32_t submit_count,
                                       const VkSubmitInfo* submits,
                                       Etc2SubmitRewrite* rewrite) {
@@ -2458,6 +2465,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
     if (host_get_queue != nullptr) {
       host_get_queue(*device, graphics_family, 0, &decode_queue);
     }
+    State().etc2.SetEncoderBuildWait(std::chrono::milliseconds(200));
     State().etc2.EnableGpuDecode(*device, decode_queue, graphics_family);
   }
 
@@ -3010,6 +3018,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueSubmit", "submit");
   scope.Arg("submits", submit_count);
+  FinishEtc2Encoder(queue);
   Etc2SubmitRewrite rewrite;
   const VkSubmitInfo* prepared =
       PrepareEtc2Submit(queue, submit_count, submits, &rewrite);
@@ -3034,6 +3043,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueSubmit2", "submit");
   scope.Arg("submits", submit_count);
+  FinishEtc2Encoder(queue);
   Etc2SubmitRewrite rewrite;
   const VkSubmitInfo2* prepared =
       PrepareEtc2Submit2(queue, submit_count, submits, &rewrite);
@@ -3058,6 +3068,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueSubmit2KHR", "submit");
   scope.Arg("submits", submit_count);
+  FinishEtc2Encoder(queue);
   Etc2SubmitRewrite rewrite;
   const VkSubmitInfo2* prepared =
       PrepareEtc2Submit2(queue, submit_count, submits, &rewrite);

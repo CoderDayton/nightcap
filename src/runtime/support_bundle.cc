@@ -266,8 +266,11 @@ FailureSupportBundleGuard::FailureSupportBundleGuard(
     const Environment& environment, const RuntimePaths& paths, bool armed)
     : environment_(&environment), paths_(&paths), armed_(armed) {}
 
-FailureSupportBundleGuard::~FailureSupportBundleGuard() {
+FailureSupportBundleGuard::~FailureSupportBundleGuard() { Finish(); }
+
+void FailureSupportBundleGuard::Finish() {
   if (!armed_ || environment_ == nullptr || paths_ == nullptr) return;
+  armed_ = false;
   const SupportBundleCollectionResult result = CollectFailureSupportBundle(
       *environment_, *paths_, "launch", "launch-failed", exit_code_);
   if (!result) std::cerr << "  [support] " << result.error << '\n';

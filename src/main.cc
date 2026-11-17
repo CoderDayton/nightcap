@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "compat/crash_reporter.h"
 #include "compat/elf_build_id.h"
 #include "compat/file_digest_record.h"
 #include "compat/host_abi_profile.h"
@@ -33,6 +34,7 @@
 #include "mocktail/vr/openxr_probe.h"
 #include "mocktail/vr/roblox_vr_device_bridge.h"
 #include "mocktail/vr/virtual_keyboard.h"
+#include "runtime/appimage_menu_entry.h"
 #include "runtime/asset_overlay_names.h"
 #include "runtime/auth_runtime_composition.h"
 #include "runtime/command_line.h"
@@ -402,6 +404,46 @@ void ConfigureHostDriverEnvironment() {
   // Avoid busy-spin vblank waits on NVIDIA Linux driver.
   set_if_unset("__GL_YIELD", "USLEEP");
   set_if_unset("__GL_THREADED_OPTIMIZATIONS", "1");
+}
+
+void UpdateAppImageMenu(const mocktail::runtime::Environment& environment,
+                        const mocktail::runtime::RuntimePaths& paths) {
+  using mocktail::runtime::AppImageMenuAction;
+  const mocktail::runtime::AppImageMenuOutcome outcome =
+      mocktail::runtime::UpdateAppImageMenuEntry(
+          mocktail::runtime::AppImageMenuPathsFor(environment, paths),
+          mocktail::runtime::RunningAppImage(environment),
+          mocktail::runtime::AppImageIcon(environment), [&environment] {
+            return mocktail::runtime::AskYesNo(
+                environment, "Add Nightcap to the app menu?",
+                "Nightcap will show in your app menu and can open Roblox "
+                "links. If you delete this AppImage, the entry goes away.",
+                "No Thanks", "Add");
+          });
+  switch (outcome.action) {
+    case AppImageMenuAction::kAdded:
+      std::cout << "  [appimage] added to the app menu: " << outcome.detail
+                << '\n';
+      break;
+    case AppImageMenuAction::kMoved:
+      std::cout << "  [appimage] app menu entry now opens this AppImage: "
+                << outcome.detail << '\n';
+      break;
+    case AppImageMenuAction::kRemoved:
+      std::cout << "  [appimage] removed the app menu entry of a deleted "
+                   "AppImage: "
+                << outcome.detail << '\n';
+      break;
+    case AppImageMenuAction::kDeclined:
+      std::cout << "  [appimage] app menu entry declined, not asking again\n";
+      break;
+    case AppImageMenuAction::kFailed:
+      std::cerr << "  [appimage] cannot update the app menu entry: "
+                << outcome.detail << '\n';
+      break;
+    case AppImageMenuAction::kNone:
+      break;
+  }
 }
 
 }  // namespace
@@ -779,6 +821,9 @@ int main(int argc, char* argv[]) {
                 << session_log.error() << '\n';
     }
     std::cout << process_launch_diagnostics << std::flush;
+    if (!mocktail::compat::InstallCrashReporter()) {
+      std::cerr << "  [crash] reporter unavailable\n";
+    }
     mocktail::runtime::InstallCpuLimitDiagnostics();
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kStartup);
@@ -1717,6 +1762,7 @@ int main(int argc, char* argv[]) {
                 << broker_status.message() << '\n';
       return EXIT_FAILURE;
     }
+    UpdateAppImageMenu(environment, paths);
   }
   failure_dialog.SetMessage(
       "Roblox closed unexpectedly because of an internal error.");
@@ -1781,6 +1827,13 @@ int main(int argc, char* argv[]) {
     std::cout.flush();
     std::cerr.flush();
     std::_Exit(EXIT_SUCCESS);
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    failure_dialog = mocktail::runtime::FailureDialogMonitor();
+    support_bundle_guard.Finish();
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(runtime_status);
   }
   if (runtime_status == EXIT_SUCCESS) {
     failure_dialog.MarkSuccessful();

@@ -52,24 +52,36 @@ void WaitForHelper(int helper_pid) {
   }
 }
 
+std::optional<int> SpawnAndWait(const std::filesystem::path& helper,
+                                std::vector<std::string> arguments) {
+  std::string helper_string = helper.string();
+  std::vector<char*> argv = {helper_string.data()};
+  for (std::string& argument : arguments) {
+    if (argument.size() > kMaximumMessageBytes) {
+      argument.resize(kMaximumMessageBytes);
+    }
+    argv.push_back(argument.data());
+  }
+  argv.push_back(nullptr);
+  pid_t child = -1;
+  const auto child_environment = BuildHelperEnvironment(environ);
+  if (posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(),
+                  child_environment.data()) != 0) {
+    return std::nullopt;
+  }
+  int status = 0;
+  while (waitpid(child, &status, 0) < 0) {
+    if (errno != EINTR) return std::nullopt;
+  }
+  if (!WIFEXITED(status)) return std::nullopt;
+  return WEXITSTATUS(status);
+}
+
 bool SpawnOneShot(const std::filesystem::path& helper,
                   std::string_view option,
                   std::string_view message) {
-  std::string helper_string = helper.string();
-  std::string option_string(option);
-  std::string message_string(message.substr(0, kMaximumMessageBytes));
-  char* arguments[] = {helper_string.data(), option_string.data(),
-                       message_string.data(), nullptr};
-  pid_t child = -1;
-  const auto child_environment = BuildHelperEnvironment(environ);
-  const int spawn_status =
-      posix_spawn(&child, helper.c_str(), nullptr, nullptr, arguments,
-                   child_environment.data());
-  if (spawn_status != 0) {
-    return false;
-  }
-  WaitForHelper(child);
-  return true;
+  return SpawnAndWait(helper, {std::string(option), std::string(message)})
+      .has_value();
 }
 
 std::pair<int, int> SpawnMonitor(const std::filesystem::path& helper) {
@@ -153,6 +165,25 @@ bool ShowWarningDialog(const Environment& environment,
   }
   const std::filesystem::path helper = DialogHelper(environment);
   return !helper.empty() && SpawnOneShot(helper, "--warning", message);
+}
+
+std::optional<bool> AskYesNo(const Environment& environment,
+                             std::string_view heading, std::string_view body,
+                             std::string_view decline,
+                             std::string_view accept) {
+  if (!FailureDialogsEnabled(environment)) {
+    return std::nullopt;
+  }
+  const std::filesystem::path helper = DialogHelper(environment);
+  if (helper.empty()) {
+    return std::nullopt;
+  }
+  const std::optional<int> status = SpawnAndWait(
+      helper, {"--question", std::string(heading), std::string(body),
+               std::string(decline), std::string(accept)});
+  if (status == 0) return true;
+  if (status == 2) return false;
+  return std::nullopt;
 }
 
 FailureDialogMonitor::FailureDialogMonitor(int socket, int helper_pid)

@@ -516,6 +516,12 @@ target_link_libraries(android_device_id_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(appimage_menu_entry_test appimage_menu_entry_test.cc)
+target_link_libraries(appimage_menu_entry_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(single_instance_lock_test single_instance_lock_test.cc)
 target_link_libraries(single_instance_lock_test PRIVATE
   Mocktail::Runtime
@@ -1377,6 +1383,12 @@ target_link_libraries(bionic_signal_runtime_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(crash_reporter_test crash_reporter_test.cc)
+target_link_libraries(crash_reporter_test PRIVATE
+  Mocktail::Compat
+  GTest::gtest_main
+)
+
 add_executable(bionic_semaphore_runtime_test
   bionic_semaphore_runtime_test.cc
 )
@@ -1525,6 +1537,7 @@ gtest_discover_tests(running_instance_test)
 gtest_discover_tests(roblox_cache_test)
 gtest_discover_tests(android_device_id_test)
 gtest_discover_tests(fleasion_test)
+gtest_discover_tests(appimage_menu_entry_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
 gtest_discover_tests(process_launch_policy_test)
@@ -1623,6 +1636,7 @@ gtest_discover_tests(bionic_large_file_runtime_test)
 gtest_discover_tests(bionic_pthread_create_runtime_test)
 gtest_discover_tests(bionic_sysconf_test)
 gtest_discover_tests(bionic_signal_runtime_test)
+gtest_discover_tests(crash_reporter_test)
 gtest_discover_tests(bionic_semaphore_runtime_test)
 gtest_discover_tests(bionic_rwlock_runtime_test)
 gtest_discover_tests(bionic_abi_exports_test)
