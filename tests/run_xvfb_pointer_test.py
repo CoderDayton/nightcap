@@ -18,7 +18,7 @@ def main():
         with (root / "xvfb.log").open("w+") as log:
             server = subprocess.Popen(
                 [xvfb, "-displayfd", "1", "-screen", "0", "3840x1080x24",
-                 "-nolisten", "tcp"], stdout=subprocess.PIPE, stderr=log,
+                 "-nolisten", "tcp", "-noreset"], stdout=subprocess.PIPE, stderr=log,
             )
             try:
                 readable, _, _ = select.select([server.stdout], [], [], 10)
