@@ -145,8 +145,12 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   // Roblox can keep Shift Lock active while chat has text focus. Honor that
   // native lock so camera motion stays relative and cannot leave the window.
   // Text editing only suppresses the host's fallback RMB camera capture.
+  const bool native_position_lock =
+    query_ok && mouse_lock.reports_current_position &&
+    mouse_lock.current_position && !mouse_lock.center && !text_input_active;
   const bool capture_requested =
-      native_capture_active || (right_drag_active && !text_input_active);
+      native_capture_active || native_position_lock ||
+      (right_drag_active && !text_input_active);
   // When capture is released, Roblox still draws its own cursor. Show the
   // system pointer only when the native client cannot provide one, or when
   // Roblox reports a stock cursor the desktop has its own shape for.
