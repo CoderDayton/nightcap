@@ -207,6 +207,15 @@ bool ValidatePresentEvidence(CanaryGraphicsBackend backend,
   return true;
 }
 
+std::string FatalReason(const std::string& log) {
+  constexpr std::string_view kPrefix = "[FATAL] ";
+  const std::size_t start = log.find(kPrefix);
+  if (start == std::string::npos) return {};
+  const std::size_t begin = start + kPrefix.size();
+  const std::size_t end = log.find('\n', begin);
+  return log.substr(begin, end == std::string::npos ? end : end - begin);
+}
+
 }  // namespace
 
 std::string_view CanaryGraphicsBackendName(CanaryGraphicsBackend backend) {
@@ -544,6 +553,8 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
       result.teardown_crash = true;
     } else if (driver_teardown_crash && !log_error.empty()) {
       result.error += "; " + log_error;
+    } else if (const std::string fatal = FatalReason(log); !fatal.empty()) {
+      result.error += "; " + fatal;
     }
     return result;
   }

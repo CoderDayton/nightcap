@@ -59,6 +59,10 @@ grep -Fq "'sdl3>=3.4'" "${PKGBUILD}" ||
   Fail 'Arch package does not enforce the SDL minimum'
 grep -Fq "'libplacebo'" "${PKGBUILD}" ||
   Fail 'Arch package does not declare the graphics composition dependency'
+grep -Fq "'libplacebo.so'" "${PKGBUILD}" ||
+  Fail 'Arch package does not pin the libplacebo soname it was built with'
+grep -Fq '.PKGINFO' "${AUR_PUBLISH_WORKFLOW}" ||
+  Fail 'nightcap-bin does not require the sonames of the release package'
 grep -Fq "'ffmpeg'" "${PKGBUILD}" ||
   Fail 'Arch package does not declare the video decoding dependency'
 grep -Fq 'pkgname=nightcap-git' "${AUR_PKGBUILD}" ||

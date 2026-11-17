@@ -14,6 +14,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- `nightcap-bin` requires the libplacebo version it was built with, and Vulkan stops with a message
+  naming the missing library instead of crashing with status 139 during the update check.
 - A custom sun or moon in the asset overlay folder (`content/sky/sun.jpg`, `moon.jpg`) shows in games,
   also in place of a game's own. Before, Roblox failed to load either one and drew a plain glow instead.
 - Text in Roblox's stats menus (Shift+F5 and the others) shows again with a custom font.

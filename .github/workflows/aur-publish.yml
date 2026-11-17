@@ -58,6 +58,17 @@ jobs:
             packaging/aur/nightcap-bin/PKGBUILD
           grep -Fqx "sha256sums=('${checksum}')" packaging/aur/nightcap-bin/PKGBUILD
 
+          curl -fsSL -o "/tmp/${archive}" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${archive}"
+          echo "${checksum}  /tmp/${archive}" | sha256sum -c -
+          mapfile -t sonames < <(tar --zstd -xOf "/tmp/${archive}" .PKGINFO |
+            sed -n 's/^depend = \(lib[^ ]*\.so=[0-9.]*-64\)$/\1/p')
+          (( ${#sonames[@]} > 0 ))
+          for soname in "${sonames[@]}"; do
+            sed -i "/^depends=(/a\\  '${soname}'" packaging/aur/nightcap-bin/PKGBUILD
+            grep -Fqx "  '${soname}'" packaging/aur/nightcap-bin/PKGBUILD
+          done
+
           docker run --rm \
             --volume "$GITHUB_WORKSPACE/packaging/aur:/aur" \
             ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
