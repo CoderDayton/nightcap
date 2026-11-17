@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-17
+
 ### Added
 
 - The AppImage offers to add Nightcap to the app menu the first time it runs, with Settings and Roblox
@@ -14,6 +16,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- The cursor is no longer lost in games that keep Roblox's mouse lock on without a camera drag. Nightcap
+  captures the pointer once the lock has held steady for a moment.
 - Startup no longer hangs when another Nightcap holds the Roblox update or download lock. It waits,
   says so in the log, and gives up with a reason.
 - Captcha frames that load `about:srcdoc` or `about:blank#…` are no longer blocked in the sign-in window.
