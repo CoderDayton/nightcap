@@ -53,6 +53,19 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.5.3" date="2026-11-17">
+      <description>
+        <ul>
+          <li>Fixes a crash on Arch when libplacebo updates, and the crash when closing the game.</li>
+          <li>Vulkan no longer sits on a black window on first launch.</li>
+          <li>Cursor no longer gets lost with games that lock the mouse in place.</li>
+          <li>Custom sun and moon, and stats menu text with a custom font, show again.</li>
+          <li>Captcha frames load in the sign-in window.</li>
+          <li>Startup no longer hangs when another Nightcap holds the update lock.</li>
+          <li>The AppImage offers an app menu entry.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.2" date="2026-11-12">
       <description>
         <ul>
