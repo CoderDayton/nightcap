@@ -17,6 +17,7 @@
 #include <mutex>
 #include <string>
 
+#include "update/file_lock.h"
 #include "update/payload_integrity.h"
 #include "update/state_file.h"
 
@@ -777,8 +778,11 @@ HttpDownloadResult DownloadFile(const HttpTransferRequest& request,
     }
   } lock{open((destination.string() + ".lock").c_str(),
               O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600)};
-  if (lock.descriptor < 0 || flock(lock.descriptor, LOCK_EX) != 0) {
-    result.error = "cannot lock HTTPS download";
+  std::string lock_error = "cannot open HTTPS download lock";
+  if (lock.descriptor < 0 ||
+      !LockExclusiveWithin(lock.descriptor, std::chrono::minutes(10),
+                           "Roblox download lock", &lock_error)) {
+    result.error = lock_error;
     return result;
   }
   const int attempts =
