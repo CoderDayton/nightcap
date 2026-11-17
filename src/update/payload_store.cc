@@ -1,5 +1,6 @@
 #include "update/payload_store.h"
 
+#include "update/file_lock.h"
 #include "update/state_file.h"
 
 #define JSON_NOEXCEPTION 1
@@ -43,8 +44,11 @@ class StoreLock final {
     }
     descriptor_ = open((root / ".payload-store.lock").c_str(),
                        O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (descriptor_ < 0 || flock(descriptor_, LOCK_EX) != 0) {
-      *error = "cannot lock payload store";
+    std::string lock_error = "cannot open payload store lock";
+    if (descriptor_ < 0 ||
+        !LockExclusiveWithin(descriptor_, std::chrono::seconds(30),
+                             "payload store lock", &lock_error)) {
+      *error = lock_error;
       if (descriptor_ >= 0) close(descriptor_);
       descriptor_ = -1;
     }
