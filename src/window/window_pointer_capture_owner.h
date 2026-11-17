@@ -143,6 +143,8 @@ class WindowPointerCaptureOwner final {
   static constexpr std::uint64_t kRobloxCursorLifetimeFrames = 8;
   static constexpr std::uint64_t kNativeUnlockFrames = 3;
   static constexpr std::uint64_t kNativeUnlockMs = 250;
+  static constexpr std::uint64_t kPositionLockFrames = 10;
+  static constexpr std::uint64_t kPositionLockMs = 150;
 
   std::uint64_t PresentedFrames() const;
   std::uint64_t NowMs() const;
@@ -168,6 +170,10 @@ class WindowPointerCaptureOwner final {
   bool native_unlock_pending_ = false;
   std::uint64_t native_unlock_frame_ = 0;
   std::uint64_t native_unlock_ms_ = 0;
+  bool position_lock_pending_ = false;
+  bool position_lock_active_ = false;
+  std::uint64_t position_lock_frame_ = 0;
+  std::uint64_t position_lock_ms_ = 0;
   bool captured_ = false;
   CursorShape cursor_ = CursorShape::kArrow;
   CursorImagePtr cursor_image_;
