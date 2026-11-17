@@ -512,6 +512,27 @@ TEST(ReadinessCanaryTest, ReportsTerminatingSignal) {
                              std::to_string(128 + SIGTERM));
 }
 
+TEST(ReadinessCanaryTest, ReportsTheFatalReasonFromTheLog) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\necho '  [warn] noise'\n"
+        "echo '[FATAL] adapter could not load: libx.so.9 missing' >&2\n"
+        "exit 1\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.error,
+            "graphics canary exited with status 1; "
+            "adapter could not load: libx.so.9 missing");
+}
+
 TEST(ReadinessCanaryTest, AcceptsTeardownCrashAfterReadiness) {
   TemporaryDirectory temporary;
   CanaryOptions options;

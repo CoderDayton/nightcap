@@ -5178,6 +5178,13 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       if (std::strcmp(name, "libvulkan.so") == 0) {
         bionic_vulkan_adapter_handle = h;
       }
+    } else if (std::strcmp(name, "libvulkan.so") == 0) {
+      std::cerr << "[FATAL] Nightcap's Vulkan adapter could not load: "
+                << ::dlerror()
+                << ". A system library it needs is missing or newer than "
+                   "the one Nightcap was built against; update or rebuild "
+                   "Nightcap, or switch the renderer to OpenGL.\n";
+      return EXIT_FAILURE;
     } else {
       std::cerr << "  [warn]  Could not preload " << name
                 << ": " << ::dlerror() << '\n';
