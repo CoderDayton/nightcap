@@ -9,6 +9,7 @@ Release notes on GitHub are taken from the matching section here.
 
 - The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
 - Joining a game right after launch no longer freezes for seconds while the BC7 encoder is compiling.
+- Session logs no longer include the join ticket from Roblox's teleport log line.
 
 ## [0.5.3] - 2026-11-17
 

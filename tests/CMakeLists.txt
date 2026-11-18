@@ -850,6 +850,16 @@ target_link_libraries(deferred_teardown_test PRIVATE GTest::gtest_main
   Threads::Threads)
 mocktail_apply_compile_options(deferred_teardown_test)
 
+add_executable(log_redaction_test
+  log_redaction_test.cc
+  ${PROJECT_SOURCE_DIR}/src/platform/log_redaction.cc
+)
+target_include_directories(log_redaction_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(log_redaction_test PRIVATE GTest::gtest_main)
+mocktail_apply_compile_options(log_redaction_test)
+
 add_library(vulkan_driver_pin_fixture SHARED vulkan_driver_pin_fixture.cc)
 
 add_executable(vulkan_driver_pin_test
@@ -1460,6 +1470,7 @@ gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(vulkan_etc2_gpu_emulation_test)
 gtest_discover_tests(deferred_teardown_test)
+gtest_discover_tests(log_redaction_test)
 gtest_discover_tests(vulkan_driver_pin_test)
 gtest_discover_tests(video_driver_policy_test)
 gtest_discover_tests(window_surface_lifecycle_test)

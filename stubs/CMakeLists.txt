@@ -83,7 +83,10 @@ else()
   message(FATAL_ERROR "The installed minizip cannot report ZIP entry offsets")
 endif()
 
-add_library(stub_log SHARED liblog_stub.cc)
+add_library(stub_log SHARED
+  liblog_stub.cc
+  ${CMAKE_SOURCE_DIR}/src/platform/log_redaction.cc
+)
 configure_stub(stub_log "liblog.so")
 target_include_directories(stub_log PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
