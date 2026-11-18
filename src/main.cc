@@ -1286,6 +1286,14 @@ int main(int argc, char* argv[]) {
       }
     }
     if (vr_active) {
+      std::string vr_settings_error;
+      if (mocktail::runtime::WriteRobloxVrEnabled(paths.android_data_root(),
+                                                  &vr_settings_error)) {
+        std::cerr << "  [vr] Roblox VR setting is on\n";
+      } else {
+        std::cerr << "  [vr] cannot turn on Roblox's VR setting: "
+                  << vr_settings_error << '\n';
+      }
       const mocktail::vr::VrBackendMode vr_backend_mode =
           mocktail::vr::ResolveVrBackendMode(true);
       std::cerr << "  [vr] experimental backend="

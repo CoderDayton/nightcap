@@ -186,9 +186,9 @@ VkFormat LinearTwin(VkFormat format) {
   }
 }
 
-bool PreferSrgbSwapchain() {
-  static const bool enabled = EnvString("MOCKTAIL_VR_SRGB", "0") == "1";
-  return enabled;
+bool PreferSrgbSwapchain(const std::string &runtime_name) {
+  static const std::string setting = EnvString("MOCKTAIL_VR_SRGB", "auto");
+  return PreferSrgbEyeSwapchain(setting, runtime_name);
 }
 
 bool FormatIsCopyCompatible(VkFormat a, VkFormat b) {
@@ -1343,7 +1343,7 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
     }
     const std::vector<std::int64_t> candidates =
         graphics_api_ == VrGraphicsApi::kVulkan
-            ? (PreferSrgbSwapchain()
+            ? (PreferSrgbSwapchain(runtime_name_)
                    ? std::vector<std::int64_t>{VK_FORMAT_R8G8B8A8_SRGB,
                                                VK_FORMAT_B8G8R8A8_SRGB,
                                                VK_FORMAT_R8G8B8A8_UNORM,
@@ -1447,7 +1447,8 @@ void OpenXrBackend::MatchSwapchainFormatToEyesLocked() {
   eye_format_checked_ = eye;
   const VkFormat current = eye_swapchains_[0].format;
   const VkFormat preferred =
-      internal::PreferredEyeSwapchainFormat(eye, xr_swapchain_formats_);
+      internal::PreferredEyeSwapchainFormat(eye, xr_swapchain_formats_,
+                                            PreferSrgbSwapchain(runtime_name_));
   if (preferred == VK_FORMAT_UNDEFINED) {
     if (!FormatIsCopyCompatible(eye, current)) {
       Log("  [vr-backend] runtime offers no swapchain format that keeps guest "
@@ -2297,12 +2298,15 @@ bool OpenXrBackend::RecoverSessionLocked(std::uint64_t now_ns) {
 }
 
 VkFormat internal::PreferredEyeSwapchainFormat(
-    VkFormat eye, const std::vector<std::int64_t>& available) {
+    VkFormat eye, const std::vector<std::int64_t>& available,
+    bool prefer_srgb) {
   const auto offered = [&](VkFormat format) {
     return format != VK_FORMAT_UNDEFINED &&
            std::find(available.begin(), available.end(),
                      static_cast<std::int64_t>(format)) != available.end();
   };
+  if (prefer_srgb && eye == LinearTwin(eye) && offered(SrgbSibling(eye)))
+    return SrgbSibling(eye);
   for (const VkFormat candidate :
        {eye, SrgbSibling(eye), OtherChannelOrder(eye)}) {
     if (offered(candidate)) return candidate;
@@ -3653,7 +3657,7 @@ void OpenXrBackend::RecordEyeCopiesLocked(VkCommandBuffer command,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     } else {
       static bool warned_reencode = false;
-      if (!warned_reencode && PreferSrgbSwapchain() &&
+      if (!warned_reencode && PreferSrgbSwapchain(runtime_name_) &&
           swapchain.format != LinearTwin(swapchain.format) &&
           binding.format == LinearTwin(binding.format)) {
         warned_reencode = true;

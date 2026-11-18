@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -216,6 +217,26 @@ TEST(VrRuntimeSelection, AlvrSelectsSteamVrWithoutFallingBackToWiVRn) {
       VrRuntimeManifestCandidates("system", "/home/test", "", "").empty());
   EXPECT_EQ(SelectVrRuntimeManifest("/custom/steamxr_linux64.json", alvr),
             "/custom/steamxr_linux64.json");
+}
+TEST(VrRuntimeSelection, ExplicitWiVRnFindsTheFlathubInstall) {
+  const auto paths =
+      VrRuntimeManifestCandidates("wivrn", "/home/test", "", "");
+  const std::string share =
+      "/app/io.github.wivrn.wivrn/current/active/files/share/openxr/1/"
+      "openxr_wivrn.json";
+  EXPECT_NE(std::find(paths.begin(), paths.end(),
+                      "/home/test/.local/share/flatpak" + share),
+            paths.end());
+  EXPECT_NE(std::find(paths.begin(), paths.end(), "/var/lib/flatpak" + share),
+            paths.end());
+  EXPECT_EQ(paths.front(), "/usr/local/share/openxr/1/openxr_wivrn.json");
+}
+TEST(VrRuntimeSelection, SrgbEyesExceptOnSteamVr) {
+  EXPECT_TRUE(PreferSrgbEyeSwapchain("auto", "WiVRn"));
+  EXPECT_TRUE(PreferSrgbEyeSwapchain("auto", "Monado(XRT) by Collabora"));
+  EXPECT_FALSE(PreferSrgbEyeSwapchain("auto", "SteamVR/OpenXR"));
+  EXPECT_TRUE(PreferSrgbEyeSwapchain("1", "SteamVR/OpenXR"));
+  EXPECT_FALSE(PreferSrgbEyeSwapchain("0", "WiVRn"));
 }
 TEST(VrRuntimeSelection, RegisteredRuntimePrecedesInstalledWiVRn) {
   const auto paths = VrRuntimeManifestCandidates(

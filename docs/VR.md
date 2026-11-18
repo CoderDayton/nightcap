@@ -62,7 +62,8 @@ The keyboard icon closes the keyboard and leaves the text box. Set
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `MOCKTAIL_VR_ENABLED` | `0` | Same as `--vr` (`1`) or `--no-vr` (`0`). |
-| `MOCKTAIL_VR_RUNTIME` | `auto` | OpenXR runtime: `auto`, `system`, `wivrn`, `steamvr` or `alvr`. `XR_RUNTIME_JSON` overrides it. |
+| `MOCKTAIL_VR_RUNTIME` | `auto` | OpenXR runtime: `auto`, `system`, `wivrn`, `steamvr` or `alvr`. `wivrn` also finds the Flathub WiVRn. `XR_RUNTIME_JSON` overrides it. |
+| `MOCKTAIL_VR_SRGB` | `auto` | Eye swapchain format. `auto` uses sRGB, except on SteamVR, which expects UNORM. `1` forces sRGB, `0` forces UNORM. |
 | `MOCKTAIL_VR_BACKEND` | `xr` | `native` keeps Roblox's stereo rendering without an OpenXR runtime, for debugging. |
 | `MOCKTAIL_VR_FRAME_RATE_LIMIT` | `unlimited` | Frame-rate cap in VR, same values as `graphics.frame_rate_limit` (also `vr.frame_rate_limit`). With `unlimited` the headset's refresh rate paces frames. |
 | `MOCKTAIL_VR_ANTI_ALIASING` | `fxaa` | Same as `vr.anti_aliasing`. Roblox draws the VR eyes without anti-aliasing, so each eye is filtered on its way to the headset (Vulkan only). `fxaa` is the cheapest; `smaa` finds edges more precisely and keeps text sharper; `off` sends them as rendered. |
