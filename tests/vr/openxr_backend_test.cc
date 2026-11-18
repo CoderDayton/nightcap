@@ -656,6 +656,16 @@ TEST(OpenXrEyeSwapchainFormat, KeepsGuestEyeBytesWithoutGammaConversion) {
   EXPECT_EQ(PreferredEyeSwapchainFormat(VK_FORMAT_R16G16B16A16_SFLOAT,
                                         formats({VK_FORMAT_R8G8B8A8_SRGB})),
             VK_FORMAT_UNDEFINED);
+  EXPECT_EQ(PreferredEyeSwapchainFormat(
+                VK_FORMAT_B8G8R8A8_UNORM,
+                formats({VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_SRGB,
+                         VK_FORMAT_B8G8R8A8_UNORM}),
+                true),
+            VK_FORMAT_B8G8R8A8_SRGB);
+  EXPECT_EQ(PreferredEyeSwapchainFormat(VK_FORMAT_B8G8R8A8_UNORM,
+                                        formats({VK_FORMAT_B8G8R8A8_UNORM}),
+                                        true),
+            VK_FORMAT_B8G8R8A8_UNORM);
 }
 
 // A runtime loaded through DeepBoundLibraries is reported as newly loaded

@@ -29,7 +29,8 @@ namespace internal {
 // the same sRGB-ness (a blit that only swizzles). VK_FORMAT_UNDEFINED when
 // only a gamma-converting blit remains.
 VkFormat PreferredEyeSwapchainFormat(VkFormat eye,
-                                     const std::vector<std::int64_t>& available);
+                                     const std::vector<std::int64_t>& available,
+                                     bool prefer_srgb = false);
 // Consume binary present dependencies exactly once. On success a later present
 // must omit them. VK_NOT_READY means nothing was consumed and the guest's
 // present proceeds unchanged; any other failure consumed them (or lost the
@@ -68,6 +69,8 @@ std::string SelectVrRuntimeManifest(const std::string& explicit_manifest,
 std::vector<std::string> VrRuntimeManifestCandidates(
     const std::string &preference, const std::string &home,
     const std::string &config_home, const std::string &config_dirs);
+bool PreferSrgbEyeSwapchain(const std::string &setting,
+                            const std::string &runtime_name);
 struct VrRuntimeDiscovery {
   std::vector<std::string> candidates;
   std::string reason;

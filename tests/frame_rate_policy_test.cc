@@ -131,6 +131,35 @@ TEST(FrameRatePolicyTest, RejectsRobloxSettingsItCannotPlaceTheCapIn) {
   EXPECT_EQ(settings.Read(), "<roblox></roblox>\n");
 }
 
+TEST(FrameRatePolicyTest, TurnsRobloxVrBackOn) {
+  SettingsFile settings;
+  std::string text = kSettings;
+  const std::string anchor = "\t\t\t<int name=\"FramerateCap\">";
+  text.insert(text.find(anchor),
+              "\t\t\t<bool name=\"VREnabled\">false</bool>\n");
+  settings.Write(text);
+  std::string error;
+  ASSERT_TRUE(WriteRobloxVrEnabled(settings.root(), &error)) << error;
+  const std::string written = settings.Read();
+  EXPECT_NE(written.find("<bool name=\"VREnabled\">true</bool>"),
+            std::string::npos)
+      << written;
+  EXPECT_EQ(written.find("<bool name=\"VREnabled\">false</bool>"),
+            std::string::npos);
+  EXPECT_NE(written.find("<bool name=\"HasEverUsedVR\">true</bool>"),
+            std::string::npos)
+      << written;
+  EXPECT_NE(written.find("<int name=\"FramerateCap\">120</int>"),
+            std::string::npos);
+}
+
+TEST(FrameRatePolicyTest, LeavesMissingRobloxSettingsAloneForVr) {
+  SettingsFile settings;
+  std::string error;
+  EXPECT_TRUE(WriteRobloxVrEnabled(settings.root(), &error)) << error;
+  EXPECT_FALSE(fs::exists(settings.path()));
+}
+
 TEST(FrameRatePolicyTest, ParsesSupportedModes) {
   EXPECT_EQ(ParseFrameRatePolicy("").mode,
             FrameRateLimitMode::kUnmanaged);

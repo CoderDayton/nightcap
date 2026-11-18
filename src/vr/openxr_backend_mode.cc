@@ -23,6 +23,15 @@ SelectVrRuntimeManifest(const std::string &explicit_manifest,
   return {};
 }
 
+bool PreferSrgbEyeSwapchain(const std::string &setting,
+                            const std::string &runtime_name) {
+  if (setting == "1")
+    return true;
+  if (setting == "0")
+    return false;
+  return runtime_name.find("SteamVR") == std::string::npos;
+}
+
 std::vector<std::string> VrRuntimeManifestCandidates(
     const std::string &preference, const std::string &home,
     const std::string &config_home, const std::string &config_dirs) {
@@ -59,8 +68,16 @@ std::vector<std::string> VrRuntimeManifestCandidates(
   const std::vector<std::string> wivrn = {
       "/usr/local/share/openxr/1/openxr_wivrn.json",
       "/usr/share/openxr/1/openxr_wivrn.json"};
-  if (preference == "wivrn")
-    return wivrn;
+  if (preference == "wivrn") {
+    const std::string flathub =
+        "/app/io.github.wivrn.wivrn/current/active/files/share/openxr/1/"
+        "openxr_wivrn.json";
+    std::vector<std::string> paths = wivrn;
+    if (!home.empty())
+      paths.push_back(home + "/.local/share/flatpak" + flathub);
+    paths.push_back("/var/lib/flatpak" + flathub);
+    return paths;
+  }
   if (preference == "system")
     return {}; // Use the loader's full discovery rules.
   std::vector<std::string> candidates;

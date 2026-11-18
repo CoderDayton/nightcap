@@ -10,6 +10,9 @@ Release notes on GitHub are taken from the matching section here.
 - The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
 - Joining a game right after launch no longer freezes for seconds while the BC7 encoder is compiling.
 - Session logs no longer include the join ticket from Roblox's teleport log line.
+- VR turns Roblox's own VR setting back on, so its VR menus and laser pointer load after a desktop session.
+- VR colours with Vulkan are no longer washed out on WiVRn and other runtimes besides SteamVR.
+- `MOCKTAIL_VR_RUNTIME=wivrn` now finds WiVRn installed from Flathub.
 
 ## [0.5.3] - 2026-11-17
 

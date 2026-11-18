@@ -5,6 +5,7 @@
 
 #include <charconv>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 #include <system_error>
@@ -99,46 +100,53 @@ std::optional<int> RobloxSettingsFramerateCap(const FrameRatePolicy &policy) {
   return std::nullopt;
 }
 
-bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
-                             int fps, std::string *error) {
-  namespace fs = std::filesystem;
-  const fs::path file =
-      android_data_root / "files/appData/GlobalBasicSettings_13.xml";
-  std::error_code exists_error;
-  if (!fs::exists(file, exists_error)) {
-    return true;
-  }
-  std::string text;
-  {
-    std::ifstream input(file, std::ios::binary);
-    if (!input) {
-      *error = "cannot read " + file.string();
-      return false;
-    }
-    text.assign(std::istreambuf_iterator<char>(input), {});
-  }
+namespace {
 
-  const std::string open = "<int name=\"FramerateCap\">";
-  const std::string value = std::to_string(fps);
-  const std::size_t found = text.find(open);
+std::filesystem::path RobloxSettingsFile(
+    const std::filesystem::path &android_data_root) {
+  return android_data_root / "files/appData/GlobalBasicSettings_13.xml";
+}
+
+bool ReadRobloxSettings(const std::filesystem::path &file, std::string *text,
+                        std::string *error) {
+  std::ifstream input(file, std::ios::binary);
+  if (!input) {
+    *error = "cannot read " + file.string();
+    return false;
+  }
+  text->assign(std::istreambuf_iterator<char>(input), {});
+  return true;
+}
+
+bool SetRobloxSetting(std::string *text, const std::string &type,
+                      const std::string &name, const std::string &value,
+                      const std::filesystem::path &file, std::string *error) {
+  const std::string open = "<" + type + " name=\"" + name + "\">";
+  const std::string close = "</" + type + ">";
+  const std::size_t found = text->find(open);
   if (found != std::string::npos) {
     const std::size_t start = found + open.size();
-    const std::size_t end = text.find("</int>", start);
+    const std::size_t end = text->find(close, start);
     if (end == std::string::npos) {
-      *error = "FramerateCap in " + file.string() + " is not closed";
+      *error = name + " in " + file.string() + " is not closed";
       return false;
     }
-    text.replace(start, end - start, value);
-  } else {
-    const std::string properties = "<Properties>\n";
-    const std::size_t at = text.find(properties);
-    if (at == std::string::npos) {
-      *error = file.string() + " has no Properties section";
-      return false;
-    }
-    text.insert(at + properties.size(), open + value + "</int>\n");
+    text->replace(start, end - start, value);
+    return true;
   }
+  const std::string properties = "<Properties>\n";
+  const std::size_t at = text->find(properties);
+  if (at == std::string::npos) {
+    *error = file.string() + " has no Properties section";
+    return false;
+  }
+  text->insert(at + properties.size(), open + value + close + "\n");
+  return true;
+}
 
+bool ReplaceRobloxSettings(const std::filesystem::path &file,
+                           const std::string &text, std::string *error) {
+  namespace fs = std::filesystem;
   const fs::path temporary = file.string() + ".nightcap";
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
@@ -159,6 +167,50 @@ bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
     return false;
   }
   return true;
+}
+
+struct RobloxSetting {
+  std::string type;
+  std::string name;
+  std::string value;
+};
+
+bool UpdateRobloxSettings(const std::filesystem::path &android_data_root,
+                          std::initializer_list<RobloxSetting> settings,
+                          std::string *error) {
+  const std::filesystem::path file = RobloxSettingsFile(android_data_root);
+  std::error_code exists_error;
+  if (!std::filesystem::exists(file, exists_error)) {
+    return true;
+  }
+  std::string text;
+  if (!ReadRobloxSettings(file, &text, error)) {
+    return false;
+  }
+  const std::string original = text;
+  for (const RobloxSetting &setting : settings) {
+    if (!SetRobloxSetting(&text, setting.type, setting.name, setting.value,
+                          file, error)) {
+      return false;
+    }
+  }
+  return text == original || ReplaceRobloxSettings(file, text, error);
+}
+
+}
+
+bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
+                             int fps, std::string *error) {
+  return UpdateRobloxSettings(
+      android_data_root, {{"int", "FramerateCap", std::to_string(fps)}}, error);
+}
+
+bool WriteRobloxVrEnabled(const std::filesystem::path &android_data_root,
+                          std::string *error) {
+  return UpdateRobloxSettings(android_data_root,
+                              {{"bool", "VREnabled", "true"},
+                               {"bool", "HasEverUsedVR", "true"}},
+                              error);
 }
 
 std::string DescribeRobloxQualitySettings(
