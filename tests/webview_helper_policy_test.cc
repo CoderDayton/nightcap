@@ -444,6 +444,15 @@ TEST(WebViewHelperPolicyTest, ShowsLoadErrorsForContentWithoutTelemetryNoise) {
   EXPECT_FALSE(IsEssentialWebResource(nullptr));
 }
 
+TEST(WebViewHelperPolicyTest, LeavesChallengeApiErrorsToThePuzzle) {
+  EXPECT_TRUE(HttpErrorHidesPage("https://arkoselabs.roblox.com/v2/public-key/api.js"));
+  EXPECT_TRUE(HttpErrorHidesPage("https://js.rbxcdn.com/app.js"));
+  EXPECT_FALSE(HttpErrorHidesPage("https://arkoselabs.roblox.com/fc/audio/?session_token=x"));
+  EXPECT_FALSE(HttpErrorHidesPage("https://arkoselabs.roblox.com/fc/gt2/public_key/test"));
+  EXPECT_FALSE(HttpErrorHidesPage("https://metrics.roblox.com/v1/batch"));
+  EXPECT_FALSE(HttpErrorHidesPage(nullptr));
+}
+
 }  // namespace
 }  // namespace webview
 }  // namespace mocktail

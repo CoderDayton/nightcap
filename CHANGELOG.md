@@ -5,6 +5,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
+
 ## [0.5.3] - 2026-11-17
 
 ### Added
