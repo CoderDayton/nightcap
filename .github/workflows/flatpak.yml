@@ -137,9 +137,12 @@ jobs:
 
       - name: Install Flatpak builder
         shell: bash
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes flatpak flatpak-builder gnupg ostree
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+          sudo apt-get "${apt_opts[@]}" update
+          sudo apt-get "${apt_opts[@]}" install --yes \
+            flatpak flatpak-builder gnupg ostree
           flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
 
