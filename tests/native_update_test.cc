@@ -1,6 +1,8 @@
 #include <curl/curl.h>
 #include <gtest/gtest.h>
+#include <fcntl.h>
 #include <minizip/zip.h>
+#include <sys/file.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -29,6 +31,7 @@
 #include "update/apkpure_provider.h"
 #include "update/background_update_process.h"
 #include "update/compatibility_catalog.h"
+#include "update/file_lock.h"
 #include "update/host_abi_deriver.h"
 #include "update/http_download.h"
 #include "update/payload_integrity.h"
@@ -117,6 +120,29 @@ bool CreateZip(const std::filesystem::path& path) {
     }
   }
   return zipClose(archive, nullptr) == ZIP_OK;
+}
+
+TEST(UpdateFileLockTest, GivesUpOnAHeldLockAndTakesAFreeOne) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path path = temporary.root() / "held.lock";
+  const int holder = open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+  const int waiter = open(path.c_str(), O_WRONLY | O_CLOEXEC);
+  ASSERT_GE(holder, 0);
+  ASSERT_GE(waiter, 0);
+  ASSERT_EQ(flock(holder, LOCK_EX), 0);
+
+  std::string error;
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_FALSE(mocktail::update::LockExclusiveWithin(
+      waiter, std::chrono::milliseconds(300), "test lock", &error));
+  EXPECT_GE(std::chrono::steady_clock::now() - started,
+            std::chrono::milliseconds(300));
+  EXPECT_NE(error.find("test lock"), std::string::npos) << error;
+
+  close(holder);
+  EXPECT_TRUE(mocktail::update::LockExclusiveWithin(
+      waiter, std::chrono::milliseconds(300), "test lock", &error));
+  close(waiter);
 }
 
 TEST(NativeUpdateConfigTest, ReadsOnlyTypedUpdaterSection) {

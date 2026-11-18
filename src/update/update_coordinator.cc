@@ -27,6 +27,7 @@
 #include "compat/guest_abi.h"
 #include "update/apk_bundle.h"
 #include "update/apk_provider.h"
+#include "update/file_lock.h"
 #include "update/apkpure_provider.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
@@ -52,10 +53,13 @@ class UpdateLock final {
     }
     descriptor_ = open((root / ".native-update.lock").c_str(),
                        O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (descriptor_ < 0 || flock(descriptor_, LOCK_EX) != 0) {
+    std::string lock_error = "cannot open native updater lock";
+    if (descriptor_ < 0 ||
+        !LockExclusiveWithin(descriptor_, std::chrono::minutes(10),
+                             "Roblox updater lock", &lock_error)) {
       if (descriptor_ >= 0) close(descriptor_);
       descriptor_ = -1;
-      *error = "cannot lock native updater";
+      *error = lock_error;
     }
   }
 

@@ -9,7 +9,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
-  VERSION 0.5.2
+  VERSION 0.5.3
   DESCRIPTION "Android Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
@@ -211,6 +211,7 @@ add_library(mocktail_update STATIC
   src/update/background_update_process.cc
   src/update/candidate_approval.cc
   src/update/compatibility_catalog.cc
+  src/update/file_lock.cc
   src/update/http_download.cc
   src/update/host_abi_deriver.cc
   src/update/payload_integrity.cc

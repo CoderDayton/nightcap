@@ -249,6 +249,17 @@ bool IsEssentialWebResource(const char* uri) {
   return essential;
 }
 
+bool HttpErrorHidesPage(const char* uri) {
+  if (!IsEssentialWebResource(uri)) return false;
+  GUri* parsed = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+  if (parsed == nullptr) return false;
+  const bool puzzle_api =
+      g_strcmp0(g_uri_get_host(parsed), "arkoselabs.roblox.com") == 0 &&
+      g_str_has_prefix(g_uri_get_path(parsed), "/fc/");
+  g_uri_unref(parsed);
+  return !puzzle_api;
+}
+
 std::string BoundedLogToken(const char* value, std::string_view fallback) {
   if (value == nullptr || *value == '\0') {
     return std::string(fallback);
@@ -271,7 +282,10 @@ UriPolicyResult EvaluateNavigationUri(const char* uri) {
   if (uri == nullptr) {
     return result;
   }
-  if (std::string_view(uri) == "about:blank") {
+  const std::string_view text(uri);
+  if (text == "about:srcdoc" || text == "about:blank" ||
+      (text.size() > 11 && text.substr(0, 11) == "about:blank" &&
+       (text[11] == '#' || text[11] == '?'))) {
     result.allowed = true;
     result.scheme = "about";
     result.host = "none";

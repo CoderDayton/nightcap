@@ -5,6 +5,14 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
+- Joining a game right after launch no longer freezes for seconds while the BC7 encoder is compiling.
+- Session logs no longer include the join ticket from Roblox's teleport log line.
+
+## [0.5.3] - 2026-11-17
+
 ### Added
 
 - VR works on Roblox 2.746.1266 (build 20836). It no longer supports 2.736.1408 or 2.738.1397, which
@@ -16,6 +24,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- The cursor is no longer lost in games that keep Roblox's mouse lock on without a camera drag. Nightcap
+  captures the pointer once the lock has held steady for a moment.
+- Startup no longer hangs when another Nightcap holds the Roblox update or download lock. It waits,
+  says so in the log, and gives up with a reason.
+- Captcha frames that load `about:srcdoc` or `about:blank#…` are no longer blocked in the sign-in window.
 - `nightcap-bin` requires the libplacebo version it was built with, and Vulkan stops with a message
   naming the missing library instead of crashing with status 139 during the update check.
 - A custom sun or moon in the asset overlay folder (`content/sky/sun.jpg`, `moon.jpg`) shows in games,

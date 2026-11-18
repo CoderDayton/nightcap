@@ -66,6 +66,7 @@ enum class StorePurchaseNavigation {
 StorePurchaseNavigation ClassifyStorePurchaseNavigation(const char* current_uri,
                                                         const char* target_uri);
 bool IsEssentialWebResource(const char* uri);
+bool HttpErrorHidesPage(const char* uri);
 std::string BoundedLogToken(const char* value, std::string_view fallback);
 UriPolicyResult EvaluateNavigationUri(const char* uri);
 const char* CaptchaEventName(CaptchaEventType type);

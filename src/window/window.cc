@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1629,16 +1630,19 @@ void MaybeLogProcessSample(std::uint64_t now_ns) {
           due, now_ns + kProcessSampleIntervalNs, std::memory_order_relaxed)) {
     return;
   }
-  const runtime::ProcessMemoryUsage usage = runtime::ReadCurrentProcessMemory();
-  if (!usage.valid) {
-    return;
-  }
-  fprintf(stderr,
-          "  [perf] process rss_mib=%llu swap_mib=%llu threads=%llu fds=%d\n",
-          static_cast<unsigned long long>(usage.resident_bytes >> 20),
-          static_cast<unsigned long long>(usage.swap_bytes >> 20),
-          static_cast<unsigned long long>(usage.threads),
-          runtime::CountOpenFileDescriptors());
+  std::thread([] {
+    const runtime::ProcessMemoryUsage usage =
+        runtime::ReadCurrentProcessMemory();
+    if (!usage.valid) {
+      return;
+    }
+    fprintf(stderr,
+            "  [perf] process rss_mib=%llu swap_mib=%llu threads=%llu fds=%d\n",
+            static_cast<unsigned long long>(usage.resident_bytes >> 20),
+            static_cast<unsigned long long>(usage.swap_bytes >> 20),
+            static_cast<unsigned long long>(usage.threads),
+            runtime::CountOpenFileDescriptors());
+  }).detach();
 }
 
 }  // namespace
