@@ -5,9 +5,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <string>
 
 #include "compat/bionic_c_locale.h"
 #include "mocktail/platform/android_log_observer.h"
+#include "mocktail/platform/log_redaction.h"
 
 // Android log priorities
 enum AndroidLogPriority {
@@ -48,6 +50,12 @@ void NotifyObserver(int priority, const char* tag, const char* message) {
   }
 }
 
+int Emit(int priority, const char* tag, const char* text) {
+  const std::string redacted = mocktail::platform::RedactJoinTickets(text);
+  return fprintf(stderr, "[%s/%s] %s\n", PriorityChar(priority),
+                 tag ? tag : "?", redacted.c_str());
+}
+
 }  // namespace
 
 extern "C" {
@@ -81,30 +89,28 @@ void mocktail_android_log_remove_observer(MocktailAndroidLogObserver observer) {
 }
 
 int __android_log_print(int prio, const char* tag, const char* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  char message[4096] = {};
-  int ret = 0;
-  {
+  std::string message;
+  if (fmt != nullptr) {
     const mocktail::compat::ScopedBionicCLocale c_locale;
-    va_list observer_args;
-    va_copy(observer_args, args);
-    if (fmt != nullptr) {
-      (void)vsnprintf(message, sizeof(message), fmt, observer_args);
+    va_list args;
+    va_start(args, fmt);
+    va_list sized;
+    va_copy(sized, args);
+    const int length = vsnprintf(nullptr, 0, fmt, sized);
+    va_end(sized);
+    if (length > 0) {
+      message.resize(static_cast<std::size_t>(length));
+      (void)vsnprintf(message.data(), message.size() + 1, fmt, args);
     }
-    va_end(observer_args);
-    fprintf(stderr, "[%s/%s] ", PriorityChar(prio), tag ? tag : "?");
-    ret = fmt != nullptr ? vfprintf(stderr, fmt, args) : 0;
-    fprintf(stderr, "\n");
+    va_end(args);
   }
-  va_end(args);
-  NotifyObserver(prio, tag, message);
+  const int ret = Emit(prio, tag, message.c_str());
+  NotifyObserver(prio, tag, message.c_str());
   return ret;
 }
 
 int __android_log_write(int prio, const char* tag, const char* text) {
-  const int result = fprintf(stderr, "[%s/%s] %s\n", PriorityChar(prio),
-                             tag ? tag : "?", text ? text : "");
+  const int result = Emit(prio, tag, text ? text : "");
   NotifyObserver(prio, tag, text ? text : "");
   return result;
 }

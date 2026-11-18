@@ -164,6 +164,7 @@ class VulkanEtc2Emulation final {
                        std::uint32_t queue_family);
   void SetEncoderBuildWait(std::chrono::milliseconds wait);
   bool EncoderPending() const;
+  bool EncoderBuilding(VkDevice device);
   void FinishEncoder(VkQueue queue);
 
   VkResult CreateImage(VkDevice device, const VkImageCreateInfo* create_info,

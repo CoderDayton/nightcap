@@ -49,6 +49,7 @@ using mocktail::webview::ExtractRobloxWkHybridCommand;
 using mocktail::webview::ClassifyStorePurchaseNavigation;
 using mocktail::webview::StorePurchaseNavigation;
 using mocktail::webview::IsBrowserLoginUrl;
+using mocktail::webview::HttpErrorHidesPage;
 using mocktail::webview::IsEssentialWebResource;
 using mocktail::webview::UriPathForLog;
 using mocktail::webview::ParseCaptchaEvent;
@@ -860,7 +861,7 @@ void OnResourceFinished(WebKitWebResource* resource, gpointer user_data) {
   const auto policy = EvaluateNavigationUri(webkit_web_resource_get_uri(resource));
   std::cerr << "[webview] resource HTTP error host=" << policy.host
             << " status=" << webkit_uri_response_get_status_code(response) << '\n';
-  if (IsEssentialWebResource(webkit_web_resource_get_uri(resource))) {
+  if (HttpErrorHidesPage(webkit_web_resource_get_uri(resource))) {
     SetLoadErrorVisible(WEBKIT_WEB_VIEW(user_data), true);
   }
 }
