@@ -5986,6 +5986,18 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
   return true;
 }
 
+bool VulkanEtc2Emulation::EncoderBuilding(VkDevice device) {
+  const HostDevice* dev = state_->FindMutable(device);
+  if (dev == nullptr) {
+    return false;
+  }
+  const auto running = [](const std::future<bool>& future) {
+    return future.valid() &&
+           future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+  };
+  return running(dev->encoder_build) || running(dev->encoder_check);
+}
+
 bool VulkanEtc2Emulation::EncoderPending() const {
   return state_->encoders_pending.load(std::memory_order_acquire) > 0;
 }

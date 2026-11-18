@@ -123,6 +123,7 @@ target_link_libraries(stub_glesv2 PRIVATE dl)
 add_library(stub_vulkan SHARED
   ${CMAKE_SOURCE_DIR}/src/graphics/bionic_vulkan_loader_adapter.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/deferred_teardown.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_text_overlay_compositor.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_driver_pin.cc
