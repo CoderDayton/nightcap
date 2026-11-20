@@ -5,6 +5,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Settings has a Present mode choice (FIFO, Mailbox or Immediate), which was only in the config file before.
+
 ### Fixed
 
 - The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
