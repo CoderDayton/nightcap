@@ -548,6 +548,15 @@ target_link_libraries(roblox_app_lifecycle_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(roblox_lua_app_restart_test
+  roblox_lua_app_restart_test.cc
+)
+target_link_libraries(roblox_lua_app_restart_test PRIVATE
+  Mocktail::ExperienceRuntime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(roblox_lua_app_restart_test)
+
 add_executable(roblox_game_session_native_adapter_test
   roblox_game_session_native_adapter_test.cc
 )
@@ -1450,6 +1459,7 @@ gtest_discover_tests(game_session_coordinator_test)
 gtest_discover_tests(owned_pthread_test)
 gtest_discover_tests(roblox_capability_resolver_test)
 gtest_discover_tests(roblox_app_lifecycle_test)
+gtest_discover_tests(roblox_lua_app_restart_test)
 gtest_discover_tests(roblox_game_session_native_adapter_test)
 gtest_discover_tests(roblox_experience_launch_bridge_test)
 gtest_discover_tests(roblox_web_view_bridge_test)

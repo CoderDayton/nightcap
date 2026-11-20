@@ -83,6 +83,7 @@
 #include "runtime/roblox_store_purchase.h"
 #include "runtime/roblox_experience_composition.h"
 #include "runtime/roblox_game_session_native_adapter.h"
+#include "runtime/roblox_lua_app_restart.h"
 #include "runtime/roblox_mouse_behavior_query.h"
 #include "runtime/roblox_window_input_runtime.h"
 #include "runtime/roblox_text_input_jni_bridge.h"
@@ -3656,10 +3657,7 @@ struct GuestLuaAppRestartState {
   std::string launch_mode;
   jnivm::RobloxAuthIdentity account_identity;
   uint64_t surface_generation = 0;
-  NativeAppBridgeObjectParamsFn start_app_with_params = nullptr;
-  NativeSetTaskSchedulerBackgroundModeFn set_task_scheduler_background_mode =
-      nullptr;
-  NativeNoArgFn pause_app = nullptr;
+  mocktail::runtime::LuaAppRestartSymbols symbols;
 };
 
 GuestLuaAppRestartState g_guest_lua_app_restart;
@@ -3674,7 +3672,7 @@ void RetainGuestLuaAppRestartInputs(
   if (env == nullptr || native_gl_class == nullptr || app_params == nullptr ||
       surface == nullptr || start_app_with_params == nullptr ||
       set_task_scheduler_background_mode == nullptr ||
-      state.pause_app == nullptr) {
+      state.symbols.pause_app == nullptr) {
     std::cerr << "  [surface] guest LuaApp restart unavailable: startup "
                  "inputs or engine symbols are missing\n"
               << std::flush;
@@ -3705,8 +3703,8 @@ void RetainGuestLuaAppRestartInputs(
   state.account_identity = account_identity;
   state.surface_generation =
       mocktail::window::GetWindowSurfaceSnapshot().generation;
-  state.start_app_with_params = start_app_with_params;
-  state.set_task_scheduler_background_mode =
+  state.symbols.start_app = start_app_with_params;
+  state.symbols.set_task_scheduler_background_mode =
       set_task_scheduler_background_mode;
   state.ready.store(true, std::memory_order_release);
 }
@@ -3747,35 +3745,27 @@ mocktail::Status RestartGuestLuaAppSurface(
                                 state.launch_mode.c_str(),
                                 state.account_identity)
           : nullptr;
-  jstring stop_reason = env->NewStringUTF("ASMA.stop");
-  jstring start_reason = env->NewStringUTF("ASMA.start");
 
-  bool restarted = false;
-  if (start_app_params != nullptr && stop_reason != nullptr &&
-      start_reason != nullptr && env->ExceptionCheck() == JNI_FALSE) {
-    state.pause_app(env, state.native_gl_class);
-    state.set_task_scheduler_background_mode(env, state.native_gl_class,
-                                             JNI_TRUE, stop_reason);
-    state.set_task_scheduler_background_mode(env, state.native_gl_class,
-                                             JNI_FALSE, start_reason);
-    state.start_app_with_params(env, state.native_gl_class, start_app_params);
-    restarted = env->ExceptionCheck() == JNI_FALSE;
-  }
-  if (env->ExceptionCheck() != JNI_FALSE) {
+  const bool exception_pending = env->ExceptionCheck() != JNI_FALSE;
+  if (exception_pending) {
     env->ExceptionDescribe();
     env->ExceptionClear();
-    restarted = false;
   }
+  const mocktail::Status status =
+      exception_pending || start_app_params == nullptr
+          ? mocktail::Status::Error(mocktail::StatusCode::kUnavailable,
+                                    "could not build guest LuaApp start params")
+          : mocktail::runtime::RestartLuaApp(env, state.native_gl_class,
+                                             state.symbols, start_app_params);
 
-  if (start_reason != nullptr) env->DeleteLocalRef(start_reason);
-  if (stop_reason != nullptr) env->DeleteLocalRef(stop_reason);
   if (start_app_params != nullptr) env->DeleteLocalRef(start_app_params);
   if (platform_params != nullptr) env->DeleteLocalRef(platform_params);
-  if (!restarted) {
+  if (!status.ok()) {
     env->DeleteGlobalRef(new_surface);
-    return mocktail::Status::Error(mocktail::StatusCode::kUnavailable,
-                                   "guest LuaApp restart on the recreated "
-                                   "surface did not complete");
+    std::cerr << "  [surface] guest LuaApp restart failed: " << status.message()
+              << '\n'
+              << std::flush;
+    return status;
   }
   env->DeleteGlobalRef(state.surface);
   state.surface = new_surface;
@@ -6558,7 +6548,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                 "Java_com_roblox_engine_jni_NativeGLInterface_"
                 "setTaskSchedulerBackgroundMode"));
     // Written before the engine startup thread exists, read only afterwards.
-    g_guest_lua_app_restart.pause_app = reinterpret_cast<NativeNoArgFn>(
+    g_guest_lua_app_restart.symbols.pause_app =
+        reinterpret_cast<mocktail::runtime::NativeAppBridgeV2PauseAppFn>(
         linker::ResolveSymbol(roblox_handle,
                               "Java_com_roblox_engine_jni_NativeGLInterface_"
                               "nativeAppBridgeV2PauseApp"));
