@@ -59,6 +59,7 @@
 #include "legacy/legacy_runtime.h"
 #include "libc_shim/libc_shim.h"
 #include "linker/linker.h"
+#include "mocktail/audio/sdl_audio_sink.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
 #include "runtime/engine_pump_rest.h"
@@ -7352,6 +7353,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       }
     }
     std::cout << "  [main] window closed, shutting down\n" << std::flush;
+    if (const mocktail::Status mute_status = mocktail::audio::MuteSdlPlayback();
+        !mute_status.ok()) {
+      std::cerr << "  [main] muting audio for shutdown failed: "
+                << mute_status.message() << '\n';
+    }
     real_frame_presented = mocktail::window::HasPresentedFrame();
     if (text_input_bridge != nullptr) {
       input_shutdown_completed = text_input_bridge->Shutdown().ok();
