@@ -200,6 +200,7 @@ enum class GamepadFamily {
   kXbox,
   kPlayStation4,
   kPlayStation5,
+  kNintendoSwitch,
 };
 
 struct GamepadDescriptor {
