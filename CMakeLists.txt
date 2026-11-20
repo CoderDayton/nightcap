@@ -529,6 +529,7 @@ foreach(stub_target IN ITEMS
 endforeach()
 
 add_library(mocktail_window STATIC
+  src/window/guest_lua_app_surface_recovery.cc
   src/window/roblox_fullscreen_menu_request_gate.cc
   src/window/video_driver_policy.cc
   src/window/window.cc

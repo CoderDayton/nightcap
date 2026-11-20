@@ -26,6 +26,7 @@ Release notes on GitHub are taken from the matching section here.
 - The numpad `/` key opens chat like the main `/` key.
 - Roblox now trusts the CA bundle set in Settings, so a proxy like mitmproxy works without Fleasion
   instead of showing a Connection Error.
+- On Wayland with NVIDIA, the sign-in screen no longer stays on a blank box until the window is resized.
 
 ## [0.5.3] - 2026-11-17
 
