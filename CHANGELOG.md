@@ -19,6 +19,7 @@ Release notes on GitHub are taken from the matching section here.
 - Closing the window stops the game's sound right away, and quitting no longer stalls for 12 seconds.
 - Nintendo Switch Pro Controllers and Joy-Con pairs send A, B, X and Y as printed on the buttons.
 - The numpad `/` key opens chat like the main `/` key.
+- On Wayland with NVIDIA, the sign-in screen no longer stays on a blank box until the window is resized.
 
 ## [0.5.3] - 2026-11-17
 

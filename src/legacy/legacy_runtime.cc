@@ -83,6 +83,7 @@
 #include "runtime/roblox_store_purchase.h"
 #include "runtime/roblox_experience_composition.h"
 #include "runtime/roblox_game_session_native_adapter.h"
+#include "runtime/roblox_lua_app_restart.h"
 #include "runtime/roblox_mouse_behavior_query.h"
 #include "runtime/roblox_window_input_runtime.h"
 #include "runtime/roblox_text_input_jni_bridge.h"
@@ -92,6 +93,7 @@
 #include "services/client_settings_service.h"
 #include "services/cursor_picture_source.h"
 #include "services/http_client.h"
+#include "window/guest_lua_app_surface_recovery.h"
 #include "window/window.h"
 #include "window/window_game_surface_bridge.h"
 
@@ -3644,6 +3646,138 @@ static std::string RuntimeBionicAdapterPath(const char* name) {
 }
 
 
+// What the guest LuaApp needs to restart onto a recreated surface. Set once
+// after the real StartAppWithParams and used only from the main loop.
+struct GuestLuaAppRestartState {
+  std::atomic<bool> ready{false};
+  jclass native_gl_class = nullptr;
+  jstring app_params = nullptr;
+  jobject surface = nullptr;
+  bool is_headless = false;
+  std::string launch_mode;
+  jnivm::RobloxAuthIdentity account_identity;
+  uint64_t surface_generation = 0;
+  mocktail::runtime::LuaAppRestartSymbols symbols;
+};
+
+GuestLuaAppRestartState g_guest_lua_app_restart;
+
+void RetainGuestLuaAppRestartInputs(
+    JNIEnv* env, jclass native_gl_class, jstring app_params, jobject surface,
+    bool is_headless, const char* launch_mode,
+    const jnivm::RobloxAuthIdentity& account_identity,
+    NativeAppBridgeObjectParamsFn start_app_with_params,
+    NativeSetTaskSchedulerBackgroundModeFn set_task_scheduler_background_mode) {
+  GuestLuaAppRestartState& state = g_guest_lua_app_restart;
+  if (env == nullptr || native_gl_class == nullptr || app_params == nullptr ||
+      surface == nullptr || start_app_with_params == nullptr ||
+      set_task_scheduler_background_mode == nullptr ||
+      state.symbols.pause_app == nullptr) {
+    std::cerr << "  [surface] guest LuaApp restart unavailable: startup "
+                 "inputs or engine symbols are missing\n"
+              << std::flush;
+    return;
+  }
+  jclass retained_class =
+      static_cast<jclass>(env->NewGlobalRef(native_gl_class));
+  jstring retained_app_params =
+      static_cast<jstring>(env->NewGlobalRef(app_params));
+  jobject retained_surface = env->NewGlobalRef(surface);
+  if (retained_class == nullptr || retained_app_params == nullptr ||
+      retained_surface == nullptr) {
+    if (retained_class != nullptr) env->DeleteGlobalRef(retained_class);
+    if (retained_app_params != nullptr) {
+      env->DeleteGlobalRef(retained_app_params);
+    }
+    if (retained_surface != nullptr) env->DeleteGlobalRef(retained_surface);
+    std::cerr << "  [surface] guest LuaApp restart unavailable: could not "
+                 "retain JNI references\n"
+              << std::flush;
+    return;
+  }
+  state.native_gl_class = retained_class;
+  state.app_params = retained_app_params;
+  state.surface = retained_surface;
+  state.is_headless = is_headless;
+  state.launch_mode = launch_mode != nullptr ? launch_mode : "";
+  state.account_identity = account_identity;
+  state.surface_generation =
+      mocktail::window::GetWindowSurfaceSnapshot().generation;
+  state.symbols.start_app = start_app_with_params;
+  state.symbols.set_task_scheduler_background_mode =
+      set_task_scheduler_background_mode;
+  state.ready.store(true, std::memory_order_release);
+}
+
+// Guest-session counterpart of
+// RobloxExperienceComposition::RestartLuaAppSurface. The new Surface is created
+// before the old one is released so the engine never sees a reused identity.
+mocktail::Status RestartGuestLuaAppSurface(
+    void*, const mocktail::runtime::GameSurface& host_surface) {
+  GuestLuaAppRestartState& state = g_guest_lua_app_restart;
+  if (!state.ready.load(std::memory_order_acquire)) {
+    return mocktail::Status::Error(
+        mocktail::StatusCode::kFailedPrecondition,
+        "guest LuaApp restart inputs were not retained");
+  }
+  JNIEnv* env = AttachMainThreadJniEnv();
+  if (env == nullptr) {
+    return mocktail::Status::Error(mocktail::StatusCode::kUnavailable,
+                                   "main-thread JNIEnv is unavailable");
+  }
+
+  jobject surface_local = BuildMockSurface(env);
+  jobject new_surface =
+      surface_local != nullptr ? env->NewGlobalRef(surface_local) : nullptr;
+  if (surface_local != nullptr) {
+    env->DeleteLocalRef(surface_local);
+  }
+  if (new_surface == nullptr) {
+    return mocktail::Status::Error(mocktail::StatusCode::kUnavailable,
+                                   "could not create a recreated Surface");
+  }
+  jobject platform_params =
+      BuildPlatformParams(env, new_surface, state.is_headless);
+  jobject start_app_params =
+      platform_params != nullptr
+          ? BuildStartAppParams(env, state.app_params, platform_params,
+                                new_surface, state.is_headless,
+                                state.launch_mode.c_str(),
+                                state.account_identity)
+          : nullptr;
+
+  const bool exception_pending = env->ExceptionCheck() != JNI_FALSE;
+  if (exception_pending) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  const mocktail::Status status =
+      exception_pending || start_app_params == nullptr
+          ? mocktail::Status::Error(mocktail::StatusCode::kUnavailable,
+                                    "could not build guest LuaApp start params")
+          : mocktail::runtime::RestartLuaApp(env, state.native_gl_class,
+                                             state.symbols, start_app_params);
+
+  if (start_app_params != nullptr) env->DeleteLocalRef(start_app_params);
+  if (platform_params != nullptr) env->DeleteLocalRef(platform_params);
+  if (!status.ok()) {
+    env->DeleteGlobalRef(new_surface);
+    std::cerr << "  [surface] guest LuaApp restart failed: " << status.message()
+              << '\n'
+              << std::flush;
+    return status;
+  }
+  env->DeleteGlobalRef(state.surface);
+  state.surface = new_surface;
+  state.surface_generation = host_surface.generation;
+  std::fprintf(stderr,
+               "  [surface] guest LuaApp restarted generation=%llu "
+               "pixels=%ux%u\n",
+               static_cast<unsigned long long>(host_surface.generation),
+               host_surface.width, host_surface.height);
+  return mocktail::Status::Ok();
+}
+
 void* EngineStartupThread(void* arg) {
   auto* context = static_cast<EngineStartupContext*>(arg);
   if (context == nullptr) {
@@ -4491,6 +4625,13 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
 	          << "  [engine] startup path cannot continue after start_app recovery\n"
 	          << std::flush;
 	      pthread_exit(nullptr);
+	    }
+	    if (effective_call_real_start_app_with_params &&
+	        context->game_session_runtime == nullptr) {
+	      RetainGuestLuaAppRestartInputs(
+	          env, native_gl_class, app_params, surface, is_headless,
+	          launch_mode, account_identity, context->native_start_app_with_params,
+	          context->native_set_task_scheduler_background_mode);
 	    }
 	  }
 
@@ -6405,6 +6546,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                 roblox_handle,
                 "Java_com_roblox_engine_jni_NativeGLInterface_"
                 "setTaskSchedulerBackgroundMode"));
+    // Written before the engine startup thread exists, read only afterwards.
+    g_guest_lua_app_restart.symbols.pause_app =
+        reinterpret_cast<mocktail::runtime::NativeAppBridgeV2PauseAppFn>(
+        linker::ResolveSymbol(roblox_handle,
+                              "Java_com_roblox_engine_jni_NativeGLInterface_"
+                              "nativeAppBridgeV2PauseApp"));
     auto* native_send_app_ready =
         reinterpret_cast<NativeSendAppReadyFn>(linker::ResolveSymbol(
             roblox_handle,
@@ -7211,7 +7358,44 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               experience_consumer,
               mocktail::window::MakeWindowResizeReadinessCommitObserver());
     }
+    // The login screen has no game session or subscribed composition, so
+    // nothing else consumes surface events there.
+    std::unique_ptr<mocktail::window::GuestLuaAppSurfaceRecovery>
+        guest_surface_recovery;
+    std::unique_ptr<mocktail::window::WindowGameSurfaceBridge>
+        guest_surface_bridge;
+    if (surface_bridge == nullptr &&
+        g_guest_lua_app_restart.ready.load(std::memory_order_acquire)) {
+      guest_surface_recovery =
+          std::make_unique<mocktail::window::GuestLuaAppSurfaceRecovery>(
+              nullptr, &RestartGuestLuaAppSurface,
+              g_guest_lua_app_restart.surface_generation);
+      guest_surface_bridge =
+          std::make_unique<mocktail::window::WindowGameSurfaceBridge>(
+              mocktail::window::MakeWindowGameSurfaceEventSource(),
+              guest_surface_recovery->Consumer());
+    }
     const auto drain_game_surface_events = [&]() {
+      if (surface_bridge == nullptr && guest_surface_bridge != nullptr) {
+        // After authentication the composition is the only event consumer.
+        if (experience_composition != nullptr &&
+            experience_composition->subscribed()) {
+          guest_surface_bridge.reset();
+          guest_surface_recovery.reset();
+          return true;
+        }
+        const mocktail::window::WindowGameSurfaceDrainResult guest_result =
+            guest_surface_bridge->Drain();
+        if (!guest_result.ok()) {
+          // Best effort: never end the session over a failed recovery.
+          std::cerr << "  [surface] guest LuaApp surface recovery disabled: "
+                    << guest_result.status.message() << '\n'
+                    << std::flush;
+          guest_surface_bridge.reset();
+          guest_surface_recovery.reset();
+        }
+        return true;
+      }
       if (surface_bridge == nullptr) {
         return true;
       }
