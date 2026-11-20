@@ -12,6 +12,7 @@
 #include "jnivm/jnivm.h"
 #include "runtime/external_launch_broker.h"
 #include "runtime/roblox_launch_uri.h"
+#include "runtime/roblox_lua_app_restart.h"
 #include "runtime/webview_helper_launcher.h"
 #include "window/window.h"
 
@@ -2162,38 +2163,14 @@ Status RobloxExperienceComposition::RestartLuaAppSurface(
                                activity, &start_app_params);
   }
 
-  jstring stop_reason = nullptr;
-  jstring start_reason = nullptr;
   if (status.ok()) {
-    stop_reason = env->NewStringUTF("ASMA.stop");
-    start_reason = env->NewStringUTF("ASMA.start");
-    if (stop_reason == nullptr || start_reason == nullptr) {
-      status = Unavailable("could not allocate ASMA surface lifecycle reason");
-    }
-  }
-  if (status.ok()) {
-    game_symbols_.pause_app(env, native_gl_class);
-    status = CheckJni(env, "pause LuaApp for surface recreation");
-  }
-  if (status.ok()) {
-    game_symbols_.set_task_scheduler_background_mode(env, native_gl_class,
-                                                     JNI_TRUE, stop_reason);
-    status = CheckJni(env, "background LuaApp for surface recreation");
-  }
-  if (status.ok()) {
-    game_symbols_.set_task_scheduler_background_mode(env, native_gl_class,
-                                                     JNI_FALSE, start_reason);
-    status = CheckJni(env, "foreground LuaApp for surface recreation");
-  }
-  if (status.ok()) {
-    game_symbols_.start_app(env, native_gl_class, start_app_params);
-    status = CheckJni(env, "restart LuaApp with recreated surface");
+    status = RestartLuaApp(env, native_gl_class,
+                           {game_symbols_.pause_app,
+                            game_symbols_.set_task_scheduler_background_mode,
+                            game_symbols_.start_app},
+                           start_app_params);
   }
 
-  if (start_reason != nullptr)
-    env->DeleteLocalRef(start_reason);
-  if (stop_reason != nullptr)
-    env->DeleteLocalRef(stop_reason);
   if (start_app_params != nullptr)
     env->DeleteLocalRef(start_app_params);
   if (platform_params != nullptr)

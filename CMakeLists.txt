@@ -582,6 +582,7 @@ add_library(mocktail_experience_runtime STATIC
   src/runtime/jnivm_platform_web_callbacks.cc
   src/runtime/roblox_experience_composition.cc
   src/runtime/roblox_fresh_game_launch_controller.cc
+  src/runtime/roblox_lua_app_restart.cc
   src/runtime/roblox_platform_web_symbols.cc
 )
 add_library(Mocktail::ExperienceRuntime ALIAS mocktail_experience_runtime)
