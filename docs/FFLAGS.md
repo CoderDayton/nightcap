@@ -198,6 +198,8 @@ You don't need to set these.
 - `FIntRenderForceVideoMemorySize`: set from your RAM.
 - `FFlagLuaAppChartsAppPage` = `false`: the newer Charts page can go blank.
 - `FIntFlyoutTestVariantRollout12` = `2`: desktop side menu.
+- `FFlagDebugDisableDRS` = `true`: draws the 3D scene at full window size.
+  Dynamic resolution otherwise stretches it and blurs it.
 - `FFlagDebugLuauCodegenAll`: on in menus, off in games, for faster menus.
   Setting it yourself applies your value everywhere. See
   [PERFORMANCE.md](PERFORMANCE.md#native-code-in-the-menus).
