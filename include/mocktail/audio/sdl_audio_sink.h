@@ -42,6 +42,8 @@ Status GetConfiguredSdlPlaybackDevice(std::uint32_t* playback_device_id,
 Status SwitchSdlPlaybackDevice(std::uint32_t playback_device_id,
                                std::string* resolved_name);
 
+Status MuteSdlPlayback();
+
 struct SdlAudioSinkOptions {
   PcmSpec source_spec;
 

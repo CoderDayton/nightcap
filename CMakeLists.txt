@@ -651,6 +651,7 @@ target_link_libraries(mocktail_legacy_runtime PRIVATE
   libc_shim
   mocktail_window
   mocktail_graphics_foundation
+  mocktail_audio_sdl
 )
 target_compile_definitions(mocktail_legacy_runtime PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
