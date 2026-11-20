@@ -18,27 +18,6 @@ std::string_view EnvironmentOr(const char *name, const char *fallback) {
 
 } // namespace
 
-PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
-                                           std::string_view frame_rate_value,
-                                           std::string_view present_mode) {
-  if (present_mode == "fifo") return PresentModePolicy::kFifo;
-  if (present_mode == "mailbox") return PresentModePolicy::kMailbox;
-  if (present_mode == "immediate") return PresentModePolicy::kImmediate;
-  if (vsync_value == "on" || vsync_value == "1") {
-    return PresentModePolicy::kVsync;
-  }
-  if (vsync_value == "off" || vsync_value == "0") {
-    return PresentModePolicy::kUnthrottled;
-  }
-  if (frame_rate_value == "unlimited") {
-    return PresentModePolicy::kUnthrottled;
-  }
-  // Every synchronized target, including the unmanaged Roblox cap, presents
-  // through the lowest-latency vsync mode the host offers. Roblox's own FIFO
-  // request queues up to two rendered frames before they reach the display.
-  return PresentModePolicy::kVsync;
-}
-
 PresentModePolicy CachedPresentModePolicy() {
   static const PresentModePolicy policy = [] {
     return ResolvePresentModePolicy(

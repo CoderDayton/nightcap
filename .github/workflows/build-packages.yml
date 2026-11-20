@@ -211,11 +211,16 @@ jobs:
           retention-days: 14
 
   rpm:
-    name: RPM (Fedora 44)
+    name: RPM (Fedora ${{ matrix.fedora }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: [44, 45]
     env:
       CHANNEL: ${{ inputs.channel }}
+      FEDORA: ${{ matrix.fedora }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -236,7 +241,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
             --env MOCKTAIL_PACKAGE_VERSION="$version" \
-            fedora:44 bash -Eeuo pipefail -c '
+            "fedora:$FEDORA" bash -Eeuo pipefail -c '
               dnf install --assumeyes \
                 gcc-c++ cmake git ninja-build pkgconf-pkg-config lld rpm-build \
                 SDL3-devel SDL3_ttf-devel libcurl-devel openssl-devel \
@@ -261,7 +266,7 @@ jobs:
       - name: Upload RPM
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: Nightcap-RPM
+          name: Nightcap-RPM-fc${{ matrix.fedora }}
           path: dist/rpm/*.rpm
           if-no-files-found: error
           retention-days: 14

@@ -9,21 +9,10 @@
 
 #include <vulkan/vulkan.h>
 
+#include "mocktail/graphics/present_mode_resolve.h"
+
 namespace mocktail {
 namespace graphics {
-
-enum class PresentModePolicy {
-  kHostDefault,
-  kVsync,
-  kUnthrottled,
-  kFifo,
-  kMailbox,
-  kImmediate,
-};
-
-PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
-                                           std::string_view frame_rate_value,
-                                           std::string_view present_mode = "auto");
 
 std::optional<VkPresentModeKHR> ExplicitPresentMode(PresentModePolicy policy);
 int ResolveSwapInterval(PresentModePolicy policy, int requested);

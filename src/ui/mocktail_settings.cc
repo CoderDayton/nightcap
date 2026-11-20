@@ -97,6 +97,7 @@ struct Row {
   // A value the file holds that the row does not list. It is shown as one
   // more choice so opening the window never changes it.
   std::string unlisted;
+  std::string default_label;
   // Whether the choices have been put in the drop-down yet.
   bool choices_set = false;
   std::vector<DeviceChoice> devices;
@@ -198,7 +199,10 @@ bool HideDescendant(GtkWidget* parent, const char* name) {
 void SetChoices(Row* row) {
   GtkStringList* labels = gtk_string_list_new(nullptr);
   for (const auto& choice : row->setting->choices) {
-    gtk_string_list_append(labels, Text(choice.label).c_str());
+    const bool relabel = choice.value.empty() && !row->default_label.empty();
+    const std::string label =
+        relabel ? row->default_label : Text(choice.label);
+    gtk_string_list_append(labels, label.c_str());
   }
   if (!row->unlisted.empty()) {
     gtk_string_list_append(labels, row->unlisted.c_str());
@@ -615,9 +619,12 @@ void RefreshRow(Row* row, bool keep_edit) {
     case SettingKind::kChoice: {
       const std::size_t index = ChoiceIndex(setting, value);
       std::string unlisted = index == kNoChoice ? value : std::string();
-      // The list changes only when the unlisted value does.
-      if (!row->choices_set || unlisted != row->unlisted) {
+      std::string default_label =
+          row->window->document.DefaultChoiceLabel(setting);
+      if (!row->choices_set || unlisted != row->unlisted ||
+          default_label != row->default_label) {
         row->unlisted = std::move(unlisted);
+        row->default_label = std::move(default_label);
         row->choices_set = true;
         SetChoices(row);
       }
