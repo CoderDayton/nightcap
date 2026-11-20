@@ -90,12 +90,14 @@ jobs:
             mv -- "${matched[0]}" "release/$name"
           }
           rename_one '*.deb' nightcap-nightly_amd64.deb
-          rename_one '*.rpm' nightcap-nightly-x86_64.rpm
+          rename_one '*.fc44.x86_64.rpm' nightcap-nightly-fc44-x86_64.rpm
+          rename_one '*.fc45.x86_64.rpm' nightcap-nightly-fc45-x86_64.rpm
           rename_one '*.pkg.tar.zst' nightcap-nightly-x86_64.pkg.tar.zst
           (
             cd release
             for asset in Nightcap-nightly-x86_64.AppImage nightcap-nightly_amd64.deb \
-                nightcap-nightly-x86_64.rpm nightcap-nightly-x86_64.pkg.tar.zst; do
+                nightcap-nightly-fc44-x86_64.rpm nightcap-nightly-fc45-x86_64.rpm \
+                nightcap-nightly-x86_64.pkg.tar.zst; do
               sha256sum "$asset" > "$asset.sha256"
             done
           )

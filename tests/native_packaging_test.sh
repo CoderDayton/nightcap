@@ -196,7 +196,8 @@ for expected in \
     'channel: nightly' \
     'Nightcap-nightly-x86_64.AppImage.zsync' \
     'nightcap-nightly_amd64.deb' \
-    'nightcap-nightly-x86_64.rpm' \
+    'nightcap-nightly-fc44-x86_64.rpm' \
+    'nightcap-nightly-fc45-x86_64.rpm' \
     'nightcap-nightly-x86_64.pkg.tar.zst' \
     'github-actions[bot]' \
     'gh release upload continuous'; do

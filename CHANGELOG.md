@@ -8,6 +8,7 @@ Release notes on GitHub are taken from the matching section here.
 ### Added
 
 - Settings has a Present mode choice (FIFO, Mailbox or Immediate), which was only in the config file before.
+- Releases carry an RPM for Fedora 45 as well as Fedora 44.
 
 ### Fixed
 

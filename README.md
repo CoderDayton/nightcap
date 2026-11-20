@@ -99,13 +99,14 @@ the app menu back at the regular build.
 
 ## Distribution packages
 
-Each release also carries a DEB, an RPM, and a pacman package, with a
-`.sha256` beside every file on the
-[releases page](https://github.com/CoderDayton/nightcap/releases/latest):
+Each release also carries a DEB, an RPM for each supported Fedora release
+(`fc44`, `fc45`), and a pacman package, with a `.sha256` beside every file on
+the [releases page](https://github.com/CoderDayton/nightcap/releases/latest).
+Pick the RPM whose `fc` number matches your Fedora:
 
 ```bash
 sudo apt install ./nightcap_<version>_amd64.deb
-sudo dnf install ./nightcap-<version>-1.x86_64.rpm
+sudo dnf install ./nightcap-<version>-1.fc45.x86_64.rpm
 sudo pacman -U nightcap-<version>-1-x86_64.pkg.tar.zst
 ```
 
