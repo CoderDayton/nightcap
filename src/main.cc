@@ -848,6 +848,19 @@ int main(int argc, char* argv[]) {
                 << command_line_error << '\n';
       return EXIT_FAILURE;
     }
+  } else if (runtime_config.config.ca_bundle()) {
+    std::string ca_bundle_overrides;
+    if (!mocktail::runtime::MergeCaBundleClientSettingsOverrides(
+            environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"),
+            &ca_bundle_overrides, &command_line_error) ||
+        setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
+               ca_bundle_overrides.c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot apply CA bundle client settings: "
+                << command_line_error << '\n';
+      return EXIT_FAILURE;
+    }
+    std::cout << "  [network] Roblox trusts " << *runtime_config.config.ca_bundle()
+              << " instead of its built-in CAs\n";
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     if (const std::optional<int> framerate_cap =

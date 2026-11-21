@@ -44,6 +44,10 @@ bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
                                           std::string* merged_json,
                                           std::string* error);
 
+bool MergeCaBundleClientSettingsOverrides(std::string_view base_json,
+                                          std::string* merged_json,
+                                          std::string* error);
+
 }  // namespace mocktail::runtime
 
 #endif

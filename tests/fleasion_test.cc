@@ -170,5 +170,34 @@ TEST(FleasionTest, RejectsOverridesThatAreNotAnObject) {
   EXPECT_FALSE(error.empty());
 }
 
+nlohmann::json MergeCaBundle(const std::string& base) {
+  std::string merged;
+  std::string error;
+  EXPECT_TRUE(MergeCaBundleClientSettingsOverrides(base, &merged, &error))
+      << error;
+  return nlohmann::json::parse(merged);
+}
+
+TEST(CaBundleTest, MakesRobloxTrustTheConfiguredBundle) {
+  const nlohmann::json merged =
+      MergeCaBundle(R"({"FIntTargetRefreshRate":"144"})");
+  EXPECT_EQ(Value(merged, "DFFlagHttpUseEmbeddedCaCerts"), "False");
+  EXPECT_EQ(Value(merged, "FIntTargetRefreshRate"), "144");
+  EXPECT_FALSE(merged.contains(kFlag));
+}
+
+TEST(CaBundleTest, KeepsAnExplicitValue) {
+  EXPECT_EQ(Value(MergeCaBundle(R"({"DFFlagHttpUseEmbeddedCaCerts":"True"})"),
+                  "DFFlagHttpUseEmbeddedCaCerts"),
+            "True");
+}
+
+TEST(CaBundleTest, RejectsOverridesThatAreNotAnObject) {
+  std::string merged;
+  std::string error;
+  EXPECT_FALSE(MergeCaBundleClientSettingsOverrides("[]", &merged, &error));
+  EXPECT_FALSE(error.empty());
+}
+
 }
 }
