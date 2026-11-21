@@ -162,6 +162,27 @@ having it in your overrides as well does no harm.
 }
 ```
 
+## Can I use mitmproxy or another proxy instead of Fleasion?
+
+Yes. Roblox has to trust the proxy's certificate, so give Nightcap a CA bundle
+that holds it. For mitmproxy on its default port:
+
+1. Start mitmproxy once so it creates `~/.mitmproxy/mitmproxy-ca-cert.pem`.
+2. Add its CA to a copy of your system bundle:
+
+   ```bash
+   cat /etc/ssl/certs/ca-certificates.crt ~/.mitmproxy/mitmproxy-ca-cert.pem \
+     > ~/.config/mocktail/cacert.pem
+   ```
+
+3. In Settings → Network, set **Fixed proxy** to `127.0.0.1:8080` and
+   **CA bundle (PEM)** to the full path of that file, for example
+   `/home/you/.config/mocktail/cacert.pem`. Leave **Use Fleasion** off.
+
+Older builds also need `"DFFlagHttpUseEmbeddedCaCerts": false` in
+**Advanced → FFlag overrides**. Without it Roblox ignores the bundle and shows
+a Connection Error.
+
 ## Can I run multiple Roblox instances?
 
 No. Nightcap won't add multi-instance launching. It would mean working around

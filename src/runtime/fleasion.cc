@@ -12,7 +12,9 @@
 
 #include <cerrno>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -202,9 +204,10 @@ bool WebsiteJoinNeedsFreshLaunch(const RuntimeConfig& config) {
   return config.fleasion_enabled() && config.fleasion_clear_cache_on_launch();
 }
 
-bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
-                                          std::string* merged_json,
-                                          std::string* error) {
+static bool MergeClientSettingsDefaults(
+    std::string_view base_json,
+    std::initializer_list<std::pair<const char*, const char*>> defaults,
+    std::string* merged_json, std::string* error) {
   nlohmann::json overrides = nlohmann::json::parse(
       base_json.empty() ? std::string_view("{}") : base_json, nullptr, false,
       true);
@@ -212,11 +215,28 @@ bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
     *error = "client-settings overrides must be a JSON object";
     return false;
   }
-  overrides.emplace("FFlagAssetProviderUseAssetDeliveryV3", "False");
-  // Read cacert.pem, which holds Fleasion's CA, not the CAs built into Roblox.
-  overrides.emplace("DFFlagHttpUseEmbeddedCaCerts", "False");
+  for (const auto& [name, value] : defaults) overrides.emplace(name, value);
   *merged_json = overrides.dump();
   return true;
+}
+
+bool MergeFleasionClientSettingsOverrides(std::string_view base_json,
+                                          std::string* merged_json,
+                                          std::string* error) {
+  // Read cacert.pem, which holds Fleasion's CA, not the CAs built into Roblox.
+  return MergeClientSettingsDefaults(
+      base_json,
+      {{"FFlagAssetProviderUseAssetDeliveryV3", "False"},
+       {"DFFlagHttpUseEmbeddedCaCerts", "False"}},
+      merged_json, error);
+}
+
+bool MergeCaBundleClientSettingsOverrides(std::string_view base_json,
+                                          std::string* merged_json,
+                                          std::string* error) {
+  return MergeClientSettingsDefaults(
+      base_json, {{"DFFlagHttpUseEmbeddedCaCerts", "False"}}, merged_json,
+      error);
 }
 
 }  // namespace mocktail::runtime

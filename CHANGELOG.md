@@ -19,6 +19,8 @@ Release notes on GitHub are taken from the matching section here.
 - Closing the window stops the game's sound right away, and quitting no longer stalls for 12 seconds.
 - Nintendo Switch Pro Controllers and Joy-Con pairs send A, B, X and Y as printed on the buttons.
 - The numpad `/` key opens chat like the main `/` key.
+- Roblox now trusts the CA bundle set in Settings, so a proxy like mitmproxy works without Fleasion
+  instead of showing a Connection Error.
 
 ## [0.5.3] - 2026-11-17
 
