@@ -127,23 +127,32 @@ TEST_F(XrControllerInputTest,
       west = b.pressed;
   EXPECT_TRUE(west);
 }
-TEST_F(XrControllerInputTest, SharedMenuReleasesOnlyAfterBothHandsRelease) {
+TEST_F(XrControllerInputTest, LeftMenuIsSelectAndRightMenuIsStart) {
   auto d = MakeDelivery();
   d.button_levels[0][MOCKTAIL_VR_BUTTON_MENU] = 1;
+  g_backend.queue.push_back(d);
+  input_.Drain();
+  const auto connections = Collect<GamepadConnectionEvent>();
+  ASSERT_EQ(connections.size(), 1u);
+  EXPECT_TRUE(connections[0].descriptor.ignores_window_focus);
+  EXPECT_NE(connections[0].descriptor.buttons & (std::uint32_t{1} << 4), 0u);
+  EXPECT_NE(connections[0].descriptor.buttons & (std::uint32_t{1} << 6), 0u);
+  auto buttons = Collect<GamepadButtonEvent>();
+  ASSERT_EQ(buttons.size(), 1u);
+  EXPECT_EQ(buttons[0].button, 4);
+  EXPECT_TRUE(buttons[0].pressed);
+
+  g_events.clear();
+  d.button_levels[0][MOCKTAIL_VR_BUTTON_MENU] = 0;
   d.button_levels[1][MOCKTAIL_VR_BUTTON_MENU] = 1;
   g_backend.queue.push_back(d);
   input_.Drain();
-  g_events.clear();
-  d.button_levels[0][MOCKTAIL_VR_BUTTON_MENU] = 0;
-  g_backend.queue.push_back(d);
-  input_.Drain();
-  EXPECT_TRUE(Collect<GamepadButtonEvent>().empty());
-  d.button_levels[1][MOCKTAIL_VR_BUTTON_MENU] = 0;
-  g_backend.queue.push_back(d);
-  input_.Drain();
-  auto buttons = Collect<GamepadButtonEvent>();
-  ASSERT_EQ(buttons.size(), 1u);
+  buttons = Collect<GamepadButtonEvent>();
+  ASSERT_EQ(buttons.size(), 2u);
+  EXPECT_EQ(buttons[0].button, 4);
   EXPECT_FALSE(buttons[0].pressed);
+  EXPECT_EQ(buttons[1].button, 6);
+  EXPECT_TRUE(buttons[1].pressed);
 }
 TEST_F(XrControllerInputTest, NewGenerationDisconnectsAndRejectsLateOldFrames) {
   auto d = MakeDelivery();

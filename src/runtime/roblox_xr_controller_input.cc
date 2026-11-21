@@ -102,10 +102,8 @@ void RobloxXrControllerInput::EmitConnection(bool connected) {
   platform::GamepadDescriptor descriptor;
   descriptor.family = platform::GamepadFamily::kXbox;
   descriptor.name = connected ? "Mocktail VR Controllers" : "";
+  descriptor.ignores_window_focus = true;
   if (connected) {
-    // Advertise exactly the buttons/axes this route can emit so the router
-    // accepts them: SOUTH/EAST/WEST/NORTH, START, both stick clicks, both
-    // shoulders.
     for (const std::uint8_t button :
          {static_cast<std::uint8_t>(vr::ControllerButtonToSdlOrdinal(
               0, vr::ControllerButton::kFaceWest)),
@@ -117,6 +115,8 @@ void RobloxXrControllerInput::EmitConnection(bool connected) {
               1, vr::ControllerButton::kFaceEast)),
           static_cast<std::uint8_t>(
               vr::ControllerButtonToSdlOrdinal(0, vr::ControllerButton::kMenu)),
+          static_cast<std::uint8_t>(
+              vr::ControllerButtonToSdlOrdinal(1, vr::ControllerButton::kMenu)),
           static_cast<std::uint8_t>(vr::ControllerButtonToSdlOrdinal(
               0, vr::ControllerButton::kThumbstick)),
           static_cast<std::uint8_t>(vr::ControllerButtonToSdlOrdinal(

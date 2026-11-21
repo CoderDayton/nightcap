@@ -144,7 +144,8 @@ TEST(XrControllerAndroidMapping, PerHandKeysAndAxesMatchVerifiedGamepadRoute) {
   EXPECT_EQ(ControllerButtonToAndroidKey(1, Button::kSqueeze), 103); // R1
   EXPECT_EQ(ControllerButtonToAndroidKey(0, Button::kThumbstick), 106);
   EXPECT_EQ(ControllerButtonToAndroidKey(1, Button::kThumbstick), 107);
-  EXPECT_EQ(ControllerButtonToAndroidKey(0, Button::kMenu), 108);
+  EXPECT_EQ(ControllerButtonToAndroidKey(0, Button::kMenu), 109);
+  EXPECT_EQ(ControllerButtonToAndroidKey(1, Button::kMenu), 108);
   EXPECT_EQ(ControllerButtonToAndroidKey(0, Button::kTrigger), -1); // analog
   EXPECT_EQ(ControllerAxisToAndroidAxis(0, Axis::kThumbstickX), 0);
   EXPECT_EQ(ControllerAxisToAndroidAxis(0, Axis::kThumbstickY), 1);
@@ -156,6 +157,37 @@ TEST(XrControllerAndroidMapping, PerHandKeysAndAxesMatchVerifiedGamepadRoute) {
   EXPECT_EQ(ControllerAxisComponentCount(Axis::kThumbstickX), 2);
   EXPECT_EQ(ControllerAxisComponentCount(Axis::kTrigger), 1);
   EXPECT_EQ(ControllerAxisComponentCount(Axis::kSqueeze), 0);
+}
+
+TEST(XrControllerDelivery, KeepMenuOnlyDropsEverythingNativeInputCarries) {
+  ControllerDelivery delivery;
+  delivery.connected[0] = delivery.connected[1] = true;
+  delivery.axes_valid[0] = delivery.axes_valid[1] = true;
+  delivery.axes[0] = .5f;
+  delivery.axes[5] = 1.f;
+  delivery.button_levels[0][static_cast<std::size_t>(Button::kMenu)] = true;
+  delivery.button_levels[0][static_cast<std::size_t>(Button::kFaceWest)] = true;
+  delivery.button_levels[1][static_cast<std::size_t>(Button::kFaceSouth)] = true;
+  delivery.edges.push_back({0, Button::kFaceWest, true});
+  delivery.edges.push_back({0, Button::kMenu, true});
+  delivery.edges.push_back({1, Button::kFaceSouth, true});
+
+  KeepMenuOnly(&delivery);
+
+  EXPECT_TRUE(delivery.connected[0]);
+  EXPECT_TRUE(delivery.connected[1]);
+  EXPECT_FALSE(delivery.axes_valid[0]);
+  EXPECT_FALSE(delivery.axes_valid[1]);
+  for (float axis : delivery.axes)
+    EXPECT_FLOAT_EQ(axis, 0.f);
+  EXPECT_TRUE(delivery.button_levels[0][static_cast<std::size_t>(Button::kMenu)]);
+  EXPECT_FALSE(
+      delivery.button_levels[0][static_cast<std::size_t>(Button::kFaceWest)]);
+  EXPECT_FALSE(
+      delivery.button_levels[1][static_cast<std::size_t>(Button::kFaceSouth)]);
+  ASSERT_EQ(delivery.edges.size(), 1u);
+  EXPECT_EQ(delivery.edges[0].button, Button::kMenu);
+  EXPECT_EQ(delivery.edges[0].hand, 0);
 }
 
 TEST(XrControllerState, InvalidHandAndButtonIndicesAreIgnored) {
@@ -237,7 +269,8 @@ TEST(XrControllerSdlMapping, OrdinalsMatchRouterExpectations) {
   // SDL3 ordinals the existing router converts through
   // MapSdlGamepadButtonToAndroid/kAndroidAxes; verified pairs only.
   EXPECT_EQ(ControllerButtonToSdlOrdinal(0, Button::kFaceSouth), 0);
-  EXPECT_EQ(ControllerButtonToSdlOrdinal(0, Button::kMenu), 6);
+  EXPECT_EQ(ControllerButtonToSdlOrdinal(0, Button::kMenu), 4);
+  EXPECT_EQ(ControllerButtonToSdlOrdinal(1, Button::kMenu), 6);
   EXPECT_EQ(ControllerButtonToSdlOrdinal(0, Button::kSqueeze), 9);
   EXPECT_EQ(ControllerButtonToSdlOrdinal(1, Button::kSqueeze), 10);
   EXPECT_EQ(ControllerButtonToSdlOrdinal(0, Button::kThumbstick), 7);

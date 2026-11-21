@@ -178,7 +178,7 @@ int32_t ControllerButtonToAndroidKey(int hand, ControllerButton button) {
   case ControllerButton::kThumbstick:
     return right ? 107 : 106; // THUMB_R / L
   case ControllerButton::kMenu:
-    return 108; // BUTTON_START
+    return right ? 108 : 109;
   case ControllerButton::kTrigger:
     return -1; // analog click, no keycode
   case ControllerButton::kCount:
@@ -237,7 +237,7 @@ int32_t ControllerButtonToSdlOrdinal(int hand, ControllerButton button) {
   case ControllerButton::kSqueeze:
     return hand == 1 ? 10 : 9;
   case ControllerButton::kMenu:
-    return 6;
+    return hand == 1 ? 6 : 4;
   case ControllerButton::kTrigger:
     return -1; // analog click, no button
   case ControllerButton::kCount:
@@ -292,6 +292,25 @@ bool EncodeNativeControllerChannels(const ControllerSnapshot &snapshot,
   }
 
   return snapshot.hands[0].connected || snapshot.hands[1].connected;
+}
+
+void KeepMenuOnly(ControllerDelivery *delivery) {
+  if (delivery == nullptr)
+    return;
+  const auto menu = static_cast<std::size_t>(ControllerButton::kMenu);
+  for (auto &levels : delivery->button_levels) {
+    const bool pressed = levels[menu];
+    std::fill(std::begin(levels), std::end(levels), false);
+    levels[menu] = pressed;
+  }
+  auto &edges = delivery->edges;
+  edges.erase(std::remove_if(edges.begin(), edges.end(),
+                             [](const ControllerDelivery::ButtonEdge &edge) {
+                               return edge.button != ControllerButton::kMenu;
+                             }),
+              edges.end());
+  std::fill(std::begin(delivery->axes), std::end(delivery->axes), 0.f);
+  delivery->axes_valid[0] = delivery->axes_valid[1] = false;
 }
 
 void EncodeControllerDelivery(const ControllerDelivery &delivery,
