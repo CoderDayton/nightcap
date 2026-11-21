@@ -268,6 +268,22 @@ TEST(RobloxDesktopAppPolicyTest, DefaultsDesktopFlyoutSidePanelUnlessOverridden)
             "0");
 }
 
+TEST(RobloxDesktopAppPolicyTest, DisablesDynamicResolutionUnlessOverridden) {
+  const std::string policy =
+      nlohmann::json({{"PlatformGroup", "Desktop"}}).dump();
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(policy, "{}", &merged,
+                                                          &error))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugDisableDRS"], "True");
+
+  ASSERT_TRUE(MergeDesktopAppPolicyClientSettingsOverride(
+      policy, R"({"FFlagDebugDisableDRS":"False"})", &merged, &error))
+      << error;
+  EXPECT_EQ(nlohmann::json::parse(merged)["FFlagDebugDisableDRS"], "False");
+}
+
 TEST(RobloxDesktopAppPolicyTest, DefaultsLuauCodegenAllUnlessOverridden) {
   const std::string policy =
       nlohmann::json({{"PlatformGroup", "Desktop"}}).dump();

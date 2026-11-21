@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <limits>
@@ -30,6 +31,7 @@ struct SdlAudioSubsystemState {
   std::uint32_t configured_playback_device_id = 0;
   std::string configured_playback_device_name = "default";
   bool initialized = false;
+  bool muted = false;
 };
 
 SdlAudioSubsystemState& AudioSubsystemState() {
@@ -218,10 +220,17 @@ class SdlAudioSink final : public AudioSink {
       return Status::Error(StatusCode::kInvalidArgument,
                            "audio gain must be finite and non-negative");
     }
+    const float gain =
+        muted_.load(std::memory_order_acquire) ? 0.0F : linear_gain;
     return WithStream("SDL_SetAudioStreamGain",
-                      [linear_gain](SDL_AudioStream* stream) {
-                        return SDL_SetAudioStreamGain(stream, linear_gain);
+                      [gain](SDL_AudioStream* stream) {
+                        return SDL_SetAudioStreamGain(stream, gain);
                       });
+  }
+
+  Status Mute() {
+    muted_.store(true, std::memory_order_release);
+    return SetGain(0.0F);
   }
 
   Status Flush() override {
@@ -439,6 +448,7 @@ class SdlAudioSink final : public AudioSink {
   mutable bool switching_device_ = false;
   bool shutting_down_ = false;
   bool shutdown_complete_ = false;
+  std::atomic<bool> muted_{false};
 };
 
 }  // namespace
@@ -651,6 +661,20 @@ Status SwitchSdlPlaybackDevice(std::uint32_t playback_device_id,
   return Status::Ok();
 }
 
+Status MuteSdlPlayback() {
+  SdlAudioSubsystemState& state = AudioSubsystemState();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  state.muted = true;
+  Status result = Status::Ok();
+  for (SdlAudioSink* sink : state.live_sinks) {
+    Status status = sink->Mute();
+    if (!status.ok() && result.ok()) {
+      result = std::move(status);
+    }
+  }
+  return result;
+}
+
 Status ShutdownSdlAudioSubsystem() {
   if (!SDL_IsMainThread()) {
     return Status::Error(StatusCode::kFailedPrecondition,
@@ -673,6 +697,7 @@ Status ShutdownSdlAudioSubsystem() {
   state.configured_playback_device_id = 0;
   state.configured_playback_device_name = "default";
   state.initialized = false;
+  state.muted = false;
   return Status::Ok();
 }
 
@@ -746,6 +771,13 @@ Status CreateSdlAudioSink(const SdlAudioSinkOptions& options,
   if (!status.ok()) {
     delete implementation;
     return status;
+  }
+  {
+    SdlAudioSubsystemState& state = AudioSubsystemState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.muted) {
+      (void)implementation->Mute();
+    }
   }
   sink->reset(implementation);
   return Status::Ok();

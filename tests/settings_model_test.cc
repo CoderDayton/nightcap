@@ -160,7 +160,8 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "device.keyboard", "runtime.headless", "runtime.roblox_library",
            "auth.use_libsecret",
            "appearance.theme", "graphics.backend", "graphics.frame_rate_limit",
-           "graphics.vsync", "graphics.texture_compression",
+           "graphics.vsync", "graphics.present_mode",
+           "graphics.texture_compression",
            "graphics.smooth_texture_loading",
            "assets.overlay", "assets.texture_overrides",
            "performance.multithreaded_rendering",
@@ -948,6 +949,49 @@ TEST_F(SettingsModelTest, ChoiceIndexMapsDefaultsAndOtherSpellings) {
   const Setting& vsync = Find("graphics.vsync");
   EXPECT_EQ(ChoiceIndex(vsync, ""), 0u);
   EXPECT_EQ(ChoiceIndex(vsync, "off"), 3u);
+
+  const Setting& present_mode = Find("graphics.present_mode");
+  EXPECT_EQ(ChoiceIndex(present_mode, ""), 0u);
+  EXPECT_EQ(ChoiceIndex(present_mode, "auto"), 0u);
+  EXPECT_EQ(ChoiceIndex(present_mode, "fifo"), 1u);
+  EXPECT_EQ(ChoiceIndex(present_mode, "mailbox"), 2u);
+  EXPECT_EQ(ChoiceIndex(present_mode, "immediate"), 3u);
+  EXPECT_EQ(ChoiceIndex(present_mode, "relaxed"), kNoChoice);
+}
+
+TEST_F(SettingsModelTest, PresentModeDefaultNamesTheModeVsyncPicks) {
+  EXPECT_EQ(PresentModeDefaultLabel("off", ""), "Default (Immediate)");
+  EXPECT_EQ(PresentModeDefaultLabel("0", "60"), "Default (Immediate)");
+  EXPECT_EQ(PresentModeDefaultLabel("", "unlimited"), "Default (Immediate)");
+  EXPECT_EQ(PresentModeDefaultLabel("auto", "unlimited"),
+            "Default (Immediate)");
+  EXPECT_EQ(PresentModeDefaultLabel("", ""), "Default (VSync)");
+  EXPECT_EQ(PresentModeDefaultLabel("auto", "display"), "Default (VSync)");
+  EXPECT_EQ(PresentModeDefaultLabel("on", "unlimited"), "Default (VSync)");
+}
+
+TEST_F(SettingsModelTest, PresentModeIsGreyedOutOnOpenGl) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("graphics.present_mode"));
+  ASSERT_TRUE(document.Set("graphics.backend", "opengl", &error)) << error;
+  EXPECT_FALSE(document.IsActive("graphics.present_mode"));
+  ASSERT_TRUE(document.Set("graphics.backend", "angle-vulkan", &error))
+      << error;
+  EXPECT_TRUE(document.IsActive("graphics.present_mode"));
+}
+
+TEST_F(SettingsModelTest, DocumentNamesTheDefaultPresentMode) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  const Setting& present_mode = Find("graphics.present_mode");
+  ASSERT_TRUE(document.Set("graphics.vsync", "off", &error)) << error;
+  EXPECT_EQ(document.DefaultChoiceLabel(present_mode), "Default (Immediate)");
+  ASSERT_TRUE(document.Set("graphics.vsync", "on", &error)) << error;
+  EXPECT_EQ(document.DefaultChoiceLabel(present_mode), "Default (VSync)");
+  EXPECT_EQ(document.DefaultChoiceLabel(Find("graphics.backend")), "");
 }
 
 TEST_F(SettingsModelTest, ToggleStateUsesTheDefaultWhenUnset) {

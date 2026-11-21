@@ -121,6 +121,9 @@ std::vector<DeviceChoice> DeviceChoices(const Setting& setting,
 // Whether a toggle is on for `value`, the file's value or empty when unset.
 bool ToggleState(const Setting& setting, std::string_view value);
 
+std::string PresentModeDefaultLabel(std::string_view vsync,
+                                    std::string_view frame_rate_limit);
+
 // What the Fleasion switch's badge shows. Only Proxy routing ("env") can be
 // checked from here.
 enum class FleasionState {
@@ -204,6 +207,8 @@ class SettingsDocument {
   // An empty fixed proxy is inactive while the system proxy is on, and the
   // Fleasion port while Fleasion routes through the hosts file.
   bool IsActive(std::string_view key) const;
+
+  std::string DefaultChoiceLabel(const Setting& setting) const;
 
   // Mouse, keyboard and touch compare with what the file's device turns on.
   bool IsChanged(const Setting& setting) const;

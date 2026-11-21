@@ -5,14 +5,23 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- Settings has a Present mode choice (FIFO, Mailbox or Immediate), which was only in the config file before.
+- Releases carry an RPM for Fedora 45 as well as Fedora 44.
+
 ### Fixed
 
+- The game world is no longer slightly blurry from Roblox drawing it a pixel smaller than the window.
 - The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
 - Joining a game right after launch no longer freezes for seconds while the BC7 encoder is compiling.
 - Session logs no longer include the join ticket from Roblox's teleport log line.
 - VR turns Roblox's own VR setting back on, so its VR menus and laser pointer load after a desktop session.
 - VR colours with Vulkan are no longer washed out on WiVRn and other runtimes besides SteamVR.
 - `MOCKTAIL_VR_RUNTIME=wivrn` now finds WiVRn installed from Flathub.
+- Closing the window stops the game's sound right away, and quitting no longer stalls for 12 seconds.
+- Nintendo Switch Pro Controllers and Joy-Con pairs send A, B, X and Y as printed on the buttons.
+- The numpad `/` key opens chat like the main `/` key.
 
 ## [0.5.3] - 2026-11-17
 

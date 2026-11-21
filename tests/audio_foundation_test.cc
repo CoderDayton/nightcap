@@ -422,6 +422,31 @@ TEST(SdlAudioSubsystemTest, MigratesLiveStreamWithoutDroppingQueuedPcm) {
   EXPECT_TRUE(ShutdownSdlAudioSubsystem().ok());
 }
 
+TEST(SdlAudioSubsystemTest, MuteSilencesLiveAndLaterSinksWithoutBlocking) {
+  ASSERT_TRUE(InitializeSdlAudioSubsystem().ok());
+  SdlAudioSinkOptions options;
+  options.start_paused = false;
+  std::unique_ptr<AudioSink> live;
+  ASSERT_TRUE(CreateSdlAudioSink(options, &live).ok());
+
+  ASSERT_TRUE(MuteSdlPlayback().ok());
+
+  const std::vector<std::int16_t> samples(256 * 2, 77);
+  const PcmBuffer buffer{samples.data(),
+                         samples.size() * sizeof(samples.front())};
+  EXPECT_TRUE(live->Enqueue(buffer).ok());
+  EXPECT_TRUE(live->SetGain(1.0F).ok());
+  std::unique_ptr<AudioSink> later;
+  ASSERT_TRUE(CreateSdlAudioSink(options, &later).ok());
+  EXPECT_TRUE(later->Enqueue(buffer).ok());
+
+  later->Shutdown();
+  later.reset();
+  live->Shutdown();
+  live.reset();
+  EXPECT_TRUE(ShutdownSdlAudioSubsystem().ok());
+}
+
 TEST(SdlAudioSinkTest, QueuesRealPcmIntoPausedSdlStream) {
   ASSERT_TRUE(InitializeSdlAudioSubsystem().ok());
   SdlAudioSinkOptions options;

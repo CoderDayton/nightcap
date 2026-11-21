@@ -328,6 +328,7 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
   // server-side experiment that does not reach this client. Variant 2 is the
   // desktop side panel; an explicit user override is preserved.
   overrides.emplace(kFlyoutVariantFlag, kDesktopFlyoutVariant);
+  overrides.emplace("FFlagDebugDisableDRS", "True");
   *merged_json = overrides.dump();
   return true;
 }
