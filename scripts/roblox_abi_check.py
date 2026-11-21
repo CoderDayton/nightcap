@@ -23,6 +23,10 @@ Usage:
 
 Prints every field where the two disagree. Exit status: 0 agree, 1 differ or
 one side failed, 2 both failed.
+
+With --vr, the VR device bridge is compared too. `find_roblox_vr_offsets.py`
+finds it in each build on its own: its answer for the reference build is the
+solver's input, and its answer for the candidate joins the deriver's side.
 """
 
 from __future__ import annotations
@@ -34,24 +38,72 @@ import sys
 from typing import Any, Sequence
 
 
-def _load_solver():
-    name = "mocktail_roblox_abi_solver"
+def _load_sibling(name: str, file_name: str):
     if name in sys.modules:
         return sys.modules[name]
-    path = Path(__file__).resolve().with_name("roblox_abi_solver.py")
+    path = Path(__file__).resolve().with_name(file_name)
     specification = importlib.util.spec_from_file_location(name, path)
     if specification is None or specification.loader is None:
-        raise RuntimeError("cannot load roblox_abi_solver.py")
+        raise RuntimeError(f"cannot load {file_name}")
     module = importlib.util.module_from_spec(specification)
     sys.modules[name] = module
     specification.loader.exec_module(module)
     return module
 
 
-SOLVER = _load_solver()
+SOLVER = _load_sibling("mocktail_roblox_abi_solver", "roblox_abi_solver.py")
+FINDER = _load_sibling("mocktail_find_roblox_vr_offsets", "find_roblox_vr_offsets.py")
 DERIVER = SOLVER.DERIVER
 AnalyzerError = SOLVER.AnalyzerError
 format_rva = SOLVER.format_rva
+
+# Where find_roblox_vr_offsets.py reports each VR bridge field.
+_FINDER_FIELDS = {
+    "vtable_rva": ("vr_debug_device_bridge", "vtable_rva"),
+    "constructor_rva": ("vr_debug_device_bridge", "constructor_rva"),
+    "state_getter_rva": ("vr_debug_device_bridge", "state_getter_rva"),
+    "eye_getter_rva": ("vr_debug_device_bridge", "eye_getter_rva"),
+    "eye_initializer_rva": ("vr_debug_device_bridge", "eye_initializer_rva"),
+    "emulator_flag_storage_rva": ("vr_debug_device_bridge", "emulator_flag_storage_rva"),
+    "device_create_framebuffer_vtable_offset": (
+        "vr_debug_device_bridge", "device_create_framebuffer_vtable_offset"
+    ),
+    "state_memcpy_rva": ("vr_bridge_supplement", "state_getter_memcpy_rva"),
+    "pointer_frame_rva": ("vr_bridge_supplement", "world_pointer_getter_rva"),
+    "workspace_getter_rva": ("vr_bridge_supplement", "workspace_getter_rva"),
+    "camera_vtable_offset": ("vr_bridge_supplement", "workspace_camera_vtable_offset"),
+    "hand_pitch_storage_rva": ("vr_bridge_supplement", "new_vr_system_hand_pitch_storage_rva"),
+    "haptic_sink_rva": ("vr_bridge_supplement", "haptic_sink_rva"),
+    "pointer_hand_selector_offset": ("vr_bridge_supplement", "usercframe_selector_offset"),
+    "camera_head_scale_offset": ("vr_bridge_supplement", "camera_head_scale_offset"),
+    "keep_haptics_flag_rva": ("vr_bridge_supplement", "keep_haptics_flag_rva"),
+    "vr_haptics_flag_rva": ("vr_bridge_supplement", "vr_haptics_flag_rva"),
+    "support_generic_haptics_flag_rva": (
+        "vr_bridge_supplement", "support_generic_haptics_flag_rva"
+    ),
+    "fix_register_motors_flag_rva": ("vr_bridge_supplement", "fix_register_motors_flag_rva"),
+}
+
+
+def vr_bridge_from_finder(
+    result: dict[str, Any], fields: Sequence[str] = SOLVER.VR.VR_FIELDS
+) -> dict[str, str]:
+    """The VR bridge fields from a find_roblox_vr_offsets.py result."""
+    bridge = {}
+    for field in fields:
+        section, key = _FINDER_FIELDS[field]
+        try:
+            bridge[field] = result[section][key]
+        except (KeyError, TypeError) as error:
+            raise AnalyzerError(f"VR offset finder result lacks {key}") from error
+    return bridge
+
+
+def _find_vr_bridge(library: Path) -> dict[str, str]:
+    try:
+        return vr_bridge_from_finder(FINDER.find_vr_offsets(library))
+    except FINDER.AnalyzerError as error:
+        raise AnalyzerError(f"VR offset finder: {error}") from error
 
 
 def compare_results(derived: Any, solved: Any, path: str = "") -> list[str]:
@@ -121,6 +173,7 @@ def check(arguments: argparse.Namespace) -> int:
     manifests = [Path(path) for path in arguments.reference_compatibility]
     cache_dir = Path(arguments.cache_dir) if arguments.cache_dir else None
     derived = solved = deriver_error = solver_error = None
+    reference_vr = _find_vr_bridge(Path(arguments.reference_lib)) if arguments.vr else None
     with DERIVER.ElfImage(Path(arguments.reference_lib)) as reference, DERIVER.ElfImage(
         Path(arguments.candidate_lib)
     ) as candidate:
@@ -128,6 +181,8 @@ def check(arguments: argparse.Namespace) -> int:
             profile, anchors = DERIVER.derive_profile(reference, candidate, sidecar)
             runtime = DERIVER.derive_runtime_compatibility(reference, candidate, manifests)
             derived = {"profile": profile, "derivation_anchors": anchors, "runtime": runtime}
+            if reference_vr is not None:
+                derived["vr_device_bridge"] = _find_vr_bridge(Path(arguments.candidate_lib))
         except Exception as error:
             deriver_error = _describe(error)
         try:
@@ -138,6 +193,8 @@ def check(arguments: argparse.Namespace) -> int:
             source = DERIVER.load_reference_runtime_profile(manifests, reference.build_id)
             runtime = solver.derive_runtime_compatibility(_solver_runtime_source(source))
             solved = {"profile": profile, "derivation_anchors": anchors, "runtime": runtime}
+            if reference_vr is not None:
+                solved["vr_device_bridge"] = solver.derive_vr(reference_vr)
         except Exception as error:
             solver_error = _describe(error)
     status, lines = check_status(derived, solved, deriver_error, solver_error)
@@ -160,6 +217,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--cache-dir",
         default=str(Path.home() / ".cache" / "mocktail" / "function_index"),
         help="where function indexes are kept; empty to disable",
+    )
+    parser.add_argument(
+        "--vr", action="store_true", help="also compare the VR device bridge"
     )
     arguments = parser.parse_args(sys.argv[1:] if argv is None else argv)
     try:

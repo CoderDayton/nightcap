@@ -230,7 +230,7 @@ class RobloxInputRouter final {
   Status ReleaseGamepadInputsLocked(ActiveGamepad& gamepad);
   Status DisconnectGamepadLocked(ActiveGamepad& gamepad);
   Status DisconnectGamepadsLocked();
-  Status ReleasePressedInputsLocked();
+  Status ReleasePressedInputsLocked(bool keep_focus_independent_pads = false);
   // Keeps mouse_x_/mouse_y_ where they are for an event that carries no
   // usable position, clamped to the current viewport. Before any absolute
   // position has been seen, the held position is the viewport center.

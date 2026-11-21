@@ -46,6 +46,9 @@ std::optional<int> RobloxSettingsFramerateCap(const FrameRatePolicy &policy);
 bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
                              int fps, std::string *error);
 
+bool WriteRobloxVrEnabled(const std::filesystem::path &android_data_root,
+                          std::string *error);
+
 // Roblox's saved quality settings, e.g. "SavedQualityLevel=0
 // GraphicsQualityLevel=4"; empty when the file or both values are missing.
 std::string DescribeRobloxQualitySettings(

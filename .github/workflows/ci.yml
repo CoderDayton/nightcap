@@ -78,7 +78,7 @@ jobs:
           bash tests/shared_data_schema_test.sh .
 
   native-build:
-    name: Native build (${{ matrix.arch }})
+    name: Native build (${{ matrix.arch }}, VR ${{ matrix.vr }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -87,8 +87,15 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-26.04
+            vr: 'ON'
           - arch: aarch64
             runner: ubuntu-26.04-arm
+            vr: 'ON'
+          # Packaging recipes build without the OpenXR submodule; keep the
+          # non-VR configuration compiling and passing on its own.
+          - arch: x86_64
+            runner: ubuntu-26.04
+            vr: 'OFF'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,6 +151,7 @@ jobs:
           ccache --zero-stats
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DMOCKTAIL_ENABLE_VR=${{ matrix.vr }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build-ci --parallel 4

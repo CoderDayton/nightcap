@@ -62,6 +62,7 @@
 #include "mocktail/audio/sdl_audio_sink.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
+#include "mocktail/vr/roblox_vr_device_bridge.h"
 #include "runtime/engine_pump_rest.h"
 #include "runtime/device_memory_profile.h"
 #include "runtime/display_size.h"
@@ -82,6 +83,7 @@
 #include "runtime/roblox_platform_web_symbols.h"
 #include "runtime/roblox_store_purchase.h"
 #include "runtime/roblox_experience_composition.h"
+#include "runtime/roblox_haptic_protocol_bridge.h"
 #include "runtime/roblox_game_session_native_adapter.h"
 #include "runtime/roblox_mouse_behavior_query.h"
 #include "runtime/roblox_window_input_runtime.h"
@@ -187,6 +189,7 @@ using NativeSendGameLoadedFn = void (*)(JNIEnv*, jclass, jstring, jstring,
 using NativePassSupportedRefreshRatesFn = void (*)(JNIEnv*, jclass,
                                                    jfloatArray);
 using NativePassCurrentDisplayRefreshRateFn = void (*)(JNIEnv*, jclass, jfloat);
+using NativeUpdateMobileHapticsStateFn = void (*)(JNIEnv*, jclass, jboolean, jstring);
 using NativeSetStringParamFn = void (*)(JNIEnv*, jclass, jstring);
 using NativeSetBaseUrlFn = void (*)(JNIEnv*, jclass, jstring, jstring);
 using NativeSetTaskSchedulerBackgroundModeFn = void (*)(JNIEnv*, jclass,
@@ -363,6 +366,7 @@ struct EngineStartupContext {
   NativePassSupportedRefreshRatesFn native_pass_supported_refresh_rates;
   NativePassCurrentDisplayRefreshRateFn native_pass_current_display_refresh_rate;
   NativeNoArgFn native_start_lua_app_dm;
+  NativeUpdateMobileHapticsStateFn native_update_mobile_haptics_state;
 };
 
 
@@ -2386,8 +2390,12 @@ void MocktailSetAssetPath(JNIEnv* env, jstring asset_path) {
   if (path.empty()) {
     path = DefaultAssetPath();
   }
-  setenv("MOCKTAIL_ASSET_ROOT", path.c_str(), 1);
-  std::cout << "  [engine] asset root set to " << path << '\n' << std::flush;
+  std::filesystem::path root_path(path);
+  if (root_path.filename() == "content") {
+    root_path = root_path.parent_path();
+  }
+  setenv("MOCKTAIL_ASSET_ROOT", root_path.c_str(), 1);
+  std::cout << "  [engine] asset root set to " << root_path.string() << '\n' << std::flush;
 }
 
 void MocktailAppBridgeInit(JNIEnv* env, jstring app_params) {
@@ -2826,7 +2834,8 @@ jobject BuildAppBridgeInitParams(JNIEnv* env, jstring client_settings,
   SetStringField(env, params, "userAgent", user_agent.c_str());
   SetBooleanField(env, params, "isTablet", JNI_FALSE);
   SetBooleanField(env, params, "isPotato", JNI_FALSE);
-  SetBooleanField(env, params, "isVrDevice", JNI_FALSE);
+  SetBooleanField(env, params, "isVrDevice",
+                  IsEnabled("MOCKTAIL_VR_ENABLED") ? JNI_TRUE : JNI_FALSE);
   SetStringField(env, params, "buildVariant", "googleProdRelease");
   SetObjectField(env, params, "vrContext", "Landroid/app/Activity;",
                  activity);
@@ -2919,7 +2928,10 @@ jobject BuildPlatformParams(JNIEnv* env, jobject surface, bool is_headless) {
       GetEnvString("MOCKTAIL_DEVICE_NAME", "Mocktail Headless");
   SetStringField(env, params, "deviceName", platform_device_name.c_str());
   SetStringField(env, params, "locale", "en_us");
-  SetStringField(env, params, "assetFolderPath", DefaultAssetPath().c_str());
+  SetStringField(env, params, "assetFolderPath",
+                 GetEnvStringDefaultPath("MOCKTAIL_ASSET_PATH",
+                                         DefaultAssetPath())
+                     .c_str());
   const mocktail::runtime::DisplaySize platform_window = HostWindowPixelSize();
   const mocktail::runtime::DisplaySize platform_display = HostDisplaySize();
   SetIntField(env, params, "width", platform_window.width);
@@ -4350,6 +4362,23 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
     std::cout << "  [engine] updateAppUISizes returned\n" << std::flush;
   }
 
+  if (context->native_update_mobile_haptics_state) {
+    env = ensure_env();
+    std::cout << "  [engine] NativeGLInterface.nativeUpdateMobileHapticsState\n"
+              << std::flush;
+    const std::string motors_json =
+        mocktail::runtime::RobloxHapticProtocolBridge::GetMotorsJson();
+    jstring motors_str = env->NewStringUTF(motors_json.c_str());
+    if (motors_str != nullptr) {
+      context->native_update_mobile_haptics_state(env, native_gl_class,
+                                                  JNI_TRUE, motors_str);
+      env->DeleteLocalRef(motors_str);
+    }
+    std::cout
+        << "  [engine] NativeGLInterface.nativeUpdateMobileHapticsState returned\n"
+        << std::flush;
+  }
+
   int init_delay_ms = GetEnvInt("MOCKTAIL_APPBRIDGE_INIT_DELAY_MS", 0);
   if (init_delay_ms > 0) {
     std::cout << "  [engine] wait after AppBridge init: " << init_delay_ms
@@ -4605,6 +4634,16 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
     std::cout
         << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
         << std::flush;
+    if (context->native_update_mobile_haptics_state) {
+      const std::string motors_json =
+          mocktail::runtime::RobloxHapticProtocolBridge::GetMotorsJson();
+      jstring motors_str = env->NewStringUTF(motors_json.c_str());
+      if (motors_str != nullptr) {
+        context->native_update_mobile_haptics_state(env, native_gl_class,
+                                                    JNI_TRUE, motors_str);
+        env->DeleteLocalRef(motors_str);
+      }
+    }
   }
 
   int keepalive_ms = GetEnvInt("MOCKTAIL_KEEPALIVE_MS", 0);
@@ -4705,6 +4744,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                  "-1, display, unlimited, or a positive integer\n";
     return EXIT_FAILURE;
   }
+  if (!runtime_config.vr_frame_rate().valid()) {
+    std::cerr << "[FATAL] Invalid MOCKTAIL_VR_FRAME_RATE_LIMIT; expected "
+                 "-1, display, unlimited, or a positive integer\n";
+    return EXIT_FAILURE;
+  }
   if (!runtime_config.theme_mode_valid()) {
     std::cerr
         << "[FATAL] Invalid MOCKTAIL_THEME; expected roblox, system, light, "
@@ -4770,8 +4814,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     return EXIT_FAILURE;
   }
 
-  const mocktail::compat::BuildProfile& build_profile =
-      *profile_result.profile;
+  const mocktail::compat::BuildProfile& build_profile = *profile_result.profile;
+  if (IsEnabled("MOCKTAIL_VR_ENABLED") &&
+      mocktail::vr::FindRobloxVrDeviceProfile(build_profile.elf_build_id) ==
+          nullptr) {
+    std::cerr << "[FATAL] Experimental Roblox VR has no verified profile for "
+              << build_profile.elf_build_id << "\n";
+    return EXIT_FAILURE;
+  }
   const mocktail::compat::HostAbiProfile* host_abi_profile =
       mocktail::compat::FindHostAbiProfile(build_profile.elf_build_id);
   const bool experiment_allowed =
@@ -5944,6 +5994,20 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   std::cout << "  [linker] Bionic unwind metadata validated for libroblox\n"
             << std::flush;
 
+  // The experimental VR bridge is armed only for --vr on an exact supported
+  // Build ID. It validates its machine contracts and interposes the
+  // DebugDeviceVR vtable slots after relocations and before guest startup
+  // can create the object. A no-op success while no bridge is armed.
+  if (const mocktail::Status vr_activation =
+          mocktail::vr::NotifyRobloxVrImageLoaded(
+              linker::FindLoadedAndroidLibraryBase("libroblox"));
+      !vr_activation.ok()) {
+    std::cerr << "\n[FATAL] Experimental Roblox VR bridge activation "
+                 "failed: "
+              << vr_activation.message() << '\n';
+    return EXIT_FAILURE;
+  }
+
   // The pre-constructor hook owns installation; repeating arena setup here is
   // not idempotent.
   if (HostAbiExperimentRequested() &&
@@ -6119,6 +6183,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       eager_permissions_bridge;
   std::unique_ptr<mocktail::runtime::RobloxCallProtocolBridge>
       eager_call_protocol_bridge;
+  std::unique_ptr<mocktail::runtime::RobloxHapticProtocolBridge>
+      eager_haptic_protocol_bridge;
   std::shared_ptr<ExperienceLifecycleTarget> experience_lifecycle_target;
   std::shared_ptr<mocktail::runtime::RobloxWindowInputRuntime>
       window_input_runtime;
@@ -6415,6 +6481,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
             roblox_handle,
             "Java_com_roblox_engine_jni_NativeGLInterface_"
             "nativeAppBridgeV2SendAppEventOnGameLoaded"));
+    auto* native_update_mobile_haptics_state =
+        mocktail::runtime::RobloxHapticProtocolBridge::EnabledForThisSession()
+            ? reinterpret_cast<NativeUpdateMobileHapticsStateFn>(
+                  linker::ResolveSymbol(
+                      roblox_handle,
+                      "Java_com_roblox_engine_jni_NativeGLInterface_"
+                      "nativeUpdateMobileHapticsState"))
+            : nullptr;
     auto* native_set_asset_path =
         reinterpret_cast<NativeSetStringParamFn>(linker::ResolveSymbol(
             roblox_handle,
@@ -6499,6 +6573,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               << reinterpret_cast<const void*>(native_send_app_ready) << '\n'
               << "    native_send_game_loaded="
               << reinterpret_cast<const void*>(native_send_game_loaded) << '\n'
+              << "    native_update_mobile_haptics_state="
+              << reinterpret_cast<const void*>(
+                     native_update_mobile_haptics_state)
+              << '\n'
               << "    native_start_lua_app_dm="
               << reinterpret_cast<const void*>(native_start_lua_app_dm) << '\n'
               << "    native_call_messages_from_main_thread="
@@ -6839,9 +6917,17 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       eager_call_protocol_bridge =
           std::make_unique<mocktail::runtime::RobloxCallProtocolBridge>(
               environment, symbols.permissions, objects);
+      if (mocktail::runtime::RobloxHapticProtocolBridge::
+              EnabledForThisSession()) {
+        eager_haptic_protocol_bridge =
+            std::make_unique<mocktail::runtime::RobloxHapticProtocolBridge>(
+                environment, symbols.permissions, objects);
+      }
       status = eager_permissions_bridge->Initialize();
       if (status.ok())
         status = eager_call_protocol_bridge->Initialize();
+      if (status.ok() && eager_haptic_protocol_bridge != nullptr)
+        status = eager_haptic_protocol_bridge->Initialize();
       env->DeleteLocalRef(bus);
       if (!status.ok()) {
         std::cerr << "[FATAL] GAME platform protocols did not initialize: "
@@ -7010,7 +7096,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         native_on_fragment_start,
         native_pass_supported_refresh_rates,
         native_pass_current_display_refresh_rate,
-        native_start_lua_app_dm};
+        native_start_lua_app_dm,
+        native_update_mobile_haptics_state};
     if (game_session_runtime != nullptr) {
       if (!game_present_observer.Register(
               &mocktail::runtime::RobloxGameSessionRuntime::
@@ -7246,6 +7333,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     while (true) {
       const uint64_t fps_tick_start_ns = fps_trace ? MonotonicNanos() : 0;
       const bool keep_window_open = mocktail::window::PumpEvents();
+      // Deliver XR tracked-controller input on the same thread and through the
+      // same router as SDL input, once per loop iteration after the SDL pump.
+      // Inert in non-VR builds or while no OpenXR controller layer is active.
+      if (window_input_runtime != nullptr) {
+        window_input_runtime->DrainXrControllers();
+      }
       game_surface_events_completed = drain_game_surface_events();
       const uint64_t fps_after_sdl_ns = fps_trace ? MonotonicNanos() : 0;
       if (!game_surface_events_completed || !keep_window_open) {
@@ -7365,6 +7458,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (window_input_runtime != nullptr) {
       input_shutdown_completed = window_input_runtime->Shutdown().ok() &&
                                  input_shutdown_completed;
+    }
+    if (eager_haptic_protocol_bridge != nullptr) {
+      (void)eager_haptic_protocol_bridge->Shutdown();
+      eager_haptic_protocol_bridge.reset();
     }
     if (eager_call_protocol_bridge != nullptr) {
       (void)eager_call_protocol_bridge->Shutdown();

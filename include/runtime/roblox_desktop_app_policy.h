@@ -39,6 +39,17 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
                                                  std::string* merged_json,
                                                  std::string* error);
 
+// Apply after desktop policy composition. Roblox 2998's Android payload is not
+// a VRAppBuild, so its LuaApp enables RunService's idle render throttle
+// even with DebugDeviceVR active. Preserve the effective app-policy (the later
+// fast-flags channel takes precedence) in both channels, changing only
+// ThrottleFramerate. This does not write the setting to appStorage.
+// spatial_toolbar (vr.spatial_toolbar) turns on Quest's in-game VR toolbar.
+bool MergeVrAppPolicyClientSettingsOverrides(
+    bool enabled, bool spatial_toolbar, std::string_view client_settings_json,
+    std::string_view fast_flags_json, std::string* merged_client_settings,
+    std::string* merged_fast_flags, std::string* error);
+
 struct OtaPatchSeed {
   std::string storage_name;
   std::filesystem::path builtin_config_file;

@@ -263,7 +263,7 @@ RobloxInputDispatchResult RobloxInputRouter::HandleGamepadButtonLocked(
   if (!sink_.gamepad.valid() || found == gamepads_.end()) {
     return Ignored(kind, "gamepad is not available");
   }
-  if (!snapshot_.focused) {
+  if (!snapshot_.focused && !found->descriptor.ignores_window_focus) {
     return {RobloxInputDispatchState::kIgnoredUnfocused, kind, Status::Ok()};
   }
   const int32_t key =
@@ -331,7 +331,7 @@ RobloxInputDispatchResult RobloxInputRouter::HandleGamepadAxisLocked(
   if (!sink_.gamepad.valid() || found == gamepads_.end()) {
     return Ignored(kind, "gamepad is not available");
   }
-  if (!snapshot_.focused) {
+  if (!snapshot_.focused && !found->descriptor.ignores_window_focus) {
     return {RobloxInputDispatchState::kIgnoredUnfocused, kind, Status::Ok()};
   }
   if (event.axis >= kAndroidAxes.size() ||

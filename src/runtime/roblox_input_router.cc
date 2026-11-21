@@ -407,7 +407,7 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
     if (!focus->focused && snapshot_.focused) {
       // Keep any focused TextBox: clipboard managers and emoji pickers take
       // window focus briefly and then paste or type back into it.
-      Status status = ReleasePressedInputsLocked();
+      Status status = ReleasePressedInputsLocked(true);
       snapshot_.focused = false;
       if (!status.ok()) {
         ++snapshot_.native_errors;
@@ -793,9 +793,14 @@ RobloxInputDispatchResult RobloxInputRouter::HandleKeyLocked(
   return result;
 }
 
-Status RobloxInputRouter::ReleasePressedInputsLocked() {
+Status RobloxInputRouter::ReleasePressedInputsLocked(
+    bool keep_focus_independent_pads) {
   Status first_error = Status::Ok();
   for (ActiveGamepad& gamepad : gamepads_) {
+    if (keep_focus_independent_pads &&
+        gamepad.descriptor.ignores_window_focus) {
+      continue;
+    }
     Status status = ReleaseGamepadInputsLocked(gamepad);
     if (first_error.ok()) {
       first_error = std::move(status);

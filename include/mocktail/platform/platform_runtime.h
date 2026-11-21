@@ -210,6 +210,7 @@ struct GamepadDescriptor {
   // joystick indices or Android key codes.
   std::uint32_t buttons = 0;
   std::uint32_t axes = 0;
+  bool ignores_window_focus = false;
 };
 
 struct GamepadConnectionEvent {

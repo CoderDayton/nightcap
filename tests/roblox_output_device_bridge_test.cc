@@ -58,6 +58,27 @@ TEST(RobloxOutputDeviceBridgeTest, ValidatesEveryInterposedVtableSlot) {
       vtable.data(), kImageBase, profile));
 }
 
+TEST(RobloxOutputDeviceBridgeTest, Validates3092LayoutWithoutUsingListSlots) {
+  constexpr std::uintptr_t kBase = 0x10000000;
+  auto profile = TestProfile();
+  profile.vtable_layout_version = 2;
+  std::array<std::uintptr_t, 20> vtable{};
+  vtable[5] = kBase + profile.count_method_rva;
+  vtable[6] = kBase + profile.info_method_rva;
+  vtable[7] = kBase + 0x7000;
+  vtable[8] = kBase + profile.current_method_rva;
+  vtable[17] = kBase + 0x8000;
+  vtable[19] = kBase + profile.select_method_rva;
+  EXPECT_TRUE(internal::HasExpectedFmodOutputDeviceVtable(vtable.data(), kBase,
+                                                          profile));
+  profile.vtable_layout_version = 1;
+  EXPECT_FALSE(internal::HasExpectedFmodOutputDeviceVtable(vtable.data(), kBase,
+                                                           profile));
+  profile.vtable_layout_version = 3;
+  EXPECT_FALSE(internal::HasExpectedFmodOutputDeviceVtable(vtable.data(), kBase,
+                                                           profile));
+}
+
 TEST(RobloxOutputDeviceBridgeTest, BuildsStableDistinctHostGuids) {
   const std::string first = internal::MakeOutputDeviceGuid(17, "USB Headset");
   EXPECT_EQ(first, internal::MakeOutputDeviceGuid(17, "USB Headset"));
