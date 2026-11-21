@@ -5280,11 +5280,12 @@ mocktail_vr_controller_pop_delivery(MocktailVrControllerDelivery* out) {
   // Exact native VR input owns Gamepad1 when the device bridge is active.
   // The JNI fallback must not inject a second copy into that same device.
   extern bool mocktail_vr_native_controller_input_active();
-  if (mocktail_vr_native_controller_input_active()) return 0;
   mocktail::vr::ControllerDelivery delivery;
   if (!backend->TakeControllerDelivery(&delivery)) {
     return 0;
   }
+  if (mocktail_vr_native_controller_input_active())
+    mocktail::vr::KeepMenuOnly(&delivery);
   mocktail::vr::EncodeControllerDelivery(delivery, out);
   return 1;
 }

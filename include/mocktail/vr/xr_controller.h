@@ -208,6 +208,8 @@ bool EncodeNativeControllerChannels(const ControllerSnapshot &snapshot,
 void EncodeControllerDelivery(const ControllerDelivery &delivery,
                               MocktailVrControllerDelivery *out);
 
+void KeepMenuOnly(ControllerDelivery *delivery);
+
 // Thread-safe bounded queue between the XR render-thread producer (one push
 // per frame after xrSyncActions) and the window-thread consumer that drains
 // into the verified input route. Overflow drops the oldest frames and arms a

@@ -19,6 +19,8 @@ Release notes on GitHub are taken from the matching section here.
 - VR turns Roblox's own VR setting back on, so its VR menus and laser pointer load after a desktop session.
 - VR colours with Vulkan are no longer washed out on WiVRn and other runtimes besides SteamVR.
 - `MOCKTAIL_VR_RUNTIME=wivrn` now finds WiVRn installed from Flathub.
+- The left VR menu button toggles Roblox's VR bar, and the right one opens the in-game menu. Before,
+  neither reached Roblox, so on Quest controllers the bar could not be opened.
 - Closing the window stops the game's sound right away, and quitting no longer stalls for 12 seconds.
 - Nintendo Switch Pro Controllers and Joy-Con pairs send A, B, X and Y as printed on the buttons.
 - The numpad `/` key opens chat like the main `/` key.

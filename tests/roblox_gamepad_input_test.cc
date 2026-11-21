@@ -286,6 +286,28 @@ TEST_F(RobloxGamepadInputTest,
   EXPECT_EQ(probe.OfKind("connect").size(), 1U);
 }
 
+TEST_F(RobloxGamepadInputTest, FocusIndependentPadKeepsWorkingWithoutFocus) {
+  auto descriptor = Descriptor();
+  descriptor.ignores_window_focus = true;
+  ASSERT_TRUE(
+      Send(platform::GamepadConnectionEvent{10, true, descriptor}).status.ok());
+  Add(20);
+  Send(platform::GamepadButtonEvent{10, SDL_GAMEPAD_BUTTON_BACK, true});
+  const auto pressed = probe.OfKind("button").size();
+  Send(platform::WindowFocusEvent{false});
+  EXPECT_EQ(probe.OfKind("button").size(), pressed);
+  EXPECT_TRUE(
+      Send(platform::GamepadButtonEvent{10, SDL_GAMEPAD_BUTTON_BACK, false})
+          .dispatched());
+  EXPECT_TRUE(
+      Send(platform::GamepadAxisEvent{10, SDL_GAMEPAD_AXIS_LEFTX, 32767})
+          .dispatched());
+  EXPECT_EQ(
+      Send(platform::GamepadButtonEvent{20, SDL_GAMEPAD_BUTTON_SOUTH, true})
+          .state,
+      RobloxInputDispatchState::kIgnoredUnfocused);
+}
+
 TEST_F(RobloxGamepadInputTest,
        DisconnectReleasesBeforeRemovalAndOtherPadsSurvive) {
   Add(10);
