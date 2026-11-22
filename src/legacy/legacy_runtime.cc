@@ -3656,7 +3656,8 @@ struct GuestLuaAppRestartState {
   bool is_headless = false;
   std::string launch_mode;
   jnivm::RobloxAuthIdentity account_identity;
-  uint64_t surface_generation = 0;
+  mocktail::runtime::GameSurface engine_surface;
+  std::chrono::steady_clock::time_point engine_surface_time;
   mocktail::runtime::LuaAppRestartSymbols symbols;
 };
 
@@ -3701,8 +3702,11 @@ void RetainGuestLuaAppRestartInputs(
   state.is_headless = is_headless;
   state.launch_mode = launch_mode != nullptr ? launch_mode : "";
   state.account_identity = account_identity;
-  state.surface_generation =
-      mocktail::window::GetWindowSurfaceSnapshot().generation;
+  const mocktail::window::WindowSurfaceSnapshot snapshot =
+      mocktail::window::GetWindowSurfaceSnapshot();
+  state.engine_surface = {snapshot.generation, snapshot.native_window,
+                          snapshot.width, snapshot.height, snapshot.dpi_scale};
+  state.engine_surface_time = std::chrono::steady_clock::now();
   state.symbols.start_app = start_app_with_params;
   state.symbols.set_task_scheduler_background_mode =
       set_task_scheduler_background_mode;
@@ -3720,6 +3724,7 @@ mocktail::Status RestartGuestLuaAppSurface(
         mocktail::StatusCode::kFailedPrecondition,
         "guest LuaApp restart inputs were not retained");
   }
+  const auto restart_started = std::chrono::steady_clock::now();
   JNIEnv* env = AttachMainThreadJniEnv();
   if (env == nullptr) {
     return mocktail::Status::Error(mocktail::StatusCode::kUnavailable,
@@ -3769,12 +3774,17 @@ mocktail::Status RestartGuestLuaAppSurface(
   }
   env->DeleteGlobalRef(state.surface);
   state.surface = new_surface;
-  state.surface_generation = host_surface.generation;
+  state.engine_surface = host_surface;
+  state.engine_surface_time = std::chrono::steady_clock::now();
   std::fprintf(stderr,
                "  [surface] guest LuaApp restarted generation=%llu "
-               "pixels=%ux%u\n",
+               "pixels=%ux%u ms=%lld\n",
                static_cast<unsigned long long>(host_surface.generation),
-               host_surface.width, host_surface.height);
+               host_surface.width, host_surface.height,
+               static_cast<long long>(
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       state.engine_surface_time - restart_started)
+                       .count()));
   return mocktail::Status::Ok();
 }
 
@@ -7370,7 +7380,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       guest_surface_recovery =
           std::make_unique<mocktail::window::GuestLuaAppSurfaceRecovery>(
               nullptr, &RestartGuestLuaAppSurface,
-              g_guest_lua_app_restart.surface_generation);
+              g_guest_lua_app_restart.engine_surface,
+              g_guest_lua_app_restart.engine_surface_time);
       guest_surface_bridge =
           std::make_unique<mocktail::window::WindowGameSurfaceBridge>(
               mocktail::window::MakeWindowGameSurfaceEventSource(),

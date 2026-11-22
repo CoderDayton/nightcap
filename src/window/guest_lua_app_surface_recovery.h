@@ -1,7 +1,9 @@
 #ifndef MOCKTAIL_WINDOW_GUEST_LUA_APP_SURFACE_RECOVERY_H_
 #define MOCKTAIL_WINDOW_GUEST_LUA_APP_SURFACE_RECOVERY_H_
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 
 #include "mocktail/status.h"
 #include "runtime/game_session_coordinator.h"
@@ -15,20 +17,22 @@ namespace window {
 using GuestLuaAppRestartFn = Status (*)(void* context,
                                         const runtime::GameSurface& surface);
 
+using GuestSurfaceClock = std::chrono::steady_clock;
+using GuestSurfaceClockFn = std::function<GuestSurfaceClock::time_point()>;
+
+inline constexpr std::chrono::milliseconds kGuestSurfaceStableExtent{500};
+
 // Surface recovery for the LuaApp before it has an authenticated session.
 // RobloxExperienceComposition does this for authenticated sessions; without
 // it the login screen keeps presenting into an obsolete swapchain until the
 // window is resized.
-//
-// A new surface generation restarts the LuaApp once, on the Changed event that
-// carries the final extent. Same-generation Changed events are plain resizes,
-// which the engine follows through the surface capabilities, so they are
-// ignored.
 class GuestLuaAppSurfaceRecovery final {
  public:
   GuestLuaAppSurfaceRecovery(void* restart_context,
                              GuestLuaAppRestartFn restart,
-                             uint64_t engine_surface_generation);
+                             const runtime::GameSurface& engine_surface,
+                             GuestSurfaceClock::time_point engine_surface_time,
+                             GuestSurfaceClockFn clock = {});
 
   GuestLuaAppSurfaceRecovery(const GuestLuaAppSurfaceRecovery&) = delete;
   GuestLuaAppSurfaceRecovery& operator=(const GuestLuaAppSurfaceRecovery&) =
@@ -50,6 +54,10 @@ class GuestLuaAppSurfaceRecovery final {
   void* restart_context_;
   GuestLuaAppRestartFn restart_;
   uint64_t engine_generation_;
+  uint32_t width_;
+  uint32_t height_;
+  GuestSurfaceClock::time_point extent_changed_at_;
+  GuestSurfaceClockFn clock_;
   bool pending_ = false;
   uint64_t restarts_ = 0;
   uint64_t failed_restarts_ = 0;

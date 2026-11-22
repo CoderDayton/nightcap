@@ -36,10 +36,16 @@ runtime::GameSessionUpdateResult DispatchDestroyed(void* context,
 
 GuestLuaAppSurfaceRecovery::GuestLuaAppSurfaceRecovery(
     void* restart_context, GuestLuaAppRestartFn restart,
-    uint64_t engine_surface_generation)
+    const runtime::GameSurface& engine_surface,
+    GuestSurfaceClock::time_point engine_surface_time,
+    GuestSurfaceClockFn clock)
     : restart_context_(restart_context),
       restart_(restart),
-      engine_generation_(engine_surface_generation) {}
+      engine_generation_(engine_surface.generation),
+      width_(engine_surface.width),
+      height_(engine_surface.height),
+      extent_changed_at_(engine_surface_time),
+      clock_(clock ? std::move(clock) : &GuestSurfaceClock::now) {}
 
 runtime::GameSessionUpdateResult GuestLuaAppSurfaceRecovery::Created(
     uint64_t generation) {
@@ -61,12 +67,24 @@ runtime::GameSessionUpdateResult GuestLuaAppSurfaceRecovery::Destroyed(
 
 runtime::GameSessionUpdateResult GuestLuaAppSurfaceRecovery::Changed(
     runtime::GameSurface surface) {
+  const GuestSurfaceClock::time_point now = clock_();
+  const bool resized = surface.width != width_ || surface.height != height_;
+  if (resized) {
+    width_ = surface.width;
+    height_ = surface.height;
+    extent_changed_at_ = now;
+  }
   // A new generation is a recreated surface even without a Created event.
   if (surface.generation != engine_generation_) {
     pending_ = true;
   }
   if (!pending_) {
     return Duplicate("guest LuaApp surface resize follows the extent query");
+  }
+  if (resized || now - extent_changed_at_ < kGuestSurfaceStableExtent) {
+    engine_generation_ = surface.generation;
+    pending_ = false;
+    return Duplicate("guest LuaApp surface recreated during a resize");
   }
   if (restart_ == nullptr) {
     ++failed_restarts_;
