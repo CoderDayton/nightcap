@@ -92,6 +92,9 @@ TEST_F(SoundSlotsTest, RefusesWhatIsNotASoundAndKeepsTheOneInUse) {
   EXPECT_NE(error.find("notes.mp3"), std::string::npos);
   EXPECT_FALSE(InstallSound(Write("tiny.ogg", "Ogg"), overlay_,
                             SoundSlot::kFalling, &error));
+  EXPECT_FALSE(InstallSound(
+      Write("song.mp3", std::string("\xff\xf1\x50\x80\0\0\0\0\0\0\0\0", 12)),
+      overlay_, SoundSlot::kFalling, &error));
   EXPECT_FALSE(InstallSound(root_ / "missing.ogg", overlay_,
                             SoundSlot::kFalling, &error));
   EXPECT_EQ(Read(sounds_ / "action_falling.ogg"), kOgg);
@@ -117,6 +120,24 @@ TEST_F(SoundSlotsTest, RemoveGoesBackToRobloxsAndLeavesTheOthers) {
   EXPECT_TRUE(CustomSound(overlay_, SoundSlot::kDeath).empty());
   EXPECT_FALSE(CustomSound(overlay_, SoundSlot::kJump).empty());
   EXPECT_TRUE(RemoveSound(overlay_, SoundSlot::kDeath, &error)) << error;
+}
+
+TEST_F(SoundSlotsTest, AFailedInstallPutsEveryNameBack) {
+  std::filesystem::create_directories(sounds_ / "ouch.ogg");
+  std::ofstream(sounds_ / "uuhhh.mp3", std::ios::binary) << kMp3;
+  std::string error;
+  EXPECT_FALSE(InstallSound(Write("new.ogg", kOgg), overlay_,
+                            SoundSlot::kDeath, &error));
+  EXPECT_FALSE(error.empty());
+  EXPECT_EQ(Read(sounds_ / "uuhhh.mp3"), kMp3);
+  EXPECT_TRUE(std::filesystem::is_directory(sounds_ / "ouch.ogg"));
+  EXPECT_FALSE(std::filesystem::exists(sounds_ / "oof.ogg"));
+  int entries = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(sounds_)) {
+    (void)entry;
+    ++entries;
+  }
+  EXPECT_EQ(entries, 2);
 }
 
 TEST_F(SoundSlotsTest, AHandPlacedFileCountsAsCustom) {

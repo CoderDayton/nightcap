@@ -396,6 +396,7 @@ add_library(mocktail_settings_model STATIC
   src/ui/fflag_presets.cc
   src/ui/settings_model.cc
   src/ui/sky_pack.cc
+  src/ui/slot_files.cc
   src/ui/sound_slots.cc
 )
 add_library(Mocktail::SettingsModel ALIAS mocktail_settings_model)

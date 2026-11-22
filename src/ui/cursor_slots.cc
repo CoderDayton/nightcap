@@ -1,12 +1,12 @@
 #include "ui/cursor_slots.h"
 
-#include <unistd.h>
-
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <system_error>
+
+#include "ui/slot_files.h"
 
 namespace mocktail {
 namespace ui {
@@ -80,39 +80,30 @@ std::string_view CursorSlotLabel(CursorSlot slot) {
   return {};
 }
 
-std::filesystem::path CursorFile(const std::filesystem::path& overlay_dir,
-                                 CursorSlot slot) {
-  return overlay_dir / "content" / "textures" / "Cursors" / "KeyboardMouse" /
-         FileName(slot);
+std::vector<std::filesystem::path> CursorFiles(
+    const std::filesystem::path& overlay_dir, CursorSlot slot) {
+  const std::filesystem::path textures = overlay_dir / "content" / "textures";
+  return {textures / "Cursors" / "KeyboardMouse" / FileName(slot),
+          textures / FileName(slot)};
+}
+
+std::filesystem::path CustomCursor(const std::filesystem::path& overlay_dir,
+                                   CursorSlot slot) {
+  return FirstRegularFile(CursorFiles(overlay_dir, slot));
 }
 
 bool HasCustomCursor(const std::filesystem::path& overlay_dir,
                      CursorSlot slot) {
-  std::error_code error;
-  return std::filesystem::is_regular_file(CursorFile(overlay_dir, slot),
-                                          error);
+  return !CustomCursor(overlay_dir, slot).empty();
 }
 
 bool InstallCursor(const std::filesystem::path& source,
                    const std::filesystem::path& overlay_dir, CursorSlot slot,
                    std::string* error) {
   if (!CheckPng(source, error)) return false;
-  const std::filesystem::path target = CursorFile(overlay_dir, slot);
-  const std::filesystem::path staged =
-      target.parent_path() /
-      ("." + target.filename().string() + "." + std::to_string(getpid()));
   std::error_code failure;
-  std::filesystem::create_directories(target.parent_path(), failure);
-  if (!failure) {
-    std::filesystem::copy_file(
-        source, staged, std::filesystem::copy_options::overwrite_existing,
-        failure);
-  }
-  if (!failure) std::filesystem::rename(staged, target, failure);
-  if (failure) {
+  if (!ReplaceAllWith(source, CursorFiles(overlay_dir, slot), &failure)) {
     *error = "Cannot save the cursor: " + failure.message();
-    std::error_code ignored;
-    std::filesystem::remove(staged, ignored);
     return false;
   }
   return true;
@@ -121,8 +112,7 @@ bool InstallCursor(const std::filesystem::path& source,
 bool RemoveCursor(const std::filesystem::path& overlay_dir, CursorSlot slot,
                   std::string* error) {
   std::error_code failure;
-  std::filesystem::remove(CursorFile(overlay_dir, slot), failure);
-  if (failure) {
+  if (!RemoveAll(CursorFiles(overlay_dir, slot), &failure)) {
     *error = "Cannot remove the cursor: " + failure.message();
     return false;
   }

@@ -1,11 +1,11 @@
 #include "ui/sound_slots.h"
 
-#include <unistd.h>
-
 #include <array>
 #include <cstring>
 #include <fstream>
 #include <system_error>
+
+#include "ui/slot_files.h"
 
 namespace mocktail {
 namespace ui {
@@ -50,12 +50,7 @@ bool IsSound(const std::filesystem::path& source) {
     return true;
   }
   if (std::memcmp(head.data(), "ID3", 3) == 0) return true;
-  return head[0] == 0xff && (head[1] & 0xe0) == 0xe0;
-}
-
-std::filesystem::path Staged(const std::filesystem::path& target) {
-  return target.parent_path() /
-         ("." + target.filename().string() + "." + std::to_string(getpid()));
+  return head[0] == 0xff && (head[1] & 0xe0) == 0xe0 && (head[1] & 0x06) != 0;
 }
 
 }
@@ -80,11 +75,7 @@ std::vector<std::filesystem::path> SoundFiles(
 
 std::filesystem::path CustomSound(const std::filesystem::path& overlay_dir,
                                   SoundSlot slot) {
-  std::error_code error;
-  for (const std::filesystem::path& file : SoundFiles(overlay_dir, slot)) {
-    if (std::filesystem::is_regular_file(file, error)) return file;
-  }
-  return {};
+  return FirstRegularFile(SoundFiles(overlay_dir, slot));
 }
 
 bool InstallSound(const std::filesystem::path& source,
@@ -101,25 +92,8 @@ bool InstallSound(const std::filesystem::path& source,
     *error = name + " is too large. A sound can be at most 8 MB.";
     return false;
   }
-  const std::vector<std::filesystem::path> targets =
-      SoundFiles(overlay_dir, slot);
-  std::filesystem::create_directories(targets.front().parent_path(), failure);
-  for (const std::filesystem::path& target : targets) {
-    if (failure) break;
-    std::filesystem::copy_file(
-        source, Staged(target),
-        std::filesystem::copy_options::overwrite_existing, failure);
-  }
-  for (const std::filesystem::path& target : targets) {
-    if (failure) break;
-    std::filesystem::rename(Staged(target), target, failure);
-  }
-  if (failure) {
+  if (!ReplaceAllWith(source, SoundFiles(overlay_dir, slot), &failure)) {
     *error = "Cannot save the sound: " + failure.message();
-    std::error_code ignored;
-    for (const std::filesystem::path& target : targets) {
-      std::filesystem::remove(Staged(target), ignored);
-    }
     return false;
   }
   return true;
@@ -128,12 +102,9 @@ bool InstallSound(const std::filesystem::path& source,
 bool RemoveSound(const std::filesystem::path& overlay_dir, SoundSlot slot,
                  std::string* error) {
   std::error_code failure;
-  for (const std::filesystem::path& file : SoundFiles(overlay_dir, slot)) {
-    std::filesystem::remove(file, failure);
-    if (failure) {
-      *error = "Cannot remove the sound: " + failure.message();
-      return false;
-    }
+  if (!RemoveAll(SoundFiles(overlay_dir, slot), &failure)) {
+    *error = "Cannot remove the sound: " + failure.message();
+    return false;
   }
   return true;
 }

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mocktail {
 namespace ui {
@@ -18,8 +19,11 @@ inline constexpr int kMaxCursorSize = 256;
 
 std::string_view CursorSlotLabel(CursorSlot slot);
 
-std::filesystem::path CursorFile(const std::filesystem::path& overlay_dir,
-                                 CursorSlot slot);
+std::vector<std::filesystem::path> CursorFiles(
+    const std::filesystem::path& overlay_dir, CursorSlot slot);
+
+std::filesystem::path CustomCursor(const std::filesystem::path& overlay_dir,
+                                   CursorSlot slot);
 
 bool HasCustomCursor(const std::filesystem::path& overlay_dir,
                      CursorSlot slot);

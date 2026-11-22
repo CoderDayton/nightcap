@@ -627,12 +627,12 @@ void RefreshCursorRow(Row* row) {
     const mocktail::ui::CursorSlot slot = mocktail::ui::kCursorSlots[index];
     GtkWidget* image = window->cursor_images[index];
     GdkTexture* texture = nullptr;
-    if (mocktail::ui::HasCustomCursor(window->asset_overlay_dir, slot)) {
+    const std::filesystem::path custom =
+        mocktail::ui::CustomCursor(window->asset_overlay_dir, slot);
+    if (!custom.empty()) {
       if (!yours.empty()) yours += ", ";
       yours += mocktail::ui::CursorSlotLabel(slot);
-      texture = gdk_texture_new_from_filename(
-          mocktail::ui::CursorFile(window->asset_overlay_dir, slot).c_str(),
-          nullptr);
+      texture = gdk_texture_new_from_filename(custom.c_str(), nullptr);
     }
     if (texture != nullptr) {
       gtk_image_set_from_paintable(GTK_IMAGE(image), GDK_PAINTABLE(texture));
@@ -640,7 +640,9 @@ void RefreshCursorRow(Row* row) {
       g_object_unref(texture);
       gtk_widget_remove_css_class(image, "empty");
     } else {
-      gtk_image_set_from_icon_name(GTK_IMAGE(image), "list-add-symbolic");
+      gtk_image_set_from_icon_name(GTK_IMAGE(image),
+                                   custom.empty() ? "list-add-symbolic"
+                                                  : "image-missing-symbolic");
       gtk_image_set_pixel_size(GTK_IMAGE(image), kCursorTileSize / 2);
       gtk_widget_add_css_class(image, "empty");
     }
@@ -1645,6 +1647,11 @@ void OnCursorChanged(Row* row) {
   RefreshCursorRow(row);
 }
 
+mocktail::ui::CursorSlot CursorSlotOf(gpointer object) {
+  return static_cast<mocktail::ui::CursorSlot>(
+      GPOINTER_TO_INT(g_object_get_data(G_OBJECT(object), "slot")));
+}
+
 void OnCursorPicked(GObject* source, GAsyncResult* result,
                     gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
@@ -1656,26 +1663,21 @@ void OnCursorPicked(GObject* source, GAsyncResult* result,
   if (picked.empty()) return;
   std::string failure;
   if (!mocktail::ui::InstallCursor(picked, window->asset_overlay_dir,
-                                   window->cursor_slot, &failure)) {
+                                   CursorSlotOf(source), &failure)) {
     ShowError(window, failure);
     return;
   }
   OnCursorChanged(row);
 }
 
-mocktail::ui::CursorSlot CursorSlotOf(GtkWidget* tile) {
-  return static_cast<mocktail::ui::CursorSlot>(
-      GPOINTER_TO_INT(g_object_get_data(G_OBJECT(tile), "slot")));
-}
-
 void OnChooseCursor(GtkButton* button, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
-  row->window->cursor_slot = CursorSlotOf(GTK_WIDGET(button));
+  const mocktail::ui::CursorSlot slot = CursorSlotOf(button);
   GtkFileDialog* dialog = gtk_file_dialog_new();
+  g_object_set_data(G_OBJECT(dialog), "slot",
+                    GINT_TO_POINTER(static_cast<int>(slot)));
   const std::string title =
-      "Choose the " +
-      Text(mocktail::ui::CursorSlotLabel(row->window->cursor_slot)) +
-      " Cursor";
+      "Choose the " + Text(mocktail::ui::CursorSlotLabel(slot)) + " Cursor";
   gtk_file_dialog_set_title(dialog, title.c_str());
   GtkFileFilter* filter = gtk_file_filter_new();
   gtk_file_filter_set_name(filter, "PNG images");
@@ -1691,24 +1693,39 @@ void OnChooseCursor(GtkButton* button, gpointer user_data) {
   g_object_unref(dialog);
 }
 
-void OnCursorTileMenu(GtkGestureClick* gesture, int, double x, double y,
-                      gpointer user_data) {
-  Row* row = static_cast<Row*>(user_data);
+bool OpenCursorMenu(Row* row, GtkWidget* tile, double x, double y) {
   SettingsWindow* window = row->window;
-  GtkWidget* tile =
-      gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   const mocktail::ui::CursorSlot slot = CursorSlotOf(tile);
   graphene_rect_t bounds;
   if (!mocktail::ui::HasCustomCursor(window->asset_overlay_dir, slot) ||
       !gtk_widget_compute_bounds(tile, row->widget, &bounds)) {
-    return;
+    return false;
   }
-  gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   window->cursor_slot = slot;
   const GdkRectangle at = {static_cast<int>(bounds.origin.x + x),
                            static_cast<int>(bounds.origin.y + y), 1, 1};
   gtk_popover_set_pointing_to(GTK_POPOVER(window->cursor_menu), &at);
   gtk_popover_popup(GTK_POPOVER(window->cursor_menu));
+  return true;
+}
+
+void OnCursorTileMenu(GtkGestureClick* gesture, int, double x, double y,
+                      gpointer user_data) {
+  GtkWidget* tile =
+      gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  if (OpenCursorMenu(static_cast<Row*>(user_data), tile, x, y)) {
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  }
+}
+
+gboolean OnCursorTileKey(GtkEventControllerKey* keys, guint key, guint,
+                         GdkModifierType state, gpointer user_data) {
+  const bool shift = (state & GDK_SHIFT_MASK) != 0;
+  if (key != GDK_KEY_Menu && !(key == GDK_KEY_F10 && shift)) return FALSE;
+  GtkWidget* tile = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(keys));
+  return OpenCursorMenu(static_cast<Row*>(user_data), tile,
+                        gtk_widget_get_width(tile) / 2.0,
+                        gtk_widget_get_height(tile) / 2.0);
 }
 
 void OnClearCursor(GSimpleAction*, GVariant*, gpointer user_data) {
@@ -1721,6 +1738,13 @@ void OnClearCursor(GSimpleAction*, GVariant*, gpointer user_data) {
     return;
   }
   OnCursorChanged(row);
+}
+
+void OnSoundError(GtkMediaStream* stream, GParamSpec*, gpointer user_data) {
+  const GError* error = gtk_media_stream_get_error(stream);
+  if (error == nullptr) return;
+  ShowError(static_cast<SettingsWindow*>(user_data),
+            std::string("Cannot play the sound: ") + error->message);
 }
 
 void StopSound(SettingsWindow* window) {
@@ -1784,9 +1808,10 @@ void OnClearSound(GtkButton*, gpointer user_data) {
   Row* row = static_cast<Row*>(user_data);
   const std::optional<mocktail::ui::SoundSlot> slot =
       mocktail::ui::SoundSlotForKey(row->setting->key);
+  if (!slot) return;
   std::string failure;
-  if (!slot || !mocktail::ui::RemoveSound(row->window->asset_overlay_dir,
-                                          *slot, &failure)) {
+  if (!mocktail::ui::RemoveSound(row->window->asset_overlay_dir, *slot,
+                                 &failure)) {
     ShowError(row->window, failure);
     return;
   }
@@ -1804,6 +1829,9 @@ void OnPlaySound(GtkButton*, gpointer user_data) {
       mocktail::ui::CustomSound(window->asset_overlay_dir, *slot);
   if (sound.empty()) return;
   window->sound_player = gtk_media_file_new_for_filename(sound.c_str());
+  g_signal_connect(window->sound_player, "notify::error",
+                   G_CALLBACK(OnSoundError), window);
+  OnSoundError(window->sound_player, nullptr, window);
   gtk_media_stream_play(window->sound_player);
 }
 
@@ -2502,6 +2530,10 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
                                       GDK_BUTTON_SECONDARY);
         g_signal_connect(click, "pressed", G_CALLBACK(OnCursorTileMenu), &row);
         gtk_widget_add_controller(tile, GTK_EVENT_CONTROLLER(click));
+        GtkEventController* keys = gtk_event_controller_key_new();
+        g_signal_connect(keys, "key-pressed", G_CALLBACK(OnCursorTileKey),
+                         &row);
+        gtk_widget_add_controller(tile, keys);
         gtk_box_append(GTK_BOX(tiles), tile);
       }
       adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), tiles);
@@ -2535,6 +2567,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       gtk_widget_set_valign(row.sound_play, GTK_ALIGN_CENTER);
       gtk_widget_add_css_class(row.sound_play, "flat");
       gtk_widget_set_tooltip_text(row.sound_play, "Play your sound");
+      SetAccessibleLabel(row.sound_play,
+                         "Play your " + Text(setting.title) + " sound");
       g_signal_connect(row.sound_play, "clicked", G_CALLBACK(OnPlaySound),
                        &row);
       row.sound_clear = gtk_button_new_with_label("Use Roblox's");

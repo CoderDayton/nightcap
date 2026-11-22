@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace mocktail {
 namespace ui {
@@ -54,13 +55,40 @@ class CursorSlotsTest : public testing::Test {
 };
 
 TEST_F(CursorSlotsTest, EachSlotHasRobloxsFileName) {
-  const std::filesystem::path folder =
-      overlay_ / "content/textures/Cursors/KeyboardMouse";
-  EXPECT_EQ(CursorFile(overlay_, CursorSlot::kArrow),
-            folder / "ArrowFarCursor.png");
-  EXPECT_EQ(CursorFile(overlay_, CursorSlot::kPointer),
-            folder / "ArrowCursor.png");
-  EXPECT_EQ(CursorFile(overlay_, CursorSlot::kText), folder / "IBeamCursor.png");
+  const std::filesystem::path textures = overlay_ / "content/textures";
+  const std::filesystem::path folder = textures / "Cursors/KeyboardMouse";
+  const auto files = [&](const char* name) {
+    return std::vector<std::filesystem::path>{folder / name, textures / name};
+  };
+  EXPECT_EQ(CursorFiles(overlay_, CursorSlot::kArrow),
+            files("ArrowFarCursor.png"));
+  EXPECT_EQ(CursorFiles(overlay_, CursorSlot::kPointer),
+            files("ArrowCursor.png"));
+  EXPECT_EQ(CursorFiles(overlay_, CursorSlot::kText), files("IBeamCursor.png"));
+}
+
+TEST_F(CursorSlotsTest, InstallWritesBothFoldersRobloxReads) {
+  const std::string png = Png(32, 32);
+  std::string error;
+  ASSERT_TRUE(InstallCursor(Write("a.png", png), overlay_, CursorSlot::kArrow,
+                            &error))
+      << error;
+  for (const std::filesystem::path& file :
+       CursorFiles(overlay_, CursorSlot::kArrow)) {
+    EXPECT_EQ(Read(file), png) << file;
+  }
+}
+
+TEST_F(CursorSlotsTest, ACursorInTheOlderFolderCountsAndCanBeRemoved) {
+  const std::filesystem::path legacy =
+      overlay_ / "content/textures/ArrowFarCursor.png";
+  std::filesystem::create_directories(legacy.parent_path());
+  std::ofstream(legacy, std::ios::binary) << Png(32, 32);
+  EXPECT_TRUE(HasCustomCursor(overlay_, CursorSlot::kArrow));
+  EXPECT_EQ(CustomCursor(overlay_, CursorSlot::kArrow), legacy);
+  std::string error;
+  EXPECT_TRUE(RemoveCursor(overlay_, CursorSlot::kArrow, &error)) << error;
+  EXPECT_FALSE(HasCustomCursor(overlay_, CursorSlot::kArrow));
 }
 
 TEST_F(CursorSlotsTest, InstallRenamesThePickedFile) {
@@ -69,7 +97,7 @@ TEST_F(CursorSlotsTest, InstallRenamesThePickedFile) {
   ASSERT_TRUE(InstallCursor(Write("my cool cursor (1).png", png), overlay_,
                             CursorSlot::kArrow, &error))
       << error;
-  EXPECT_EQ(Read(CursorFile(overlay_, CursorSlot::kArrow)), png);
+  EXPECT_EQ(Read(CustomCursor(overlay_, CursorSlot::kArrow)), png);
   EXPECT_TRUE(HasCustomCursor(overlay_, CursorSlot::kArrow));
   EXPECT_FALSE(HasCustomCursor(overlay_, CursorSlot::kPointer));
   EXPECT_FALSE(HasCustomCursor(overlay_, CursorSlot::kText));
@@ -82,7 +110,10 @@ TEST_F(CursorSlotsTest, InstallReplacesTheSlot) {
   const std::string second = Png(48, 24);
   ASSERT_TRUE(InstallCursor(Write("b.png", second), overlay_,
                             CursorSlot::kText, &error));
-  EXPECT_EQ(Read(CursorFile(overlay_, CursorSlot::kText)), second);
+  for (const std::filesystem::path& file :
+       CursorFiles(overlay_, CursorSlot::kText)) {
+    EXPECT_EQ(Read(file), second) << file;
+  }
 }
 
 TEST_F(CursorSlotsTest, InstallRefusesWhatIsNotAPng) {
@@ -114,7 +145,10 @@ TEST_F(CursorSlotsTest, AFailedInstallKeepsTheCursorInUse) {
                              CursorSlot::kArrow, &error));
   EXPECT_FALSE(InstallCursor(root_ / "missing.png", overlay_,
                              CursorSlot::kArrow, &error));
-  EXPECT_EQ(Read(CursorFile(overlay_, CursorSlot::kArrow)), png);
+  for (const std::filesystem::path& file :
+       CursorFiles(overlay_, CursorSlot::kArrow)) {
+    EXPECT_EQ(Read(file), png) << file;
+  }
 }
 
 TEST_F(CursorSlotsTest, RemoveGoesBackToRobloxsAndLeavesTheOthers) {
