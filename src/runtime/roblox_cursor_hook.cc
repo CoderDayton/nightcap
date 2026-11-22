@@ -37,8 +37,7 @@ constexpr std::size_t kMaxAnchorDistance = 0x1000;
 constexpr std::size_t kMaxDrawSiteDistance = 0x2800;
 // mov rdi,[rbp+disp32]; call rel32; cmp ax,2; je rel32. The content type 2
 // is empty content, which Roblox does not draw.
-constexpr std::size_t kDrawSiteBytes = 18;
-constexpr std::size_t kDrawSiteCallOffset = 7;
+constexpr std::size_t kDrawSiteCheckBytes = 15;
 constexpr std::uint16_t kEmptyContentType = 2;
 
 // cvtsi2ss xmm,[rip+flag]: the first after the draw site reads
@@ -539,6 +538,15 @@ const std::uint8_t* TransparentCursorPng(std::size_t* size) {
   return kTransparentCursorPng;
 }
 
+bool LoadsContentBefore(const std::uint8_t* code, std::size_t call) {
+  if (call >= 7 && code[call - 7] == 0x48 && code[call - 6] == 0x8B &&
+      code[call - 5] == 0xBD) {
+    return true;
+  }
+  return call >= 3 && (code[call - 3] & 0xFB) == 0x48 &&
+         code[call - 2] == 0x89 && (code[call - 1] & 0xC7) == 0xC7;
+}
+
 std::optional<CursorRenderSite> LocateCursorRenderSite(
     const std::vector<CursorHookSegment>& segments, std::string* error) {
   const std::optional<AnchoredFunction> function =
@@ -552,14 +560,15 @@ std::optional<CursorRenderSite> LocateCursorRenderSite(
   const std::size_t anchor_offset = function->anchor;
 
   const std::size_t end =
-      std::min(code->size, *start + kMaxDrawSiteDistance) - kDrawSiteBytes;
+      std::min(code->size, *start + kMaxDrawSiteDistance) -
+      kDrawSiteCheckBytes;
   std::optional<std::size_t> site;
   for (std::size_t at = anchor_offset; at <= end; ++at) {
     const std::uint8_t* bytes = code->data + at;
-    if (bytes[0] == 0x48 && bytes[1] == 0x8B && bytes[2] == 0xBD &&
-        bytes[7] == 0xE8 && bytes[12] == 0x66 && bytes[13] == 0x83 &&
-        bytes[14] == 0xF8 && bytes[15] == kEmptyContentType &&
-        bytes[16] == 0x0F && bytes[17] == 0x84) {
+    if (bytes[0] == 0xE8 && bytes[5] == 0x66 && bytes[6] == 0x83 &&
+        bytes[7] == 0xF8 && bytes[8] == kEmptyContentType &&
+        bytes[9] == 0x0F && bytes[10] == 0x84 &&
+        LoadsContentBefore(code->data, at)) {
       if (site.has_value()) {
         Fail(error, "cursor draw site is ambiguous");
         return std::nullopt;
@@ -574,11 +583,11 @@ std::optional<CursorRenderSite> LocateCursorRenderSite(
 
   CursorRenderSite result;
   result.render_function = code->address + *start;
-  result.content_type_call = code->address + *site + kDrawSiteCallOffset;
+  result.content_type_call = code->address + *site;
   result.content_type_function =
       result.content_type_call + 5 +
       static_cast<std::intptr_t>(
-          ReadInt32(code->data + *site + kDrawSiteCallOffset + 1));
+          ReadInt32(code->data + *site + 1));
   const CursorHookSegment* callee =
       SegmentContaining(segments, result.content_type_function);
   if (callee == nullptr || !callee->executable) {
@@ -586,7 +595,7 @@ std::optional<CursorRenderSite> LocateCursorRenderSite(
     return std::nullopt;
   }
   for (const std::size_t at :
-       FindBytes(*code, *site + kDrawSiteBytes,
+       FindBytes(*code, *site + kDrawSiteCheckBytes,
                  std::min(code->size, *start + kMaxDrawSiteDistance),
                  kReadsLimit)) {
     if (at + 8 <= code->size && (code->data[at + 3] & 0xC7) == 0x05) {
