@@ -529,6 +529,7 @@ foreach(stub_target IN ITEMS
 endforeach()
 
 add_library(mocktail_window STATIC
+  src/window/guest_lua_app_surface_recovery.cc
   src/window/roblox_fullscreen_menu_request_gate.cc
   src/window/video_driver_policy.cc
   src/window/window.cc
@@ -584,6 +585,7 @@ add_library(mocktail_experience_runtime STATIC
   src/runtime/jnivm_platform_web_callbacks.cc
   src/runtime/roblox_experience_composition.cc
   src/runtime/roblox_fresh_game_launch_controller.cc
+  src/runtime/roblox_lua_app_restart.cc
   src/runtime/roblox_platform_web_symbols.cc
 )
 add_library(Mocktail::ExperienceRuntime ALIAS mocktail_experience_runtime)
