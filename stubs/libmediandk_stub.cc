@@ -813,6 +813,12 @@ AMediaCodec* AMediaCodec_createEncoderByType(const char* mime) {
   return nullptr;
 }
 
+AMediaCodec* AMediaCodec_createCodecByName(const char* name) {
+  std::fprintf(stderr, "  [media] no codec named %s\n",
+               name != nullptr ? name : "(null)");
+  return nullptr;
+}
+
 // Imported from Roblox 2.746 to decode video into hardware buffers. There are
 // none here, so creating a reader fails and nothing else gets a reader.
 struct AImageReader;
