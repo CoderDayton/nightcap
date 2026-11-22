@@ -259,6 +259,34 @@ TEST_F(RobloxGamepadInputTest, StickVectorsFlipYAndTriggersUseZ) {
   EXPECT_FLOAT_EQ(axes.back().position[2], 1);
 }
 
+TEST_F(RobloxGamepadInputTest, SticksIgnoreTheFirstTwentiethOfTravel) {
+  Add(10);
+  Send(platform::GamepadAxisEvent{10, SDL_GAMEPAD_AXIS_LEFTX, 1300});
+  EXPECT_TRUE(probe.OfKind("axis").empty());
+  Send(platform::GamepadAxisEvent{10, SDL_GAMEPAD_AXIS_LEFTX, 2600});
+  const auto axes = probe.OfKind("axis");
+  ASSERT_FALSE(axes.empty());
+  EXPECT_NEAR(axes.back().position[0], (2600.0F / 32767.0F - 0.05F) / 0.95F,
+              0.001F);
+  EXPECT_FLOAT_EQ(axes.back().position[1], 0);
+}
+
+TEST_F(RobloxGamepadInputTest, StickDeadzoneCanBeTurnedOffOrRaised) {
+  Add(10);
+  router.SetGamepadStickDeadzone(0.0F);
+  Send(platform::GamepadAxisEvent{10, SDL_GAMEPAD_AXIS_LEFTX, 1300});
+  auto axes = probe.OfKind("axis");
+  ASSERT_FALSE(axes.empty());
+  EXPECT_NEAR(axes.back().position[0], 1300.0F / 32767.0F, 0.0001F);
+  router.SetGamepadStickDeadzone(0.5F);
+  Send(platform::GamepadAxisEvent{10, SDL_GAMEPAD_AXIS_LEFTX, 15000});
+  axes = probe.OfKind("axis");
+  EXPECT_FLOAT_EQ(axes.back().position[0], 0);
+  Send(platform::GamepadAxisEvent{10, SDL_GAMEPAD_AXIS_LEFTX, 32767});
+  axes = probe.OfKind("axis");
+  EXPECT_FLOAT_EQ(axes.back().position[0], 1);
+}
+
 TEST_F(RobloxGamepadInputTest,
        FocusLossNeutralizesAndBackgroundInputCannotRefocus) {
   Add(10);

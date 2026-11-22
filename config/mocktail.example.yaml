@@ -110,6 +110,9 @@ input:
   # plugins. The desktop draws a game's own cursor instead of Roblox; the
   # shift lock cursor stays Roblox's. Most people should leave this off.
   hardware_cursor: false
+  # Whole number from 0 to 50 (default: 5): how far a controller stick moves,
+  # in percent, before it counts. 0 turns the deadzone off.
+  controller_deadzone: 5
 
 overlay:
   # Boolean (default: false): show the game server's location for a few

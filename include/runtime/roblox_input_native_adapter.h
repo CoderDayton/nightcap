@@ -130,6 +130,7 @@ class RobloxInputRuntime final {
   Status GetMainWindowMouseLock(RobloxMouseLock* lock);
   bool SupportsGamepads() const;
   void SetRawMouseEnabled(bool enabled);
+  void SetGamepadStickDeadzone(float fraction);
 
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);

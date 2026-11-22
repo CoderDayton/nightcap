@@ -346,6 +346,40 @@ input:
   EXPECT_TRUE(enabled.config.input_capabilities().raw_mouse);
 }
 
+TEST(RuntimeConfigFileTest, ControllerDeadzoneDefaultsToFiveAndLoadsFromYaml) {
+  TemporaryDirectory defaulted_directory;
+  const RuntimeConfigLoadResult defaulted = LoadRuntimeConfig(
+      MapEnvironment(), defaulted_directory.Write(R"yaml(
+version: 1
+input:
+  raw_mouse: true
+)yaml"));
+  ASSERT_TRUE(defaulted) << defaulted.error;
+  EXPECT_EQ(defaulted.config.input_capabilities().controller_deadzone, 5);
+
+  for (const int percent : {0, 20, 50}) {
+    TemporaryDirectory directory;
+    const RuntimeConfigLoadResult loaded = LoadRuntimeConfig(
+        MapEnvironment(),
+        directory.Write("version: 1\ninput:\n  controller_deadzone: " +
+                        std::to_string(percent) + "\n"));
+    ASSERT_TRUE(loaded) << loaded.error;
+    EXPECT_EQ(loaded.config.input_capabilities().controller_deadzone, percent);
+  }
+
+  for (const char* bad : {"51", "-1", "2.5", "off"}) {
+    TemporaryDirectory directory;
+    const RuntimeConfigLoadResult invalid = LoadRuntimeConfig(
+        MapEnvironment(),
+        directory.Write(
+            std::string("version: 1\ninput:\n  controller_deadzone: ") + bad +
+            "\n"));
+    EXPECT_NE(Why(invalid).find("input.controller_deadzone"),
+              std::string::npos)
+        << bad;
+  }
+}
+
 TEST(RuntimeConfigFileTest, SystemCursorDefaultsOffAndLoadsFromYaml) {
   TemporaryDirectory defaulted_directory;
   const RuntimeConfigLoadResult defaulted = LoadRuntimeConfig(

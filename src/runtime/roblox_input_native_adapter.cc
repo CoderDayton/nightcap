@@ -646,6 +646,10 @@ void RobloxInputRuntime::SetRawMouseEnabled(bool enabled) {
   router_.SetRawMouseEnabled(enabled);
 }
 
+void RobloxInputRuntime::SetGamepadStickDeadzone(float fraction) {
+  router_.SetGamepadStickDeadzone(fraction);
+}
+
 RobloxInputSnapshot RobloxInputRuntime::Snapshot() const {
   return router_.Snapshot();
 }
