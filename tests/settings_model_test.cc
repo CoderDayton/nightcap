@@ -15,6 +15,7 @@
 #include "runtime/environment.h"
 #include "runtime/runtime_config_file.h"
 #include "services/client_settings_service.h"
+#include "ui/sound_slots.h"
 #include "update/update_config.h"
 
 namespace mocktail {
@@ -116,7 +117,7 @@ TEST_F(SettingsModelTest, PagesListEverySettingOnce) {
     }
   }
   EXPECT_EQ(titles, (std::vector<std::string_view>{
-                        "Graphics", "Input", "Appearance", "Files",
+                        "Graphics", "Input", "Appearance", "Sounds", "Files",
                         "Performance", "Audio",
                         "Network", "Discord", "Fleasion", "Advanced"}));
 }
@@ -228,9 +229,13 @@ TEST_F(SettingsModelTest, TheCustomizeSectionHoldsAppearanceAndFiles) {
     if (page.section == "Customize") customize.push_back(page.name);
   }
   EXPECT_EQ(customize,
-            (std::vector<std::string_view>{"appearance", "files"}));
+            (std::vector<std::string_view>{"appearance", "sounds", "files"}));
+  for (const SoundSlot slot : kSoundSlots) {
+    EXPECT_EQ(Find(SoundSlotKey(slot)).kind, SettingKind::kSound);
+  }
   EXPECT_EQ(Find("sky").kind, SettingKind::kSky);
   EXPECT_EQ(Find("font").kind, SettingKind::kFont);
+  EXPECT_EQ(Find("cursor").kind, SettingKind::kCursor);
   for (const std::string_view key :
        {"assets.overlay", "assets.texture_overrides"}) {
     EXPECT_EQ(Find(key).kind, SettingKind::kToggle) << key;
@@ -250,9 +255,21 @@ TEST_F(SettingsModelTest, TheSkyIsGreyedOutWhileCustomAssetsAreOff) {
   ASSERT_TRUE(document.Set("assets.overlay", "false", &error)) << error;
   EXPECT_FALSE(document.IsActive("sky"));
   EXPECT_FALSE(document.IsActive("font"));
+  EXPECT_FALSE(document.IsActive("cursor"));
+  EXPECT_FALSE(document.IsActive("sound_death"));
   const runtime::RuntimeConfigLoadResult loaded = LoadFile();
   ASSERT_TRUE(loaded) << loaded.error;
   EXPECT_FALSE(loaded.config.asset_overlay());
+}
+
+TEST_F(SettingsModelTest, CursorsAreGreyedOutWhileTheSystemCursorIsOn) {
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  EXPECT_TRUE(document.IsActive("cursor"));
+  ASSERT_TRUE(document.Set("input.system_cursor", "true", &error)) << error;
+  EXPECT_FALSE(document.IsActive("cursor"));
+  EXPECT_TRUE(document.IsActive("font"));
 }
 
 TEST_F(SettingsModelTest, TheAdvancedPageClearsTheRobloxCache) {
@@ -1334,6 +1351,8 @@ std::optional<std::string> ChangedSample(const Setting& setting) {
     case SettingKind::kCache:
     case SettingKind::kSky:
     case SettingKind::kFont:
+    case SettingKind::kCursor:
+    case SettingKind::kSound:
       return std::nullopt;
   }
   return std::nullopt;

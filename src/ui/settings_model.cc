@@ -739,6 +739,21 @@ const std::vector<SettingsPage>& SettingsPages() {
             "One font for Roblox's menus and games. Emoji and other scripts "
             "keep Roblox's fonts. A new pick shows the next time Nightcap "
             "starts."},
+           {"Cursors",
+            {
+                {"cursor",
+                 "Cursors",
+                 "",
+                 SettingKind::kCursor,
+                 {},
+                 "",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            "Click one to pick a PNG, right-click it for Roblox's. A new pick "
+            "shows the next time Nightcap starts."},
            {"Sky",
             {
                 {"sky",
@@ -762,6 +777,29 @@ const std::vector<SettingsPage>& SettingsPages() {
             "The sky in games. A new pick shows the next time Nightcap "
             "starts. Right-click a sky to remove it."},
        }},
+      {"sounds",
+       "Sounds",
+       "audio-volume-high-symbolic",
+       "Customize",
+       {
+           {"Character sounds",
+            {
+                {"sound_death", "Death", "", SettingKind::kSound, {}, "", {}},
+                {"sound_jump", "Jump", "", SettingKind::kSound, {}, "", {}},
+                {"sound_landing", "Landing", "", SettingKind::kSound, {}, "", {}},
+                {"sound_footsteps", "Footsteps", "", SettingKind::kSound, {}, "", {}},
+                {"sound_falling", "Falling", "", SettingKind::kSound, {}, "", {}},
+                {"sound_swimming", "Swimming", "", SettingKind::kSound, {}, "", {}},
+                {"sound_getting_up", "Getting up", "", SettingKind::kSound, {}, "", {}},
+                {"sound_splash", "Splash", "", SettingKind::kSound, {}, "", {}},
+            },
+            {},
+            {},
+            false,
+            "Pick an OGG, MP3 or WAV for any of these. A new pick plays the "
+            "next time Nightcap starts. Games that bring their own sounds "
+            "keep them."},
+       }},
       {"files",
        "Files",
        "folder-symbolic",
@@ -771,7 +809,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"assets.overlay",
                  "Custom assets",
-                 "Use the cursors, fonts and sky in the asset folder.",
+                 "Use the cursors, fonts, sounds and sky in the asset folder.",
                  SettingKind::kToggle,
                  {},
                  "true",
@@ -1433,7 +1471,14 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
-  if ((key == "sky" || key == "font") && !IsSwitchedOn("assets.overlay")) {
+  if ((key == "sky" || key == "font" || key == "cursor") &&
+      !IsSwitchedOn("assets.overlay")) {
+    return false;
+  }
+  if (key.substr(0, 6) == "sound_" && !IsSwitchedOn("assets.overlay")) {
+    return false;
+  }
+  if (key == "cursor" && IsSwitchedOn("input.system_cursor")) {
     return false;
   }
   if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
@@ -1501,6 +1546,8 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
     case SettingKind::kCache:
     case SettingKind::kSky:
     case SettingKind::kFont:
+    case SettingKind::kCursor:
+    case SettingKind::kSound:
       return false;
   }
   return false;

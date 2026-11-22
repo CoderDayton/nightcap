@@ -9,6 +9,10 @@ Release notes on GitHub are taken from the matching section here.
 
 - Settings has a Present mode choice (FIFO, Mailbox or Immediate), which was only in the config file before.
 - Releases carry an RPM for Fedora 45 as well as Fedora 44.
+- Settings > Appearance has a Cursors row: click Arrow, Pointer or Text to pick any PNG for it, and
+  right-click one to go back to Roblox's. Before, cursors had to be copied into the asset folder.
+- Settings has a Sounds page: pick an OGG, MP3 or WAV for the death, jump, landing, footsteps,
+  falling, swimming, getting up and splash sounds, play your pick, or go back to Roblox's.
 
 ### Fixed
 
