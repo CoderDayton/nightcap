@@ -4,6 +4,7 @@
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_video.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <chrono>
@@ -22,6 +23,77 @@ namespace {
 // Such a call owns the in-flight marker and must not wait for its own stack to
 // unwind.
 thread_local WindowPointerCaptureOwner* t_pointer_query_owner = nullptr;
+
+struct X11GrabApi {
+  int (*get_client_pointer)(void*, unsigned long, int*) = nullptr;
+  int (*ungrab_device)(void*, int, unsigned long) = nullptr;
+  int (*ungrab_pointer)(void*, unsigned long) = nullptr;
+  int (*grab_pointer)(void*, unsigned long, int, unsigned int, int, int,
+                      unsigned long, unsigned long, unsigned long) = nullptr;
+  int (*sync)(void*, int) = nullptr;
+  bool loaded = false;
+};
+
+const X11GrabApi& LoadX11GrabApi() {
+  static const X11GrabApi api = [] {
+    X11GrabApi loaded;
+    void* x11 = dlopen("libX11.so.6", RTLD_NOW | RTLD_GLOBAL);
+    void* xi = dlopen("libXi.so.6", RTLD_NOW | RTLD_GLOBAL);
+    if (x11 == nullptr || xi == nullptr) {
+      return loaded;
+    }
+    loaded.get_client_pointer =
+        reinterpret_cast<decltype(loaded.get_client_pointer)>(
+            dlsym(xi, "XIGetClientPointer"));
+    loaded.ungrab_device = reinterpret_cast<decltype(loaded.ungrab_device)>(
+        dlsym(xi, "XIUngrabDevice"));
+    loaded.ungrab_pointer = reinterpret_cast<decltype(loaded.ungrab_pointer)>(
+        dlsym(x11, "XUngrabPointer"));
+    loaded.grab_pointer = reinterpret_cast<decltype(loaded.grab_pointer)>(
+        dlsym(x11, "XGrabPointer"));
+    loaded.sync =
+        reinterpret_cast<decltype(loaded.sync)>(dlsym(x11, "XSync"));
+    loaded.loaded = loaded.get_client_pointer != nullptr &&
+                    loaded.ungrab_device != nullptr &&
+                    loaded.ungrab_pointer != nullptr &&
+                    loaded.grab_pointer != nullptr && loaded.sync != nullptr;
+    return loaded;
+  }();
+  return api;
+}
+
+void GrabX11PointerWhileButtonHeld(SDL_Window* window) {
+  const char* driver = SDL_GetCurrentVideoDriver();
+  if (driver == nullptr || std::strcmp(driver, "x11") != 0 ||
+      SDL_GetMouseState(nullptr, nullptr) == 0) {
+    return;
+  }
+  const SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  void* display = SDL_GetPointerProperty(
+      props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+  const auto x_window = static_cast<unsigned long>(
+      SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
+  const X11GrabApi& api = LoadX11GrabApi();
+  if (display == nullptr || x_window == 0 || !api.loaded) {
+    return;
+  }
+  constexpr unsigned int kEvents =
+      (1u << 2) | (1u << 3) | (1u << 6) | (1u << 21);
+  constexpr int kGrabModeAsync = 1;
+  int pointer = 0;
+  if (!api.get_client_pointer(display, 0, &pointer)) {
+    return;
+  }
+  api.ungrab_device(display, pointer, 0);
+  api.ungrab_pointer(display, 0);
+  const int result =
+      api.grab_pointer(display, x_window, 0, kEvents, kGrabModeAsync,
+                       kGrabModeAsync, x_window, 0, 0);
+  api.sync(display, 0);
+  if (result != 0) {
+    std::fprintf(stderr, "[cursor] X11 drag grab refused: %d\n", result);
+  }
+}
 
 }  // namespace
 
@@ -433,6 +505,7 @@ bool SdlPointerCaptureBackend::Apply(bool relative_mode, CursorShape cursor,
       SDL_WarpMouseInWindow(window, capture_anchor_x_, capture_anchor_y_);
     }
     SDL_SetWindowMouseGrab(window, true);
+    GrabX11PointerWhileButtonHeld(window);
   }
   // Before relative mode starts: Wayland then locks the pointer where it is.
   if (relative_mode && center_pointer && !pointer_centered_) {
