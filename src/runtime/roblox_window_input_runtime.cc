@@ -199,6 +199,10 @@ void RobloxWindowInputRuntime::SetRawMouseEnabled(bool enabled) {
   runtime_.SetRawMouseEnabled(enabled);
 }
 
+void RobloxWindowInputRuntime::SetGamepadStickDeadzone(float fraction) {
+  runtime_.SetGamepadStickDeadzone(fraction);
+}
+
 RobloxInputSnapshot RobloxWindowInputRuntime::Snapshot() const {
   return runtime_.Snapshot();
 }

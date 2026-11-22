@@ -170,6 +170,7 @@ TEST_F(SettingsModelTest, EveryConfigKeyHasARow) {
            "audio.output_device", "audio.input_device",
            "window.width", "window.height", "window.title", "window.high_dpi",
            "input.raw_mouse", "input.system_cursor", "input.hardware_cursor",
+           "input.controller_deadzone",
            "overlay.location", "overlay.location_offset", "overlay.fps",
            "overlay.ping", "overlay.position",
            "network.use_system_proxy", "network.proxy_scheme",
@@ -1113,6 +1114,21 @@ TEST_F(SettingsModelTest, DesktopDrawnGameCursorIsUnderMore) {
   EXPECT_EQ(mouse.more_from, 3U);
   EXPECT_EQ(mouse.settings[3].key, "input.hardware_cursor");
   EXPECT_EQ(mouse.settings[3].title, "Desktop-drawn game cursor");
+}
+
+TEST_F(SettingsModelTest, ControllerDeadzoneIsAPercentThatCanBeOff) {
+  const Setting& deadzone = Find("input.controller_deadzone");
+  EXPECT_EQ(deadzone.kind, SettingKind::kNumber);
+  EXPECT_EQ(deadzone.default_value, "5");
+  EXPECT_EQ(deadzone.minimum, 0);
+  EXPECT_EQ(deadzone.maximum, runtime::kMaximumControllerDeadzone);
+  EXPECT_EQ(deadzone.zero_label, "Off");
+  SettingsDocument document(file_);
+  std::string error;
+  ASSERT_TRUE(document.Load(&error)) << error;
+  ASSERT_TRUE(document.Set("input.controller_deadzone", "0", &error))
+      << error;
+  EXPECT_EQ(document.Value("input.controller_deadzone"), "0");
 }
 
 TEST_F(SettingsModelTest, MoreRowsSitInsideTheirGroup) {

@@ -196,6 +196,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "input.raw_mouse",
        "input.system_cursor",
        "input.hardware_cursor",
+       "input.controller_deadzone",
       "overlay.server_info",
       "overlay.location",
       "overlay.location_offset",
@@ -564,6 +565,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_HARDWARE_CURSOR"] = parsed ? "on" : "off";
+  }
+  if (const auto deadzone = value("input.controller_deadzone");
+      deadzone.has_value()) {
+    if (!ParseControllerDeadzone(*deadzone).has_value()) {
+      *error = "input.controller_deadzone must be a whole number from 0 to " +
+               std::to_string(kMaximumControllerDeadzone);
+      return false;
+    }
+    (*environment)["MOCKTAIL_CONTROLLER_DEADZONE"] = *deadzone;
   }
   if (const auto desktop_playability =
           value("compatibility.desktop_playability");
@@ -1139,6 +1149,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue(
           "MOCKTAIL_HARDWARE_CURSOR",
           config.input_capabilities().hardware_cursor ? "on" : "off", error) &&
+      SetEnvironmentValue(
+          "MOCKTAIL_CONTROLLER_DEADZONE",
+          std::to_string(config.input_capabilities().controller_deadzone),
+          error) &&
       SetEnvironmentValue("MOCKTAIL_DESKTOP_PLAYABILITY",
                           config.desktop_playability() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",

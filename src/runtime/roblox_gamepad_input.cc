@@ -49,16 +49,15 @@ float SignedAxis(int16_t value) {
   return static_cast<float>(value) / (value < 0 ? 32768.0F : 32767.0F);
 }
 
-std::array<float, 2> Stick(int16_t raw_x, int16_t raw_y) {
-  constexpr float kDeadzone = 0.05F;
+std::array<float, 2> Stick(int16_t raw_x, int16_t raw_y, float deadzone) {
   const float x = SignedAxis(raw_x);
   const float y = -SignedAxis(raw_y);
   const float length = std::sqrt(x * x + y * y);
-  if (length <= kDeadzone) {
+  if (length <= deadzone) {
     return {};
   }
   const float scale =
-      (std::min(length, 1.0F) - kDeadzone) / ((1.0F - kDeadzone) * length);
+      (std::min(length, 1.0F) - deadzone) / ((1.0F - deadzone) * length);
   return {x * scale, y * scale};
 }
 
@@ -287,6 +286,11 @@ RobloxInputDispatchResult RobloxInputRouter::HandleGamepadButtonLocked(
   return NativeResultLocked(std::move(status), kind);
 }
 
+void RobloxInputRouter::SetGamepadStickDeadzone(float fraction) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  stick_deadzone_ = std::clamp(fraction, 0.0F, 0.9F);
+}
+
 Status RobloxInputRouter::DispatchGamepadAxesLocked(ActiveGamepad& gamepad,
                                                     uint8_t axis,
                                                     bool* dispatched) {
@@ -294,7 +298,8 @@ Status RobloxInputRouter::DispatchGamepadAxesLocked(ActiveGamepad& gamepad,
   const uint8_t first = axis < 4 ? static_cast<uint8_t>(axis & ~1U) : axis;
   const uint8_t count = axis < 4 ? 2 : 1;
   const auto stick =
-      axis < 4 ? Stick(gamepad.raw_axes[first], gamepad.raw_axes[first + 1])
+      axis < 4 ? Stick(gamepad.raw_axes[first], gamepad.raw_axes[first + 1],
+                       stick_deadzone_)
                : std::array<float, 2>{Trigger(gamepad.raw_axes[axis]), 0};
   if (gamepad.sent_axes[first] == stick[0] &&
       (count == 1 || gamepad.sent_axes[first + 1] == stick[1])) {

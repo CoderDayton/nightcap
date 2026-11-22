@@ -7315,6 +7315,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
           std::make_shared<mocktail::runtime::RobloxWindowInputRuntime>(
               input_environment, input_symbols);
       window_input_runtime->SetRawMouseEnabled(input_capabilities.raw_mouse);
+      window_input_runtime->SetGamepadStickDeadzone(
+          static_cast<float>(input_capabilities.controller_deadzone) / 100.0F);
+      std::fprintf(stderr, "[gamepad] stick deadzone %d%%\n",
+                   input_capabilities.controller_deadzone);
       const mocktail::Status input_status = window_input_runtime->Initialize();
       if (!input_status.ok()) {
         std::cerr << "[FATAL] Typed production input did not initialize: "

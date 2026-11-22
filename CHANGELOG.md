@@ -13,6 +13,8 @@ Release notes on GitHub are taken from the matching section here.
   right-click one to go back to Roblox's. Before, cursors had to be copied into the asset folder.
 - Settings has a Sounds page: pick an OGG, MP3 or WAV for the death, jump, landing, footsteps,
   falling, swimming, getting up and splash sounds, play your pick, or go back to Roblox's.
+- Settings > Input has a Stick deadzone row, from 0 (off) to 50%, for controllers that drift or need
+  finer aim. The config key is `input.controller_deadzone`.
 
 ### Fixed
 

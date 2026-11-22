@@ -49,7 +49,11 @@ struct InputCapabilityConfig {
   // Have the desktop draw the cursor pictures Roblox would draw into the
   // game, a game's own included. The mouse-lock cursor stays Roblox's.
   bool hardware_cursor = false;
+  int controller_deadzone = 5;
 };
+
+inline constexpr int kMaximumControllerDeadzone = 50;
+std::optional<int> ParseControllerDeadzone(std::string_view value);
 
 enum class OverlayPosition {
   kTopCenter,
