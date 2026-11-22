@@ -50,7 +50,7 @@ float SignedAxis(int16_t value) {
 }
 
 std::array<float, 2> Stick(int16_t raw_x, int16_t raw_y) {
-  constexpr float kDeadzone = 0.20F;
+  constexpr float kDeadzone = 0.05F;
   const float x = SignedAxis(raw_x);
   const float y = -SignedAxis(raw_y);
   const float length = std::sqrt(x * x + y * y);
