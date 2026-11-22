@@ -16,7 +16,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
-- Roblox 2.748 loads now, so the updater moves to it instead of staying on 2.746.
+- Roblox 2.748 loads now, so the updater moves to it instead of staying on 2.746. The cursor settings
+  work on it too.
 - The game world is no longer slightly blurry from Roblox drawing it a pixel smaller than the window.
 - The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
 - Joining a game right after launch no longer freezes for seconds while the BC7 encoder is compiling.

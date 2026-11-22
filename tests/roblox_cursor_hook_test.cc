@@ -138,6 +138,20 @@ class DrawImage {
     std::memcpy(code_.data() + at + 12, check, sizeof(check));
   }
 
+  void WriteRegisterDrawSite(std::size_t at) {
+    const std::uint8_t load[] = {0x4C, 0x89, 0xFF};
+    std::memcpy(code_.data() + at, load, sizeof(load));
+    code_[at + 3] = 0xE8;
+    WriteRel32(at + 4, kCodeAddress + at + 8, kCodeAddress + kCallee);
+    const std::uint8_t check[] = {0x66, 0x83, 0xF8, 0x02, 0x0F, 0x84,
+                                  0x41, 0x05, 0x00, 0x00};
+    std::memcpy(code_.data() + at + 8, check, sizeof(check));
+  }
+
+  void ClearDrawSite(std::size_t at) {
+    std::memset(code_.data() + at, 0xCC, 22);
+  }
+
   // cvtsi2ss xmm2,[rip+limit]
   void WriteLimitRead(std::size_t at) {
     const std::uint8_t load[] = {0xF3, 0x0F, 0x2A, 0x15};
@@ -179,6 +193,32 @@ TEST(RobloxCursorHookTest, LocatesTheDrawFunctionAndSite) {
             DrawImage::kCodeAddress + DrawImage::kCallee);
   EXPECT_EQ(site->max_dimension_flag,
             DrawImage::kDataAddress + DrawImage::kLimitFlag);
+}
+
+TEST(RobloxCursorHookTest, LocatesADrawSiteThatLoadsFromARegister) {
+  DrawImage image;
+  image.ClearDrawSite(DrawImage::kDrawSite);
+  image.WriteRegisterDrawSite(DrawImage::kDrawSite + 0x21);
+  std::string error;
+  const std::optional<CursorRenderSite> site =
+      LocateCursorRenderSite(image.Segments(), &error);
+  ASSERT_TRUE(site.has_value()) << error;
+  EXPECT_EQ(site->content_type_call,
+            DrawImage::kCodeAddress + DrawImage::kDrawSite + 0x21 + 3);
+  EXPECT_EQ(site->content_type_function,
+            DrawImage::kCodeAddress + DrawImage::kCallee);
+  EXPECT_EQ(site->max_dimension_flag,
+            DrawImage::kDataAddress + DrawImage::kLimitFlag);
+}
+
+TEST(RobloxCursorHookTest, RefusesADrawSiteThatDoesNotLoadTheContent) {
+  DrawImage image;
+  image.ClearDrawSite(DrawImage::kDrawSite);
+  image.WriteRegisterDrawSite(DrawImage::kDrawSite + 0x21);
+  image.code()[DrawImage::kDrawSite + 0x21 + 2] = 0xFE;
+  std::string error;
+  EXPECT_FALSE(LocateCursorRenderSite(image.Segments(), &error).has_value());
+  EXPECT_EQ(error, "cursor draw site not found");
 }
 
 TEST(RobloxCursorHookTest, DrawSiteWithoutTheLimitStillHooks) {
