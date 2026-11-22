@@ -42,6 +42,7 @@ enum class SettingKind {
   // Picks the font that replaces Roblox's, or goes back to Roblox's.
   kFont,
   kCursor,
+  kSound,
 };
 
 struct SettingChoice {

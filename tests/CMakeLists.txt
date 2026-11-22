@@ -70,6 +70,12 @@ target_link_libraries(cursor_slots_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(sound_slots_test sound_slots_test.cc)
+target_link_libraries(sound_slots_test PRIVATE
+  Mocktail::SettingsModel
+  GTest::gtest_main
+)
+
 add_executable(sky_pack_test sky_pack_test.cc)
 target_link_libraries(sky_pack_test PRIVATE
   Mocktail::SettingsModel
@@ -1377,6 +1383,7 @@ gtest_discover_tests(runtime_config_store_test)
 gtest_discover_tests(settings_model_test)
 gtest_discover_tests(sky_pack_test)
 gtest_discover_tests(cursor_slots_test)
+gtest_discover_tests(sound_slots_test)
 gtest_discover_tests(fflag_presets_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)

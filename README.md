@@ -37,11 +37,12 @@ side by side.
 - **Mouse and keyboard.** The PC home screen and side menu, raw mouse input,
   and your own cursor theme.
 - **Performance.** Less idle CPU use and faster texture loading.
-- **Custom assets.** Cursors, fonts and skies go in
+- **Custom assets.** Cursors, fonts, sounds and skies go in
   `~/.local/share/mocktail/asset_overlay`, same layout as Sober's. Settings >
   Appearance imports sky packs, zips included, switches between them, swaps
   Roblox's fonts for one of yours, and sets the arrow, pointer and text
-  cursors from any PNG. Fleasion works too.
+  cursors from any PNG. Settings > Sounds swaps the death, jump and other
+  character sounds. Fleasion works too.
 - **Overlays.** FPS, ping, and the server's location when you join.
 - **Discord.** Shows the game you're playing.
 - **Settings window.** Every option in one place.

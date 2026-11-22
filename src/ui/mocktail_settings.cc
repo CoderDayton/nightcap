@@ -35,6 +35,7 @@
 #include "ui/cursor_slots.h"
 #include "ui/settings_model.h"
 #include "ui/sky_pack.h"
+#include "ui/sound_slots.h"
 
 namespace {
 
@@ -113,6 +114,9 @@ struct Row {
   std::string shown;
   // The badge on an expander row that shows a status, such as Fleasion's.
   GtkWidget* badge = nullptr;
+  GtkWidget* sound_play = nullptr;
+  GtkWidget* sound_clear = nullptr;
+  bool sound_shown = false;
 };
 
 struct SettingsWindow {
@@ -189,6 +193,7 @@ struct SettingsWindow {
   GtkWidget* cursor_menu = nullptr;
   mocktail::ui::CursorSlot cursor_slot = mocktail::ui::CursorSlot::kArrow;
   bool cursor_shown = false;
+  GtkMediaStream* sound_player = nullptr;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -644,6 +649,19 @@ void RefreshCursorRow(Row* row) {
              yours.empty() ? "Roblox's cursors" : "Yours: " + yours);
 }
 
+void RefreshSoundRow(Row* row) {
+  row->sound_shown = true;
+  const std::optional<mocktail::ui::SoundSlot> slot =
+      mocktail::ui::SoundSlotForKey(row->setting->key);
+  const bool custom =
+      slot && !mocktail::ui::CustomSound(row->window->asset_overlay_dir, *slot)
+                   .empty();
+  SetRowText(row->widget, row->setting->title,
+             custom ? "Your sound" : "Roblox's sound");
+  gtk_widget_set_visible(row->sound_play, custom);
+  gtk_widget_set_visible(row->sound_clear, custom);
+}
+
 // Shows the file's value in `row`. With `keep_edit`, text typed into the row
 // and not saved yet is left alone.
 void RefreshRow(Row* row, bool keep_edit) {
@@ -724,6 +742,9 @@ void RefreshRow(Row* row, bool keep_edit) {
       break;
     case SettingKind::kCursor:
       if (!row->window->cursor_shown) RefreshCursorRow(row);
+      break;
+    case SettingKind::kSound:
+      if (!row->sound_shown) RefreshSoundRow(row);
       break;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
@@ -1702,6 +1723,90 @@ void OnClearCursor(GSimpleAction*, GVariant*, gpointer user_data) {
   OnCursorChanged(row);
 }
 
+void StopSound(SettingsWindow* window) {
+  if (window->sound_player == nullptr) return;
+  gtk_media_stream_pause(window->sound_player);
+  g_clear_object(&window->sound_player);
+}
+
+void OnSoundChanged(Row* row) {
+  SettingsWindow* window = row->window;
+  StopSound(window);
+  window->document.ForgetUndo();
+  OnChangeSaved(window, false);
+  gtk_widget_set_visible(window->undo, FALSE);
+  RefreshSoundRow(row);
+}
+
+void OnSoundPicked(GObject* source, GAsyncResult* result,
+                   gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  GError* error = nullptr;
+  GFile* file =
+      gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+  const std::filesystem::path picked = PickedPath(row, file, error);
+  const std::optional<mocktail::ui::SoundSlot> slot =
+      mocktail::ui::SoundSlotForKey(row->setting->key);
+  if (picked.empty() || !slot) return;
+  std::string failure;
+  if (!mocktail::ui::InstallSound(picked, window->asset_overlay_dir, *slot,
+                                  &failure)) {
+    ShowError(window, failure);
+    return;
+  }
+  OnSoundChanged(row);
+}
+
+void OnChooseSound(GtkButton*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  GtkFileDialog* dialog = gtk_file_dialog_new();
+  const std::string title =
+      "Choose the " + Text(row->setting->title) + " Sound";
+  gtk_file_dialog_set_title(dialog, title.c_str());
+  GtkFileFilter* filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "Sounds (.ogg, .mp3, .wav)");
+  for (const char* suffix : {"ogg", "oga", "mp3", "wav"}) {
+    gtk_file_filter_add_suffix(filter, suffix);
+  }
+  GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+  g_list_store_append(filters, filter);
+  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+  gtk_file_dialog_set_default_filter(dialog, filter);
+  g_object_unref(filters);
+  g_object_unref(filter);
+  gtk_file_dialog_open(dialog, GTK_WINDOW(row->window->widget), nullptr,
+                       OnSoundPicked, row);
+  g_object_unref(dialog);
+}
+
+void OnClearSound(GtkButton*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  const std::optional<mocktail::ui::SoundSlot> slot =
+      mocktail::ui::SoundSlotForKey(row->setting->key);
+  std::string failure;
+  if (!slot || !mocktail::ui::RemoveSound(row->window->asset_overlay_dir,
+                                          *slot, &failure)) {
+    ShowError(row->window, failure);
+    return;
+  }
+  OnSoundChanged(row);
+}
+
+void OnPlaySound(GtkButton*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  const std::optional<mocktail::ui::SoundSlot> slot =
+      mocktail::ui::SoundSlotForKey(row->setting->key);
+  StopSound(window);
+  if (!slot) return;
+  const std::filesystem::path sound =
+      mocktail::ui::CustomSound(window->asset_overlay_dir, *slot);
+  if (sound.empty()) return;
+  window->sound_player = gtk_media_file_new_for_filename(sound.c_str());
+  gtk_media_stream_play(window->sound_player);
+}
+
 void SetSkyBusy(Row* row, bool busy) {
   SettingsWindow* window = row->window;
   window->sky_busy = busy;
@@ -2423,6 +2528,28 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       g_object_unref(actions);
       break;
     }
+    case SettingKind::kSound: {
+      row.widget = adw_action_row_new();
+      row.sound_play =
+          gtk_button_new_from_icon_name("media-playback-start-symbolic");
+      gtk_widget_set_valign(row.sound_play, GTK_ALIGN_CENTER);
+      gtk_widget_add_css_class(row.sound_play, "flat");
+      gtk_widget_set_tooltip_text(row.sound_play, "Play your sound");
+      g_signal_connect(row.sound_play, "clicked", G_CALLBACK(OnPlaySound),
+                       &row);
+      row.sound_clear = gtk_button_new_with_label("Use Roblox's");
+      gtk_widget_set_valign(row.sound_clear, GTK_ALIGN_CENTER);
+      gtk_widget_add_css_class(row.sound_clear, "flat");
+      g_signal_connect(row.sound_clear, "clicked", G_CALLBACK(OnClearSound),
+                       &row);
+      GtkWidget* choose = gtk_button_new_with_label("Choose…");
+      gtk_widget_set_valign(choose, GTK_ALIGN_CENTER);
+      g_signal_connect(choose, "clicked", G_CALLBACK(OnChooseSound), &row);
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.sound_play);
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.sound_clear);
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), choose);
+      break;
+    }
     case SettingKind::kCache:
       row.widget = adw_action_row_new();
       window->cache = &row;
@@ -2439,7 +2566,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       setting.kind != SettingKind::kCache &&
       setting.kind != SettingKind::kSky &&
       setting.kind != SettingKind::kFont &&
-      setting.kind != SettingKind::kCursor) {
+      setting.kind != SettingKind::kCursor &&
+      setting.kind != SettingKind::kSound) {
     row.reset = NewResetButton(&row);
     adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.reset);
     // Before the row's own control, so the control stays at the edge.
