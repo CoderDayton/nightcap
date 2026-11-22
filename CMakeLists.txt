@@ -392,6 +392,7 @@ target_link_libraries(mocktail_failure_dialog PRIVATE PkgConfig::LIBADWAITA)
 mocktail_apply_compile_options(mocktail_failure_dialog)
 
 add_library(mocktail_settings_model STATIC
+  src/ui/cursor_slots.cc
   src/ui/fflag_presets.cc
   src/ui/settings_model.cc
   src/ui/sky_pack.cc

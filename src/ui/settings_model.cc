@@ -739,6 +739,21 @@ const std::vector<SettingsPage>& SettingsPages() {
             "One font for Roblox's menus and games. Emoji and other scripts "
             "keep Roblox's fonts. A new pick shows the next time Nightcap "
             "starts."},
+           {"Cursors",
+            {
+                {"cursor",
+                 "Cursors",
+                 "",
+                 SettingKind::kCursor,
+                 {},
+                 "",
+                 {}},
+            },
+            {},
+            {},
+            false,
+            "Click one to pick a PNG, right-click it for Roblox's. A new pick "
+            "shows the next time Nightcap starts."},
            {"Sky",
             {
                 {"sky",
@@ -1433,7 +1448,11 @@ bool SettingsDocument::IsActive(std::string_view key) const {
   if (key == kProxyPasswordKey && Value(kProxyUsernameKey).empty()) {
     return false;
   }
-  if ((key == "sky" || key == "font") && !IsSwitchedOn("assets.overlay")) {
+  if ((key == "sky" || key == "font" || key == "cursor") &&
+      !IsSwitchedOn("assets.overlay")) {
+    return false;
+  }
+  if (key == "cursor" && IsSwitchedOn("input.system_cursor")) {
     return false;
   }
   if (key == "overlay.location_offset" && !IsSwitchedOn("overlay.location")) {
@@ -1501,6 +1520,7 @@ bool SettingsDocument::IsChanged(const Setting& setting) const {
     case SettingKind::kCache:
     case SettingKind::kSky:
     case SettingKind::kFont:
+    case SettingKind::kCursor:
       return false;
   }
   return false;

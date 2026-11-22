@@ -32,6 +32,7 @@
 #include "accessible_rows.h"
 #include "fflag_editor.h"
 #include "icon_names.h"
+#include "ui/cursor_slots.h"
 #include "ui/settings_model.h"
 #include "ui/sky_pack.h"
 
@@ -74,6 +75,12 @@ constexpr char kWindowStyle[] = R"(
 .status-badge.warn {
   background-color: alpha(@warning_color, 0.2); color: @warning_color;
 }
+.cursor-tile { padding: 4px 8px; }
+.cursor-well {
+  padding: 4px; border-radius: 8px;
+  background-color: alpha(@window_fg_color, 0.07);
+}
+.cursor-well.empty { padding: 12px; color: alpha(@window_fg_color, 0.45); }
 .status-badge.error {
   background-color: alpha(@error_color, 0.2); color: @error_color;
 }
@@ -178,6 +185,10 @@ struct SettingsWindow {
   // Font files already added to Pango for the preview, by path and mtime.
   std::vector<std::string> font_previews;
   bool font_shown = false;
+  std::array<GtkWidget*, mocktail::ui::kCursorSlots.size()> cursor_images{};
+  GtkWidget* cursor_menu = nullptr;
+  mocktail::ui::CursorSlot cursor_slot = mocktail::ui::CursorSlot::kArrow;
+  bool cursor_shown = false;
 };
 
 std::string Text(std::string_view text) { return std::string(text); }
@@ -600,6 +611,39 @@ void RefreshFontRow(Row* row) {
   pango_attr_list_unref(attributes);
 }
 
+constexpr int kCursorTileSize = 32;
+
+void RefreshCursorRow(Row* row) {
+  SettingsWindow* window = row->window;
+  window->cursor_shown = true;
+  std::string yours;
+  for (std::size_t index = 0; index < mocktail::ui::kCursorSlots.size();
+       ++index) {
+    const mocktail::ui::CursorSlot slot = mocktail::ui::kCursorSlots[index];
+    GtkWidget* image = window->cursor_images[index];
+    GdkTexture* texture = nullptr;
+    if (mocktail::ui::HasCustomCursor(window->asset_overlay_dir, slot)) {
+      if (!yours.empty()) yours += ", ";
+      yours += mocktail::ui::CursorSlotLabel(slot);
+      texture = gdk_texture_new_from_filename(
+          mocktail::ui::CursorFile(window->asset_overlay_dir, slot).c_str(),
+          nullptr);
+    }
+    if (texture != nullptr) {
+      gtk_image_set_from_paintable(GTK_IMAGE(image), GDK_PAINTABLE(texture));
+      gtk_image_set_pixel_size(GTK_IMAGE(image), kCursorTileSize);
+      g_object_unref(texture);
+      gtk_widget_remove_css_class(image, "empty");
+    } else {
+      gtk_image_set_from_icon_name(GTK_IMAGE(image), "list-add-symbolic");
+      gtk_image_set_pixel_size(GTK_IMAGE(image), kCursorTileSize / 2);
+      gtk_widget_add_css_class(image, "empty");
+    }
+  }
+  SetRowText(row->widget, row->setting->title,
+             yours.empty() ? "Roblox's cursors" : "Yours: " + yours);
+}
+
 // Shows the file's value in `row`. With `keep_edit`, text typed into the row
 // and not saved yet is left alone.
 void RefreshRow(Row* row, bool keep_edit) {
@@ -677,6 +721,9 @@ void RefreshRow(Row* row, bool keep_edit) {
     case SettingKind::kFont:
       // Reading the font file costs too much for every save.
       if (!row->window->font_shown) RefreshFontRow(row);
+      break;
+    case SettingKind::kCursor:
+      if (!row->window->cursor_shown) RefreshCursorRow(row);
       break;
     case SettingKind::kEditor:
     case SettingKind::kFolder:
@@ -1569,6 +1616,92 @@ void OnClearFont(GtkButton*, gpointer user_data) {
   OnFontChanged(row);
 }
 
+void OnCursorChanged(Row* row) {
+  SettingsWindow* window = row->window;
+  window->document.ForgetUndo();
+  OnChangeSaved(window, false);
+  gtk_widget_set_visible(window->undo, FALSE);
+  RefreshCursorRow(row);
+}
+
+void OnCursorPicked(GObject* source, GAsyncResult* result,
+                    gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  GError* error = nullptr;
+  GFile* file =
+      gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+  const std::filesystem::path picked = PickedPath(row, file, error);
+  if (picked.empty()) return;
+  std::string failure;
+  if (!mocktail::ui::InstallCursor(picked, window->asset_overlay_dir,
+                                   window->cursor_slot, &failure)) {
+    ShowError(window, failure);
+    return;
+  }
+  OnCursorChanged(row);
+}
+
+mocktail::ui::CursorSlot CursorSlotOf(GtkWidget* tile) {
+  return static_cast<mocktail::ui::CursorSlot>(
+      GPOINTER_TO_INT(g_object_get_data(G_OBJECT(tile), "slot")));
+}
+
+void OnChooseCursor(GtkButton* button, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  row->window->cursor_slot = CursorSlotOf(GTK_WIDGET(button));
+  GtkFileDialog* dialog = gtk_file_dialog_new();
+  const std::string title =
+      "Choose the " +
+      Text(mocktail::ui::CursorSlotLabel(row->window->cursor_slot)) +
+      " Cursor";
+  gtk_file_dialog_set_title(dialog, title.c_str());
+  GtkFileFilter* filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "PNG images");
+  gtk_file_filter_add_suffix(filter, "png");
+  GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+  g_list_store_append(filters, filter);
+  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+  gtk_file_dialog_set_default_filter(dialog, filter);
+  g_object_unref(filters);
+  g_object_unref(filter);
+  gtk_file_dialog_open(dialog, GTK_WINDOW(row->window->widget), nullptr,
+                       OnCursorPicked, row);
+  g_object_unref(dialog);
+}
+
+void OnCursorTileMenu(GtkGestureClick* gesture, int, double x, double y,
+                      gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  GtkWidget* tile =
+      gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  const mocktail::ui::CursorSlot slot = CursorSlotOf(tile);
+  graphene_rect_t bounds;
+  if (!mocktail::ui::HasCustomCursor(window->asset_overlay_dir, slot) ||
+      !gtk_widget_compute_bounds(tile, row->widget, &bounds)) {
+    return;
+  }
+  gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  window->cursor_slot = slot;
+  const GdkRectangle at = {static_cast<int>(bounds.origin.x + x),
+                           static_cast<int>(bounds.origin.y + y), 1, 1};
+  gtk_popover_set_pointing_to(GTK_POPOVER(window->cursor_menu), &at);
+  gtk_popover_popup(GTK_POPOVER(window->cursor_menu));
+}
+
+void OnClearCursor(GSimpleAction*, GVariant*, gpointer user_data) {
+  Row* row = static_cast<Row*>(user_data);
+  SettingsWindow* window = row->window;
+  std::string failure;
+  if (!mocktail::ui::RemoveCursor(window->asset_overlay_dir,
+                                  window->cursor_slot, &failure)) {
+    ShowError(window, failure);
+    return;
+  }
+  OnCursorChanged(row);
+}
+
 void SetSkyBusy(Row* row, bool busy) {
   SettingsWindow* window = row->window;
   window->sky_busy = busy;
@@ -2232,6 +2365,64 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
                              "visible", G_BINDING_SYNC_CREATE);
       break;
     }
+    case SettingKind::kCursor: {
+      row.widget = adw_action_row_new();
+      GtkWidget* tiles = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+      gtk_widget_set_valign(tiles, GTK_ALIGN_CENTER);
+      for (std::size_t index = 0; index < mocktail::ui::kCursorSlots.size();
+           ++index) {
+        const mocktail::ui::CursorSlot slot = mocktail::ui::kCursorSlots[index];
+        const std::string label = Text(mocktail::ui::CursorSlotLabel(slot));
+        GtkWidget* image = gtk_image_new();
+        gtk_image_set_pixel_size(GTK_IMAGE(image), kCursorTileSize);
+        gtk_widget_add_css_class(image, "cursor-well");
+        gtk_widget_set_halign(image, GTK_ALIGN_CENTER);
+        window->cursor_images[index] = image;
+        GtkWidget* caption = gtk_label_new(label.c_str());
+        gtk_widget_add_css_class(caption, "caption");
+        GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_box_append(GTK_BOX(box), image);
+        gtk_box_append(GTK_BOX(box), caption);
+        GtkWidget* tile = gtk_button_new();
+        gtk_button_set_child(GTK_BUTTON(tile), box);
+        gtk_widget_add_css_class(tile, "flat");
+        gtk_widget_add_css_class(tile, "cursor-tile");
+        gtk_widget_set_tooltip_text(
+            tile, ("Choose a PNG for the " + label + " cursor").c_str());
+        g_object_set_data(G_OBJECT(tile), "slot",
+                          GINT_TO_POINTER(static_cast<int>(slot)));
+        g_signal_connect(tile, "clicked", G_CALLBACK(OnChooseCursor), &row);
+        GtkGesture* click = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                      GDK_BUTTON_SECONDARY);
+        g_signal_connect(click, "pressed", G_CALLBACK(OnCursorTileMenu), &row);
+        gtk_widget_add_controller(tile, GTK_EVENT_CONTROLLER(click));
+        gtk_box_append(GTK_BOX(tiles), tile);
+      }
+      adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), tiles);
+      GMenu* menu = g_menu_new();
+      g_menu_append(menu, "Use Roblox's", "cursor.clear");
+      window->cursor_menu = gtk_popover_menu_new_from_model(G_MENU_MODEL(menu));
+      g_object_unref(menu);
+      gtk_popover_set_has_arrow(GTK_POPOVER(window->cursor_menu), FALSE);
+      gtk_widget_set_halign(window->cursor_menu, GTK_ALIGN_START);
+      gtk_widget_set_parent(window->cursor_menu, row.widget);
+      g_signal_connect(row.widget, "destroy",
+                       G_CALLBACK(+[](GtkWidget*, gpointer popover) {
+                         gtk_widget_unparent(GTK_WIDGET(popover));
+                       }),
+                       window->cursor_menu);
+      const GActionEntry entries[] = {
+          {"clear", OnClearCursor, nullptr, nullptr, nullptr, {}},
+      };
+      GSimpleActionGroup* actions = g_simple_action_group_new();
+      g_action_map_add_action_entries(G_ACTION_MAP(actions), entries,
+                                      G_N_ELEMENTS(entries), &row);
+      gtk_widget_insert_action_group(row.widget, "cursor",
+                                     G_ACTION_GROUP(actions));
+      g_object_unref(actions);
+      break;
+    }
     case SettingKind::kCache:
       row.widget = adw_action_row_new();
       window->cache = &row;
@@ -2247,7 +2438,8 @@ void AddRow(SettingsWindow* window, GtkWidget* container,
       setting.kind != SettingKind::kFolder &&
       setting.kind != SettingKind::kCache &&
       setting.kind != SettingKind::kSky &&
-      setting.kind != SettingKind::kFont) {
+      setting.kind != SettingKind::kFont &&
+      setting.kind != SettingKind::kCursor) {
     row.reset = NewResetButton(&row);
     adw_action_row_add_suffix(ADW_ACTION_ROW(row.widget), row.reset);
     // Before the row's own control, so the control stays at the edge.
