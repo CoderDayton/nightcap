@@ -5,6 +5,10 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- The app icon has a bigger center hole, and the main window uses the same icon as Settings.
+
 ## [0.5.4] - 2026-11-22
 
 ### Added

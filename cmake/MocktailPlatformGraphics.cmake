@@ -13,7 +13,7 @@ find_path(MOCKTAIL_EGL_INCLUDE_DIR EGL/egl.h REQUIRED)
 find_path(MOCKTAIL_GLES3_INCLUDE_DIR GLES3/gl3.h REQUIRED)
 
 set(MOCKTAIL_WINDOW_ICON_PNG
-  "${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/packaging/icons/hicolor/48x48/apps/io.github.CoderDayton.nightcap.png"
+  "${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/packaging/icons/hicolor/256x256/apps/io.github.CoderDayton.nightcap.png"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${MOCKTAIL_WINDOW_ICON_PNG}"
