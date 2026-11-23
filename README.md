@@ -294,23 +294,7 @@ lefthook install
 
 ## Known limitations
 
-### Microphone stuttering in voice chat
-
-Microphone stuttering and choppy audio are known issues in both Mocktail and Sober. See [Mocktail issue #240](https://github.com/komaruworld/mocktail/issues/240).
-
-Setting `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=200` fixes the issue in Nightcap and Mocktail. This workaround does not apply to Sober.
-
-For Nightcap Flatpak:
-
-```sh
-flatpak override --user \
-  --env=SDL_AUDIO_DEVICE_SAMPLE_FRAMES=200 \
-  io.github.CoderDayton.nightcap
-```
-
-### hardened_malloc incompatibility
-
-Nightcap is incompatible with `hardened_malloc` (`hmalloc`). With it enabled, Nightcap **will fail**, either during startup or at runtime. Disable `hardened_malloc` before running Nightcap.
+Nightcap is incompatible with hardened_malloc. With it enabled, Nightcap will fail, either during startup or at runtime. Disable hardened_malloc before running Nightcap.
 
 ## License
 
