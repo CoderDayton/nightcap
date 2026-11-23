@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-22
+
 ### Added
 
 - Settings has a Present mode choice (FIFO, Mailbox or Immediate), which was only in the config file before.
@@ -23,6 +25,7 @@ Release notes on GitHub are taken from the matching section here.
 - On X11 and XWayland, the pointer no longer leaves the window during a right-click camera drag, and it
   returns to where the drag started.
 - The game world is no longer slightly blurry from Roblox drawing it a pixel smaller than the window.
+  Nightcap turns off Roblox's dynamic resolution with `FFlagDebugDisableDRS`; your own value still wins.
 - The sign-in captcha puzzle no longer gets covered by a load error when one of its answers is rejected.
 - Joining a game right after launch no longer freezes for seconds while the BC7 encoder is compiling.
 - Session logs no longer include the join ticket from Roblox's teleport log line.

@@ -20,7 +20,7 @@ body:
     attributes:
       label: Nightcap version
       description: Provide the release version, package version, or commit hash.
-      placeholder: "For example: v0.5.3 or 1a2b3c4"
+      placeholder: "For example: v0.5.4 or 1a2b3c4"
     validations:
       required: true
 
