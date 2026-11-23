@@ -9,6 +9,10 @@ Release notes on GitHub are taken from the matching section here.
 
 - The app icon has a bigger center hole, and the main window uses the same icon as Settings.
 
+### Fixed
+
+- Your mic no longer sounds choppy in voice chat. It sent audio in 20 to 40 ms bursts instead of every 10 ms.
+
 ## [0.5.4] - 2026-11-22
 
 ### Added
