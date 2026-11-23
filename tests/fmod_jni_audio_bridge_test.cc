@@ -679,6 +679,44 @@ TEST(SdlAudioCaptureTest, MigrationPreservesPausedCapturesAndBuffers) {
   }
 }
 
+TEST(SdlAudioCaptureTest, DeliversOneFramePerDevicePeriod) {
+  ScopedSdlAudioShutdown shutdown;
+  ASSERT_TRUE(InitializeSdlAudioSubsystem().ok());
+  struct Probe {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::chrono::steady_clock::time_point> times;
+  } probe;
+  SdlAudioCaptureOptions options;
+  options.output_spec.channels = 1;
+  options.data_context = &probe;
+  options.data_callback = [](void *opaque, std::size_t) {
+    auto *p = static_cast<Probe *>(opaque);
+    std::lock_guard<std::mutex> lock(p->mutex);
+    p->times.push_back(std::chrono::steady_clock::now());
+    p->cv.notify_all();
+  };
+  std::unique_ptr<AudioCapture> capture;
+  ASSERT_TRUE(CreateSdlAudioCapture(options, &capture).ok());
+  ASSERT_TRUE(capture->Start().ok());
+  constexpr std::size_t kSkip = 5;
+  constexpr std::size_t kSamples = 30;
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    ASSERT_TRUE(probe.cv.wait_for(lock, std::chrono::seconds(3), [&] {
+      return probe.times.size() >= kSkip + kSamples + 1;
+    }));
+  }
+  ASSERT_TRUE(capture->Stop().ok());
+  std::lock_guard<std::mutex> lock(probe.mutex);
+  int back_to_back = 0;
+  for (std::size_t i = kSkip + 1; i <= kSkip + kSamples; ++i) {
+    if (probe.times[i] - probe.times[i - 1] < std::chrono::milliseconds(3))
+      ++back_to_back;
+  }
+  EXPECT_LE(back_to_back, 2) << "10 ms frames arrived in bursts";
+}
+
 TEST(SdlAudioCaptureTest, ResolvesDefaultIdAndUnambiguousDeviceNames) {
   const std::vector<SdlRecordingDevice> devices = {
       {11, "USB Microphone"},

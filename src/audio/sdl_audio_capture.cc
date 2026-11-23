@@ -65,6 +65,25 @@ SDL_AudioFormat ToSdlFormat(PcmSampleFormat format) {
   return SDL_AUDIO_UNKNOWN;
 }
 
+SDL_AudioStream* OpenRecordingStream(SDL_AudioDeviceID device,
+                                     const SDL_AudioSpec& spec,
+                                     std::size_t frames_per_buffer,
+                                     SDL_AudioStreamCallback callback,
+                                     void* userdata) {
+  const bool user_set =
+      SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES) != nullptr;
+  if (!user_set) {
+    const std::size_t half_frame =
+        std::max<std::size_t>(frames_per_buffer / 2, 1);
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES,
+                std::to_string(half_frame).c_str());
+  }
+  SDL_AudioStream* stream =
+      SDL_OpenAudioDeviceStream(device, &spec, callback, userdata);
+  if (!user_set) SDL_ResetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES);
+  return stream;
+}
+
 class SdlAudioCapture final : public AudioCapture {
  public:
   SdlAudioCapture(PcmSpec spec, std::size_t frames_per_buffer,
@@ -148,9 +167,9 @@ class SdlAudioCapture final : public AudioCapture {
     spec.format = ToSdlFormat(output_spec_.format);
     spec.channels = output_spec_.channels;
     spec.freq = output_spec_.sample_rate_hz;
-    replacement_ = SDL_OpenAudioDeviceStream(
-        id == 0 ? SDL_AUDIO_DEVICE_DEFAULT_RECORDING : id, &spec,
-        &OnAudioAvailable, this);
+    replacement_ = OpenRecordingStream(
+        id == 0 ? SDL_AUDIO_DEVICE_DEFAULT_RECORDING : id, spec,
+        frames_per_buffer_, &OnAudioAvailable, this);
     return replacement_ ? Status::Ok()
                         : SdlError("open replacement microphone");
   }
@@ -438,8 +457,9 @@ Status CreateSdlAudioCapture(const SdlAudioCaptureOptions& options,
     return Status::Error(StatusCode::kUnavailable,
                          "unable to allocate SDL audio capture");
   }
-  SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(
-      device, &spec, &SdlAudioCapture::OnAudioAvailable, implementation);
+  SDL_AudioStream* stream =
+      OpenRecordingStream(device, spec, static_cast<std::size_t>(frames),
+                          &SdlAudioCapture::OnAudioAvailable, implementation);
   if (stream == nullptr) {
     registry_lock.unlock();
     delete implementation;
