@@ -53,6 +53,18 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.5.4" date="2026-11-22">
+      <description>
+        <ul>
+          <li>Runs Roblox 2.748, new installs start on it, and the cursor settings work on it.</li>
+          <li>Settings can pick custom cursors and sounds, and set the present mode and stick deadzone.</li>
+          <li>Controller sticks respond from 5% of their travel instead of 20%.</li>
+          <li>On X11 the pointer stays in the window during a right-click camera drag.</li>
+          <li>Fixes for Wayland freezes, the captcha, the join freeze, numpad slash and Switch buttons.</li>
+          <li>The game world is no longer slightly blurry.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.3" date="2026-11-17">
       <description>
         <ul>
