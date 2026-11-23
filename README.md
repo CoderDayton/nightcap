@@ -294,9 +294,7 @@ lefthook install
 
 ## Known limitations
 
-Nightcap does not currently work with `hardened_malloc`. Using
-`hardened_malloc` may cause Nightcap to fail to start or crash during runtime.
-Run Nightcap without `hardened_malloc` enabled.
+Nightcap is incompatible with hardened_malloc. With it enabled, Nightcap will fail, either during startup or at runtime. Disable hardened_malloc before running Nightcap.
 
 ## License
 
