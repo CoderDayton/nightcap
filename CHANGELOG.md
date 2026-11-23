@@ -18,8 +18,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
-- Roblox 2.748 loads now, so the updater moves to it instead of staying on 2.746. The cursor settings
-  work on it too.
+- Runs Roblox 2.748.1527, and new installs start on it. Before, the updater stayed on 2.746. The cursor
+  settings work on it too.
 - On X11 and XWayland, the pointer no longer leaves the window during a right-click camera drag, and it
   returns to where the drag started.
 - The game world is no longer slightly blurry from Roblox drawing it a pixel smaller than the window.
@@ -30,6 +30,13 @@ Release notes on GitHub are taken from the matching section here.
 - Nintendo Switch Pro Controllers and Joy-Con pairs send A, B, X and Y as printed on the buttons.
 - Controller sticks respond from 5% of their travel instead of 20%, so small aim corrections register.
 - The numpad `/` key opens chat like the main `/` key.
+- The FFlag editor no longer offers texture quality, GPU light culling or `AnimatorThrottle` flags,
+  which Roblox 2.748 removed, and marks them as removed in your setup.
+- The cursor no longer jumps after leaving shift lock.
+- On Wayland, Nightcap picks a swapchain setup that avoids the screen freezes and frame rate drops some
+  people had.
+- Startup and texture loading do less work: the message pump no longer runs flat out, assets are read
+  only when needed, texture overrides stay off without PNGs, and ETC2 uploads are faster.
 - Roblox now trusts the CA bundle set in Settings, so a proxy like mitmproxy works without Fleasion
   instead of showing a Connection Error.
 - On Wayland with NVIDIA, the sign-in screen no longer stays on a blank box until the window is resized.

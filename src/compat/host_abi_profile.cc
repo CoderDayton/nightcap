@@ -8,7 +8,29 @@ namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
-    // Roblox 2.746.1266, the shipped reference. Verified with native mimalloc
+    {"00ce2627eafafafe6257fdf5a544879fa2da7424",
+     {{{0x1ae98ce, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1aed59f, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x1fbae31, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1ae94ea, HostBridgeKind::kAllocate, "allocate"},
+       {0x1b080c9, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1aeea13, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0x70f3838, 0x7737b00, 0x77f6458, 0x400, 0x1ae9c87, 0x1aeda4a,
+      0x808a070, 0x808a100, 0x400000},
+     {0x1ae94ea, 0x1aeea13},
+     0x6ff07c0,
+     2355,
+     {{{3, 4}, {5, 2355}}},
+     2,
+     {{{2, 2355}}},
+     1,
+     6,
+     {0x1fab3fd, 0x7739e48},
+     HostAllocatorStrategy::kNativeMimalloc,
+     false},
+    // Roblox 2.746.1266. Verified with native mimalloc
     // only; host allocator bridges are not supported for this build. Index 5
     // is an added allocator-tracking constructor, so process-load moved to 6.
     {"1f8b6cc6597d6ae49104d32f0a30c79d029f400d",

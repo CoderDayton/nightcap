@@ -40,6 +40,40 @@ TEST(HostAbiProfileTest, RetiredBuildsHaveNoProfile) {
 
 TEST(HostAbiProfileTest, CurrentPayloadHasDerivedBringupBoundaries) {
   const HostAbiProfile* profile =
+      FindHostAbiProfile("00ce2627eafafafe6257fdf5a544879fa2da7424");
+
+  ASSERT_NE(profile, nullptr);
+  ASSERT_EQ(profile->bridge_entry_count, 6U);
+  EXPECT_EQ(profile->bridge_entries[0].rva, 0x1ae98ceU);
+  EXPECT_EQ(profile->bridge_entries[2].kind, HostBridgeKind::kReallocate);
+  EXPECT_EQ(profile->bridge_entries[4].kind, HostBridgeKind::kAlignedAllocate);
+  EXPECT_EQ(profile->bridge_entries[5].rva, 0x1aeea13U);
+  EXPECT_EQ(profile->data_seeds.allocator_object_slot, 0x70f3838U);
+  EXPECT_EQ(profile->data_seeds.arena_table_slot_count, 0x400000U);
+  EXPECT_EQ(profile->native_allocator.allocate, 0x1ae94eaU);
+  EXPECT_EQ(profile->native_allocator.deallocate, 0x1aeea13U);
+  EXPECT_EQ(profile->init_array_offset, 0x6ff07c0U);
+  EXPECT_EQ(profile->init_array_count, 2355U);
+  EXPECT_TRUE(profile->HasValidConstructorRanges());
+  EXPECT_FALSE(profile->AllowsConstructor(2U));
+  EXPECT_TRUE(profile->AllowsConstructor(3U));
+  EXPECT_FALSE(profile->AllowsConstructor(4U));
+  EXPECT_TRUE(profile->AllowsConstructor(2354U));
+  EXPECT_FALSE(profile->AllowsConstructor(2355U));
+  EXPECT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
+  EXPECT_EQ(profile->NativeMimallocConstructorRangeBegin(), 2U);
+  EXPECT_EQ(profile->NativeMimallocConstructorRangeEndExclusive(), 2355U);
+  EXPECT_TRUE(
+      profile->ShouldInitializeNativeMimallocThreadAfterConstructor(6U));
+  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_initializer,
+            0x1fab3fdU);
+  EXPECT_EQ(profile->native_pre_jni_bootstrap.registry_slot, 0x7739e48U);
+  EXPECT_EQ(profile->default_allocator_strategy,
+            HostAllocatorStrategy::kNativeMimalloc);
+}
+
+TEST(HostAbiProfileTest, Payload20836HasDerivedBringupBoundaries) {
+  const HostAbiProfile* profile =
       FindHostAbiProfile("1f8b6cc6597d6ae49104d32f0a30c79d029f400d");
 
   ASSERT_NE(profile, nullptr);

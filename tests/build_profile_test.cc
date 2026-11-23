@@ -21,7 +21,7 @@ namespace {
 
 const std::string kManifestPath =
     std::string(MOCKTAIL_TEST_SOURCE_DIR) + "/config/roblox_compatibility.json";
-constexpr char kCurrentBuildId[] = "1f8b6cc6597d6ae49104d32f0a30c79d029f400d";
+constexpr char kCurrentBuildId[] = "00ce2627eafafafe6257fdf5a544879fa2da7424";
 
 nlohmann::json ReadManifest() {
   nlohmann::json document;
@@ -48,8 +48,8 @@ TEST(BuildProfileTest, FindsCurrentPayloadAsSupported) {
 
   ASSERT_TRUE(result) << result.error;
   ASSERT_TRUE(result.profile.has_value());
-  EXPECT_EQ(result.profile->version_name, "2.746.1266");
-  EXPECT_EQ(result.profile->version_code, 20836);
+  EXPECT_EQ(result.profile->version_name, "2.748.1527");
+  EXPECT_EQ(result.profile->version_code, 22294);
   EXPECT_EQ(result.profile->status, BuildStatus::kSupported);
   EXPECT_TRUE(result.profile->default_allowed);
   EXPECT_FALSE(result.profile->allow_legacy_binary_patches);
@@ -58,17 +58,17 @@ TEST(BuildProfileTest, FindsCurrentPayloadAsSupported) {
   ASSERT_TRUE(
       result.profile->user_game_settings_fullscreen_setter_rva.has_value());
   EXPECT_EQ(*result.profile->user_game_settings_fullscreen_setter_rva,
-            0x5889620U);
+            0x59ec602U);
   ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
   const auto& bridge = *result.profile->fmod_output_device_bridge;
-  EXPECT_EQ(bridge.vtable_rva, 0x69ebad0U);
-  EXPECT_EQ(bridge.string_constructor_rva, 0x1a9781eU);
-  EXPECT_EQ(bridge.count_method_rva, 0x2a44ef2U);
-  EXPECT_EQ(bridge.info_method_rva, 0x2a44f92U);
-  EXPECT_EQ(bridge.current_method_rva, 0x2a44f42U);
-  EXPECT_EQ(bridge.select_method_rva, 0x2a447e8U);
+  EXPECT_EQ(bridge.vtable_rva, 0x6b50230U);
+  EXPECT_EQ(bridge.string_constructor_rva, 0x1af4080U);
+  EXPECT_EQ(bridge.count_method_rva, 0x2ce4c34U);
+  EXPECT_EQ(bridge.info_method_rva, 0x2ce4cd4U);
+  EXPECT_EQ(bridge.current_method_rva, 0x2ce4c84U);
+  EXPECT_EQ(bridge.select_method_rva, 0x2ce452aU);
   ASSERT_TRUE(bridge.has_input_devices());
-  EXPECT_EQ(bridge.input_method_rvas[0], 0x2a45342U);
+  EXPECT_EQ(bridge.input_method_rvas[0], 0x2ce5084U);
   EXPECT_EQ(bridge.current_vtable_index(), 8U);
 }
 

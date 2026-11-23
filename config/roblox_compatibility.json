@@ -76,6 +76,32 @@
         "vtable_layout_version": 2
       },
       "reason": "Derived from 2.742.1059 and verified with two isolated Vulkan canaries and a session to the home screen; exact Build-ID native allocator, constructor replay, fullscreen, and FMOD output-device profile."
+    },
+    {
+      "version_name": "2.748.1527",
+      "version_code": 22294,
+      "abi": "x86_64",
+      "elf_build_id": "00ce2627eafafafe6257fdf5a544879fa2da7424",
+      "status": "supported",
+      "default_allowed": true,
+      "allow_legacy_binary_patches": false,
+      "allow_host_abi_bridges": true,
+      "allow_host_constructor_replay": true,
+      "user_game_settings_fullscreen_setter_rva": "0x59ec602",
+      "fmod_output_device_bridge": {
+        "vtable_rva": "0x6b50230",
+        "string_constructor_rva": "0x1af4080",
+        "count_method_rva": "0x2ce4c34",
+        "info_method_rva": "0x2ce4cd4",
+        "current_method_rva": "0x2ce4c84",
+        "select_method_rva": "0x2ce452a",
+        "input_count_method_rva": "0x2ce5084",
+        "input_info_method_rva": "0x2ce5092",
+        "input_current_method_rva": "0x2ce54ec",
+        "input_select_method_rva": "0x2ce42c8",
+        "vtable_layout_version": 2
+      },
+      "reason": "Derived from 2.746.1266 and verified with two isolated Vulkan canaries and real game sessions; exact Build-ID native allocator, constructor replay, fullscreen, and FMOD output-device profile."
     }
   ]
 }

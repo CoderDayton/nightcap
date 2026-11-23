@@ -1,0 +1,114 @@
+{
+  "derivation_anchors": {
+    "allocator_object_initializer_rva": "0x1f8ec4a",
+    "constructor_rvas": {
+      "2": "0x1ae9105",
+      "3": "0x1ae92a4",
+      "4": "0x1ae929f",
+      "6": "0x1aee76b"
+    },
+    "empty_string_initializer_rva": "0x1f91624",
+    "jni_singleton_initializer_rva": "0x1ae92a4",
+    "signature_version": 1
+  },
+  "elf_build_id": "00ce2627eafafafe6257fdf5a544879fa2da7424",
+  "libroblox_sha256": "ca6822c705888047e066bb9cfbb883cf316cc75a324680aff0cbd2b554771ab4",
+  "payload_id": "22294-00ce2627eafafafe6257fdf5a544879fa2da7424",
+  "profile": {
+    "bridge_entries": [
+      {
+        "kind": "allocate",
+        "label": "small-allocate",
+        "rva": "0x1ae98ce"
+      },
+      {
+        "kind": "usable_size",
+        "label": "usable-size",
+        "rva": "0x1aed59f"
+      },
+      {
+        "kind": "reallocate",
+        "label": "reallocate",
+        "rva": "0x1fbae31"
+      },
+      {
+        "kind": "allocate",
+        "label": "allocate",
+        "rva": "0x1ae94ea"
+      },
+      {
+        "kind": "aligned_allocate",
+        "label": "aligned-allocate-direct",
+        "rva": "0x1b080c9"
+      },
+      {
+        "kind": "free",
+        "label": "free",
+        "rva": "0x1aeea13"
+      }
+    ],
+    "constructor_run_ranges": [
+      {
+        "begin": 3,
+        "end_exclusive": 4
+      },
+      {
+        "begin": 5,
+        "end_exclusive": 2355
+      }
+    ],
+    "data_seeds": {
+      "allocator_object_slot": "0x70f3838",
+      "allocator_thread_initializer": "0x1aeda4a",
+      "arena_guard_slot": "0x808a070",
+      "arena_initializer": "0x1ae9c87",
+      "arena_table_slot": "0x808a100",
+      "arena_table_slot_count": 4194304,
+      "empty_string_slot": "0x7737b00",
+      "jni_singleton_bytes": 1024,
+      "jni_singleton_slot": "0x77f6458"
+    },
+    "default_allocator_strategy": "native_mimalloc",
+    "elf_build_id": "00ce2627eafafafe6257fdf5a544879fa2da7424",
+    "init_array_count": 2355,
+    "init_array_offset": "0x6ff07c0",
+    "native_allocator": {
+      "allocate": "0x1ae94ea",
+      "deallocate": "0x1aeea13"
+    },
+    "native_mimalloc_constructor_run_ranges": [
+      {
+        "begin": 2,
+        "end_exclusive": 2355
+      }
+    ],
+    "native_mimalloc_thread_initializer_after_constructor": 6,
+    "native_pre_jni_bootstrap": {
+      "registry_initializer": "0x1fab3fd",
+      "registry_slot": "0x7739e48"
+    }
+  },
+  "reference": {
+    "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+    "payload_sha256": "d29de17f28c5020741e5607cf690847297c911f564fc7f31a63610c6f5324075"
+  },
+  "runtime_compatibility": {
+    "fmod_output_device_bridge": {
+      "count_method_rva": "0x2ce4c34",
+      "current_method_rva": "0x2ce4c84",
+      "info_method_rva": "0x2ce4cd4",
+      "input_count_method_rva": "0x2ce5084",
+      "input_current_method_rva": "0x2ce54ec",
+      "input_info_method_rva": "0x2ce5092",
+      "input_select_method_rva": "0x2ce42c8",
+      "select_method_rva": "0x2ce452a",
+      "string_constructor_rva": "0x1af4080",
+      "vtable_layout_version": 2,
+      "vtable_rva": "0x6b50230"
+    },
+    "user_game_settings_fullscreen_setter_rva": "0x59ec602"
+  },
+  "schema_version": 1,
+  "version_code": 22294,
+  "version_name": "2.748.1527"
+}
