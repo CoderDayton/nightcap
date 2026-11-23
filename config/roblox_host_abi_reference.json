@@ -1,64 +1,64 @@
 {
   "schema_version": 1,
-  "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
-  "payload_sha256": "d29de17f28c5020741e5607cf690847297c911f564fc7f31a63610c6f5324075",
-  "payload_id": "20836-1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
-  "payload_path": "payloads/20836-1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+  "elf_build_id": "00ce2627eafafafe6257fdf5a544879fa2da7424",
+  "payload_sha256": "ca6822c705888047e066bb9cfbb883cf316cc75a324680aff0cbd2b554771ab4",
+  "payload_id": "22294-00ce2627eafafafe6257fdf5a544879fa2da7424",
+  "payload_path": "payloads/22294-00ce2627eafafafe6257fdf5a544879fa2da7424",
   "reference": {
-    "elf_build_id": "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
-    "payload_sha256": "4892d8949918db453f72d3db64093bc985f3ed6dba870a6381d9f3be3b7a3338"
+    "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+    "payload_sha256": "d29de17f28c5020741e5607cf690847297c911f564fc7f31a63610c6f5324075"
   },
   "profile": {
-    "elf_build_id": "1f8b6cc6597d6ae49104d32f0a30c79d029f400d",
+    "elf_build_id": "00ce2627eafafafe6257fdf5a544879fa2da7424",
     "bridge_entries": [
       {
-        "rva": "0x1a90aca",
+        "rva": "0x1ae98ce",
         "kind": "allocate",
         "label": "small-allocate"
       },
       {
-        "rva": "0x1a93ca3",
+        "rva": "0x1aed59f",
         "kind": "usable_size",
         "label": "usable-size"
       },
       {
-        "rva": "0x1e88acc",
+        "rva": "0x1fbae31",
         "kind": "reallocate",
         "label": "reallocate"
       },
       {
-        "rva": "0x1a9082a",
+        "rva": "0x1ae94ea",
         "kind": "allocate",
         "label": "allocate"
       },
       {
-        "rva": "0x1aaa425",
+        "rva": "0x1b080c9",
         "kind": "aligned_allocate",
         "label": "aligned-allocate-direct"
       },
       {
-        "rva": "0x1a9432b",
+        "rva": "0x1aeea13",
         "kind": "free",
         "label": "free"
       }
     ],
     "data_seeds": {
-      "allocator_object_slot": "0x6f61750",
-      "empty_string_slot": "0x7597500",
-      "jni_singleton_slot": "0x7655e00",
+      "allocator_object_slot": "0x70f3838",
+      "empty_string_slot": "0x7737b00",
+      "jni_singleton_slot": "0x77f6458",
       "jni_singleton_bytes": 1024,
-      "arena_initializer": "0x1a90e83",
-      "allocator_thread_initializer": "0x1b0cb48",
-      "arena_guard_slot": "0x7ee9a30",
-      "arena_table_slot": "0x7ee9ac0",
+      "arena_initializer": "0x1ae9c87",
+      "allocator_thread_initializer": "0x1aeda4a",
+      "arena_guard_slot": "0x808a070",
+      "arena_table_slot": "0x808a100",
       "arena_table_slot_count": 4194304
     },
     "native_allocator": {
-      "allocate": "0x1a9082a",
-      "deallocate": "0x1a9432b"
+      "allocate": "0x1ae94ea",
+      "deallocate": "0x1aeea13"
     },
-    "init_array_offset": "0x6e60720",
-    "init_array_count": 2500,
+    "init_array_offset": "0x6ff07c0",
+    "init_array_count": 2355,
     "constructor_run_ranges": [
       {
         "begin": 3,
@@ -66,32 +66,32 @@
       },
       {
         "begin": 5,
-        "end_exclusive": 2500
+        "end_exclusive": 2355
       }
     ],
     "native_mimalloc_constructor_run_ranges": [
       {
         "begin": 2,
-        "end_exclusive": 2500
+        "end_exclusive": 2355
       }
     ],
     "native_mimalloc_thread_initializer_after_constructor": 6,
     "native_pre_jni_bootstrap": {
-      "registry_initializer": "0x1e89f68",
-      "registry_slot": "0x75997f8"
+      "registry_initializer": "0x1fab3fd",
+      "registry_slot": "0x7739e48"
     },
     "default_allocator_strategy": "native_mimalloc"
   },
   "derivation_anchors": {
     "signature_version": 1,
-    "allocator_object_initializer_rva": "0x1e70b3c",
-    "empty_string_initializer_rva": "0x1e731f7",
-    "jni_singleton_initializer_rva": "0x1a905e4",
+    "allocator_object_initializer_rva": "0x1f8ec4a",
+    "empty_string_initializer_rva": "0x1f91624",
+    "jni_singleton_initializer_rva": "0x1ae92a4",
     "constructor_rvas": {
-      "2": "0x1a9044a",
-      "3": "0x1a905e4",
-      "4": "0x1a90445",
-      "6": "0x1a94083"
+      "2": "0x1ae9105",
+      "3": "0x1ae92a4",
+      "4": "0x1ae929f",
+      "6": "0x1aee76b"
     }
   }
 }

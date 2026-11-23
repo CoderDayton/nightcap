@@ -50,7 +50,7 @@ that isn't shown has a typo or no longer exists.
 
 ## Recommended flags
 
-All of these exist in the Roblox version Nightcap runs (2.742), and each
+All of these exist in the Roblox version Nightcap runs (2.748), and each
 was started in Nightcap to check that it loads cleanly. In-game effects
 weren't tested.
 
@@ -80,7 +80,6 @@ On a weak PC, also add:
 | Flag | What it does | Use it? |
 |---|---|---|
 | `FIntDebugForceMSAASamples` | Smooths jagged edges. `0` off, up to `4`. Higher causes visual bugs. | ✅ |
-| `DFFlagTextureQualityOverrideEnabled` + `DFIntTextureQualityOverride` | Texture sharpness, `0` to `3` (default). Set the first to `true`. | ✅ `2` or lower on 4 GB graphics cards |
 | `FIntFRMMaxGrassDistance` + `FIntFRMMinGrassDistance` | Both `0` removes grass. | ✅ |
 | `FIntGrassMovementReducedMotionFactor` | `0` stops grass swaying. | ✅ |
 | `DFIntDebugFRMQualityLevelOverride` | Locks graphics quality and view distance, `1` (lowest) to `21` (highest). The in-game Graphics Quality slider stops working, neither drops when frame rate does, and dynamic resolution turns off. Try the slider first. | ⚠️ Strong PCs, `10` or higher |
@@ -90,7 +89,6 @@ On a weak PC, also add:
 | `FIntDebugTextureManagerSkipMips` | Drops texture detail to save graphics memory. `1`–`2` is mild. | ⚠️ Low graphics memory |
 | `FIntTerrainArraySliceSize` | Terrain texture detail. Default `256`. Lower uses less memory. | ⚠️ Low graphics memory |
 | `FIntRenderShadowmapBias` | Shifts shadows to hide stripes. Default `75`. | ⚠️ Striped shadows |
-| `FFlagFastGPULightCulling3` | Sorts lights on the GPU instead of the CPU. Only matters with Future lighting and many lights. Off by default. | ⚠️ Weak CPUs |
 | `FIntRenderLocalLightUpdatesMin` + `…Max` | Lights with shadows updated each frame, `1` to `8`. Defaults `2` and `8`. Lower is faster, but lights update slower. | ⚠️ Weak PCs |
 | `DFIntDebugDynamicRenderKiloPixels` | Lowers render resolution. Blurry. | ❌ Last resort |
 | `FFlagDebugGraphicsPreferOpenGL`, `…PreferVulkan` | Nothing useful here. Use **Graphics backend** in settings. | ❌ |
@@ -102,7 +100,7 @@ On a weak PC, also add:
 | `FFlagDebugDisplayFPS` | FPS counter in the top-left. `true` | ✅ |
 | `DFFlagReduceCPUWhenBG` | Less CPU while Roblox is in the background. `true` | ✅ |
 | `DFFlagEnableMeshPreloading`, `DFFlagEnableTexturePreloading`, `DFFlagEnableSoundPreloading` | Loads what a game asks for up front. Less pop-in, longer loading, more RAM. | ⚠️ 16 GB RAM or more |
-| `DFIntAnimatorThrottleMaxFramesToSkip` + `DFIntAnimationLodThrottleMaxFramesToSkip` | `0` stops far animations skipping frames. Defaults `4` and `8`. Costs CPU. | ⚠️ Strong CPUs |
+| `DFIntAnimationLodThrottleMaxFramesToSkip` | `0` stops far animations skipping frames. Default `8`. Costs CPU. | ⚠️ Strong CPUs |
 | `DFIntMaxFrameBufferSize` | Frames queued ahead. Causes stutter or input lag. | ❌ |
 | `DFIntTaskSchedulerTargetFps` | Frame rate limit. A different value stops Nightcap starting. | ❌ Use **Frame rate limit** in settings |
 
@@ -153,7 +151,7 @@ advantage, like camera zoom or desync, can count as cheating.
 
 ## Flags that no longer work
 
-Common in older guides, gone by 2.746. Delete them:
+Common in older guides, gone by 2.748. Delete them:
 
 `FFlagDebugForceFutureIsBrightPhase2`, `FFlagDebugForceFutureIsBrightPhase3`,
 `DFFlagDebugRenderForceTechnologyVoxel`, `FFlagRenderUnifiedLighting10`,
@@ -165,7 +163,9 @@ Common in older guides, gone by 2.746. Delete them:
 `FFlagDebugDisableTelemetry…` flags,
 `DFFlagSkipHighResolutiontextureMipsOnLowMemoryDevices` (and `2`),
 `FFlagSoundsUsePhysicalVelocity`, `FIntRuntimeMaxNumOfThreads`,
-`DFIntAnimationLodThrottlerDistanceMin` and `…Max`.
+`DFIntAnimationLodThrottlerDistanceMin` and `…Max`,
+`DFFlagTextureQualityOverrideEnabled`, `DFIntTextureQualityOverride`,
+`DFIntAnimatorThrottleMaxFramesToSkip`, `FFlagFastGPULightCulling3`.
 
 Nightcap already blocks crash reports and error logs, so the telemetry flags
 aren't needed.

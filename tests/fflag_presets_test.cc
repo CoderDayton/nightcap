@@ -221,7 +221,8 @@ TEST(FFlagPresetsTest, FlagsSetTogetherAreOneRow) {
 }
 
 TEST(FFlagPresetsTest, ALevelSetsEveryFlagOfTheRow) {
-  const CatalogFlag* texture = FindCatalogFlag("DFIntTextureQualityOverride");
+  const CatalogFlag* texture =
+      FindCatalogFlag("FIntRenderLocalLightUpdatesMax");
   ASSERT_NE(texture, nullptr);
   ASSERT_GE(texture->levels.size(), 2u);
   Preset preset;
@@ -285,6 +286,11 @@ TEST(FFlagPresetsTest, RemovedAndUnknownFlagsAreRowsOfTheirOwn) {
   ASSERT_EQ(preset.flags.size(), 1u);
   EXPECT_EQ(preset.flags[0].name, "FFlagSomethingNew");
   EXPECT_TRUE(IsRemovedFlag("FFlagDebugDisableTelemetryEventIngest"));
+  for (std::string_view name :
+       {"DFIntTextureQualityOverride", "DFFlagTextureQualityOverrideEnabled",
+        "DFIntAnimatorThrottleMaxFramesToSkip", "FFlagFastGPULightCulling3"}) {
+    EXPECT_TRUE(IsRemovedFlag(name)) << name;
+  }
 }
 
 TEST(FFlagPresetsTest, NewPresetNamesAreUnique) {
