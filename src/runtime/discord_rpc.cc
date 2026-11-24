@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -421,14 +422,16 @@ bool IsSafeExternalImageUrl(std::string_view url) {
          });
 }
 
-ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
+ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id,
+                                           const std::atomic<bool>* cancel) {
   ResolvedPlaceMetadata metadata;
   if (place_id <= 0) {
     return metadata;
   }
   const std::optional<Json> universe =
       GetHttpsJson("https://apis.roblox.com/universes/v1/places/" +
-                    std::to_string(place_id) + "/universe");
+                       std::to_string(place_id) + "/universe",
+                   cancel);
   if (!universe.has_value() || !universe->contains("universeId")) {
     return metadata;
   }
@@ -451,7 +454,8 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
   }
   const std::optional<Json> game =
       GetHttpsJson("https://games.roblox.com/v1/games?universeIds=" +
-                    std::to_string(universe_id));
+                       std::to_string(universe_id),
+                   cancel);
   if (game.has_value() && game->contains("data") &&
       (*game)["data"].is_array() && !(*game)["data"].empty()) {
     const Json& first = (*game)["data"][0];
@@ -471,7 +475,8 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
   const std::optional<Json> thumbnail = GetHttpsJson(
       "https://thumbnails.roblox.com/v1/games/icons?universeIds=" +
       std::to_string(universe_id) +
-      "&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false");
+      "&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false",
+      cancel);
   if (thumbnail.has_value() && thumbnail->contains("data") &&
       (*thumbnail)["data"].is_array() && !(*thumbnail)["data"].empty()) {
     const Json& first = (*thumbnail)["data"][0];
@@ -615,6 +620,7 @@ class DiscordRpcSession::Impl final {
       request_ = {};
       revision_ = 1;
       stopping_ = false;
+      cancel_lookup_.store(false, std::memory_order_relaxed);
     }
     const int error =
         worker_.Start(&Impl::RunWorker, this, kDiscordWorkerStackBytes);
@@ -637,6 +643,7 @@ class DiscordRpcSession::Impl final {
         return;
       }
       stopping_ = true;
+      cancel_lookup_.store(true, std::memory_order_relaxed);
       condition_.notify_all();
     }
     if (worker_.joinable()) {
@@ -806,7 +813,10 @@ class DiscordRpcSession::Impl final {
 
       if (resolve_metadata_after_publish) {
         const ResolvedPlaceMetadata resolved =
-            ResolvePlaceMetadata(desired.request.place_id);
+            ResolvePlaceMetadata(desired.request.place_id, &cancel_lookup_);
+        if (cancel_lookup_.load(std::memory_order_relaxed)) {
+          continue;
+        }
         CachedPlaceMetadata& cached =
             place_metadata_[desired.request.place_id];
         bool changed = false;
@@ -895,6 +905,7 @@ class DiscordRpcSession::Impl final {
   uint64_t revision_ = 0;
   bool started_ = false;
   bool stopping_ = false;
+  std::atomic<bool> cancel_lookup_{false};
 };
 
 DiscordRpcSession::DiscordRpcSession(DiscordRpcConfig config)

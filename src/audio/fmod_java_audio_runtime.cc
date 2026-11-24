@@ -1,7 +1,10 @@
 #include "mocktail/audio/fmod_java_audio_runtime.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -29,6 +32,7 @@ struct RuntimeCounters {
   std::atomic<std::uint64_t> discarded_buffers{0};
   std::atomic<std::uint64_t> discarded_bytes{0};
   std::atomic<std::uint64_t> rejected_write_calls{0};
+  std::atomic<std::uint64_t> capacity_drops{0};
   std::atomic<std::uint64_t> active_devices{0};
   std::atomic<std::uint64_t> pending_buffers{0};
   std::atomic<std::uint64_t> pending_bytes{0};
@@ -52,10 +56,12 @@ struct BufferSlot {
 struct DeviceState {
   DeviceState(std::unique_ptr<AudioSink> owned_sink, std::size_t frame_bytes,
               std::size_t buffer_size_bytes, std::size_t buffer_count,
+              std::chrono::microseconds buffer_duration,
               std::shared_ptr<RuntimeCounters> runtime_counters)
       : sink(std::move(owned_sink)),
         bytes_per_frame(frame_bytes),
         block_bytes(buffer_size_bytes),
+        block_duration(buffer_duration),
         slot_count(buffer_count),
         slots(new (std::nothrow) BufferSlot[buffer_count]),
         storage(new (std::nothrow)
@@ -88,12 +94,14 @@ struct DeviceState {
   std::unique_ptr<AudioSink> sink;
   const std::size_t bytes_per_frame;
   const std::size_t block_bytes;
+  const std::chrono::microseconds block_duration;
   const std::size_t slot_count;
   const std::unique_ptr<BufferSlot[]> slots;
   const std::unique_ptr<std::uint8_t[]> storage;
   const std::shared_ptr<RuntimeCounters> counters;
   std::size_t pending_buffers = 0;
   std::size_t pending_bytes = 0;
+  bool capacity_stalled = false;
   bool closing = false;
 };
 
@@ -191,7 +199,8 @@ void ReleaseOwnedBuffer(void* context, const void* /*data*/,
 
 Status ValidateRuntimeOptions(const FmodJavaAudioRuntimeOptions& options) {
   if (options.max_devices == 0 || options.max_block_count == 0 ||
-      options.max_buffer_bytes_per_device == 0) {
+      options.max_buffer_bytes_per_device == 0 ||
+      options.write_capacity_wait.count() <= 0) {
     return Status::Error(StatusCode::kInvalidArgument,
                          "FMOD Java audio runtime limits must be non-zero");
   }
@@ -398,8 +407,14 @@ Status FmodJavaAudioRuntime::Init(FmodJavaAudioDeviceIdentity device_identity,
     return reject(status);
   }
 
+  const std::chrono::microseconds block_duration =
+      std::max<std::chrono::microseconds>(
+          std::chrono::milliseconds(1),
+          std::chrono::microseconds(static_cast<std::int64_t>(
+              block_frames * 1000000U /
+              static_cast<std::size_t>(sample_rate_hz))));
   auto device = std::shared_ptr<DeviceState>(new (std::nothrow) DeviceState(
-      std::move(sink), bytes_per_frame, block_bytes, blocks,
+      std::move(sink), bytes_per_frame, block_bytes, blocks, block_duration,
       state->counters));
   if (device == nullptr || !device->InitializeSlots()) {
     if (device != nullptr && device->sink != nullptr) {
@@ -505,13 +520,37 @@ Status FmodJavaAudioRuntime::Write(
           "FMOD Java write exceeds the configured mix block size"));
     }
 
-    // Android AudioTrack.write(byte[], 0, length) uses WRITE_BLOCKING for the
-    // APK's MODE_STREAM device. Preserve that backpressure instead of dropping
-    // a valid FMOD mix block when SDL still owns earlier borrowed buffers.
-    device->capacity_cv.wait(lock, [&device] {
-      return device->closing || device->sink == nullptr ||
-             device->pending_buffers < device->slot_count;
-    });
+    const std::chrono::microseconds capacity_wait =
+        device->capacity_stalled
+            ? std::min<std::chrono::microseconds>(
+                  device->block_duration, state->options.write_capacity_wait)
+            : std::chrono::microseconds(state->options.write_capacity_wait);
+    const bool has_capacity =
+        device->capacity_cv.wait_for(lock, capacity_wait, [&device] {
+          return device->closing || device->sink == nullptr ||
+                 device->pending_buffers < device->slot_count;
+        });
+    device->capacity_stalled = !has_capacity;
+    if (!has_capacity) {
+      lock.unlock();
+      state->counters->discarded_buffers.fetch_add(1,
+                                                   std::memory_order_relaxed);
+      const std::uint64_t dropped =
+          state->counters->capacity_drops.fetch_add(
+              1, std::memory_order_relaxed) +
+          1;
+      state->counters->discarded_bytes.fetch_add(size_bytes,
+                                                 std::memory_order_relaxed);
+      if ((dropped & (dropped - 1)) == 0) {
+        std::fprintf(stderr,
+                     "  [audio] FMOD output stopped taking data for %lld ms; "
+                     "dropped %llu blocks\n",
+                     static_cast<long long>(
+                         state->options.write_capacity_wait.count()),
+                     static_cast<unsigned long long>(dropped));
+      }
+      return Status::Ok();
+    }
     if (device->closing || device->sink == nullptr) {
       return reject(Status::Error(
           StatusCode::kFailedPrecondition,

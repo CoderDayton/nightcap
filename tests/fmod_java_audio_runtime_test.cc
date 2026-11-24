@@ -537,5 +537,69 @@ TEST(FmodJavaAudioRuntimeTest, CloseWakesWriteBlockedByQueueCapacity) {
   EXPECT_EQ(stats.pending_buffers, 0u);
 }
 
+TEST(FmodJavaAudioRuntimeTest, WriteDropsTheBlockWhenTheSinkStopsTakingData) {
+  SinkFactoryProbe probe;
+  FmodJavaAudioRuntimeOptions options = TestOptions(&probe);
+  options.write_capacity_wait = 50ms;
+  FmodJavaAudioRuntime runtime(options);
+  ASSERT_TRUE(runtime.Init(Identity(1), 2, 48000, 4, 1).ok());
+
+  const std::vector<std::uint8_t> samples(16, 12);
+  ASSERT_TRUE(runtime.Write(Identity(1), samples.data(), samples.size()).ok());
+
+  std::promise<Status> write_result;
+  std::future<Status> write_future = write_result.get_future();
+  std::thread writer([&] {
+    write_result.set_value(
+        runtime.Write(Identity(1), samples.data(), samples.size()));
+  });
+  ASSERT_EQ(write_future.wait_for(2s), std::future_status::ready);
+  const Status dropped_write_status = write_future.get();
+  writer.join();
+
+  EXPECT_TRUE(dropped_write_status.ok()) << dropped_write_status.message();
+  const FmodJavaAudioRuntimeStats stats = runtime.GetStats();
+  EXPECT_EQ(stats.submitted_buffers, 1u);
+  EXPECT_EQ(stats.discarded_buffers, 1u);
+  EXPECT_EQ(stats.discarded_bytes, samples.size());
+  EXPECT_EQ(stats.rejected_write_calls, 0u);
+  EXPECT_EQ(stats.pending_buffers, 1u);
+}
+
+TEST(FmodJavaAudioRuntimeTest,
+     StalledWritesKeepTheBlockPaceUntilTheSinkRecovers) {
+  SinkFactoryProbe probe;
+  FmodJavaAudioRuntimeOptions options = TestOptions(&probe);
+  options.write_capacity_wait = 300ms;
+  FmodJavaAudioRuntime runtime(options);
+  ASSERT_TRUE(runtime.Init(Identity(1), 2, 48000, 480, 1).ok());
+  ControlledSink* sink = LastSink(&probe);
+  ASSERT_NE(sink, nullptr);
+
+  const std::vector<std::uint8_t> block(480 * 4, 12);
+  const auto timed_write = [&] {
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_TRUE(runtime.Write(Identity(1), block.data(), block.size()).ok());
+    return std::chrono::steady_clock::now() - started;
+  };
+  ASSERT_TRUE(runtime.Write(Identity(1), block.data(), block.size()).ok());
+  EXPECT_GE(timed_write(), 300ms);
+
+  std::chrono::steady_clock::duration stalled{};
+  for (int write = 0; write < 4; ++write) {
+    stalled += timed_write();
+  }
+  EXPECT_GE(stalled, 40ms);
+  EXPECT_LT(stalled, 250ms);
+
+  sink->ReleaseOne();
+  ASSERT_TRUE(runtime.Write(Identity(1), block.data(), block.size()).ok());
+  EXPECT_GE(timed_write(), 300ms);
+
+  const FmodJavaAudioRuntimeStats stats = runtime.GetStats();
+  EXPECT_EQ(stats.submitted_buffers, 2u);
+  EXPECT_EQ(stats.discarded_buffers, 6u);
+}
+
 }  // namespace
 }  // namespace mocktail::audio

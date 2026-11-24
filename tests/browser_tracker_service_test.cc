@@ -1,12 +1,16 @@
 #include "services/browser_tracker_service.h"
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <nlohmann/json.hpp>
 
 namespace mocktail {
@@ -76,6 +80,33 @@ TEST_F(BrowserTrackerServiceTest, ReusesValidStoredIdentityWithoutNetwork) {
   ASSERT_TRUE(result) << result.error;
   EXPECT_EQ(result.status, BrowserTrackerStatus::kExisting);
   EXPECT_EQ(result.browser_tracker_id, "123456");
+  EXPECT_EQ(http.post_count, 0);
+}
+
+TEST_F(BrowserTrackerServiceTest, GivesUpOnAnAppStorageLockHeldElsewhere) {
+  std::filesystem::create_directories(Storage().parent_path());
+  std::ofstream(Storage()) << R"({"BrowserTrackerId":"123456"})";
+  std::ofstream(Cookies()) << ".ROBLOSECURITY=secret";
+  const std::string lock_path = Storage().string() + ".lock";
+  const int holder = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  ASSERT_GE(holder, 0);
+  ASSERT_EQ(flock(holder, LOCK_EX), 0);
+  FakeHttpClient http;
+
+  std::future<BrowserTrackerResult> pending = std::async(
+      std::launch::async, [&] {
+        return BrowserTrackerService(http).EnsureInitialized(Storage(),
+                                                             Cookies(), true);
+      });
+  const bool finished =
+      pending.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  close(holder);
+  ASSERT_TRUE(finished);
+  const BrowserTrackerResult result = pending.get();
+
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.error,
+            "appStorage is locked by another process; gave up after 2 s");
   EXPECT_EQ(http.post_count, 0);
 }
 

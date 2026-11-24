@@ -22,6 +22,9 @@ std::optional<bool> AskYesNo(const Environment& environment,
                              std::string_view decline,
                              std::string_view accept);
 
+void PrepareSignalSafeFailureMessage(std::string_view message);
+void SendPreparedFailureMessage();
+
 // The helper starts before guest threads, so it can report errors and fatal
 // exits even when the main process can no longer show a dialog.
 class FailureDialogMonitor final {
@@ -41,6 +44,7 @@ class FailureDialogMonitor final {
   void SetMessage(std::string_view message);
   // Adds a button to the failure dialog that opens this folder.
   void SetLogFolder(const std::filesystem::path& folder);
+  void SetSessionLog(const std::filesystem::path& log);
   void MarkSuccessful();
 
  private:

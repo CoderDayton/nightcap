@@ -224,6 +224,13 @@ target_link_libraries(failure_dialog_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(jni_onload_watchdog_test jni_onload_watchdog_test.cc)
+target_link_libraries(jni_onload_watchdog_test PRIVATE
+  mocktail_jni_onload_watchdog
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(jni_onload_watchdog_test)
+
 add_executable(settings_launcher_test settings_launcher_test.cc)
 target_link_libraries(settings_launcher_test PRIVATE
   Mocktail::FailureDialog
@@ -1413,6 +1420,7 @@ gtest_discover_tests(support_bundle_runtime_test)
 gtest_discover_tests(vulkan_icd_selection_test)
 gtest_discover_tests(session_log_test)
 gtest_discover_tests(failure_dialog_test)
+gtest_discover_tests(jni_onload_watchdog_test)
 gtest_discover_tests(settings_launcher_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)

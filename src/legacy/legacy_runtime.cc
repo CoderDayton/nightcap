@@ -56,6 +56,7 @@
 #include "compat/host_abi_profile.h"
 #include "compat/host_allocator_bridge.h"
 #include "jnivm/jnivm.h"
+#include "legacy/jni_onload_watchdog.h"
 #include "legacy/legacy_runtime.h"
 #include "libc_shim/libc_shim.h"
 #include "linker/linker.h"
@@ -67,6 +68,7 @@
 #include "runtime/display_size.h"
 #include "runtime/environment.h"
 #include "runtime/discord_rpc.h"
+#include "runtime/failure_dialog.h"
 #include "runtime/server_info_overlay.h"
 #include "runtime/luau_codegen_switch.h"
 #include "runtime/jnivm_platform_web_callbacks.h"
@@ -135,11 +137,7 @@ void RestoreGameSessionJniEnvironment(void* context) {
 
 volatile uintptr_t g_libroblox_base = 0;
 extern "C" void* mocktail_gameactivity_on_trim_memory_native;
-volatile sig_atomic_t g_jni_onload_in_progress = 0;
-volatile sig_atomic_t g_jni_onload_timings_printed = 0;
 volatile sig_atomic_t g_jni_onload_soft_timeout = 0;
-volatile sig_atomic_t g_jni_onload_jmp_armed = 0;
-thread_local sigjmp_buf g_jni_onload_jmp_buf;
 thread_local sigjmp_buf g_init_with_params_jmp_buf;
 thread_local volatile sig_atomic_t g_init_with_params_recovery_in_progress = 0;
 thread_local sigjmp_buf g_start_app_with_params_jmp_buf;
@@ -1447,76 +1445,6 @@ void PrintStage(int stage, const char* description) {
             << std::flush;
 }
 
-
-bool IsUnsafeSoftTimeoutModule(void* rip) {
-  Dl_info dlinfo;
-  if (rip == nullptr || dladdr(rip, &dlinfo) == 0 || dlinfo.dli_fname == nullptr) {
-    return true;
-  }
-  const char* module = dlinfo.dli_fname;
-  return std::strstr(module, "libc.so") != nullptr ||
-         std::strstr(module, "libpthread.so") != nullptr ||
-         std::strstr(module, "ld-linux") != nullptr ||
-         std::strstr(module, "libstdc++") != nullptr ||
-         std::strstr(module, "libgcc_s") != nullptr;
-}
-
-void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
-  static_cast<void>(info);
-  auto* uc = static_cast<ucontext_t*>(context);
-#if defined(__x86_64__)
-  auto rip = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]) : 0;
-  auto rsp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RSP]) : 0;
-  auto rbp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RBP]) : 0;
-  auto rax = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RAX]) : 0;
-  const char* regs_format =
-      "  [timeout] RIP=0x%016llx RSP=0x%016llx RBP=0x%016llx "
-      "RAX=0x%016llx\n";
-#elif defined(__aarch64__)
-  auto rip = uc ? static_cast<uintptr_t>(uc->uc_mcontext.pc) : 0;
-  auto rsp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.sp) : 0;
-  auto rbp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.regs[29]) : 0;
-  auto rax = uc ? static_cast<uintptr_t>(uc->uc_mcontext.regs[0]) : 0;
-  const char* regs_format =
-      "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
-      "X0=0x%016llx\n";
-#else
-  static_cast<void>(uc);
-  uintptr_t rip = 0, rsp = 0, rbp = 0, rax = 0;
-  const char* regs_format =
-      "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
-      "X0=0x%016llx\n";
-#endif
-  char regs_msg[192];
-  int len = std::snprintf(
-      regs_msg, sizeof(regs_msg), regs_format,
-      static_cast<unsigned long long>(rip), static_cast<unsigned long long>(rsp),
-      static_cast<unsigned long long>(rbp), static_cast<unsigned long long>(rax));
-  write(2, regs_msg, static_cast<size_t>(len));
-
-  if (g_jni_onload_in_progress == 0 || g_jni_onload_timings_printed != 0) {
-    return;
-  }
-  g_jni_onload_timings_printed = 1;
-
-  const char prefix[] =
-      "  [timeout] JNI_OnLoad still in progress\n";
-  write(2, prefix, sizeof(prefix) - 1);
-  if (g_jni_onload_soft_timeout != 0 && g_jni_onload_jmp_armed != 0 &&
-      !IsUnsafeSoftTimeoutModule(reinterpret_cast<void*>(rip))) {
-    g_jni_onload_jmp_armed = 0;
-    g_jni_onload_in_progress = 0;
-    siglongjmp(g_jni_onload_jmp_buf, 1);
-    return;
-  }
-  if (g_jni_onload_soft_timeout != 0 && g_jni_onload_jmp_armed != 0) {
-    const char skip_msg[] =
-        "  [timeout] soft timeout skipped for unsafe module; waiting\n";
-    write(2, skip_msg, sizeof(skip_msg) - 1);
-    return;
-  }
-  _exit(124);
-}
 
 
 void PublishCurrentJniEnv(JNIEnv* env) {
@@ -5130,16 +5058,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               << std::flush;
     window_initialised = mocktail::window::Init(win_w, win_h, win_title);
     if (!window_initialised) {
-      if (IsEnabled("MOCKTAIL_SOBER_MODE")) {
-        std::cerr << "  [window] FATAL: Sober-style startup requires a "
-                  << "working SDL video device. Check DISPLAY/WAYLAND_DISPLAY "
-                  << "and SDL3.\n"
-                  << std::flush;
-        return EXIT_FAILURE;
-      }
-      std::cerr
-          << "  [window] WARNING: window init failed, continuing headless\n"
-          << std::flush;
+      std::cerr << "[FATAL] The game window could not be opened. Check that "
+                   "DISPLAY or WAYLAND_DISPLAY is set and the graphics driver "
+                   "works; the [window] lines above have SDL's error.\n"
+                << std::flush;
+      return EXIT_FAILURE;
     } else {
       std::cout << "  [window] Window ready; waiting for Roblox frames\n"
                 << std::flush;
@@ -6142,7 +6065,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   JavaVM* raw_vm = jni_vm->GetJavaVM();
   PublishCurrentJniEnv(jni_vm->GetJNIEnv());
   int jni_timeout_ms =
-      GetEnvInt("MOCKTAIL_JNI_ONLOAD_TIMEOUT_MS", 3000);
+      GetEnvInt("MOCKTAIL_JNI_ONLOAD_TIMEOUT_MS", 30000);
   bool soft_timeout_enabled = IsEnabled("MOCKTAIL_JNI_ONLOAD_SOFT_TIMEOUT");
   bool soft_timeout_forced =
       IsEnabled("MOCKTAIL_JNI_ONLOAD_SOFT_TIMEOUT_FORCE");
@@ -6156,6 +6079,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   g_jni_onload_soft_timeout = soft_timeout_enabled && soft_timeout_forced;
 
   jint jni_version = JNI_ERR;
+  const auto jni_onload_started = std::chrono::steady_clock::now();
   if (jni_timeout_ms > 0 && g_jni_onload_soft_timeout != 0) {
     std::cout << "  [jvm] JNI_OnLoad soft timeout watcher armed: "
               << jni_timeout_ms << "ms\n"
@@ -6168,10 +6092,20 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       std::cout << "  [jvm] JNI_OnLoad worker thread creation failed: "
                 << create_result << "\n"
                 << std::flush;
+      const mocktail::legacy::JniOnLoadWatchdog watchdog(
+          jni_timeout_ms, mocktail::legacy::kJniOnLoadSlowWarningMs);
       jni_version = jni_onload(raw_vm, nullptr);
     } else {
-      const mocktail::runtime::OwnedPthreadWaitResult wait_result =
-          onload_thread.WaitFor(jni_timeout_ms, 10);
+      const int warn_ms =
+          std::min(mocktail::legacy::kJniOnLoadSlowWarningMs, jni_timeout_ms);
+      mocktail::runtime::OwnedPthreadWaitResult wait_result =
+          onload_thread.WaitFor(warn_ms, 10);
+      if (!wait_result.joined() && warn_ms < jni_timeout_ms) {
+        std::cerr << mocktail::legacy::JniOnLoadSlowWarning(warn_ms,
+                                                            jni_timeout_ms)
+                  << std::flush;
+        wait_result = onload_thread.WaitFor(jni_timeout_ms - warn_ms, 10);
+      }
       if (wait_result.joined()) {
         jni_version = async_context.result;
       } else {
@@ -6190,34 +6124,29 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   << " error=" << cancel_result.wait.platform_error
                   << "; terminating without RAII unwind\n"
                   << std::flush;
+        mocktail::runtime::PrepareSignalSafeFailureMessage(
+            mocktail::legacy::JniOnLoadTimeoutDialogMessage(jni_timeout_ms));
+        mocktail::runtime::SendPreparedFailureMessage();
         std::_Exit(EXIT_FAILURE);
       }
     }
   } else {
     if (jni_timeout_ms > 0) {
-      g_jni_onload_in_progress = 1;
-      g_jni_onload_timings_printed = 0;
-      std::cout << "  [jvm] JNI_OnLoad timeout watchdog armed: "
-                << jni_timeout_ms << "ms\n"
+      std::cout << "  [jvm] JNI_OnLoad watchdog armed: " << jni_timeout_ms
+                << "ms\n"
                 << std::flush;
-      struct sigaction action;
-      action.sa_sigaction = JniOnLoadTimeoutAlarm;
-      action.sa_flags = SA_SIGINFO | SA_RESETHAND;
-      sigemptyset(&action.sa_mask);
-      sigaction(SIGALRM, &action, nullptr);
-      alarm((jni_timeout_ms + 999) / 1000);
     }
-
+    const mocktail::legacy::JniOnLoadWatchdog watchdog(
+        jni_timeout_ms, mocktail::legacy::kJniOnLoadSlowWarningMs);
     jni_version = jni_onload(raw_vm, nullptr);
-
-    if (jni_timeout_ms > 0) {
-      g_jni_onload_in_progress = 0;
-      g_jni_onload_jmp_armed = 0;
-      alarm(0);
-    }
   }
+  const long long jni_onload_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - jni_onload_started)
+          .count();
 
-  std::cout << "  JNI_OnLoad returned. Requested JNI version: 0x"
+  std::cout << "  JNI_OnLoad returned after " << jni_onload_ms
+            << " ms. Requested JNI version: 0x"
             << std::hex << std::setw(8) << std::setfill('0') << jni_version
             << std::dec << '\n';
 
@@ -7347,6 +7276,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   bool game_surface_events_completed = true;
   bool input_shutdown_completed = window_input_runtime == nullptr;
   bool resize_readiness_completed = true;
+  bool window_quit_failed = false;
   if (mocktail::window::IsInitialised()) {
     std::cout << "  [main] engine pump rest: "
               << mocktail::runtime::EnginePumpRestModeName(
@@ -7650,6 +7580,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       std::cerr << "[FATAL] Real resize readiness failed: "
                 << failure.message() << '\n';
     }
+    const mocktail::Status window_quit_status =
+        mocktail::window::QuitFailureStatus();
+    if (!window_quit_status.ok()) {
+      window_quit_failed = true;
+      std::cerr << "[FATAL] " << window_quit_status.message() << '\n';
+    }
     const mocktail::Status audio_shutdown_status =
         dependencies.ShutdownBeforePlatform();
     if (!audio_shutdown_status.ok()) {
@@ -7698,6 +7634,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   if (is_headless) {
     std::cerr << "[FATAL] Headless LuaApp readiness evidence is not wired into "
                  "the supported runtime yet.\n";
+    return EXIT_FAILURE;
+  }
+  if (window_quit_failed) {
     return EXIT_FAILURE;
   }
   if (!real_frame_presented) {
