@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_AUDIO_FMOD_JAVA_AUDIO_RUNTIME_H_
 #define MOCKTAIL_AUDIO_FMOD_JAVA_AUDIO_RUNTIME_H_
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,7 @@ struct FmodJavaAudioRuntimeOptions {
   std::uint32_t max_devices = 8;
   std::uint32_t max_block_count = 256;
   std::size_t max_buffer_bytes_per_device = 64U * 1024U * 1024U;
+  std::chrono::milliseconds write_capacity_wait{500};
 };
 
 // Contains no PCM, JNI identities, or guest pointers.
