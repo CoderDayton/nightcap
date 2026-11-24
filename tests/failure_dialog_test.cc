@@ -1,4 +1,5 @@
 #include "runtime/failure_dialog.h"
+#include "runtime/failure_reason.h"
 
 #include <gtest/gtest.h>
 #include <signal.h>
@@ -197,6 +198,80 @@ TEST(FailureDialogTest, MonitorReportsNormalFailureOnScopeExit) {
   EXPECT_EQ(
       ReadLines(helper.capture()),
       std::vector<std::string>({"MStartup failed.", "MRuntime failed.", "F"}));
+}
+
+TEST(FailureDialogTest, MonitorPassesTheSessionLogForTheDetails) {
+  FakeDialogHelper helper;
+  const MapEnvironment environment = DialogEnvironment(helper);
+  {
+    FailureDialogMonitor monitor =
+        FailureDialogMonitor::Start(environment, "Startup failed.");
+    ASSERT_TRUE(monitor.active());
+    monitor.SetSessionLog("/state/mocktail/logs/sessions/now.log");
+  }
+
+  EXPECT_EQ(ReadLines(helper.capture()),
+            std::vector<std::string>(
+                {"MStartup failed.", "G/state/mocktail/logs/sessions/now.log",
+                 "F"}));
+}
+
+TEST(FailureReasonTest, NamesTheCrashAndTheFatalErrorInLogOrder) {
+  const std::string log =
+      "[stage 6] Invoking Roblox startup entry points\n"
+      "[crash] guest installed a SIGSEGV handler; it runs after the report\n"
+      "[I/Roblox] Warning noise\n"
+      "[crash] SIGSEGV (code 1) at 0x10 in thread \"RenderJob\" tid 42\n"
+      "[crash] pc libroblox.so+0x2c18f35\n"
+      "[crash] #0 libroblox.so+0x2c18f35\n"
+      "[FATAL] Windowed runtime exited without a real presented frame.\r\n"
+      "[diagnostic] stage=shutdown\n";
+
+  EXPECT_EQ(FailureReasonFromLog(log),
+            "SIGSEGV (code 1) at 0x10 in thread \"RenderJob\" tid 42\n"
+            "pc libroblox.so+0x2c18f35\n"
+            "Windowed runtime exited without a real presented frame.");
+}
+
+TEST(FailureReasonTest, NamesMemoryLimitsCpuLimitsAndAssertions) {
+  EXPECT_EQ(FailureReasonFromLog("[memory] limit exceeded: RSS+swap=9000 MiB, "
+                                 "limit=8192 MiB; terminating Mocktail with "
+                                 "exit 137\n"),
+            "Memory limit exceeded: RSS+swap=9000 MiB, limit=8192 MiB; "
+            "terminating Mocktail with exit 137");
+  EXPECT_EQ(FailureReasonFromLog("\n[crash] SIGXCPU signal=24 code=0\n"),
+            "SIGXCPU signal=24 code=0");
+  EXPECT_EQ(FailureReasonFromLog("Bionic assertion failed: a.cc:3: x != 0\n"),
+            "Bionic assertion failed: a.cc:3: x != 0");
+}
+
+TEST(FailureReasonTest, SkipsNoiseAndKeepsTheFirstFewReasons) {
+  EXPECT_EQ(FailureReasonFromLog("[crash] reporter unavailable\n"
+                                 "[crash] pc libroblox.so+0x1\n"
+                                 "  [window] FATAL in prose\n"),
+            "");
+  EXPECT_EQ(FailureReasonFromLog("[FATAL] same\n[FATAL] same\n[FATAL] b\n"
+                                 "[FATAL] c\n[FATAL] d\n[FATAL] e\n"),
+            "same\nb\nc\nd");
+  const std::string long_reason =
+      FailureReasonFromLog("[FATAL] " + std::string(400, 'x') + "\n");
+  EXPECT_EQ(long_reason, std::string(300, 'x') + "...");
+}
+
+TEST(FailureReasonTest, ReadsOnlyWholeLinesFromTheEndOfTheLog) {
+  char pattern[] = "/tmp/mocktail_failure_reason_XXXXXX";
+  ASSERT_NE(mkdtemp(pattern), nullptr);
+  const std::filesystem::path log = std::filesystem::path(pattern) / "s.log";
+  std::ofstream(log) << "[FATAL] early\n" << std::string(64, 'n') << '\n'
+                     << "[FATAL] late\n";
+  const std::string tail =
+      ReadSettledLogTail(log, 40, std::chrono::milliseconds(1),
+                         std::chrono::milliseconds(5));
+  EXPECT_EQ(tail, "[FATAL] late\n");
+  EXPECT_EQ(ReadSettledLogTail(std::filesystem::path(pattern) / "missing"),
+            "");
+  std::error_code error;
+  std::filesystem::remove_all(pattern, error);
 }
 
 TEST(FailureDialogTest, SignalHandlerCanSetTheMessageBeforeExiting) {

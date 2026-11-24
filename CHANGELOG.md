@@ -8,6 +8,8 @@ Release notes on GitHub are taken from the matching section here.
 ### Changed
 
 - The app icon has a bigger center hole, and the main window uses the same icon as Settings.
+- The error dialog now shows what went wrong, like the crash location or the fatal error from the log,
+  instead of only saying there was an internal error. The text can be selected and copied.
 
 ### Fixed
 
@@ -19,6 +21,8 @@ Release notes on GitHub are taken from the matching section here.
 - Quitting during a game join no longer waits up to 10 seconds for the Discord status lookups.
 - Slow disks no longer make Nightcap quit at startup. Roblox's library gets 30 seconds to load instead of 3.
   The log shows how long it took. If it still runs out of time, the error dialog says how to allow more.
+- If the game window can't open or can't rebuild its surface, Nightcap stops with an error saying why.
+  Before, the window could close without any message.
 
 ## [0.5.4] - 2026-11-22
 

@@ -958,8 +958,11 @@ int main(int argc, char* argv[]) {
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog = mocktail::runtime::FailureDialogMonitor::Start(
         environment,
-        "Nightcap could not start Roblox because of an internal error.");
+        "Nightcap could not start Roblox.");
     failure_dialog.SetLogFolder(paths.logs_root() / "sessions");
+    if (session_log) {
+      failure_dialog.SetSessionLog(session_log.path());
+    }
   }
   if (use_memory_limit) {
     if (!memory_limit_watchdog.Start(memory_limit_bytes, &command_line_error)) {
@@ -1014,9 +1017,7 @@ int main(int argc, char* argv[]) {
       std::cerr << '\n';
       return EXIT_FAILURE;
     }
-    failure_dialog.SetMessage(
-        "Nightcap could not finish starting Roblox because of an internal "
-        "error.");
+    failure_dialog.SetMessage("Nightcap could not finish starting Roblox.");
     background_update.Start(environment, paths, std::chrono::minutes(30),
                             mocktail::runtime::QueryRobloxUpgradeAction);
   }
@@ -1136,7 +1137,7 @@ int main(int argc, char* argv[]) {
   }
   if (!mocktail::runtime::ExportRuntimeConfigEnvironment(runtime_config.config,
                                                          &command_line_error)) {
-    std::cerr << command_line_error << '\n';
+    std::cerr << "[FATAL] " << command_line_error << '\n';
     return EXIT_FAILURE;
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
@@ -1520,8 +1521,7 @@ int main(int argc, char* argv[]) {
     }
     UpdateAppImageMenu(environment, paths);
   }
-  failure_dialog.SetMessage(
-      "Roblox closed unexpectedly because of an internal error.");
+  failure_dialog.SetMessage("Roblox closed unexpectedly.");
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kNativeRuntime);

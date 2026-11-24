@@ -44,6 +44,7 @@ class FailureDialogMonitor final {
   void SetMessage(std::string_view message);
   // Adds a button to the failure dialog that opens this folder.
   void SetLogFolder(const std::filesystem::path& folder);
+  void SetSessionLog(const std::filesystem::path& log);
   void MarkSuccessful();
 
  private:

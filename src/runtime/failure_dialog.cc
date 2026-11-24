@@ -30,6 +30,7 @@ constexpr char kMessagePacket = 'M';
 constexpr char kFailurePacket = 'F';
 constexpr char kSuccessPacket = 'S';
 constexpr char kLogFolderPacket = 'L';
+constexpr char kSessionLogPacket = 'G';
 constexpr std::size_t kMaximumMessageBytes = 2048;
 
 std::atomic<int> g_monitor_socket{-1};
@@ -263,6 +264,10 @@ void FailureDialogMonitor::SetMessage(std::string_view message) {
 
 void FailureDialogMonitor::SetLogFolder(const std::filesystem::path& folder) {
   if (!folder.empty()) Send(kLogFolderPacket, folder.string());
+}
+
+void FailureDialogMonitor::SetSessionLog(const std::filesystem::path& log) {
+  if (!log.empty()) Send(kSessionLogPacket, log.string());
 }
 
 void FailureDialogMonitor::Send(char kind, std::string_view payload) {

@@ -374,6 +374,7 @@ target_link_libraries(mocktail_runtime PRIVATE
 # Keep GTK out of the process that loads Android libraries.
 add_library(mocktail_failure_dialog_runtime STATIC
   src/runtime/failure_dialog.cc
+  src/runtime/failure_reason.cc
   src/runtime/helper_program.cc
   src/runtime/settings_launcher.cc
 )
@@ -388,7 +389,10 @@ add_executable(mocktail_failure_dialog
   src/ui/mocktail_failure_dialog.cc
 )
 target_include_directories(mocktail_failure_dialog PRIVATE include)
-target_link_libraries(mocktail_failure_dialog PRIVATE PkgConfig::LIBADWAITA)
+target_link_libraries(mocktail_failure_dialog PRIVATE
+  mocktail_failure_dialog_runtime
+  PkgConfig::LIBADWAITA
+)
 mocktail_apply_compile_options(mocktail_failure_dialog)
 
 add_library(mocktail_settings_model STATIC

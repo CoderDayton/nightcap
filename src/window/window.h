@@ -56,6 +56,7 @@ Status RecordResizeReadinessSurfaceCommit(const WindowSurfaceEvent& event);
 // Completes the optional resize gate after Roblox reaches Stopped.
 Status StopResizeReadiness();
 Status ResizeReadinessCompletionStatus();
+Status QuitFailureStatus();
 
 struct WindowViewportSnapshot {
   int logical_width = 0;

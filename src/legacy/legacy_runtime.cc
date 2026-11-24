@@ -5058,16 +5058,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               << std::flush;
     window_initialised = mocktail::window::Init(win_w, win_h, win_title);
     if (!window_initialised) {
-      if (IsEnabled("MOCKTAIL_SOBER_MODE")) {
-        std::cerr << "  [window] FATAL: Sober-style startup requires a "
-                  << "working SDL video device. Check DISPLAY/WAYLAND_DISPLAY "
-                  << "and SDL3.\n"
-                  << std::flush;
-        return EXIT_FAILURE;
-      }
-      std::cerr
-          << "  [window] WARNING: window init failed, continuing headless\n"
-          << std::flush;
+      std::cerr << "[FATAL] The game window could not be opened. Check that "
+                   "DISPLAY or WAYLAND_DISPLAY is set and the graphics driver "
+                   "works; the [window] lines above have SDL's error.\n"
+                << std::flush;
+      return EXIT_FAILURE;
     } else {
       std::cout << "  [window] Window ready; waiting for Roblox frames\n"
                 << std::flush;
@@ -7281,6 +7276,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   bool game_surface_events_completed = true;
   bool input_shutdown_completed = window_input_runtime == nullptr;
   bool resize_readiness_completed = true;
+  bool window_quit_failed = false;
   if (mocktail::window::IsInitialised()) {
     std::cout << "  [main] engine pump rest: "
               << mocktail::runtime::EnginePumpRestModeName(
@@ -7584,6 +7580,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       std::cerr << "[FATAL] Real resize readiness failed: "
                 << failure.message() << '\n';
     }
+    const mocktail::Status window_quit_status =
+        mocktail::window::QuitFailureStatus();
+    if (!window_quit_status.ok()) {
+      window_quit_failed = true;
+      std::cerr << "[FATAL] " << window_quit_status.message() << '\n';
+    }
     const mocktail::Status audio_shutdown_status =
         dependencies.ShutdownBeforePlatform();
     if (!audio_shutdown_status.ok()) {
@@ -7632,6 +7634,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   if (is_headless) {
     std::cerr << "[FATAL] Headless LuaApp readiness evidence is not wired into "
                  "the supported runtime yet.\n";
+    return EXIT_FAILURE;
+  }
+  if (window_quit_failed) {
     return EXIT_FAILURE;
   }
   if (!real_frame_presented) {

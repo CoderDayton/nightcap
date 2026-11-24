@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "mocktail/platform/application_id.h"
+#include "runtime/failure_reason.h"
 
 namespace {
 
@@ -18,9 +19,9 @@ constexpr char kFailurePacket = 'F';
 constexpr char kSuccessPacket = 'S';
 constexpr char kProgressPacket = 'P';
 constexpr char kLogFolderPacket = 'L';
+constexpr char kSessionLogPacket = 'G';
 constexpr std::size_t kMaximumPacketBytes = 4096;
-constexpr std::string_view kDefaultMessage =
-    "Nightcap closed unexpectedly because of an internal error.";
+constexpr std::string_view kDefaultMessage = "Nightcap closed unexpectedly.";
 constexpr std::string_view kDefaultProgressMessage = "Installing Roblox...";
 // Keep AdwAlertDialog semantics while preventing host GTK themes such as
 // Breeze from replacing the compact dark crash-card appearance.
@@ -61,6 +62,14 @@ window.dialog-window.alert {
 .alert .body {
   color: rgba(255, 255, 255, 0.92);
   font-size: 14px;
+}
+
+.alert .mocktail-failure-details {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  background-color: #2b2c30;
+  border-radius: 10px;
+  padding: 10px 12px;
 }
 
 .alert .response-area {
@@ -232,7 +241,8 @@ void OnDialogResponse(AdwAlertDialog*, const char* response,
 int ShowDialog(std::string_view requested_message,
                const char* heading = "Nightcap",
                const char* response_label = "Close",
-               std::string_view log_folder = {}) {
+               std::string_view log_folder = {},
+               std::string_view details = {}) {
   if (!InitializeUi(UiStyle::kDialog)) {
     return EXIT_FAILURE;
   }
@@ -247,6 +257,21 @@ int ShowDialog(std::string_view requested_message,
   AdwAlertDialog* alert = ADW_ALERT_DIALOG(dialog);
   // The narrow layout caps the width near 370 px and ignores the setting.
   adw_alert_dialog_set_prefer_wide_layout(alert, TRUE);
+  if (!details.empty()) {
+    gchar* details_text = g_utf8_make_valid(
+        details.data(), static_cast<gssize>(details.size()));
+    GtkWidget* details_label = gtk_label_new(details_text);
+    g_free(details_text);
+    GtkLabel* label = GTK_LABEL(details_label);
+    gtk_label_set_selectable(label, TRUE);
+    gtk_label_set_wrap(label, TRUE);
+    gtk_label_set_wrap_mode(label, PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_xalign(label, 0.0f);
+    gtk_widget_set_focusable(details_label, FALSE);
+    gtk_widget_add_css_class(details_label, "monospace");
+    gtk_widget_add_css_class(details_label, "mocktail-failure-details");
+    adw_alert_dialog_set_extra_child(alert, details_label);
+  }
   if (!state.log_folder.empty() &&
       g_utf8_validate(state.log_folder.c_str(), -1, nullptr)) {
     adw_alert_dialog_add_response(alert, "logs", "Open Log Folder");
@@ -429,9 +454,17 @@ int MonitorProgress() {
   return EXIT_SUCCESS;
 }
 
+int ShowFailure(const std::string& message, const std::string& log_folder,
+                const std::string& session_log) {
+  const std::string details = mocktail::runtime::FailureReasonFromLog(
+      mocktail::runtime::ReadSettledLogTail(session_log));
+  return ShowDialog(message, "Nightcap", "Close", log_folder, details);
+}
+
 int MonitorParent() {
   std::string message(kDefaultMessage);
   std::string log_folder;
+  std::string session_log;
   char packet[kMaximumPacketBytes];
   while (true) {
     const ssize_t received = recv(STDIN_FILENO, packet, sizeof(packet), 0);
@@ -439,7 +472,7 @@ int MonitorParent() {
       continue;
     }
     if (received <= 0) {
-      return ShowDialog(message, "Nightcap", "Close", log_folder);
+      return ShowFailure(message, log_folder, session_log);
     }
     const std::string_view payload(packet + 1,
                                    static_cast<std::size_t>(received - 1));
@@ -450,8 +483,11 @@ int MonitorParent() {
       case kLogFolderPacket:
         log_folder.assign(payload);
         break;
+      case kSessionLogPacket:
+        session_log.assign(payload);
+        break;
       case kFailurePacket:
-        return ShowDialog(message, "Nightcap", "Close", log_folder);
+        return ShowFailure(message, log_folder, session_log);
       case kSuccessPacket:
         return EXIT_SUCCESS;
       default:
