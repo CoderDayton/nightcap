@@ -632,6 +632,16 @@ target_link_libraries(mocktail_bionic_abi_exports PRIVATE
   Threads::Threads
 )
 
+add_library(mocktail_jni_onload_watchdog STATIC
+  src/legacy/jni_onload_watchdog.cc
+)
+target_include_directories(mocktail_jni_onload_watchdog PUBLIC include)
+target_link_libraries(mocktail_jni_onload_watchdog PUBLIC
+  mocktail_failure_dialog_runtime
+  Threads::Threads
+)
+mocktail_apply_compile_options(mocktail_jni_onload_watchdog)
+
 add_library(mocktail_legacy_runtime STATIC
   src/legacy/legacy_runtime.cc
   src/runtime/roblox_text_input_jni_bridge.cc
@@ -645,6 +655,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   )
 endif()
 target_link_libraries(mocktail_legacy_runtime PRIVATE
+  mocktail_jni_onload_watchdog
   mocktail_legacy_jnivm
   mocktail_compat
   mocktail_runtime

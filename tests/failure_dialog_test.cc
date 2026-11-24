@@ -1,6 +1,7 @@
 #include "runtime/failure_dialog.h"
 
 #include <gtest/gtest.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <cstdlib>
@@ -196,6 +197,30 @@ TEST(FailureDialogTest, MonitorReportsNormalFailureOnScopeExit) {
   EXPECT_EQ(
       ReadLines(helper.capture()),
       std::vector<std::string>({"MStartup failed.", "MRuntime failed.", "F"}));
+}
+
+TEST(FailureDialogTest, SignalHandlerCanSetTheMessageBeforeExiting) {
+  FakeDialogHelper helper;
+  const MapEnvironment environment = DialogEnvironment(helper);
+  struct sigaction action {};
+  struct sigaction previous {};
+  action.sa_handler = [](int) { SendPreparedFailureMessage(); };
+  sigemptyset(&action.sa_mask);
+  ASSERT_EQ(sigaction(SIGUSR1, &action, &previous), 0);
+  {
+    FailureDialogMonitor monitor =
+        FailureDialogMonitor::Start(environment, "Startup failed.");
+    ASSERT_TRUE(monitor.active());
+    PrepareSignalSafeFailureMessage("Roblox took too long to load.");
+    ASSERT_EQ(raise(SIGUSR1), 0);
+  }
+  ASSERT_EQ(raise(SIGUSR1), 0);
+  ASSERT_EQ(sigaction(SIGUSR1, &previous, nullptr), 0);
+  PrepareSignalSafeFailureMessage({});
+
+  EXPECT_EQ(ReadLines(helper.capture()),
+            std::vector<std::string>({"MStartup failed.",
+                                      "MRoblox took too long to load.", "F"}));
 }
 
 }  // namespace

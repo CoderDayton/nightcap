@@ -7,7 +7,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -28,6 +31,15 @@ constexpr char kFailurePacket = 'F';
 constexpr char kSuccessPacket = 'S';
 constexpr char kLogFolderPacket = 'L';
 constexpr std::size_t kMaximumMessageBytes = 2048;
+
+std::atomic<int> g_monitor_socket{-1};
+char g_prepared_packet[kMaximumMessageBytes + 1];
+std::atomic<std::size_t> g_prepared_size{0};
+
+void RetireMonitorSocket(int socket) {
+  int expected = socket;
+  g_monitor_socket.compare_exchange_strong(expected, -1);
+}
 
 bool Enabled(const Environment& environment, std::string_view name) {
   const std::optional<std::string> value = environment.Get(name);
@@ -167,6 +179,26 @@ bool ShowWarningDialog(const Environment& environment,
   return !helper.empty() && SpawnOneShot(helper, "--warning", message);
 }
 
+void PrepareSignalSafeFailureMessage(std::string_view message) {
+  g_prepared_size.store(0, std::memory_order_release);
+  if (message.empty()) {
+    return;
+  }
+  const std::size_t size = std::min(message.size(), kMaximumMessageBytes);
+  g_prepared_packet[0] = kMessagePacket;
+  std::memcpy(g_prepared_packet + 1, message.data(), size);
+  g_prepared_size.store(size + 1, std::memory_order_release);
+}
+
+void SendPreparedFailureMessage() {
+  const std::size_t size = g_prepared_size.load(std::memory_order_acquire);
+  const int socket = g_monitor_socket.load(std::memory_order_acquire);
+  if (size == 0 || socket < 0) {
+    return;
+  }
+  (void)send(socket, g_prepared_packet, size, MSG_NOSIGNAL);
+}
+
 std::optional<bool> AskYesNo(const Environment& environment,
                              std::string_view heading, std::string_view body,
                              std::string_view decline,
@@ -219,6 +251,7 @@ FailureDialogMonitor FailureDialogMonitor::Start(
   const auto [socket, helper_pid] = SpawnMonitor(helper);
   FailureDialogMonitor monitor(socket, helper_pid);
   if (monitor.active()) {
+    g_monitor_socket.store(socket, std::memory_order_release);
     monitor.SetMessage(initial_message);
   }
   return monitor;
@@ -234,6 +267,7 @@ void FailureDialogMonitor::SetLogFolder(const std::filesystem::path& folder) {
 
 void FailureDialogMonitor::Send(char kind, std::string_view payload) {
   if (!active() || SendPacket(socket_, kind, payload)) return;
+  RetireMonitorSocket(socket_);
   close(socket_);
   socket_ = -1;
   WaitForHelper(helper_pid_);
@@ -246,6 +280,7 @@ void FailureDialogMonitor::Finish(char disposition) {
   if (!active()) {
     return;
   }
+  RetireMonitorSocket(socket_);
   (void)SendPacket(socket_, disposition);
   (void)shutdown(socket_, SHUT_RDWR);
   close(socket_);
