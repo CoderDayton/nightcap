@@ -15,6 +15,7 @@ Release notes on GitHub are taken from the matching section here.
 - The game no longer freezes when the sound device stops taking audio, for example after a PipeWire restart.
   Sound is dropped until the device recovers.
 - Startup no longer hangs when another Nightcap holds the lock on Roblox's app storage.
+- Quitting during a game join no longer waits up to 10 seconds for the Discord status lookups.
 
 ## [0.5.4] - 2026-11-22
 
