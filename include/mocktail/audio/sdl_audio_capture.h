@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,6 +75,8 @@ Status CreateSdlAudioCapture(const SdlAudioCaptureOptions& options,
 
 // Called by the SDL subsystem owner before SDL_QuitSubSystem.
 Status PrepareSdlAudioCaptureSubsystemShutdown();
+
+std::mutex& SdlAudioDeviceOpenMutex();
 
 }  // namespace mocktail::audio
 

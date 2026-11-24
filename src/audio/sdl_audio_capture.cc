@@ -70,6 +70,7 @@ SDL_AudioStream* OpenRecordingStream(SDL_AudioDeviceID device,
                                      std::size_t frames_per_buffer,
                                      SDL_AudioStreamCallback callback,
                                      void* userdata) {
+  std::lock_guard<std::mutex> open_lock(SdlAudioDeviceOpenMutex());
   const bool user_set =
       SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES) != nullptr;
   if (!user_set) {
@@ -548,6 +549,11 @@ Status PrepareSdlAudioCaptureSubsystemShutdown() {
   state.configured_device_id = 0;
   state.configured_device_name = "default";
   return Status::Ok();
+}
+
+std::mutex& SdlAudioDeviceOpenMutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
 }  // namespace mocktail::audio
