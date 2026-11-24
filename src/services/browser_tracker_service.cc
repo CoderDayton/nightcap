@@ -7,11 +7,14 @@
 
 #include <atomic>
 #include <cerrno>
+#include <cstring>
 #include <charconv>
+#include <chrono>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace mocktail {
@@ -198,6 +201,19 @@ bool WriteAll(int descriptor, const std::string& contents) {
 bool IsPrivateDirectory(const struct stat& metadata) {
   return S_ISDIR(metadata.st_mode) && metadata.st_uid == geteuid() &&
          (metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+bool LockExclusiveWithin(int descriptor, std::chrono::milliseconds wait) {
+  const auto deadline = std::chrono::steady_clock::now() + wait;
+  while (flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EINTR) continue;
+    if (errno != EWOULDBLOCK ||
+        std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return true;
 }
 
 // Removes group and world write access from a directory this user owns.
@@ -531,11 +547,24 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
   if (lock < 0 || fstat(lock, &lock_status) != 0 ||
       !S_ISREG(lock_status.st_mode) || lock_status.st_uid != geteuid() ||
       lock_status.st_nlink != 1 ||
-      (lock_status.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
-      flock(lock, LOCK_EX) != 0 ||
-      (!lock_parent_existed &&
-       !FsyncDirectoryChain(lock_parent, existing_lock_ancestor))) {
+      (lock_status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
     if (lock >= 0) close(lock);
+    result.error = "cannot lock appStorage";
+    return result;
+  }
+  if (!LockExclusiveWithin(lock, std::chrono::seconds(2))) {
+    const int lock_error = errno;
+    close(lock);
+    result.error =
+        lock_error == EWOULDBLOCK
+            ? "appStorage is locked by another process; gave up after 2 s"
+            : std::string("cannot lock appStorage: ") +
+                  std::strerror(lock_error);
+    return result;
+  }
+  if (!lock_parent_existed &&
+      !FsyncDirectoryChain(lock_parent, existing_lock_ancestor)) {
+    close(lock);
     result.error = "cannot lock appStorage";
     return result;
   }

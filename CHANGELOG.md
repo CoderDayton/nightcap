@@ -14,6 +14,7 @@ Release notes on GitHub are taken from the matching section here.
 - Your mic no longer sounds choppy in voice chat. It sent audio in 20 to 40 ms bursts instead of every 10 ms.
 - The game no longer freezes when the sound device stops taking audio, for example after a PipeWire restart.
   Sound is dropped until the device recovers.
+- Startup no longer hangs when another Nightcap holds the lock on Roblox's app storage.
 
 ## [0.5.4] - 2026-11-22
 
