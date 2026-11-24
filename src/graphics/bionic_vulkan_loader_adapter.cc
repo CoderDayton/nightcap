@@ -219,6 +219,29 @@ mocktail::graphics::DeferredTeardown& Teardown() {
   return teardown;
 }
 
+void NoteSwapchainResult(VkResult result, const char* call) {
+  if (result != VK_ERROR_OUT_OF_DATE_KHR &&
+      result != VK_ERROR_SURFACE_LOST_KHR) {
+    return;
+  }
+  if (result == VK_ERROR_SURFACE_LOST_KHR) {
+    static std::atomic<unsigned long long> lost_count{0};
+    const unsigned long long count =
+        lost_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((count & (count - 1)) == 0) {
+      std::fprintf(stderr,
+                   "  [vulkan] %s lost the window surface "
+                   "(VK_ERROR_SURFACE_LOST_KHR, count=%llu); recreating it\n",
+                   call, count);
+    }
+  }
+  const NoteSurfaceOutOfDateFn note_surface_out_of_date =
+      State().note_surface_out_of_date.load(std::memory_order_acquire);
+  if (note_surface_out_of_date != nullptr) {
+    note_surface_out_of_date();
+  }
+}
+
 void* HoldLibraryOf(const void* function) {
   Dl_info info{};
   if (function == nullptr || dladdr(function, &info) == 0 ||
@@ -2324,13 +2347,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(
     AcquireWaitTrace().Record(acquire_start_ns);
   }
   const VkResult result = NormalizeSwapchainResult(host_result);
-  if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-    const NoteSurfaceOutOfDateFn note_surface_out_of_date =
-        State().note_surface_out_of_date.load(std::memory_order_acquire);
-    if (note_surface_out_of_date != nullptr) {
-      note_surface_out_of_date();
-    }
-  }
+  NoteSwapchainResult(result, "vkAcquireNextImageKHR");
   observation.SetResult(result);
   return result;
 }
@@ -2350,13 +2367,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
   const VkResult host_result =
       host_acquire(device, acquire_info, image_index);
   const VkResult result = NormalizeSwapchainResult(host_result);
-  if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-    const NoteSurfaceOutOfDateFn note_surface_out_of_date =
-        State().note_surface_out_of_date.load(std::memory_order_acquire);
-    if (note_surface_out_of_date != nullptr) {
-      note_surface_out_of_date();
-    }
-  }
+  NoteSwapchainResult(result, "vkAcquireNextImage2KHR");
   observation.SetResult(result);
   return result;
 }
@@ -2807,13 +2818,7 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
       queue, present_info, ObservedHostQueuePresent);
   scope.Arg("result", result);
   const VkResult normalized_result = NormalizeSwapchainResult(result);
-  if (normalized_result == VK_ERROR_OUT_OF_DATE_KHR) {
-    const NoteSurfaceOutOfDateFn note_surface_out_of_date =
-        state.note_surface_out_of_date.load(std::memory_order_acquire);
-    if (note_surface_out_of_date != nullptr) {
-      note_surface_out_of_date();
-    }
-  }
+  NoteSwapchainResult(normalized_result, "vkQueuePresentKHR");
   if (normalized_result == VK_SUCCESS && note_present != nullptr) {
     note_present();
   }
