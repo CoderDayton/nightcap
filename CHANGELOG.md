@@ -13,6 +13,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Leaving a game or joining another no longer freezes the screen for about 12 seconds on NVIDIA.
+  Nightcap keeps the game's Vulkan device and hands it back to the next game instead of destroying it.
 - Your mic no longer sounds choppy in voice chat. It sent audio in 20 to 40 ms bursts instead of every 10 ms.
 - The game no longer freezes when the sound device stops taking audio, for example after a PipeWire restart.
   Sound is dropped until the device recovers.

@@ -867,6 +867,17 @@ target_link_libraries(chrome_trace_writer_test PRIVATE GTest::gtest_main
   Threads::Threads nlohmann_json::nlohmann_json)
 mocktail_apply_compile_options(chrome_trace_writer_test)
 
+add_executable(vulkan_object_reuse_test
+  vulkan_object_reuse_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_object_reuse.cc
+)
+target_include_directories(vulkan_object_reuse_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(vulkan_object_reuse_test PRIVATE GTest::gtest_main
+  Vulkan::Headers)
+mocktail_apply_compile_options(vulkan_object_reuse_test)
+
 add_executable(deferred_teardown_test
   deferred_teardown_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/deferred_teardown.cc
@@ -1511,6 +1522,7 @@ gtest_discover_tests(chrome_trace_writer_test)
 gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(vulkan_etc2_gpu_emulation_test)
 gtest_discover_tests(deferred_teardown_test)
+gtest_discover_tests(vulkan_object_reuse_test)
 gtest_discover_tests(log_redaction_test)
 gtest_discover_tests(vulkan_driver_pin_test)
 gtest_discover_tests(video_driver_policy_test)
