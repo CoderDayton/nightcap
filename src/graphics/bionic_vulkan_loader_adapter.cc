@@ -21,6 +21,7 @@
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
 #include "mocktail/graphics/deferred_teardown.h"
+#include "mocktail/graphics/vulkan_object_reuse.h"
 #include "mocktail/graphics/vulkan_driver_pin.h"
 #include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
@@ -193,7 +194,15 @@ struct AdapterState {
   PFN_vkGetPhysicalDeviceSurfacePresentModesKHR host_surface_present_modes =
       nullptr;
   VkInstance latest_instance = VK_NULL_HANDLE;
+  std::string latest_instance_key;
   size_t active_instance_count = 0;
+  // The game destroys and recreates its device on every rejoin, and the
+  // NVIDIA driver can take 12 s to destroy one that ran a game. Like the Mac
+  // build's one shared device, the host objects are kept and handed back to
+  // the next identical create instead.
+  mocktail::graphics::KeptVulkanObject<VkInstance> kept_instance;
+  mocktail::graphics::KeptVulkanObject<VkDevice> kept_device;
+  std::vector<std::pair<VkDevice, std::string>> device_keys;
   mocktail::graphics::VulkanTextOverlayCompositor text_overlay;
   mocktail::graphics::VulkanEtc2Emulation etc2;
   std::atomic<NotePresentFn> note_present{nullptr};
@@ -1621,6 +1630,44 @@ const VkSubmitInfo2* PrepareEtc2Submit2(VkQueue queue,
   return rewritten_any ? rewrite->rewritten2.data() : submits;
 }
 
+std::string TakeDeviceKey(VkDevice device) {
+  AdapterState& state = State();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  const auto found = std::find_if(
+      state.device_keys.begin(), state.device_keys.end(),
+      [device](const auto& entry) { return entry.first == device; });
+  if (found == state.device_keys.end()) {
+    return {};
+  }
+  std::string key = std::move(found->second);
+  state.device_keys.erase(found);
+  return key;
+}
+
+// Keeps an idle host device for the next identical vkCreateDevice instead of
+// destroying it. Returns false when one is already kept.
+bool KeepHostDevice(VkDevice device, std::string key) {
+  if (key.empty()) {
+    return false;
+  }
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.kept_device.Held() != VK_NULL_HANDLE) {
+      return false;
+    }
+  }
+  if (const auto wait_idle = reinterpret_cast<PFN_vkDeviceWaitIdle>(
+          HostDeviceProc(device, "vkDeviceWaitIdle"));
+      wait_idle != nullptr) {
+    (void)wait_idle(device);
+  }
+  AdapterState& state = State();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  state.kept_device.Keep(device, std::move(key));
+  return true;
+}
+
 }  // namespace
 
 extern "C" {
@@ -1681,12 +1728,26 @@ vkCreateInstance(const VkInstanceCreateInfo* create_info,
   if (host_create == nullptr) {
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const VkResult result = host_create(&host_info, allocator, instance);
+  std::string key = mocktail::graphics::VulkanInstanceKey(host_info);
+  VkInstance kept = VK_NULL_HANDLE;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    kept = state.kept_instance.Take(key);
+  }
+  VkResult result = VK_SUCCESS;
+  if (kept != VK_NULL_HANDLE) {
+    *instance = kept;
+    std::fprintf(stderr, "  [vulkan] reusing the kept host VkInstance\n");
+  } else {
+    result = host_create(&host_info, allocator, instance);
+  }
   if (result == VK_SUCCESS) {
     AdapterState& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
     ++state.active_instance_count;
     state.latest_instance = *instance;
+    state.latest_instance_key = std::move(key);
     state.host_get_device_proc_addr.store(
         reinterpret_cast<PFN_vkGetDeviceProcAddr>(
             state.host_get_instance_proc_addr(*instance, "vkGetDeviceProcAddr")),
@@ -1706,7 +1767,21 @@ VKAPI_ATTR void VKAPI_CALL
 vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* allocator) {
   const auto host_destroy = reinterpret_cast<PFN_vkDestroyInstance>(
       HostInstanceProc(instance, "vkDestroyInstance"));
-  if (host_destroy != nullptr && Teardown().Busy()) {
+  bool kept = false;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (instance == state.latest_instance &&
+        state.kept_instance.Held() == VK_NULL_HANDLE) {
+      state.kept_instance.Keep(instance, state.latest_instance_key);
+      kept = true;
+    }
+  }
+  if (kept) {
+    std::fprintf(stderr,
+                 "  [vulkan] keeping the host VkInstance for the next "
+                 "create\n");
+  } else if (host_destroy != nullptr && Teardown().Busy()) {
     std::fprintf(stderr,
                  "  [vulkan] keeping the old Vulkan instance; destroying it "
                  "after the new one crashes the NVIDIA driver\n");
@@ -1985,8 +2060,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
     }
   }
 
-  const VkResult result =
-      host_create(physical_device, &host_info, allocator, device);
+  std::string device_key =
+      mocktail::graphics::VulkanDeviceKey(physical_device, host_info);
+  VkDevice kept = VK_NULL_HANDLE;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    kept = state.kept_device.Take(device_key);
+  }
+  VkResult result = VK_SUCCESS;
+  if (kept != VK_NULL_HANDLE) {
+    *device = kept;
+    std::fprintf(stderr, "  [vulkan] reusing the kept host VkDevice\n");
+  } else {
+    result = host_create(physical_device, &host_info, allocator, device);
+  }
   if (requested_features2 != nullptr) {
     requested_features2->features.textureCompressionETC2 =
         requested_features2_etc2;
@@ -1997,6 +2085,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   }
   if (result != VK_SUCCESS) {
     return result;
+  }
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.device_keys.emplace_back(*device, std::move(device_key));
   }
   RegisterHostDeviceDispatch(*device, physical_device,
                              host_get_device_proc_addr);
@@ -2141,6 +2234,7 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
                  "  [vulkan] BC7 encoder still compiling; destroying the old "
                  "device in the background\n");
     RemoveHostDeviceDispatch(device);
+    (void)TakeDeviceKey(device);
     void* const library =
         HoldLibraryOf(reinterpret_cast<const void*>(host_destroy));
     Teardown().Post([device, allocator, host_destroy, library] {
@@ -2152,7 +2246,11 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
     });
   } else {
     State().etc2.DestroyDevice(device);
-    if (host_destroy != nullptr) {
+    if (KeepHostDevice(device, TakeDeviceKey(device))) {
+      std::fprintf(stderr,
+                   "  [vulkan] keeping the host VkDevice for the next "
+                   "create\n");
+    } else if (host_destroy != nullptr) {
       host_destroy(device, allocator);
     }
     RemoveHostDeviceDispatch(device);
