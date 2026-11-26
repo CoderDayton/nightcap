@@ -13,13 +13,16 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -182,6 +185,84 @@ bool WriteAll(int descriptor, const char* bytes, std::size_t size) {
   return true;
 }
 
+// Copies output to the terminal on its own thread. A terminal that stops
+// reading (paused, or a pipe nobody drains) must not stop the tee from reading
+// the game's pipes, or the game blocks in write() while holding the stdio lock
+// and every thread that logs stalls behind it. Past the cap, output is dropped
+// from the terminal only; the session log still gets all of it.
+class TerminalWriter final {
+ public:
+  static constexpr std::size_t kMaxQueuedBytes = 1 << 20;
+
+  TerminalWriter() : thread_([this] { Run(); }) { thread_.detach(); }
+
+  void Write(int descriptor, const char* bytes, std::size_t size) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (queued_bytes_ + size > kMaxQueuedBytes) {
+      dropped_bytes_ += size;
+      return;
+    }
+    queue_.push_back({descriptor, std::string(bytes, size)});
+    queued_bytes_ += size;
+    ready_.notify_one();
+  }
+
+  // Gives a slow terminal a moment to catch up before the tee exits.
+  void Drain(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    (void)drained_.wait_for(lock, timeout, [this] {
+      return queue_.empty() && !writing_;
+    });
+  }
+
+ private:
+  struct Chunk {
+    int descriptor;
+    std::string bytes;
+  };
+
+  void Run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+      ready_.wait(lock, [this] { return !queue_.empty(); });
+      Chunk chunk = std::move(queue_.front());
+      queue_.pop_front();
+      queued_bytes_ -= chunk.bytes.size();
+      std::string notice;
+      if (dropped_bytes_ != 0) {
+        notice = "[nightcap] terminal fell behind; " +
+                 std::to_string(dropped_bytes_) +
+                 " bytes were left out here but are in the session log\n";
+        dropped_bytes_ = 0;
+      }
+      writing_ = true;
+      lock.unlock();
+      if (!notice.empty()) Send(chunk.descriptor, notice);
+      Send(chunk.descriptor, chunk.bytes);
+      lock.lock();
+      writing_ = false;
+      if (queue_.empty()) drained_.notify_all();
+    }
+  }
+
+  void Send(int descriptor, const std::string& bytes) {
+    if (descriptor == broken_[0] || descriptor == broken_[1]) return;
+    if (!WriteAll(descriptor, bytes.data(), bytes.size())) {
+      broken_[broken_[0] < 0 ? 0 : 1] = descriptor;
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::condition_variable drained_;
+  std::deque<Chunk> queue_;
+  std::size_t queued_bytes_ = 0;
+  std::size_t dropped_bytes_ = 0;
+  bool writing_ = false;
+  int broken_[2] = {-1, -1};  // only touched by the writer thread
+  std::thread thread_;
+};
+
 void RunTeeProcess(int stdout_reader, int stderr_reader, int log_descriptor,
                    int original_stdout, int original_stderr) {
   (void)signal(SIGPIPE, SIG_IGN);
@@ -193,11 +274,12 @@ void RunTeeProcess(int stdout_reader, int stderr_reader, int log_descriptor,
     int reader;
     int output;
     bool active;
-    bool output_active;
   };
-  std::array<Source, 2> sources = {
-      {{stdout_reader, original_stdout, true, true},
-       {stderr_reader, original_stderr, true, true}}};
+  std::array<Source, 2> sources = {{{stdout_reader, original_stdout, true},
+                                     {stderr_reader, original_stderr, true}}};
+  // Intentionally leaked: the thread may be blocked on a terminal that never
+  // reads, and _exit ends it with the process.
+  auto* terminal = new TerminalWriter();
   bool log_active = true;
   std::array<char, 32768> buffer{};
   while (sources[0].active || sources[1].active) {
@@ -222,10 +304,7 @@ void RunTeeProcess(int stdout_reader, int stderr_reader, int log_descriptor,
         if (log_active && !WriteAll(log_descriptor, buffer.data(), size)) {
           log_active = false;
         }
-        if (source.output_active &&
-            !WriteAll(source.output, buffer.data(), size)) {
-          source.output_active = false;
-        }
+        terminal->Write(source.output, buffer.data(), size);
       } else if (bytes == 0 || errno != EINTR) {
         close(source.reader);
         source.reader = -1;
@@ -235,8 +314,7 @@ void RunTeeProcess(int stdout_reader, int stderr_reader, int log_descriptor,
   }
   if (log_active) (void)fsync(log_descriptor);
   close(log_descriptor);
-  close(original_stdout);
-  close(original_stderr);
+  terminal->Drain(std::chrono::seconds(1));
 }
 
 std::filesystem::path ExecutablePath() {

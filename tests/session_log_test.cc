@@ -19,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -211,6 +212,63 @@ TEST(SessionLogTest, StopDoesNotWaitForAProcessThatKeepsTheLogOpen) {
   kill(holder, SIGKILL);
   waitpid(holder, nullptr, 0);
   EXPECT_LT(stop_time, std::chrono::seconds(10));
+}
+
+// A terminal that stops reading (a paused tty, or a compositor that never
+// drains the pipe it gave the game) must not block the game's logging.
+TEST(SessionLogTest, ATerminalThatStopsReadingDoesNotBlockWrites) {
+  TemporaryDirectory temporary;
+  const MapEnvironment environment({
+      {"HOME", (temporary.root() / "home").string()},
+      {"MOCKTAIL_STATE_ROOT", (temporary.root() / "state").string()},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  int terminal[2] = {-1, -1};
+  ASSERT_EQ(pipe(terminal), 0);
+  std::filesystem::path session_path;
+  const pid_t game = fork();
+  ASSERT_GE(game, 0);
+  if (game == 0) {
+    alarm(60);
+    close(terminal[0]);
+    dup2(terminal[1], STDOUT_FILENO);
+    dup2(terminal[1], STDERR_FILENO);
+    close(terminal[1]);
+    SessionLog log = SessionLog::Start(environment, paths);
+    if (!log) _exit(2);
+    const std::string line(1023, 'x');
+    for (int index = 0; index < 1024; ++index) {
+      std::fprintf(stderr, "%s\n", line.c_str());
+    }
+    std::fprintf(stderr, "stalled-terminal-marker\n");
+    _exit(0);
+  }
+  close(terminal[1]);  // The read end stays open and is never read.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  int status = 0;
+  pid_t reaped = 0;
+  while ((reaped = waitpid(game, &status, WNOHANG)) == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (reaped == 0) {
+    kill(game, SIGKILL);
+    waitpid(game, nullptr, 0);
+  }
+  close(terminal[0]);
+  ASSERT_EQ(reaped, game) << "writes blocked on the stalled terminal";
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+  std::string text;
+  std::string error;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    if (ReadLatestSessionLog(paths.logs_root(), &text, &error) &&
+        text.find("stalled-terminal-marker") != std::string::npos) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_NE(text.find("stalled-terminal-marker"), std::string::npos) << error;
 }
 
 TEST(SessionLogTest, CpuLimitCrashReachesConsoleAndLogAndRemainsFatal) {
