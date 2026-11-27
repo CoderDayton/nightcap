@@ -5,6 +5,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Changed
+
+- `scripts/auto_update_roblox.sh` downloads its fallback Roblox version from APKPure like every other
+  download, instead of a pinned Uptodown copy.
+
 ## [0.5.5] - 2026-11-27
 
 ### Added

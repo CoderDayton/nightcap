@@ -780,7 +780,6 @@ install(PROGRAMS "${MOCKTAIL_FREEBSD_SOCKET_HELPER}"
 endif()
 install(FILES
     config/roblox_compatibility.json
-    config/roblox_bootstrap_sources.json
     config/roblox_download_sources.json
     config/roblox_host_abi_reference.json
     config/roblox_signing_certificates.json

@@ -9,13 +9,9 @@
 
 """Report when the pinned Roblox payload metadata has fallen behind.
 
-Two kinds of drift make a first launch fail, and neither one shows up until a
-user hits it:
-
-* the compatibility catalog no longer lists the Roblox version the provider
-  publishes, so every new install lands on a version Roblox has since retired;
-* the preferred supported profile has no pinned bootstrap source, so the
-  pinned bootstrap path cannot produce the version the updater falls back to.
+When the compatibility catalog no longer lists the Roblox version the provider
+publishes, every new install lands on a version Roblox may have retired, and
+nothing shows it until a user hits it.
 """
 
 from __future__ import annotations
@@ -75,20 +71,6 @@ def preferred_profile(catalog: dict) -> dict:
     return max(profiles, key=lambda profile: profile["version_code"])
 
 
-def pinned_versions(sources: dict) -> set[str]:
-    entries = sources.get("sources")
-    if not isinstance(entries, list):
-        raise DriftError("bootstrap source manifest has no sources")
-    return {
-        entry["version_name"]
-        for entry in entries
-        if isinstance(entry, dict)
-        and entry.get("package") == PACKAGE
-        and entry.get("abi") == ARCHITECTURE
-        and isinstance(entry.get("version_name"), str)
-    }
-
-
 def latest_published_version(provider: Path) -> tuple[str, int]:
     completed = subprocess.run(
         [sys.executable, str(provider), "--check", "--package", PACKAGE,
@@ -112,18 +94,9 @@ def latest_published_version(provider: Path) -> tuple[str, int]:
         raise DriftError("provider metadata is not understood") from error
 
 
-def findings(catalog: dict, sources: dict, latest: tuple[str, int] | None
-             ) -> list[str]:
+def findings(catalog: dict, latest: tuple[str, int] | None) -> list[str]:
     reported: list[str] = []
     preferred = preferred_profile(catalog)
-    pinned = pinned_versions(sources)
-    if preferred["version_name"] not in pinned:
-        reported.append(
-            f"The preferred supported profile {preferred['version_name']} "
-            f"({preferred['version_code']}) has no pinned bootstrap source. "
-            "The pinned bootstrap path cannot produce the version the updater "
-            "falls back to."
-        )
     if latest is not None:
         latest_name, latest_code = latest
         if latest_code > preferred["version_code"]:
@@ -143,9 +116,6 @@ def main(argv: list[str] | None = None) -> int:
         "--catalog", type=Path,
         default=root / "config/roblox_compatibility.json")
     parser.add_argument(
-        "--sources", type=Path,
-        default=root / "config/roblox_bootstrap_sources.json")
-    parser.add_argument(
         "--provider", type=Path,
         default=root / "scripts/apk_providers/direct_apkpure.py")
     parser.add_argument(
@@ -155,13 +125,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         catalog = _load(arguments.catalog)
-        sources = _load(arguments.sources)
         latest = (
             latest_published_version(arguments.provider)
             if arguments.check_latest
             else None
         )
-        reported = findings(catalog, sources, latest)
+        reported = findings(catalog, latest)
     except DriftError as error:
         print(f"payload source drift: {error}", file=sys.stderr)
         return 2

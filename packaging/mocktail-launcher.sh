@@ -537,7 +537,6 @@ export MOCKTAIL_UPDATE_COMPATIBILITY_PATH="${METADATA_DIR}/roblox_compatibility.
 export MOCKTAIL_UPDATE_SIGNING_TRUST_PATH="${METADATA_DIR}/roblox_signing_certificates.json"
 export MOCKTAIL_UPDATE_DOWNLOAD_SOURCES_PATH="${METADATA_DIR}/roblox_download_sources.json"
 export MOCKTAIL_UPDATE_HOST_ABI_REFERENCE="${METADATA_DIR}/roblox_host_abi_reference.json"
-export MOCKTAIL_BOOTSTRAP_SOURCES_PATH="${METADATA_DIR}/roblox_bootstrap_sources.json"
 export MOCKTAIL_UPDATE_HELPER="${UPDATE_HELPER}"
 export MOCKTAIL_UPDATE_CANARY_BIN="${MAIN_BINARY}"
 export MOCKTAIL_BIN="${MAIN_BINARY}"

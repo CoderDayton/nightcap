@@ -416,7 +416,6 @@ export MOCKTAIL_UPDATE_SMOKE_SCRIPT="${TEMP_DIR}/bin/smoke"
 export MOCKTAIL_UPDATE_CHECK_SCRIPT="${TEMP_DIR}/bin/check"
 export MOCKTAIL_CONFIG_FILE="${TEMP_DIR}/config.yaml"
 export MOCKTAIL_UPDATE_COMPATIBILITY_PATH="${TEMP_DIR}/compatibility.json"
-export MOCKTAIL_BOOTSTRAP_SOURCES_PATH="${TEMP_DIR}/bootstrap-sources.json"
 export FAKE_BUNDLE_DIR="${TEMP_DIR}/bundle"
 export FAKE_CALLS="${TEMP_DIR}/calls"
 export FAKE_FETCH_CALLS="${TEMP_DIR}/fetch-calls"
@@ -447,10 +446,6 @@ export __GLX_VENDOR_LIBRARY_NAME=nvidia
 mocktail_hostile_canary() { :; }
 export -f mocktail_hostile_canary
 printf '%s\n' 'version: 1' > "${MOCKTAIL_CONFIG_FILE}"
-jq -n '{schema_version:1,sources:[
-  {package:"com.roblox.client",version_name:"2.725.1142",version_code:2546,
-   provider:"uptodown"}
-]}' > "${MOCKTAIL_BOOTSTRAP_SOURCES_PATH}"
 jq -n \
   --arg current d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21 \
   --arg seed 1686400865ae0e408cd7bd67de7a439625c6fd13 \
@@ -670,7 +665,7 @@ mapfile -t fallback_fetches < "${FAKE_FETCH_ARGUMENTS}"
 [[ "${fallback_fetches[0]}" == 'apk-pure|' ]]
 [[ "${fallback_fetches[1]}" == 'apk-pure|failure-candidate' ]]
 [[ "${fallback_fetches[2]}" == 'apk-pure|2.727.1199' ]]
-[[ "${fallback_fetches[3]}" == 'uptodown|2.725.1142' ]]
+[[ "${fallback_fetches[3]}" == 'apk-pure|2.725.1142' ]]
 [[ "${#fallback_fetches[@]}" -eq 4 ]]
 [[ -d "${MOCKTAIL_DATA_ROOT}/payloads/8888-abababababababababababababababababababab" ]]
 [[ "$(jq -r .payload_id "${MOCKTAIL_DATA_ROOT}/current.json")" == \

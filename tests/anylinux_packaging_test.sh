@@ -125,7 +125,7 @@ cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libEGL.
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libvulkan.so"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libmediandk.so"
 cp -- "${10}" "${11}" "${APPDIR}/lib/"
-for metadata in roblox_compatibility roblox_bootstrap_sources \
+for metadata in roblox_compatibility \
     roblox_host_abi_reference roblox_signing_certificates roblox_download_sources; do
   printf '{}\n' >"${APPDIR}/share/mocktail/metadata/${metadata}.json"
 done
@@ -301,7 +301,7 @@ done
 for adapter in libEGL.so libvulkan.so libmediandk.so; do
   cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${prefix}/lib/mocktail/${adapter}"
 done
-for metadata in roblox_compatibility roblox_bootstrap_sources \
+for metadata in roblox_compatibility \
     roblox_host_abi_reference roblox_signing_certificates roblox_download_sources; do
   printf '{}\n' >"${prefix}/share/mocktail/metadata/${metadata}.json"
 done

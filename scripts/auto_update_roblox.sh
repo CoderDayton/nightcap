@@ -20,12 +20,10 @@ if [[ -d "${PROJECT_ROOT}/metadata" ]]; then
   DEFAULT_METADATA_ROOT="${PROJECT_ROOT}/metadata"
 fi
 COMPATIBILITY_PATH="${MOCKTAIL_UPDATE_COMPATIBILITY_PATH:-${DEFAULT_METADATA_ROOT}/roblox_compatibility.json}"
-BOOTSTRAP_SOURCES_PATH="${MOCKTAIL_BOOTSTRAP_SOURCES_PATH:-${DEFAULT_METADATA_ROOT}/roblox_bootstrap_sources.json}"
 SIGNING_TRUST_PATH="${MOCKTAIL_UPDATE_SIGNING_TRUST_PATH:-${DEFAULT_METADATA_ROOT}/roblox_signing_certificates.json}"
 # Child validators/providers must use the same resolved source/install layout.
 # In an installed tree PROJECT_ROOT contains metadata/, never config/.
 export MOCKTAIL_UPDATE_COMPATIBILITY_PATH="${COMPATIBILITY_PATH}"
-export MOCKTAIL_BOOTSTRAP_SOURCES_PATH="${BOOTSTRAP_SOURCES_PATH}"
 export MOCKTAIL_UPDATE_SIGNING_TRUST_PATH="${SIGNING_TRUST_PATH}"
 FETCH_SCRIPT="${MOCKTAIL_UPDATE_FETCH_SCRIPT:-${SCRIPT_DIR}/fetch_roblox_apks.sh}"
 VALIDATOR_SCRIPT="${MOCKTAIL_UPDATE_VALIDATOR_SCRIPT:-${SCRIPT_DIR}/update_roblox_payload.sh}"
@@ -103,7 +101,6 @@ Usage: scripts/auto_update_roblox.sh [OPTIONS]
 Discover and stage latest Roblox x86_64, then activate it only after exact
 profile derivation and two isolated real-frame canaries. Failed candidates
 remain staged while the previous working payload stays current.
-An older supported first-run payload may use its pinned bootstrap mirror.
 
 Options:
   --source NAME       Download source. Normal updates use apk-pure.
@@ -483,27 +480,6 @@ SelectSupportedBootstrapFallback() {
     Die "supported first-run compatibility profile is invalid"
   BOOTSTRAP_SELECTED_VERSION_CODE="${fallback_version_code}"
   EXPECTED_PAYLOAD_VERSION_CODE="${fallback_version_code}"
-
-  local bootstrap_source=""
-  if [[ -e "${BOOTSTRAP_SOURCES_PATH}" ||
-        -L "${BOOTSTRAP_SOURCES_PATH}" ]]; then
-    [[ -f "${BOOTSTRAP_SOURCES_PATH}" &&
-       ! -L "${BOOTSTRAP_SOURCES_PATH}" ]] ||
-      Die "bootstrap source manifest must be a regular file"
-    jq -e '.schema_version == 1 and (.sources | type == "array")' \
-      "${BOOTSTRAP_SOURCES_PATH}" >/dev/null ||
-      Die "bootstrap source manifest is invalid"
-    bootstrap_source="$(jq -er --argjson version_code "${fallback_version_code}" '
-      [.sources[]? |
-       select(.version_code == $version_code and
-              (.abi // "x86_64") == "x86_64" and
-              .provider == "uptodown")] |
-      if length == 1 then .[0].provider else empty end
-    ' "${BOOTSTRAP_SOURCES_PATH}" 2>/dev/null || true)"
-  fi
-  if [[ -n "${bootstrap_source}" ]]; then
-    SOURCE="${bootstrap_source}"
-  fi
 
   STAGED_PAYLOAD_ID=""
   local staged_selection_status=0

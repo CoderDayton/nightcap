@@ -29,8 +29,7 @@ The command never activates a payload. Pass the reported paths explicitly to
 update_roblox_payload.sh only after its compatibility checks are appropriate.
 
 Options:
-  --source NAME         Download source. Uptodown is reserved for a pinned
-                        bootstrap; normal updates use apk-pure.
+  --source NAME         Download source: apk-pure.
   --version VERSION     APK version name.
   --staging-root DIR    Immutable bundle destination.
   -h, --help            Show this help.
@@ -209,7 +208,6 @@ main() {
   local provider
   case "${SOURCE}" in
     apk-pure) provider="direct_apkpure" ;;
-    uptodown) provider="direct_uptodown" ;;
     *) die "unsupported download source: ${SOURCE}" ;;
   esac
   local -r provider_path="${MOCKTAIL_APK_PROVIDER_COMMAND:-${SCRIPT_DIR}/apk_providers/${provider}.sh}"
