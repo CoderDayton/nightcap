@@ -5,6 +5,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-27
+
 ### Added
 
 - `MOCKTAIL_LAUNCH_PROGRAM` starts a program with the game and closes it when Nightcap closes, like
@@ -660,7 +662,10 @@ First Nightcap release, forked from komaruworld/mocktail.
 - The FMOD output-device bridge is optional, so the updater no longer fails without it.
 - The AppImage build no longer fails on stale checksums for the slimmed Arch packages.
 
-[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/CoderDayton/nightcap/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.5
+[0.5.4]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.4
+[0.5.3]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.3
 [0.5.2]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.2
 [0.5.1]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.1
 [0.5.0]: https://github.com/CoderDayton/nightcap/releases/tag/v0.5.0

@@ -53,6 +53,17 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="0.5.5" date="2026-11-27">
+      <description>
+        <ul>
+          <li>Multithreaded rendering uses less GPU in terrain-heavy games.</li>
+          <li>Leaving or rejoining a game no longer freezes the screen for about 12 seconds on NVIDIA.</li>
+          <li>Mic audio in voice chat is smooth again, and sound device changes no longer stall the game.</li>
+          <li>Fixes for startup hangs on slow disks, a stalled terminal, and Discord status on quit.</li>
+          <li>The error dialog shows what went wrong, and the app icon is updated.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.4" date="2026-11-22">
       <description>
         <ul>
