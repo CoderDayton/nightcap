@@ -15,6 +15,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -176,7 +177,6 @@ struct AdapterState {
   };
 
   struct CommandBufferBinding {
-    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkCommandPool command_pool = VK_NULL_HANDLE;
   };
@@ -188,7 +188,9 @@ struct AdapterState {
   std::atomic<PFN_vkGetDeviceProcAddr> host_get_device_proc_addr{nullptr};
   std::vector<DeviceDispatch> device_dispatches;
   std::vector<QueueBinding> queue_bindings;
-  std::vector<CommandBufferBinding> command_buffer_bindings;
+  // Looked up on every command-buffer call that misses the thread cache.
+  std::unordered_map<VkCommandBuffer, CommandBufferBinding>
+      command_buffer_bindings;
   PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR host_surface_capabilities =
       nullptr;
   PFN_vkGetPhysicalDeviceSurfacePresentModesKHR host_surface_present_modes =
@@ -202,7 +204,21 @@ struct AdapterState {
   // the next identical create instead.
   mocktail::graphics::KeptVulkanObject<VkInstance> kept_instance;
   mocktail::graphics::KeptVulkanObject<VkDevice> kept_device;
-  std::vector<std::pair<VkDevice, std::string>> device_keys;
+  PFN_vkDestroyDevice kept_device_destroy = nullptr;
+  // The instance the kept device was made from. It is never destroyed while
+  // that device lives, so a stale kept device can still be destroyed later.
+  VkInstance kept_device_instance = VK_NULL_HANDLE;
+  // The allocator the kept device was created with, which its destroy needs.
+  bool kept_device_has_allocator = false;
+  VkAllocationCallbacks kept_device_allocator{};
+  struct DeviceRecord {
+    VkDevice device = VK_NULL_HANDLE;
+    std::string key;
+    VkInstance instance = VK_NULL_HANDLE;
+    bool has_allocator = false;
+    VkAllocationCallbacks allocator{};
+  };
+  std::vector<DeviceRecord> device_records;
   mocktail::graphics::VulkanTextOverlayCompositor text_overlay;
   mocktail::graphics::VulkanEtc2Emulation etc2;
   std::atomic<NotePresentFn> note_present{nullptr};
@@ -473,19 +489,15 @@ const AdapterState::DeviceDispatch& HostDispatchForCommandBuffer(
   }
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
-  const auto binding = std::find_if(
-      state.command_buffer_bindings.begin(),
-      state.command_buffer_bindings.end(),
-      [command_buffer](const AdapterState::CommandBufferBinding& candidate) {
-        return candidate.command_buffer == command_buffer;
-      });
+  const auto binding = state.command_buffer_bindings.find(command_buffer);
   if (binding == state.command_buffer_bindings.end()) {
     return kEmptyDeviceDispatch;
   }
+  const VkDevice device = binding->second.device;
   const auto dispatch = std::find_if(
       state.device_dispatches.begin(), state.device_dispatches.end(),
-      [binding](const AdapterState::DeviceDispatch& candidate) {
-        return candidate.device == binding->device;
+      [device](const AdapterState::DeviceDispatch& candidate) {
+        return candidate.device == device;
       });
   if (dispatch != state.device_dispatches.end()) {
     t_command_buffer_cache.generation = gen;
@@ -584,6 +596,15 @@ void RegisterHostQueueBinding(VkDevice device, VkQueue queue) {
   InvalidateFastDispatchCaches();
 }
 
+template <typename Predicate>
+void EraseCommandBufferBindingsIf(AdapterState* state, Predicate predicate) {
+  for (auto it = state->command_buffer_bindings.begin();
+       it != state->command_buffer_bindings.end();) {
+    it = predicate(it->second) ? state->command_buffer_bindings.erase(it)
+                               : std::next(it);
+  }
+}
+
 void RegisterHostCommandBuffers(VkDevice device, VkCommandPool command_pool,
                                 std::uint32_t command_buffer_count,
                                 const VkCommandBuffer* command_buffers) {
@@ -597,19 +618,7 @@ void RegisterHostCommandBuffers(VkDevice device, VkCommandPool command_pool,
     if (command_buffer == VK_NULL_HANDLE) {
       continue;
     }
-    const auto existing = std::find_if(
-        state.command_buffer_bindings.begin(),
-        state.command_buffer_bindings.end(),
-        [command_buffer](const AdapterState::CommandBufferBinding& candidate) {
-          return candidate.command_buffer == command_buffer;
-        });
-    if (existing != state.command_buffer_bindings.end()) {
-      existing->device = device;
-      existing->command_pool = command_pool;
-    } else {
-      state.command_buffer_bindings.push_back(
-          {command_buffer, device, command_pool});
-    }
+    state.command_buffer_bindings[command_buffer] = {device, command_pool};
   }
   InvalidateFastDispatchCaches();
 }
@@ -622,20 +631,15 @@ void RemoveHostCommandBuffers(VkDevice device, VkCommandPool command_pool,
   }
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
-  state.command_buffer_bindings.erase(
-      std::remove_if(
-          state.command_buffer_bindings.begin(),
-          state.command_buffer_bindings.end(),
-          [device, command_pool, command_buffer_count, command_buffers](
-              const AdapterState::CommandBufferBinding& binding) {
-            return binding.device == device &&
-                   binding.command_pool == command_pool &&
-                   std::find(command_buffers,
-                             command_buffers + command_buffer_count,
-                             binding.command_buffer) !=
-                       command_buffers + command_buffer_count;
-          }),
-      state.command_buffer_bindings.end());
+  for (std::uint32_t index = 0; index < command_buffer_count; ++index) {
+    const auto binding =
+        state.command_buffer_bindings.find(command_buffers[index]);
+    if (binding != state.command_buffer_bindings.end() &&
+        binding->second.device == device &&
+        binding->second.command_pool == command_pool) {
+      state.command_buffer_bindings.erase(binding);
+    }
+  }
   InvalidateFastDispatchCaches();
 }
 
@@ -643,16 +647,10 @@ void RemoveHostCommandPoolBindings(VkDevice device,
                                    VkCommandPool command_pool) {
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
-  state.command_buffer_bindings.erase(
-      std::remove_if(
-          state.command_buffer_bindings.begin(),
-          state.command_buffer_bindings.end(),
-          [device, command_pool](
-              const AdapterState::CommandBufferBinding& binding) {
-            return binding.device == device &&
-                   binding.command_pool == command_pool;
-          }),
-      state.command_buffer_bindings.end());
+  EraseCommandBufferBindingsIf(
+      &state, [device, command_pool](const auto& binding) {
+        return binding.device == device && binding.command_pool == command_pool;
+      });
   InvalidateFastDispatchCaches();
 }
 
@@ -665,14 +663,9 @@ void RemoveHostDeviceDispatch(VkDevice device) {
                        return binding.device == device;
                      }),
       state.queue_bindings.end());
-  state.command_buffer_bindings.erase(
-      std::remove_if(
-          state.command_buffer_bindings.begin(),
-          state.command_buffer_bindings.end(),
-          [device](const AdapterState::CommandBufferBinding& binding) {
-            return binding.device == device;
-          }),
-      state.command_buffer_bindings.end());
+  EraseCommandBufferBindingsIf(&state, [device](const auto& binding) {
+    return binding.device == device;
+  });
   state.device_dispatches.erase(
       std::remove_if(
           state.device_dispatches.begin(), state.device_dispatches.end(),
@@ -1437,13 +1430,18 @@ bool Etc2EmulatedPhysicalDevice(VkPhysicalDevice physical_device) {
 
 void ReleaseEtc2PoolCommandBuffers(VkDevice device,
                                    VkCommandPool command_pool) {
+  // Runs on every pool reset, which the game does each frame per thread.
+  if (!State().etc2.HasCommands()) {
+    return;
+  }
   std::vector<VkCommandBuffer> command_buffers;
   {
     AdapterState& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
-    for (const auto& binding : state.command_buffer_bindings) {
+    for (const auto& [command_buffer, binding] :
+         state.command_buffer_bindings) {
       if (binding.device == device && binding.command_pool == command_pool) {
-        command_buffers.push_back(binding.command_buffer);
+        command_buffers.push_back(command_buffer);
       }
     }
   }
@@ -1630,24 +1628,25 @@ const VkSubmitInfo2* PrepareEtc2Submit2(VkQueue queue,
   return rewritten_any ? rewrite->rewritten2.data() : submits;
 }
 
-std::string TakeDeviceKey(VkDevice device) {
+AdapterState::DeviceRecord TakeDeviceRecord(VkDevice device) {
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
   const auto found = std::find_if(
-      state.device_keys.begin(), state.device_keys.end(),
-      [device](const auto& entry) { return entry.first == device; });
-  if (found == state.device_keys.end()) {
+      state.device_records.begin(), state.device_records.end(),
+      [device](const auto& record) { return record.device == device; });
+  if (found == state.device_records.end()) {
     return {};
   }
-  std::string key = std::move(found->second);
-  state.device_keys.erase(found);
-  return key;
+  AdapterState::DeviceRecord record = std::move(*found);
+  state.device_records.erase(found);
+  return record;
 }
 
 // Keeps an idle host device for the next identical vkCreateDevice instead of
 // destroying it. Returns false when one is already kept.
-bool KeepHostDevice(VkDevice device, std::string key) {
-  if (key.empty()) {
+bool KeepHostDevice(VkDevice device, AdapterState::DeviceRecord record,
+                    PFN_vkDestroyDevice host_destroy) {
+  if (record.key.empty()) {
     return false;
   }
   {
@@ -1664,8 +1663,35 @@ bool KeepHostDevice(VkDevice device, std::string key) {
   }
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
-  state.kept_device.Keep(device, std::move(key));
+  state.kept_device.Keep(device, std::move(record.key));
+  state.kept_device_destroy = host_destroy;
+  state.kept_device_instance = record.instance;
+  state.kept_device_has_allocator = record.has_allocator;
+  state.kept_device_allocator = record.allocator;
   return true;
+}
+
+// Destroys a kept device that a create with a different key could not reuse,
+// in the background, so the slot is free for the device replacing it.
+// Its parent instance stays alive, as every replaced instance does:
+// destroying an older instance after a newer one exists crashes the NVIDIA
+// driver.
+void DestroyStaleKeptDevice(VkDevice device, PFN_vkDestroyDevice host_destroy,
+                            bool has_allocator,
+                            VkAllocationCallbacks allocator) {
+  if (device == VK_NULL_HANDLE || host_destroy == nullptr) {
+    return;
+  }
+  std::fprintf(stderr,
+               "  [vulkan] the kept host VkDevice does not match this create; "
+               "destroying it in the background\n");
+  void* const library =
+      HoldLibraryOf(reinterpret_cast<const void*>(host_destroy));
+  Teardown().Post([device, host_destroy, library, has_allocator, allocator] {
+    State().etc2.DropParkedGpuDecoder(device);
+    host_destroy(device, has_allocator ? &allocator : nullptr);
+    ReleaseLibrary(library);
+  });
 }
 
 }  // namespace
@@ -1768,6 +1794,7 @@ vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* allocator) {
   const auto host_destroy = reinterpret_cast<PFN_vkDestroyInstance>(
       HostInstanceProc(instance, "vkDestroyInstance"));
   bool kept = false;
+  bool parent_of_kept_device = false;
   {
     AdapterState& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -1776,11 +1803,17 @@ vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* allocator) {
       state.kept_instance.Keep(instance, state.latest_instance_key);
       kept = true;
     }
+    parent_of_kept_device = state.kept_device.Held() != VK_NULL_HANDLE &&
+                            state.kept_device_instance == instance;
   }
   if (kept) {
     std::fprintf(stderr,
                  "  [vulkan] keeping the host VkInstance for the next "
                  "create\n");
+  } else if (parent_of_kept_device) {
+    std::fprintf(stderr,
+                 "  [vulkan] keeping the old Vulkan instance; the kept "
+                 "device still belongs to it\n");
   } else if (host_destroy != nullptr && Teardown().Busy()) {
     std::fprintf(stderr,
                  "  [vulkan] keeping the old Vulkan instance; destroying it "
@@ -2063,11 +2096,34 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   std::string device_key =
       mocktail::graphics::VulkanDeviceKey(physical_device, host_info);
   VkDevice kept = VK_NULL_HANDLE;
+  VkDevice stale = VK_NULL_HANDLE;
+  PFN_vkDestroyDevice stale_destroy = nullptr;
+  bool stale_has_allocator = false;
+  VkAllocationCallbacks stale_allocator{};
+  // A reused device keeps the parent and allocator it was created with.
+  VkInstance kept_parent = VK_NULL_HANDLE;
   {
     AdapterState& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
     kept = state.kept_device.Take(device_key);
+    kept_parent = state.kept_device_instance;
+    if (kept == VK_NULL_HANDLE) {
+      stale = state.kept_device.Keep(VK_NULL_HANDLE, {});
+    }
+    stale_destroy = state.kept_device_destroy;
+    stale_has_allocator = state.kept_device_has_allocator;
+    stale_allocator = state.kept_device_allocator;
+    state.kept_device_destroy = nullptr;
+    state.kept_device_instance = VK_NULL_HANDLE;
+    state.kept_device_has_allocator = false;
   }
+  const bool reused_has_allocator = stale_has_allocator;
+  const VkAllocationCallbacks reused_allocator = stale_allocator;
+  if (kept != VK_NULL_HANDLE) {
+    stale_has_allocator = false;
+  }
+  DestroyStaleKeptDevice(stale, stale_destroy, stale_has_allocator,
+                         stale_allocator);
   VkResult result = VK_SUCCESS;
   if (kept != VK_NULL_HANDLE) {
     *device = kept;
@@ -2089,7 +2145,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   {
     AdapterState& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
-    state.device_keys.emplace_back(*device, std::move(device_key));
+    AdapterState::DeviceRecord record;
+    record.device = *device;
+    record.key = std::move(device_key);
+    if (kept != VK_NULL_HANDLE) {
+      record.instance = kept_parent;
+      record.has_allocator = reused_has_allocator;
+      record.allocator = reused_allocator;
+    } else {
+      record.instance = instance;
+      if (allocator != nullptr) {
+        record.has_allocator = true;
+        record.allocator = *allocator;
+      }
+    }
+    state.device_records.push_back(std::move(record));
   }
   RegisterHostDeviceDispatch(*device, physical_device,
                              host_get_device_proc_addr);
@@ -2234,24 +2304,28 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
                  "  [vulkan] BC7 encoder still compiling; destroying the old "
                  "device in the background\n");
     RemoveHostDeviceDispatch(device);
-    (void)TakeDeviceKey(device);
+    (void)TakeDeviceRecord(device);
     void* const library =
         HoldLibraryOf(reinterpret_cast<const void*>(host_destroy));
     Teardown().Post([device, allocator, host_destroy, library] {
       State().etc2.DestroyDevice(device);
+      State().etc2.DropParkedGpuDecoder(device);
       if (host_destroy != nullptr) {
         host_destroy(device, allocator);
       }
       ReleaseLibrary(library);
     });
   } else {
-    State().etc2.DestroyDevice(device);
-    if (KeepHostDevice(device, TakeDeviceKey(device))) {
+    State().etc2.DestroyDevice(device, /*park_gpu_decoder=*/true);
+    if (KeepHostDevice(device, TakeDeviceRecord(device), host_destroy)) {
       std::fprintf(stderr,
                    "  [vulkan] keeping the host VkDevice for the next "
                    "create\n");
-    } else if (host_destroy != nullptr) {
-      host_destroy(device, allocator);
+    } else {
+      State().etc2.DropParkedGpuDecoder(device);
+      if (host_destroy != nullptr) {
+        host_destroy(device, allocator);
+      }
     }
     RemoveHostDeviceDispatch(device);
   }

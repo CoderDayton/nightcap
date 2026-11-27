@@ -2693,7 +2693,9 @@ uint64_t PaceInputPump() {
   const uint64_t delay_ns =
       g_input_pump_pacer.DelayBeforeNextPump(SDL_GetTicksNS());
   if (delay_ns != 0) {
-    SDL_DelayPrecise(delay_ns);
+    // Not SDL_DelayPrecise: it spins the last millisecond, up to a quarter
+    // of a core at 240 Hz. Input polling does not need that precision.
+    SDL_DelayNS(delay_ns);
   }
   return delay_ns;
 }

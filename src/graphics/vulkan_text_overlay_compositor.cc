@@ -177,6 +177,8 @@ struct VulkanTextOverlayCompositor::Impl {
     pl_vulkan vulkan = nullptr;
     pl_dispatch dispatch = nullptr;
     pl_tex source = nullptr;
+    // Reused for every upload; cleared after each, but keeps its capacity.
+    std::vector<std::uint8_t> source_pixels;
     std::uint64_t source_revision = 0;
     std::uint32_t source_width = 0;
     std::uint32_t source_height = 0;
@@ -394,8 +396,8 @@ struct VulkanTextOverlayCompositor::Impl {
       return false;
     }
 
-    std::vector<std::uint8_t> pixels(
-        static_cast<std::size_t>(frame.rgba_bytes));
+    std::vector<std::uint8_t>& pixels = device->source_pixels;
+    pixels.resize(static_cast<std::size_t>(frame.rgba_bytes));
     if (!overlay_copy(frame.revision, pixels.data(), pixels.size())) {
       SecureClear(&pixels);
       return false;

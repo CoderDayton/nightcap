@@ -272,65 +272,72 @@ class SdlAudioSink final : public AudioSink {
             ? SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK
             : static_cast<SDL_AudioDeviceID>(physical_device_id);
 
-    std::unique_lock<std::mutex> lock(mutex_);
-    if (shutting_down_ || stream_ == nullptr || logical_device_id_ == 0) {
-      return FailedPrecondition("audio sink is shut down");
-    }
-    if (physical_device_id_ == physical_device_id) {
-      return Status::Ok();
-    }
-    switching_device_ = true;
-    shutdown_cv_.wait(lock,
-                      [this] { return active_calls_ == 0 || shutting_down_; });
-    if (shutting_down_ || stream_ == nullptr || logical_device_id_ == 0) {
-      switching_device_ = false;
-      lock.unlock();
-      shutdown_cv_.notify_all();
-      return FailedPrecondition("audio sink is shut down");
+    // Opening and closing a device can take hundreds of ms on PipeWire or
+    // Pulse, so both happen without mutex_; only the rebind blocks the
+    // playback calls.
+    std::lock_guard<std::mutex> switch_lock(switch_mutex_);
+    SDL_AudioDeviceID current = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (shutting_down_ || stream_ == nullptr || logical_device_id_ == 0) {
+        return FailedPrecondition("audio sink is shut down");
+      }
+      if (physical_device_id_ == physical_device_id) {
+        return Status::Ok();
+      }
+      current = logical_device_id_;
     }
 
-    const bool was_paused = SDL_AudioDevicePaused(logical_device_id_);
+    const bool was_paused = SDL_AudioDevicePaused(current);
     SDL_AudioDeviceID replacement = 0;
     {
       std::lock_guard<std::mutex> open_lock(SdlAudioDeviceOpenMutex());
       replacement = SDL_OpenAudioDevice(requested_device, nullptr);
     }
     if (replacement == 0) {
-      switching_device_ = false;
-      lock.unlock();
-      shutdown_cv_.notify_all();
       return SdlError("SDL_OpenAudioDevice during playback migration");
     }
     if (was_paused && !SDL_PauseAudioDevice(replacement)) {
       const Status status =
           SdlError("SDL_PauseAudioDevice during playback migration");
       SDL_CloseAudioDevice(replacement);
-      switching_device_ = false;
-      lock.unlock();
-      shutdown_cv_.notify_all();
       return status;
     }
 
-    SDL_UnbindAudioStream(stream_);
-    if (!SDL_BindAudioStream(replacement, stream_)) {
-      const Status status =
-          SdlError("SDL_BindAudioStream during playback migration");
-      (void)SDL_BindAudioStream(logical_device_id_, stream_);
-      SDL_CloseAudioDevice(replacement);
+    Status status = Status::Ok();
+    SDL_AudioDeviceID to_close = replacement;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      switching_device_ = true;
+      shutdown_cv_.wait(
+          lock, [this] { return active_calls_ == 0 || shutting_down_; });
+      // A Pause or Resume that ran while the replacement opened changed the
+      // old device after `was_paused` was read.
+      const bool paused = !shutting_down_ && stream_ != nullptr &&
+                          logical_device_id_ != 0 &&
+                          SDL_AudioDevicePaused(logical_device_id_);
+      if (shutting_down_ || stream_ == nullptr || logical_device_id_ == 0) {
+        status = FailedPrecondition("audio sink is shut down");
+      } else if (paused != was_paused &&
+                 !(paused ? SDL_PauseAudioDevice(replacement)
+                          : SDL_ResumeAudioDevice(replacement))) {
+        status = SdlError("SDL_PauseAudioDevice during playback migration");
+      } else {
+        SDL_UnbindAudioStream(stream_);
+        if (!SDL_BindAudioStream(replacement, stream_)) {
+          status = SdlError("SDL_BindAudioStream during playback migration");
+          (void)SDL_BindAudioStream(logical_device_id_, stream_);
+        } else {
+          to_close = logical_device_id_;
+          logical_device_id_ = replacement;
+          physical_device_id_ = physical_device_id;
+        }
+      }
       switching_device_ = false;
-      lock.unlock();
-      shutdown_cv_.notify_all();
-      return status;
     }
-
-    const SDL_AudioDeviceID previous = logical_device_id_;
-    logical_device_id_ = replacement;
-    physical_device_id_ = physical_device_id;
-    SDL_CloseAudioDevice(previous);
-    switching_device_ = false;
-    lock.unlock();
     shutdown_cv_.notify_all();
-    return Status::Ok();
+    SDL_CloseAudioDevice(to_close);
+    return status;
   }
 
   std::uint32_t playback_device_id() const {
@@ -441,6 +448,8 @@ class SdlAudioSink final : public AudioSink {
 
   const PcmSpec source_spec_;
   mutable std::mutex mutex_;
+  // Serializes device switches, which open and close devices without mutex_.
+  std::mutex switch_mutex_;
   mutable std::condition_variable shutdown_cv_;
   mutable std::size_t active_calls_ = 0;
   SDL_AudioStream* stream_ = nullptr;

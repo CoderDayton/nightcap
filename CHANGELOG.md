@@ -17,10 +17,17 @@ Release notes on GitHub are taken from the matching section here.
   output. Terminal output that falls behind is left out there; the session log still has all of it.
 - Leaving a game or joining another no longer freezes the screen for about 12 seconds on NVIDIA.
   Nightcap keeps the game's Vulkan device and hands it back to the next game instead of destroying it.
+  The texture encoder is kept with it, so textures stay compressed right after a rejoin.
+- Moving, resizing or fullscreening the window no longer stutters the game on slow disks. Saving the
+  window position no longer waits for the disk.
 - Your mic no longer sounds choppy in voice chat. It sent audio in 20 to 40 ms bursts instead of every 10 ms.
 - The game no longer freezes when the sound device stops taking audio, for example after a PipeWire restart.
   Sound is dropped until the device recovers.
 - A speaker opened at the same moment as the mic no longer gets the mic's 5 ms buffer, which crackled.
+- Switching the sound output device no longer stalls game audio while the new device opens.
+- A slow voice chat call in the game no longer drops mic audio or can hang closing the mic. Mic audio is
+  handed to the game from its own thread instead of SDL's audio thread.
+- With vsync or a frame cap, the main loop no longer busy-waits between input polls.
 - Startup no longer hangs when another Nightcap holds the lock on Roblox's app storage.
 - Quitting during a game join no longer waits up to 10 seconds for the Discord status lookups.
 - Slow disks no longer make Nightcap quit at startup. Roblox's library gets 30 seconds to load instead of 3.

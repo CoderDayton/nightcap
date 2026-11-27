@@ -70,10 +70,40 @@ thread_local mocktail::audio::FmodThreadFloatingPointMode g_thread_audio_fp_mode
 // owner registered so discarding that candidate cannot disable the VM that
 // the runtime retained. Access is serialized by g_jni_state_mutex.
 std::vector<VM*> g_live_vms;
+// Bumped under g_jni_state_mutex whenever g_live_vms changes, so each thread
+// can answer CurrentVM from its cache instead of taking the global JNI lock
+// on every call.
+std::atomic<std::uint64_t> g_live_vms_generation{1};
+
+struct VmLookupCache {
+  std::uint64_t generation = 0;
+  const VM* thread_vm = nullptr;
+  VM* current = nullptr;
+  bool thread_vm_live = false;
+};
+thread_local VmLookupCache t_vm_lookup;
 
 bool IsLiveVmLocked(const VM* vm) {
   return std::find(g_live_vms.begin(), g_live_vms.end(), vm) !=
          g_live_vms.end();
+}
+
+const VmLookupCache& LookupVm() {
+  if (t_vm_lookup.generation ==
+          g_live_vms_generation.load(std::memory_order_acquire) &&
+      t_vm_lookup.thread_vm == g_thread_vm_instance) {
+    return t_vm_lookup;
+  }
+  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
+  t_vm_lookup.generation =
+      g_live_vms_generation.load(std::memory_order_relaxed);
+  t_vm_lookup.thread_vm = g_thread_vm_instance;
+  t_vm_lookup.thread_vm_live = IsLiveVmLocked(g_thread_vm_instance);
+  t_vm_lookup.current =
+      t_vm_lookup.thread_vm_live
+          ? g_thread_vm_instance
+          : (g_live_vms.empty() ? nullptr : g_live_vms.back());
+  return t_vm_lookup;
 }
 
 bool JniVmTraceEnabled() {
@@ -81,13 +111,7 @@ bool JniVmTraceEnabled() {
   return enabled;
 }
 
-VM* CurrentVM() {
-  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  if (IsLiveVmLocked(g_thread_vm_instance)) {
-    return g_thread_vm_instance;
-  }
-  return g_live_vms.empty() ? nullptr : g_live_vms.back();
-}
+VM* CurrentVM() { return LookupVm().current; }
 
 PlatformIdentity CurrentPlatformIdentity() {
   VM* vm = CurrentVM();
@@ -95,8 +119,7 @@ PlatformIdentity CurrentPlatformIdentity() {
 }
 
 bool IsThreadLocalEnvValid() {
-  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  return IsLiveVmLocked(g_thread_vm_instance) &&
+  return LookupVm().thread_vm_live &&
          g_thread_local_env == &g_thread_env_storage &&
          g_thread_local_env->functions != nullptr;
 }
@@ -4401,6 +4424,7 @@ VM::VM() {
   InitJNIFunctionTables();
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   g_live_vms.push_back(this);
+  g_live_vms_generation.fetch_add(1, std::memory_order_release);
 }
 
 VM::~VM() {
@@ -4408,6 +4432,7 @@ VM::~VM() {
     std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
     g_live_vms.erase(std::remove(g_live_vms.begin(), g_live_vms.end(), this),
                     g_live_vms.end());
+    g_live_vms_generation.fetch_add(1, std::memory_order_release);
     if (g_thread_vm_instance == this) {
       g_thread_audio_fp_mode.Restore();
       g_thread_vm_instance = nullptr;
