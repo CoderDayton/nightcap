@@ -34,19 +34,14 @@ def catalog(*profiles: tuple[str, int, bool]) -> dict:
     }
 
 
-def sources(*versions: str) -> dict:
-    return {
-        "schema_version": 1,
-        "sources": [
-            {
-                "package": "com.roblox.client",
-                "version_name": version,
-                "abi": "x86_64",
-                "provider": "uptodown",
-            }
-            for version in versions
-        ],
-    }
+def fake_provider(root: Path, name: str, code: int) -> Path:
+    provider = root / "provider.py"
+    provider.write_text(
+        "import json\n"
+        f"print(json.dumps({{'latest_version_name': {name!r}, "
+        f"'latest_version_code': {code}}}))\n"
+    )
+    return provider
 
 
 class PreferredProfileTest(unittest.TestCase):
@@ -70,46 +65,29 @@ class PreferredProfileTest(unittest.TestCase):
 class FindingsTest(unittest.TestCase):
     def test_reports_nothing_when_metadata_is_current(self) -> None:
         reported = drift.findings(
-            catalog(("2.727.1199", 2628, True)),
-            sources("2.727.1199"),
-            ("2.727.1199", 2628),
+            catalog(("2.727.1199", 2628, True)), ("2.727.1199", 2628)
         )
         self.assertEqual(reported, [])
 
-    def test_reports_an_unpinned_fallback(self) -> None:
+    def test_reports_nothing_without_a_latest_version(self) -> None:
         reported = drift.findings(
             catalog(("2.725.1142", 2546, True), ("2.727.1199", 2628, True)),
-            sources("2.725.1142"),
             None,
         )
-        self.assertEqual(len(reported), 1)
-        self.assertIn("no pinned bootstrap source", reported[0])
-        self.assertIn("2.727.1199", reported[0])
+        self.assertEqual(reported, [])
 
     def test_reports_a_catalog_behind_the_published_version(self) -> None:
         reported = drift.findings(
-            catalog(("2.727.1199", 2628, True)),
-            sources("2.727.1199"),
-            ("2.734.917", 2908),
+            catalog(("2.727.1199", 2628, True)), ("2.734.917", 2908)
         )
         self.assertEqual(len(reported), 1)
         self.assertIn("2.734.917", reported[0])
 
     def test_accepts_a_catalog_ahead_of_the_published_version(self) -> None:
         reported = drift.findings(
-            catalog(("2.727.1199", 2628, True)),
-            sources("2.727.1199"),
-            ("2.725.1142", 2546),
+            catalog(("2.727.1199", 2628, True)), ("2.725.1142", 2546)
         )
         self.assertEqual(reported, [])
-
-    def test_ignores_pinned_sources_for_another_architecture(self) -> None:
-        manifest = sources("2.727.1199")
-        manifest["sources"][0]["abi"] = "arm64-v8a"
-        reported = drift.findings(
-            catalog(("2.727.1199", 2628, True)), manifest, None
-        )
-        self.assertEqual(len(reported), 1)
 
 
 class MainTest(unittest.TestCase):
@@ -119,12 +97,13 @@ class MainTest(unittest.TestCase):
             (root / "catalog.json").write_text(
                 json.dumps(catalog(("2.727.1199", 2628, True)))
             )
-            (root / "sources.json").write_text(json.dumps(sources()))
+            provider = fake_provider(root, "2.734.917", 2908)
             self.assertEqual(
                 drift.main(
                     [
                         "--catalog", str(root / "catalog.json"),
-                        "--sources", str(root / "sources.json"),
+                        "--provider", str(provider),
+                        "--check-latest",
                     ]
                 ),
                 1,
@@ -134,14 +113,8 @@ class MainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "catalog.json").write_text("{")
-            (root / "sources.json").write_text(json.dumps(sources()))
             self.assertEqual(
-                drift.main(
-                    [
-                        "--catalog", str(root / "catalog.json"),
-                        "--sources", str(root / "sources.json"),
-                    ]
-                ),
+                drift.main(["--catalog", str(root / "catalog.json")]),
                 2,
             )
 

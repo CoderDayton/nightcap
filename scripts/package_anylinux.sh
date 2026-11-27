@@ -85,7 +85,7 @@ AnyLinuxVerifyInstalled() {
     [[ -r "/usr/lib/mocktail/${entry}" ]] ||
       AnyLinuxDie "missing installed Android adapter: ${entry}"
   done
-  for entry in roblox_compatibility.json roblox_bootstrap_sources.json \
+  for entry in roblox_compatibility.json \
       roblox_host_abi_reference.json roblox_signing_certificates.json \
       roblox_download_sources.json; do
     [[ -r "/usr/share/mocktail/metadata/${entry}" ]] ||
@@ -124,7 +124,7 @@ AnyLinuxVerifyAppDir() {
     compgen -G "${app_dir}/lib/${entry}.so.*" >/dev/null ||
       AnyLinuxDie "quick-sharun did not deploy ${entry} for in-game video"
   done
-  for entry in roblox_compatibility.json roblox_bootstrap_sources.json \
+  for entry in roblox_compatibility.json \
       roblox_host_abi_reference.json roblox_signing_certificates.json \
       roblox_download_sources.json; do
     [[ -r "${app_dir}/share/mocktail/metadata/${entry}" ]] ||

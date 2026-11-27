@@ -139,7 +139,6 @@ for path in \
     mocktail/metadata/DEPENDENCIES.txt \
     mocktail/metadata/SHA256SUMS.txt \
     mocktail/metadata/roblox_compatibility.json \
-    mocktail/metadata/roblox_bootstrap_sources.json \
     mocktail/metadata/roblox_download_sources.json \
     mocktail/metadata/roblox_host_abi_reference.json \
     mocktail/metadata/roblox_signing_certificates.json \
@@ -288,7 +287,6 @@ EOF
     chmod 0755 "${musl_runtime}/runtime/android-tools/bin/${tool}"
   done
   printf '{}\n' >"${musl_metadata}/roblox_compatibility.json"
-  printf '{}\n' >"${musl_metadata}/roblox_bootstrap_sources.json"
   printf '{}\n' >"${musl_metadata}/roblox_download_sources.json"
   printf '{}\n' >"${musl_metadata}/roblox_host_abi_reference.json"
   printf '{}\n' >"${musl_metadata}/roblox_signing_certificates.json"
