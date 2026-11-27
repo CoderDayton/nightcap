@@ -240,15 +240,13 @@ bool MergePerformanceClientSettingsOverrides(
     // Forcing one sample disables anti-aliasing even at maximum quality.
     // Every name here exists in the supported builds. Shadow and texture
     // sharpness stay with Roblox's quality level.
-    const std::array<ClientSetting, 39> rendering_settings = {{
+    const std::array<ClientSetting, 36> rendering_settings = {{
         {"FIntSmoothClusterTaskQueueMaxParallelTasks", workers},
         {"FIntOcclusionWorkerThreadCount", occlusion_workers},
         {"FFlagMovePrerenderV2", "True"},
-        {"FIntTerrainArraySliceSize", "4"},
         {"FFlagUITextureCompressionDesktop", "True"},
         {"FFlagTCTextureCompressionDesktop", "True"},
         {"FFlagUITextureUncompressed", "False"},
-        {"FFlagGpuVoxelCompression", "True"},
         {"FFlagPhysicsMeshCompression", "True"},
         {"FFlagMeshLodApplyGeomMeshOptimizer", "False"},
         {"FIntDefaultMeshCacheSizeMB", "64"},
@@ -258,7 +256,6 @@ bool MergePerformanceClientSettingsOverrides(
         {"FIntSmoothTerrainPhysicsCacheSize", "32"},
         {"FIntRenderTextureTotalBudgetMB", "128"},
         {"FIntRenderTextureOrphanBudgetMB", "8"},
-        {"FFlagDebugTerrainVTCompressedTextures", "True"},
         {"FFlagStreamingObserverMemoryOptimization", "True"},
         {"FIntNetworkStreamingGCMaxMicroSecondLimit", "5000"},
         {"FFlagfeatureFastClusterCacheEnabled", "True"},

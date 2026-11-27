@@ -27,6 +27,8 @@ Release notes on GitHub are taken from the matching section here.
   The log shows how long it took. If it still runs out of time, the error dialog says how to allow more.
 - If the game window can't open or can't rebuild its surface, Nightcap stops with an error saying why.
   Before, the window could close without any message.
+- Multithreaded rendering no longer turns on Roblox's terrain compression, which used about 20% more GPU
+  per frame in terrain-heavy games. Terrain textures also keep their full detail.
 
 ## [0.5.4] - 2026-11-22
 
