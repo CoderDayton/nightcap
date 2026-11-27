@@ -1478,6 +1478,15 @@ struct VulkanEtc2Emulation::State {
   std::mutex devices_mutex;
   std::unordered_map<VkPhysicalDevice, bool> physical_devices;
   std::vector<std::unique_ptr<HostDevice>> devices;
+  // A ready decoder whose VkDevice the adapter kept for the next rejoin.
+  // Guarded by devices_mutex.
+  struct ParkedGpuDecoder {
+    VkDevice device = VK_NULL_HANDLE;
+    std::unique_ptr<Etc2GpuDecoder> gpu;
+    Etc2GpuSpeed speed;
+    std::uint32_t decode_family = 0;
+  };
+  ParkedGpuDecoder parked_gpu;
   std::unordered_map<VkImage, ImageRecord> images;
   // Destroyed images a queued batch may still look up, by that batch's
   // ticket. A new image that reuses the handle waits for it first, so it
@@ -3344,7 +3353,8 @@ struct VulkanEtc2Emulation::State {
   std::deque<std::unique_ptr<DecodeBatch>> queue;
   std::vector<std::unique_ptr<DecodeBatch>> spare_batches;
   std::uint64_t issued_ticket = 0;
-  std::uint64_t completed_ticket = 0;
+  // Written under queue_mutex; atomic so a satisfied wait skips the lock.
+  std::atomic<std::uint64_t> completed_ticket{0};
   bool stopping = false;
   std::thread dispatcher;
 
@@ -3396,7 +3406,7 @@ struct VulkanEtc2Emulation::State {
       RunBatch(*batch);
       {
         std::lock_guard<std::mutex> lock(queue_mutex);
-        completed_ticket = batch->ticket;
+        completed_ticket.store(batch->ticket, std::memory_order_release);
         if (spare_batches.size() < kMaxSpareBatches) {
           spare_batches.push_back(std::move(batch));
         }
@@ -3719,8 +3729,7 @@ struct VulkanEtc2Emulation::State {
   }
 
   std::uint64_t CompletedTicket() {
-    std::lock_guard<std::mutex> lock(queue_mutex);
-    return completed_ticket;
+    return completed_ticket.load(std::memory_order_acquire);
   }
 
   // The last queued batch that touches an image `copies` read or write.
@@ -3751,12 +3760,15 @@ struct VulkanEtc2Emulation::State {
 
   // Blocks until every batch up to `ticket` has been decoded and emitted.
   void WaitForTicket(std::uint64_t ticket) {
-    if (ticket == 0) {
+    // Every command-buffer reset lands here, almost always after its decode.
+    if (ticket == 0 ||
+        completed_ticket.load(std::memory_order_acquire) >= ticket) {
       return;
     }
     std::unique_lock<std::mutex> lock(queue_mutex);
     queue_done.wait(lock, [this, ticket] {
-      return completed_ticket >= ticket || stopping;
+      return completed_ticket.load(std::memory_order_relaxed) >= ticket ||
+             stopping;
     });
   }
 
@@ -4016,7 +4028,20 @@ void VulkanEtc2Emulation::SetMemoryBudgetQuery(VkDevice device,
   state_->video_free_ns = 0;
 }
 
-void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
+void VulkanEtc2Emulation::DropParkedGpuDecoder(VkDevice device) {
+  std::unique_ptr<Etc2GpuDecoder> doomed;
+  {
+    std::lock_guard<std::mutex> lock(state_->devices_mutex);
+    if (state_->parked_gpu.device != device) {
+      return;
+    }
+    doomed = std::move(state_->parked_gpu.gpu);
+    state_->parked_gpu = {};
+  }
+}
+
+void VulkanEtc2Emulation::DestroyDevice(VkDevice device,
+                                        bool park_gpu_decoder) {
   HostDevice* const building = state_->FindMutable(device);
   if (building != nullptr && building->encoder_build.valid()) {
     building->encoder_build.wait();
@@ -4024,9 +4049,12 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
   if (building != nullptr && building->encoder_check.valid()) {
     building->encoder_check.wait();
   }
+  // An encoder that never reached EndEncoder is not in a known state.
+  bool encoder_unfinished = false;
   if (building != nullptr &&
       building->encoder_pending.exchange(false, std::memory_order_acq_rel)) {
     state_->encoders_pending.fetch_sub(1, std::memory_order_acq_rel);
+    encoder_unfinished = true;
   }
   // Nothing may free staging or the semaphore while a decode still writes it.
   state_->DrainDecodes();
@@ -4148,6 +4176,13 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
     }
   }
   std::lock_guard<std::mutex> lock(state_->devices_mutex);
+  if (park_gpu_decoder && building != nullptr && building->gpu != nullptr &&
+      !encoder_unfinished && state_->parked_gpu.gpu == nullptr) {
+    state_->parked_gpu.device = device;
+    state_->parked_gpu.gpu = std::move(building->gpu);
+    state_->parked_gpu.speed = building->speed;
+    state_->parked_gpu.decode_family = building->decode_family;
+  }
   state_->devices.erase(
       std::remove_if(state_->devices.begin(), state_->devices.end(),
                      [device](const std::unique_ptr<HostDevice>& candidate) {
@@ -5942,6 +5977,22 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
       dev->end_command_buffer == nullptr || dev->pipeline_barrier == nullptr) {
     return false;
   }
+  {
+    std::lock_guard<std::mutex> lock(state_->devices_mutex);
+    if (state_->parked_gpu.device == device &&
+        state_->parked_gpu.decode_family == queue_family) {
+      dev->gpu = std::move(state_->parked_gpu.gpu);
+      dev->speed = state_->parked_gpu.speed;
+      dev->decode_family = queue_family;
+      state_->parked_gpu = {};
+    }
+  }
+  if (dev->gpu != nullptr) {
+    std::fprintf(stderr,
+                 "  [vulkan] ETC2 GPU decode enabled; reusing the decoder and "
+                 "BC encoder of the kept device\n");
+    return true;
+  }
   const bool background = (dev->bc_textures || dev->bc_fallback) &&
                           state_->encoder_build_wait.has_value();
   std::string error;
@@ -5956,6 +6007,7 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
     return false;
   }
   std::fprintf(stderr, "  [vulkan] ETC2 GPU decode enabled\n");
+  dev->decode_family = queue_family;
   if (!background) {
     ReportEncoder(*dev, *decoder, queue, queue_family, state_->encode_budget,
                   state_->upscale);
@@ -5963,7 +6015,6 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
     return true;
   }
   Etc2GpuDecoder* const building = decoder.get();
-  dev->decode_family = queue_family;
   dev->encoder_started = std::chrono::steady_clock::now();
   dev->encoder_build = std::async(std::launch::async, [building] {
     return building->BuildTranscode();
@@ -6361,6 +6412,10 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
   result.semaphore = batch_dev->timeline;
   result.value = ticket;
   return result;
+}
+
+bool VulkanEtc2Emulation::HasCommands() const {
+  return state_->has_commands.load(std::memory_order_acquire);
 }
 
 void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {

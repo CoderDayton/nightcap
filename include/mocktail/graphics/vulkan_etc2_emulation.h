@@ -156,7 +156,11 @@ class VulkanEtc2Emulation final {
   using MemoryBudgetQuery =
       std::function<bool(VkPhysicalDeviceMemoryBudgetPropertiesEXT*)>;
   void SetMemoryBudgetQuery(VkDevice device, MemoryBudgetQuery query);
-  void DestroyDevice(VkDevice device);
+  // `park_gpu_decoder` keeps a ready decoder for the next EnableGpuDecode on
+  // the same kept VkDevice. It owns objects on that device, so
+  // DropParkedGpuDecoder must run before the device is destroyed.
+  void DestroyDevice(VkDevice device, bool park_gpu_decoder = false);
+  void DropParkedGpuDecoder(VkDevice device);
 
   void RegisterQueue(VkDevice device, VkQueue queue,
                      std::uint32_t queue_family);
@@ -316,6 +320,7 @@ class VulkanEtc2Emulation final {
   // Destroys the staging buffers owned by a command buffer that is no longer
   // pending, after waiting for any decode still writing into them.
   void ReleaseCommandBuffer(VkCommandBuffer command_buffer);
+  bool HasCommands() const;
 
   // Traced as the "emulated texture (MB)" and "compressed texture (MB)"
   // counters.

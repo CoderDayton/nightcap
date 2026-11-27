@@ -5043,5 +5043,53 @@ TEST(VulkanEtc2GpuEmulationTest, EncoderBuiltInTheBackgroundStartsAtASubmit) {
   CloseTestDevices(&devices);
 }
 
+// A rejoin reuses the kept VkDevice, so its decoder and BC encoder come back
+// ready instead of being compiled and probed again.
+TEST(VulkanEtc2GpuEmulationTest, AParkedDecoderComesBackReadyForTheSameDevice) {
+  std::vector<VulkanTestDevice> devices = OpenTestDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "no Vulkan device with a graphics and compute queue";
+  }
+  for (VulkanTestDevice& vk : devices) {
+    SCOPED_TRACE(vk.name);
+    if (!vk.bc_textures) {
+      continue;
+    }
+    VulkanEtc2Emulation emulation;
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+    emulation.DestroyDevice(vk.device, /*park_gpu_decoder=*/true);
+
+    // A fresh encoder would now build in the background and load the first
+    // texture uncompressed.
+    emulation.SetEncoderBuildWait(std::chrono::milliseconds(0));
+    emulation.RegisterDevice(vk.device, vk.physical_device, true, vk.memory,
+                             vk.get_device_proc_addr, false, true);
+    emulation.RegisterQueue(vk.device, vk.queue, vk.family);
+    ASSERT_TRUE(emulation.EnableGpuDecode(vk.device, vk.queue, vk.family));
+
+    constexpr std::uint32_t kSize = 256;
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    info.extent = {kSize, kSize, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImage image = VK_NULL_HANDLE;
+    ASSERT_EQ(emulation.CreateImage(vk.device, &info, nullptr, &image),
+              VK_SUCCESS);
+    EXPECT_EQ(emulation.TextureBytes().decoded, VkDeviceSize{kSize} * kSize);
+    emulation.DestroyImage(vk.device, image, nullptr);
+    emulation.DestroyDevice(vk.device);
+  }
+  CloseTestDevices(&devices);
+}
+
 }
 }

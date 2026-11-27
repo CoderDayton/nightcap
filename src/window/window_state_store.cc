@@ -249,24 +249,17 @@ Status StoreWindowState(const std::filesystem::path& path,
   bool stored = false;
   {
     const ScopedFileDescriptor file(descriptor);
+    // No fsync: this runs on the game's event loop, and a lost window
+    // position only falls back to the default. The rename keeps readers from
+    // seeing a partial file; a crash before writeback can leave it empty.
     stored = fchmod(file.get(), S_IRUSR | S_IWUSR) == 0 &&
-             WriteAll(file.get(), bytes) && fsync(file.get()) == 0;
+             WriteAll(file.get(), bytes);
   }
   if (!stored || rename(temporary.c_str(), path.c_str()) != 0) {
     const int saved_errno = errno;
     (void)unlink(temporary.c_str());
     errno = saved_errno;
     return PlatformError("cannot atomically store window state");
-  }
-
-  const int directory_descriptor =
-      open(path.parent_path().c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
-  if (directory_descriptor < 0) {
-    return PlatformError("cannot open window state directory for sync");
-  }
-  const ScopedFileDescriptor directory(directory_descriptor);
-  if (fsync(directory.get()) != 0) {
-    return PlatformError("cannot sync window state directory");
   }
   return Status::Ok();
 }
