@@ -1,11 +1,15 @@
 #include "mocktail/audio/sdl_audio_capture.h"
 
 #include <SDL3/SDL.h>
+#include <pthread.h>
 
 #include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <condition_variable>
+#include <cstring>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <string>
@@ -85,6 +89,142 @@ SDL_AudioStream* OpenRecordingStream(SDL_AudioDeviceID device,
   return stream;
 }
 
+// Hands captured frames from SDL's audio thread to a thread of its own, which
+// runs the data callback. The callback calls into the game over JNI, and a
+// slow or re-entrant call there must not hold up SDL's thread, which
+// Shutdown waits on while holding the capture locks.
+class CaptureDelivery final {
+ public:
+  // 8 frames is 80 ms of 10 ms frames; older frames are dropped past that.
+  static constexpr std::size_t kSlots = 8;
+
+  CaptureDelivery(std::size_t frame_bytes, AudioCaptureDataCallback callback,
+                  void* context)
+      : frame_bytes_(frame_bytes),
+        buffer_(frame_bytes),
+        scratch_(frame_bytes),
+        ring_(frame_bytes * kSlots),
+        callback_(callback),
+        context_(context) {}
+
+  std::size_t frame_bytes() const { return frame_bytes_; }
+  std::uint8_t* buffer() { return buffer_.data(); }
+  // Only SDL's audio thread reads into it.
+  std::uint8_t* scratch() { return scratch_.data(); }
+
+  void Push() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (count_ == kSlots) {
+        head_ = (head_ + 1) % kSlots;
+        --count_;
+      }
+      std::memcpy(ring_.data() + ((head_ + count_) % kSlots) * frame_bytes_,
+                  scratch_.data(), frame_bytes_);
+      ++count_;
+    }
+    ready_.notify_one();
+  }
+
+  void SetDelivering(bool delivering) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    delivering_ = delivering;
+    if (!delivering) {
+      count_ = 0;
+    }
+  }
+
+  void Stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_ = true;
+    }
+    ready_.notify_all();
+  }
+
+  bool OnDeliveryThread() const { return t_running_delivery == this; }
+
+  // Waits out a callback already running, so none arrives after Stop()
+  // returns. A callback that stops its own capture does not wait on itself.
+  void WaitIdle() {
+    if (OnDeliveryThread()) {
+      return;
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    idle_.wait(lock, [this] { return !in_callback_; });
+  }
+
+  void Run() {
+    t_running_delivery = this;
+    for (;;) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      ready_.wait(lock, [this] { return stopping_ || count_ > 0; });
+      if (stopping_) {
+        return;
+      }
+      std::memcpy(buffer_.data(), ring_.data() + head_ * frame_bytes_,
+                  frame_bytes_);
+      head_ = (head_ + 1) % kSlots;
+      --count_;
+      if (!delivering_) {
+        continue;
+      }
+      in_callback_ = true;
+      lock.unlock();
+      callback_(context_, frame_bytes_);
+      lock.lock();
+      in_callback_ = false;
+      lock.unlock();
+      idle_.notify_all();
+    }
+  }
+
+  // Started with pthread_create so a failure is an error, not an abort:
+  // this target builds without exceptions.
+  static bool StartThread(const std::shared_ptr<CaptureDelivery>& delivery,
+                          pthread_t* thread) {
+    auto* owner = new (std::nothrow) std::shared_ptr<CaptureDelivery>(delivery);
+    if (owner == nullptr) {
+      return false;
+    }
+    if (pthread_create(thread, nullptr, &ThreadMain, owner) != 0) {
+      delete owner;
+      return false;
+    }
+    return true;
+  }
+
+ private:
+  const std::size_t frame_bytes_;
+  std::vector<std::uint8_t> buffer_;
+  std::vector<std::uint8_t> scratch_;
+  std::vector<std::uint8_t> ring_;
+  AudioCaptureDataCallback callback_ = nullptr;
+  void* context_ = nullptr;
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::size_t head_ = 0;
+  std::size_t count_ = 0;
+  bool delivering_ = false;
+  bool stopping_ = false;
+  bool in_callback_ = false;
+  std::condition_variable idle_;
+
+  static thread_local const CaptureDelivery* t_running_delivery;
+
+  static void* ThreadMain(void* argument) {
+    // The thread owns a reference, so a callback that destroys its capture
+    // does not pull the delivery state out from under it.
+    std::unique_ptr<std::shared_ptr<CaptureDelivery>> owner(
+        static_cast<std::shared_ptr<CaptureDelivery>*>(argument));
+    (*owner)->Run();
+    return nullptr;
+  }
+};
+
+thread_local const CaptureDelivery* CaptureDelivery::t_running_delivery =
+    nullptr;
+
 class SdlAudioCapture final : public AudioCapture {
  public:
   SdlAudioCapture(PcmSpec spec, std::size_t frames_per_buffer,
@@ -92,16 +232,23 @@ class SdlAudioCapture final : public AudioCapture {
                   AudioCaptureDataCallback callback, void* callback_context)
       : output_spec_(spec),
         frames_per_buffer_(frames_per_buffer),
-        buffer_(std::move(buffer)),
-        stream_(stream),
-        callback_(callback),
-        callback_context_(callback_context) {}
+        delivery_(std::make_shared<CaptureDelivery>(buffer.size(), callback,
+                                                    callback_context)),
+        stream_(stream) {}
+
+  bool StartDelivery() {
+    delivery_started_ =
+        CaptureDelivery::StartThread(delivery_, &delivery_thread_);
+    return delivery_started_;
+  }
 
   ~SdlAudioCapture() override { Shutdown(); }
 
   const PcmSpec& output_spec() const override { return output_spec_; }
-  void* buffer_data() override { return buffer_.data(); }
-  std::size_t buffer_size_bytes() const override { return buffer_.size(); }
+  void* buffer_data() override { return delivery_->buffer(); }
+  std::size_t buffer_size_bytes() const override {
+    return delivery_->frame_bytes();
+  }
   std::size_t frames_per_buffer() const override {
     return frames_per_buffer_;
   }
@@ -118,7 +265,9 @@ class SdlAudioCapture final : public AudioCapture {
     if (running_.load(std::memory_order_acquire)) {
       return Status::Ok();
     }
+    delivery_->SetDelivering(true);
     if (!SDL_ResumeAudioStreamDevice(stream_)) {
+      delivery_->SetDelivering(false);
       return SdlError("SDL_ResumeAudioStreamDevice");
     }
     running_.store(true, std::memory_order_release);
@@ -126,11 +275,19 @@ class SdlAudioCapture final : public AudioCapture {
   }
 
   Status Stop() override {
+    Status status = StopLocked();
+    // Outside operation_mutex_: the callback being waited on may need it.
+    delivery_->WaitIdle();
+    return status;
+  }
+
+  Status StopLocked() {
     std::lock_guard<std::mutex> lock(operation_mutex_);
     if (stream_ == nullptr || stopping_.load(std::memory_order_acquire)) {
       return Status::Ok();
     }
     running_.store(false, std::memory_order_release);
+    delivery_->SetDelivering(false);
     if (!SDL_PauseAudioStreamDevice(stream_)) {
       return SdlError("SDL_PauseAudioStreamDevice");
     }
@@ -141,22 +298,33 @@ class SdlAudioCapture final : public AudioCapture {
   }
 
   void Shutdown() override {
-    auto &state = RecordingSubsystemState();
-    std::lock_guard<std::mutex> registry_lock(state.mutex);
-    std::lock_guard<std::mutex> lock(operation_mutex_);
-    if (stream_ == nullptr) {
-      return;
+    {
+      auto &state = RecordingSubsystemState();
+      std::lock_guard<std::mutex> registry_lock(state.mutex);
+      std::lock_guard<std::mutex> lock(operation_mutex_);
+      if (stream_ != nullptr) {
+        stopping_.store(true, std::memory_order_release);
+        running_.store(false, std::memory_order_release);
+        (void)SDL_PauseAudioStreamDevice(stream_);
+        SDL_DestroyAudioStream(stream_);
+        stream_ = nullptr;
+        if (registered_) {
+          registered_ = false;
+          auto &captures = state.live_captures;
+          captures.erase(std::remove(captures.begin(), captures.end(), this),
+                         captures.end());
+        }
+      }
     }
-    stopping_.store(true, std::memory_order_release);
-    running_.store(false, std::memory_order_release);
-    (void)SDL_PauseAudioStreamDevice(stream_);
-    SDL_DestroyAudioStream(stream_);
-    stream_ = nullptr;
-    if (registered_) {
-      registered_ = false;
-      auto &captures = state.live_captures;
-      captures.erase(std::remove(captures.begin(), captures.end(), this),
-                     captures.end());
+    // Joined without the locks: a callback in flight may be waiting on them.
+    delivery_->Stop();
+    if (delivery_started_) {
+      delivery_started_ = false;
+      if (delivery_->OnDeliveryThread()) {
+        pthread_detach(delivery_thread_);
+      } else {
+        pthread_join(delivery_thread_, nullptr);
+      }
     }
   }
 
@@ -178,7 +346,7 @@ class SdlAudioCapture final : public AudioCapture {
   Status PauseForSwitch() {
     if (!SDL_PauseAudioStreamDevice(stream_))
       return SdlError("pause old microphone");
-    // Wait for an in-flight callback before the replacement can use buffer_.
+    // Wait for an in-flight callback before the replacement can use scratch.
     if (!SDL_LockAudioStream(stream_))
       return SdlError("lock old microphone");
     SDL_UnlockAudioStream(stream_);
@@ -221,31 +389,31 @@ class SdlAudioCapture final : public AudioCapture {
         !capture->running_.load(std::memory_order_acquire)) {
       return;
     }
-    const int frame_bytes = static_cast<int>(capture->buffer_.size());
+    CaptureDelivery& delivery = *capture->delivery_;
+    const int frame_bytes = static_cast<int>(delivery.frame_bytes());
     while (!capture->stopping_.load(std::memory_order_acquire) &&
            capture->running_.load(std::memory_order_acquire)) {
       const int available = SDL_GetAudioStreamAvailable(stream);
       if (available < frame_bytes) {
         return;
       }
-      const int read = SDL_GetAudioStreamData(stream, capture->buffer_.data(),
-                                              frame_bytes);
+      const int read =
+          SDL_GetAudioStreamData(stream, delivery.scratch(), frame_bytes);
       if (read != frame_bytes) {
         return;
       }
-      capture->callback_(capture->callback_context_,
-                         static_cast<std::size_t>(read));
+      delivery.Push();
     }
   }
 
  private:
   PcmSpec output_spec_;
   std::size_t frames_per_buffer_ = 0;
-  std::vector<std::uint8_t> buffer_;
+  std::shared_ptr<CaptureDelivery> delivery_;
+  pthread_t delivery_thread_{};
+  bool delivery_started_ = false;
   SDL_AudioStream* stream_ = nullptr;
   SDL_AudioStream *replacement_ = nullptr;
-  AudioCaptureDataCallback callback_ = nullptr;
-  void* callback_context_ = nullptr;
   std::mutex operation_mutex_;
   std::atomic<bool> running_{false};
   std::atomic<bool> stopping_{false};
@@ -457,6 +625,12 @@ Status CreateSdlAudioCapture(const SdlAudioCaptureOptions& options,
   if (implementation == nullptr) {
     return Status::Error(StatusCode::kUnavailable,
                          "unable to allocate SDL audio capture");
+  }
+  if (!implementation->StartDelivery()) {
+    registry_lock.unlock();
+    delete implementation;
+    return Status::Error(StatusCode::kUnavailable,
+                         "unable to start the microphone delivery thread");
   }
   SDL_AudioStream* stream =
       OpenRecordingStream(device, spec, static_cast<std::size_t>(frames),

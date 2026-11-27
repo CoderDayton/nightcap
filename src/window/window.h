@@ -27,7 +27,7 @@ bool Init(int width, int height, const char* title);
 bool PumpEvents();
 
 // Paces SDL polling at 240 Hz without smoothing raw input. Returns the
-// nanoseconds actually spent in SDL_DelayPrecise (0 if the tick already
+// nanoseconds it asked to sleep (0 if the tick already
 // missed the slot or SDL still has events).
 uint64_t PaceInputPump();
 

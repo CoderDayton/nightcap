@@ -3585,7 +3585,8 @@ struct VulkanEtc2Emulation::State {
   // the destination's kept blocks. A region that covers only part of the mip
   // patches the kept blocks, and drops them when there are none to patch, so
   // no later copy reads stale texels.
-  void KeepBlocks(const BlockCopy& copy, const std::vector<std::uint8_t>* region) {
+  // A whole-mip `region` is moved into the kept entry.
+  void KeepBlocks(const BlockCopy& copy, std::vector<std::uint8_t>* region) {
     if (copy.keep == VK_NULL_HANDLE) {
       return;
     }
@@ -3610,7 +3611,8 @@ struct VulkanEtc2Emulation::State {
     if (region == nullptr || !fits) {
       kept = nullptr;
     } else if (whole) {
-      kept = std::make_shared<const std::vector<std::uint8_t>>(*region);
+      kept = std::make_shared<const std::vector<std::uint8_t>>(
+          std::move(*region));
     } else if (kept != nullptr && kept->size() == mip_bytes) {
       auto patched = std::make_shared<std::vector<std::uint8_t>>(*kept);
       for (std::uint32_t row = 0; row < copy.high; ++row) {
