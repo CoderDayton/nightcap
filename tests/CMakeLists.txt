@@ -414,6 +414,12 @@ target_link_libraries(appimage_menu_entry_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(launch_program_test launch_program_test.cc)
+target_link_libraries(launch_program_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(single_instance_lock_test single_instance_lock_test.cc)
 target_link_libraries(single_instance_lock_test PRIVATE
   Mocktail::Runtime
@@ -1460,6 +1466,7 @@ gtest_discover_tests(roblox_cache_test)
 gtest_discover_tests(android_device_id_test)
 gtest_discover_tests(fleasion_test)
 gtest_discover_tests(appimage_menu_entry_test)
+gtest_discover_tests(launch_program_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
 gtest_discover_tests(process_launch_policy_test)

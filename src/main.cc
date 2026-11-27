@@ -60,6 +60,7 @@
 #include "runtime/settings_launcher.h"
 #include "runtime/roblox_cache.h"
 #include "runtime/android_device_id.h"
+#include "runtime/launch_program.h"
 #include "runtime/single_instance_lock.h"
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
@@ -768,6 +769,11 @@ int main(int argc, char* argv[]) {
     mocktail::runtime::InstallCpuLimitDiagnostics();
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kStartup);
+    // After the session log, whose writer forks without exec and would
+    // otherwise keep the launch program's pipe open.
+    if (!isolated_canary) {
+      (void)mocktail::runtime::StartLaunchProgram(environment);
+    }
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       runtime_config.config.fleasion_enabled() &&
