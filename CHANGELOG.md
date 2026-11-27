@@ -5,6 +5,11 @@ Release notes on GitHub are taken from the matching section here.
 
 ## [Unreleased]
 
+### Added
+
+- `MOCKTAIL_LAUNCH_PROGRAM` starts a program with the game and closes it when Nightcap closes, like
+  `MOCKTAIL_LAUNCH_PROGRAM="/path/to/app --flag"`.
+
 ### Changed
 
 - The app icon has a bigger center hole, and the main window uses the same icon as Settings.
