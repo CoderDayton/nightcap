@@ -27,7 +27,8 @@ class RuntimeDependencies final {
         account_identity_(std::move(composition.account_identity)),
         roblox_credential_(std::move(composition.credential)),
         startup_cookies_(runtime::CombineRobloxStartupCookies(
-            roblox_credential_.view(), composition.saved_cookies.view())),
+            roblox_credential_.view(), composition.saved_cookies.view(),
+            composition.browser_tracker)),
         clear_persisted_web_view_cookie_(
             composition.rejected_credential_retired ||
             composition.clear_web_view_cookie),

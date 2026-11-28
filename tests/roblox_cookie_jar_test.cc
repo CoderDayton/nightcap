@@ -143,6 +143,33 @@ TEST(RobloxCookieJarTest, CombinesCredentialAndJar) {
   EXPECT_EQ(CombineRobloxStartupCookies("", "a=1"), "a=1");
 }
 
+TEST(RobloxCookieJarTest, AddsTheBrowserTrackerWhenNeitherHasOne) {
+  EXPECT_EQ(CombineRobloxStartupCookies(".ROBLOSECURITY=x", "a=1",
+                                        "browserid=123"),
+            ".ROBLOSECURITY=x; a=1; RBXEventTrackerV2=browserid=123");
+  EXPECT_EQ(CombineRobloxStartupCookies(".ROBLOSECURITY=x", "", "browserid=123"),
+            ".ROBLOSECURITY=x; RBXEventTrackerV2=browserid=123");
+}
+
+TEST(RobloxCookieJarTest, KeepsABrowserTrackerAlreadySent) {
+  EXPECT_EQ(CombineRobloxStartupCookies(
+                ".ROBLOSECURITY=x", "RBXEventTrackerV2=browserid=1; a=1",
+                "browserid=2"),
+            ".ROBLOSECURITY=x; RBXEventTrackerV2=browserid=1; a=1");
+  EXPECT_EQ(CombineRobloxStartupCookies(
+                ".ROBLOSECURITY=x; RBXEventTrackerV2=browserid=1", "",
+                "browserid=2"),
+            ".ROBLOSECURITY=x; RBXEventTrackerV2=browserid=1");
+}
+
+TEST(RobloxCookieJarTest, MatchesOnlyTheWholeTrackerName) {
+  EXPECT_EQ(CombineRobloxStartupCookies(".ROBLOSECURITY=x",
+                                        "XRBXEventTrackerV2=1",
+                                        "browserid=2"),
+            ".ROBLOSECURITY=x; XRBXEventTrackerV2=1; "
+            "RBXEventTrackerV2=browserid=2");
+}
+
 }
 }
 }

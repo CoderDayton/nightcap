@@ -489,13 +489,43 @@ std::string RobloxCookieJar::StartupHeader(std::int64_t now) const {
   return header;
 }
 
-std::string CombineRobloxStartupCookies(std::string_view credential,
-                                        std::string_view jar_header) {
-  std::string combined(credential);
-  if (!combined.empty() && !jar_header.empty()) {
-    combined += "; ";
+namespace {
+
+bool HeaderHasCookie(std::string_view header, std::string_view name) {
+  std::size_t begin = 0;
+  while (begin < header.size()) {
+    while (begin < header.size() && (header[begin] == ';' || header[begin] == ' '))
+      ++begin;
+    const std::size_t end = std::min(header.find(';', begin), header.size());
+    const std::string_view segment = header.substr(begin, end - begin);
+    if (segment.size() > name.size() && segment.substr(0, name.size()) == name &&
+        segment[name.size()] == '=') {
+      return true;
+    }
+    begin = end;
   }
-  combined += jar_header;
+  return false;
+}
+
+void AppendCookies(std::string* combined, std::string_view cookies) {
+  if (!combined->empty() && !cookies.empty()) {
+    *combined += "; ";
+  }
+  *combined += cookies;
+}
+
+}  // namespace
+
+std::string CombineRobloxStartupCookies(std::string_view credential,
+                                        std::string_view jar_header,
+                                        std::string_view browser_tracker) {
+  constexpr std::string_view kTracker = "RBXEventTrackerV2";
+  std::string combined(credential);
+  AppendCookies(&combined, jar_header);
+  if (!browser_tracker.empty() && !HeaderHasCookie(combined, kTracker)) {
+    AppendCookies(&combined, std::string(kTracker) + "=" +
+                                 std::string(browser_tracker));
+  }
   return combined;
 }
 

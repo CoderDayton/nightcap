@@ -83,6 +83,9 @@ struct AuthRuntimeComposition {
   SecureRobloxCredential credential;
   // Other roblox.com cookies saved from earlier runs, as a Cookie header.
   SecureRobloxCredential saved_cookies;
+  // RBXEventTrackerV2 from the BrowserTracker bootstrap, sent when neither
+  // the credential nor the saved cookies carry one.
+  std::string browser_tracker;
   long http_status = 0;
   bool rejected_credential_retired = false;
   bool clear_web_view_cookie = false;
