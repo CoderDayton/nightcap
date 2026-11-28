@@ -6,6 +6,7 @@
 #include <limits>
 #include <mutex>
 
+#include "compat/host_ca_bundle.h"
 #include "runtime/environment.h"
 #include "runtime/runtime_config.h"
 
@@ -116,8 +117,11 @@ std::optional<nlohmann::json> GetHttpsJson(const std::string& url,
     }
     curl_easy_setopt(curl, CURLOPT_NOPROXY, "");
   }
-  if (const char* ca_bundle = std::getenv("MOCKTAIL_CA_BUNDLE")) {
-    curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+  const char* ca_override = std::getenv("MOCKTAIL_CA_BUNDLE");
+  const std::string ca_bundle =
+      ca_override != nullptr ? ca_override : compat::FindHostCaBundle();
+  if (!ca_bundle.empty()) {
+    curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle.c_str());
   }
   const CURLcode status = Perform(curl, cancel);
   long http_status = 0;

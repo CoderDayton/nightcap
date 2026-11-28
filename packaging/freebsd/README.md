@@ -60,9 +60,12 @@ the Linux userspace.
 ## Audio
 
 For Fedora, install `alsa-lib` and `alsa-plugins-oss` in the Linux userspace.
-Use `cat /dev/sndstat` on FreeBSD to select the correct `/dev/dspN`. In the
-Linux userspace, back up any existing `/etc/asound.conf` before creating or
-editing it:
+Nightcap then plays through `/dev/dsp`, FreeBSD's default sound device, which
+`hw.snd.default_unit` selects.
+
+To use a different device, use `cat /dev/sndstat` on FreeBSD to select the
+correct `/dev/dspN`. In the Linux userspace, back up any existing
+`/etc/asound.conf` before creating or editing it:
 
 ```conf
 pcm.!default {

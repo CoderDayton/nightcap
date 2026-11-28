@@ -15,7 +15,10 @@
 #include <string_view>
 #include <unordered_map>
 #include <unistd.h>
+#include <utility>
 #include <vector>
+
+#include "compat/host_ca_bundle.h"
 
 namespace libc_shim {
 
@@ -39,10 +42,6 @@ bool g_installed = false;
 std::atomic<GuestAllocator> g_guest_allocator{nullptr};
 
 constexpr char kCaBundleOverride[] = "MOCKTAIL_CA_BUNDLE";
-constexpr std::array<const char*, 2> kDefaultCaBundles = {
-    "/etc/ssl/cert.pem",
-    "/etc/ssl/certs/ca-certificates.crt",
-};
 constexpr std::array<const char*, 8> kAndroidCaBundlePaths = {
     "/data/user/0/com.roblox.client/files/exe/cacert.pem",
     "/data/data/com.roblox.client/files/exe/cacert.pem",
@@ -94,31 +93,14 @@ bool PrefixMatchesPath(std::string_view path, std::string_view prefix) {
 }
 
 bool ValidateHostCaBundle(const char* path, std::string* canonical_path) {
-  if (path == nullptr || path[0] != '/' || canonical_path == nullptr) {
+  if (path == nullptr || canonical_path == nullptr) {
     return false;
   }
-
-  char resolved_path[PATH_MAX];
-  if (::realpath(path, resolved_path) == nullptr || resolved_path[0] != '/') {
+  std::string resolved = mocktail::compat::CanonicalCaBundlePath(path);
+  if (resolved.empty()) {
     return false;
   }
-
-  const int fd = ::open(resolved_path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) {
-    return false;
-  }
-  struct stat file_status {};
-  const bool status_available = ::fstat(fd, &file_status) == 0;
-  const int close_result = ::close(fd);
-  const bool has_read_permission =
-      status_available &&
-      (file_status.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) != 0;
-  if (!status_available || close_result != 0 || !S_ISREG(file_status.st_mode) ||
-      file_status.st_size <= 0 || !has_read_permission) {
-    return false;
-  }
-
-  *canonical_path = resolved_path;
+  *canonical_path = std::move(resolved);
   return true;
 }
 
@@ -201,14 +183,12 @@ HostCaBundleResolution ResolveHostCaBundle() {
     return resolution;
   }
 
-  for (const char* candidate : kDefaultCaBundles) {
-    HostCaBundleResolution resolution;
-    if (ValidateHostCaBundle(candidate, &resolution.host_path)) {
-      resolution.status = HostCaBundleStatus::kReady;
-      return resolution;
-    }
+  HostCaBundleResolution resolution;
+  resolution.host_path = mocktail::compat::FindHostCaBundle();
+  if (!resolution.host_path.empty()) {
+    resolution.status = HostCaBundleStatus::kReady;
   }
-  return {};
+  return resolution;
 }
 
 HostCaBundleResolution ConfigureHostCaBundlePathMappings() {

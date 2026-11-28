@@ -1381,6 +1381,20 @@ target_link_libraries(libc_shim_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(host_ca_bundle_test
+  host_ca_bundle_test.cc
+)
+target_include_directories(host_ca_bundle_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(host_ca_bundle_test PRIVATE GTest::gtest_main)
+
+add_executable(linuxulator_alsa_test
+  linuxulator_alsa_test.cc
+)
+target_link_libraries(linuxulator_alsa_test PRIVATE
+  mocktail_runtime
+  GTest::gtest_main
+)
+
 add_executable(asset_manager_test
   asset_manager_test.cc
 )
@@ -1576,6 +1590,8 @@ gtest_discover_tests(bionic_abi_exports_test)
 gtest_discover_tests(bionic_stdio_runtime_test)
 
 gtest_discover_tests(libc_shim_test)
+gtest_discover_tests(host_ca_bundle_test)
+gtest_discover_tests(linuxulator_alsa_test)
 gtest_discover_tests(discord_rpc_test)
 gtest_discover_tests(luau_codegen_switch_test)
 gtest_discover_tests(asset_manager_test)

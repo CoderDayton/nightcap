@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -61,6 +63,7 @@
 #include "runtime/roblox_cache.h"
 #include "runtime/android_device_id.h"
 #include "runtime/launch_program.h"
+#include "runtime/linuxulator_alsa.h"
 #include "runtime/single_instance_lock.h"
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
@@ -398,6 +401,34 @@ void ConfigureHostDriverEnvironment() {
   // Avoid busy-spin vblank waits on NVIDIA Linux driver.
   set_if_unset("__GL_YIELD", "USLEEP");
   set_if_unset("__GL_THREADED_OPTIMIZATIONS", "1");
+}
+
+void ConfigureLinuxulatorAudio(const mocktail::runtime::RuntimePaths& paths) {
+  using mocktail::runtime::LinuxulatorAlsaPlan;
+  switch (mocktail::runtime::PlanLinuxulatorAlsa(
+      mocktail::runtime::ReadLinuxulatorAlsaHost())) {
+    case LinuxulatorAlsaPlan::kLeaveAlone:
+      return;
+    case LinuxulatorAlsaPlan::kOssPluginMissing:
+      std::cerr << "  [audio] FreeBSD Linuxulator: no ALSA OSS plugin; install "
+                   "alsa-plugins-oss in the Linux userspace for sound\n";
+      return;
+    case LinuxulatorAlsaPlan::kRouteToOss:
+      break;
+  }
+  std::string error;
+  const std::optional<std::filesystem::path> config =
+      mocktail::runtime::WriteLinuxulatorOssAlsaConfig(paths.cache_root(),
+                                                       &error);
+  if (!config.has_value() ||
+      setenv("ALSA_CONFIG_PATH", config->c_str(), 1) != 0) {
+    std::cerr << "  [audio] FreeBSD Linuxulator: cannot route ALSA to OSS: "
+              << (error.empty() ? std::strerror(errno) : error) << '\n';
+    return;
+  }
+  std::cout << "  [audio] FreeBSD Linuxulator: ALSA plays through /dev/dsp "
+               "using "
+            << config->string() << '\n';
 }
 
 void UpdateAppImageMenu(const mocktail::runtime::Environment& environment,
@@ -918,6 +949,7 @@ int main(int argc, char* argv[]) {
                       ? " (EGL/OpenGL ES)"
                       : "")
               << '\n';
+    ConfigureLinuxulatorAudio(paths);
   }
 
   // Register before starting helper processes or loading the Android payload.
