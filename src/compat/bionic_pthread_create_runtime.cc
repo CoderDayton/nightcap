@@ -3,6 +3,7 @@
 #include "compat/bionic_abi_exports.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
 
