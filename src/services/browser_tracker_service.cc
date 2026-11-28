@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#include <ctime>
+
 namespace mocktail {
 namespace services {
 namespace {
@@ -35,6 +37,16 @@ bool IsValidId(const std::string& value) {
       std::from_chars(value.data(), value.data() + value.size(), parsed);
   return conversion.ec == std::errc() &&
          conversion.ptr == value.data() + value.size() && parsed != 0;
+}
+
+// The RBXEventTrackerV2 value Roblox issues, rebuilt for a stored ID.
+std::string TrackerCookieFor(const std::string& id) {
+  const std::time_t now = std::time(nullptr);
+  std::tm utc = {};
+  gmtime_r(&now, &utc);
+  char date[32];
+  std::strftime(date, sizeof(date), "%m/%d/%Y %H:%M:%S", &utc);
+  return std::string("CreateDate=") + date + "&rbxuid=&browserid=" + id;
 }
 
 std::string SuggestedId() {
@@ -605,6 +617,7 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
   }
   if (!authoritative_id.empty()) {
     result.browser_tracker_id = authoritative_id;
+    result.tracker_cookie = tracker;
     if (stored_id == authoritative_id) {
       close(lock);
       return result;
@@ -617,6 +630,7 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
   }
   if (!stored_id.empty()) {
     result.browser_tracker_id = stored_id;
+    result.tracker_cookie = TrackerCookieFor(stored_id);
     close(lock);
     return result;
   }
@@ -684,6 +698,7 @@ BrowserTrackerResult BrowserTrackerService::EnsureInitialized(
           AtomicWrite(app_storage_file, storage, &result.error)) {
         result.status = BrowserTrackerStatus::kCreated;
         result.browser_tracker_id = std::move(authoritative_id);
+        result.tracker_cookie = tracker;
       }
     }
   }

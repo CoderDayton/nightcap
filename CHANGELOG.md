@@ -14,6 +14,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Fixed
 
+- Blocking and unblocking players works when Nightcap has no saved `RBXEventTrackerV2` cookie. Roblox refused
+  those requests with "BrowserTrackerID is missing or invalid"; Nightcap now sends its browser tracker.
 - On FreeBSD, Roblox downloads no longer fail with "error adding trust anchors" in a Fedora userspace.
 - On FreeBSD, sound plays through `/dev/dsp` without an `asound.conf`, once `alsa-plugins-oss` is installed
   in the Linux userspace. An existing `~/.asoundrc` or `/etc/asound.conf` is still used.

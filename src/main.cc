@@ -1409,6 +1409,7 @@ int main(int argc, char* argv[]) {
       PromptFirstLaunchSignIn(environment, paths, auth_service, http_client,
                               &composition);
     }
+    composition.browser_tracker = browser_tracker_result.tracker_cookie;
     if (!composition) {
       std::cerr << "[FATAL] Typed Roblox authentication preflight failed: "
                 << composition.error;

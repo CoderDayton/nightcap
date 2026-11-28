@@ -14,6 +14,8 @@ enum class BrowserTrackerStatus { kExisting, kCreated };
 struct BrowserTrackerResult {
   BrowserTrackerStatus status = BrowserTrackerStatus::kExisting;
   std::string browser_tracker_id;
+  // The RBXEventTrackerV2 value Roblox issued, when the cookie file has one.
+  std::string tracker_cookie;
   long http_status = 0;
   std::string error;
 

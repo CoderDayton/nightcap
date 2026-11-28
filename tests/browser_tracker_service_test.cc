@@ -80,6 +80,7 @@ TEST_F(BrowserTrackerServiceTest, ReusesValidStoredIdentityWithoutNetwork) {
   ASSERT_TRUE(result) << result.error;
   EXPECT_EQ(result.status, BrowserTrackerStatus::kExisting);
   EXPECT_EQ(result.browser_tracker_id, "123456");
+  EXPECT_EQ(result.tracker_cookie, "CreateDate=1&rbxid=2&browserid=123456");
   EXPECT_EQ(http.post_count, 0);
 }
 
@@ -128,6 +129,8 @@ TEST_F(BrowserTrackerServiceTest, InitializesAndAtomicallyPreservesStorage) {
   ASSERT_TRUE(result) << result.error;
   EXPECT_EQ(result.status, BrowserTrackerStatus::kCreated);
   EXPECT_EQ(result.browser_tracker_id, "987654321");
+  EXPECT_EQ(result.tracker_cookie,
+            "CreateDate=1&rbxid=2&browserid=987654321");
   EXPECT_EQ(http.post_count, 1);
   EXPECT_EQ(http.last_body, "{}");
   EXPECT_NE(http.last_request.url.find("suggestedBrowserTrackerId="),
@@ -177,6 +180,9 @@ TEST_F(BrowserTrackerServiceTest,
   ASSERT_TRUE(result) << result.error;
   EXPECT_EQ(result.status, BrowserTrackerStatus::kExisting);
   EXPECT_EQ(result.browser_tracker_id, "1234567890123456");
+  EXPECT_EQ(result.tracker_cookie.rfind("CreateDate=", 0), 0u);
+  EXPECT_NE(result.tracker_cookie.find("&rbxuid=&browserid=1234567890123456"),
+            std::string::npos);
   EXPECT_EQ(http.post_count, 0);
   EXPECT_EQ(ReadFile(Storage()), storage);
   EXPECT_EQ(ReadFile(Cookies()), ".ROBLOSECURITY=secret");

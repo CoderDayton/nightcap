@@ -50,8 +50,11 @@ class RobloxCookieJar {
   std::vector<Cookie> cookies_;
 };
 
+// Roblox's servers read the BrowserTrackerID from RBXEventTrackerV2, so
+// `browser_tracker` (that cookie's value) is added when neither header has one.
 std::string CombineRobloxStartupCookies(std::string_view credential,
-                                        std::string_view jar_header);
+                                        std::string_view jar_header,
+                                        std::string_view browser_tracker = {});
 
 }
 }
