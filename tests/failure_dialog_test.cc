@@ -52,11 +52,10 @@ class FakeDialogHelper final {
               "capture = '"
            << capture_.string()
            << "'\n"
-              "if len(sys.argv) == 3 and sys.argv[1] in "
+              "if len(sys.argv) in (3, 4) and sys.argv[1] in "
               "('--message', '--warning'):\n"
               "    with open(capture, 'a', encoding='utf-8') as stream:\n"
-              "        stream.write(sys.argv[1] + ':' + sys.argv[2] + "
-              "'\\n')\n"
+              "        stream.write(':'.join(sys.argv[1:]) + '\\n')\n"
               "    raise SystemExit(0)\n"
               "if len(sys.argv) == 6 and sys.argv[1] == '--question':\n"
               "    raise SystemExit(int(sys.argv[2]))\n"
@@ -150,9 +149,11 @@ TEST(FailureDialogTest, OneShotPassesAUserFacingMessage) {
 
   ASSERT_TRUE(ShowFailureDialog(environment, "Already running."));
   ASSERT_TRUE(ShowWarningDialog(environment, "Sign in again."));
+  ASSERT_TRUE(ShowWarningDialog(environment, "Mount it.", "Home folder"));
   EXPECT_EQ(ReadLines(helper.capture()),
             std::vector<std::string>({"--message:Already running.",
-                                      "--warning:Sign in again."}));
+                                      "--warning:Sign in again.",
+                                      "--warning:Mount it.:Home folder"}));
 }
 
 TEST(FailureDialogTest, MonitorDismissesAfterSuccessfulShutdown) {

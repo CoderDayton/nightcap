@@ -7,6 +7,7 @@
 #include <limits>
 #include <mutex>
 
+#include "compat/host_ca_bundle.h"
 #include "runtime/runtime_config.h"
 
 namespace mocktail {
@@ -118,8 +119,11 @@ HttpResponse PerformRequest(const HttpRequest& request,
   curl_easy_setopt(handle, CURLOPT_WRITEDATA, &writer);
   curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, WriteHeader);
   curl_easy_setopt(handle, CURLOPT_HEADERDATA, &response.headers);
-  if (const char* ca_bundle = std::getenv("MOCKTAIL_CA_BUNDLE")) {
-    curl_easy_setopt(handle, CURLOPT_CAINFO, ca_bundle);
+  const char* ca_override = std::getenv("MOCKTAIL_CA_BUNDLE");
+  const std::string ca_bundle =
+      ca_override != nullptr ? ca_override : compat::FindHostCaBundle();
+  if (!ca_bundle.empty()) {
+    curl_easy_setopt(handle, CURLOPT_CAINFO, ca_bundle.c_str());
   }
   std::string proxy_url;
   const auto proxy = runtime::ReadNetworkProxy(runtime::ProcessEnvironment());

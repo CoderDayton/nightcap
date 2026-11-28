@@ -10,6 +10,16 @@ Release notes on GitHub are taken from the matching section here.
 - `scripts/auto_update_roblox.sh` downloads its fallback Roblox version from APKPure like every other
   download, instead of a pinned Uptodown copy.
 
+### Fixed
+
+- On FreeBSD, Roblox downloads no longer fail with "error adding trust anchors" in a Fedora userspace.
+- On FreeBSD, sound plays through `/dev/dsp` without an `asound.conf`, once `alsa-plugins-oss` is installed
+  in the Linux userspace. An existing `~/.asoundrc` or `/etc/asound.conf` is still used.
+- On FreeBSD, Nightcap warns when `/compat/linux/home/USER` is a separate folder, which splits its data and
+  breaks shader loading, and shows the `nullfs` mount that fixes it.
+- On FreeBSD, KDE on X11 keeps compositing while Nightcap runs. Nightcap no longer asks X11 to bypass the
+  compositor there; `SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR=1` turns the request back on.
+
 ## [0.5.5] - 2026-11-27
 
 ### Added

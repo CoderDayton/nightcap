@@ -268,6 +268,8 @@ add_library(mocktail_runtime STATIC
   src/runtime/crash_report_policy.cc
   src/runtime/discord_rpc.cc
   src/runtime/https_json.cc
+  src/runtime/linuxulator_alsa.cc
+  src/runtime/linuxulator_home.cc
   src/runtime/device_profile.cc
   src/runtime/engine_pump_rest.cc
   src/runtime/environment.cc

@@ -17,6 +17,7 @@
 #include <mutex>
 #include <string>
 
+#include "compat/host_ca_bundle.h"
 #include "update/file_lock.h"
 #include "update/payload_integrity.h"
 #include "update/state_file.h"
@@ -335,6 +336,14 @@ std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
   return bytes;
 }
 
+bool SetCaBundle(CURL* handle, const HttpTransferRequest& request) {
+  const std::string ca_bundle = request.ca_bundle.empty()
+                                    ? compat::FindHostCaBundle()
+                                    : request.ca_bundle.string();
+  return ca_bundle.empty() ||
+         curl_easy_setopt(handle, CURLOPT_CAINFO, ca_bundle.c_str()) == CURLE_OK;
+}
+
 bool Configure(CURL* handle, const HttpTransferRequest& request,
                std::string_view url, curl_slist* headers,
                std::array<char, CURL_ERROR_SIZE>* error_buffer) {
@@ -359,9 +368,7 @@ bool Configure(CURL* handle, const HttpTransferRequest& request,
                           "Mocktail-native-updater/1") == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, error_buffer->data()) ==
              CURLE_OK &&
-         (request.ca_bundle.empty() ||
-          curl_easy_setopt(handle, CURLOPT_CAINFO, request.ca_bundle.c_str()) ==
-              CURLE_OK) &&
+         SetCaBundle(handle, request) &&
          (headers == nullptr ||
           curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers) == CURLE_OK);
 }

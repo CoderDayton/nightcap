@@ -60,23 +60,9 @@ the Linux userspace.
 ## Audio
 
 For Fedora, install `alsa-lib` and `alsa-plugins-oss` in the Linux userspace.
-Use `cat /dev/sndstat` on FreeBSD to select the correct `/dev/dspN`. In the
-Linux userspace, back up any existing `/etc/asound.conf` before creating or
-editing it:
-
-```conf
-pcm.!default {
-    type oss
-    device /dev/dsp3
-}
-ctl.!default {
-    type oss
-    device /dev/dsp3
-}
-```
-
-Replace `/dev/dsp3` with your device, then launch with
-`SDL_AUDIO_DRIVER=alsa ./Nightcap-x86_64.AppImage`.
+Nightcap plays through `/dev/dsp`, FreeBSD's default sound device. To use
+another one, find its number in `cat /dev/sndstat` and run
+`sysctl hw.snd.default_unit=N`.
 
 ## Troubleshooting
 
@@ -118,31 +104,23 @@ Use the path for your GPU and distribution; do not export it globally.
 
 ### Shader pack exists but fails to open
 
-Linuxulator can resolve Nightcap's absolute home paths and relative working
-paths into different trees under the host home and `/compat/linux/home`. On the
-Manjaro setup, mounting the host `rbx_bin` directory over its Linuxulator
-counterpart made the shader paths resolve:
+When `/compat/linux/home/USER` exists as its own directory, Linuxulator creates
+new files and directories there whenever their parent exists there, even if
+they already exist in `/home/USER`. Nightcap's data then splits between the two
+trees. Nightcap shows a warning at startup when it finds this.
+
+Mount the real home over the copy so both paths are the same directory:
 
 ```sh
-# As root; replace both paths after inspecting them.
-mount -t nullfs /home/USER/.local/share/mocktail/rbx_bin \
-  /compat/linux/home/USER/.local/share/mocktail/rbx_bin
+# As root. The mount hides what is in the copy; move anything you need out first.
+mount -t nullfs /home/USER /compat/linux/home/USER
 ```
 
-Both directories must exist. A mount hides existing mountpoint contents until
-unmounted; preserve them first. The read-write mount lets Nightcap update its
-payload links. After testing, an appropriate `nullfs rw,late` entry in
-`/etc/fstab` can make it persistent if both paths are available at boot. To
-undo it, unmount the target and remove the fstab entry if added. An isolated
-Xvfb test cannot verify hardware presentation because it lacks DRI3.
+To keep it after a reboot, add this line to `/etc/fstab`:
 
-### KDE X11 compositing suspends while Nightcap runs
-
-Nightcap's SDL window may request compositor bypass. Disable that request by
-setting this before launch:
-
-```sh
-SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR=0 ./Nightcap-x86_64.AppImage
+```text
+/home/USER  /compat/linux/home/USER  nullfs  rw,late  0  0
 ```
 
-This controls the X11 bypass hint, not Vulkan support or every compositor.
+To undo it, unmount the target and remove the fstab line. An isolated Xvfb test
+cannot verify hardware presentation because it lacks DRI3.
