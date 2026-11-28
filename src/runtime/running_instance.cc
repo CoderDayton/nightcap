@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -13,6 +14,10 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
+
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
 
 namespace mocktail {
 namespace runtime {
@@ -327,7 +332,7 @@ bool ReplaceProcess(const std::filesystem::path& program,
   sigset_t saved_mask;
   sigemptyset(&none);
   pthread_sigmask(SIG_SETMASK, &none, &saved_mask);
-  (void)close_range(3, ~0U, CLOSE_RANGE_CLOEXEC);
+  (void)syscall(SYS_close_range, 3, ~0U, CLOSE_RANGE_CLOEXEC);
   EnterFolderIfItExists(command.working_directory.string());
   execve(exec.path.c_str(), exec.arguments.data(), exec.envp);
   const int exec_error = errno;
