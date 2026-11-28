@@ -7,6 +7,8 @@ Release notes on GitHub are taken from the matching section here.
 
 ### Changed
 
+- Session logs show the error text of failed Roblox web requests (4xx and 5xx) under Roblox's own
+  `HttpTraceError` line, so a refused action such as blocking a player says why. Each text is logged once.
 - `scripts/auto_update_roblox.sh` downloads its fallback Roblox version from APKPure like every other
   download, instead of a pinned Uptodown copy.
 

@@ -79,6 +79,7 @@
 #include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_cursor_hook.h"
 #include "runtime/roblox_sky_hook.h"
+#include "runtime/roblox_http_failure_body_hook.h"
 #include "runtime/roblox_app_lifecycle.h"
 #include "runtime/roblox_capability_resolver.h"
 #include "runtime/roblox_platform_web_symbols.h"
@@ -2079,6 +2080,16 @@ void InstallSkyHook(uintptr_t base) {
   }
 }
 
+void InstallHttpFailureBodyHook(uintptr_t base) {
+  std::string error;
+  if (!mocktail::runtime::InstallRobloxHttpFailureBodyHook(base, &error)) {
+    std::cerr << "  [http] failed-response bodies not logged for this Roblox "
+                 "version: "
+              << error << '\n'
+              << std::flush;
+  }
+}
+
 extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
                                                     uintptr_t base) {
   if (realpath == nullptr || std::strstr(realpath, "libroblox.so") == nullptr ||
@@ -2089,6 +2100,7 @@ extern "C" void mocktail_before_soinfo_constructors(const char* realpath,
   g_libroblox_base = base;
   InstallCursorHooks(base);
   InstallSkyHook(base);
+  InstallHttpFailureBodyHook(base);
   DisableOverlaidAssetMappings(base);
   g_mocktail_abort_libroblox_base = base;
   g_libroblox_base_static = base;
