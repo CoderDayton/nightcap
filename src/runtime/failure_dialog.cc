@@ -172,12 +172,16 @@ bool ShowFailureDialog(const Environment& environment,
 }
 
 bool ShowWarningDialog(const Environment& environment,
-                       std::string_view message) {
+                       std::string_view message, std::string_view heading) {
   if (!FailureDialogsEnabled(environment)) {
     return false;
   }
   const std::filesystem::path helper = DialogHelper(environment);
-  return !helper.empty() && SpawnOneShot(helper, "--warning", message);
+  if (helper.empty()) return false;
+  if (heading.empty()) return SpawnOneShot(helper, "--warning", message);
+  return SpawnAndWait(helper, {"--warning", std::string(message),
+                               std::string(heading)})
+      .has_value();
 }
 
 void PrepareSignalSafeFailureMessage(std::string_view message) {

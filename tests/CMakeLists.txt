@@ -1395,6 +1395,14 @@ target_link_libraries(linuxulator_alsa_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(linuxulator_home_test
+  linuxulator_home_test.cc
+)
+target_link_libraries(linuxulator_home_test PRIVATE
+  mocktail_runtime
+  GTest::gtest_main
+)
+
 add_executable(asset_manager_test
   asset_manager_test.cc
 )
@@ -1592,6 +1600,7 @@ gtest_discover_tests(bionic_stdio_runtime_test)
 gtest_discover_tests(libc_shim_test)
 gtest_discover_tests(host_ca_bundle_test)
 gtest_discover_tests(linuxulator_alsa_test)
+gtest_discover_tests(linuxulator_home_test)
 gtest_discover_tests(discord_rpc_test)
 gtest_discover_tests(luau_codegen_switch_test)
 gtest_discover_tests(asset_manager_test)

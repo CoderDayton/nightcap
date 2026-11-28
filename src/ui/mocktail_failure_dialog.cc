@@ -508,8 +508,8 @@ int main(int argc, char* argv[]) {
   if (argc == 3 && std::string_view(argv[1]) == "--message") {
     return ShowDialog(argv[2]);
   }
-  if (argc == 3 && std::string_view(argv[1]) == "--warning") {
-    return ShowDialog(argv[2], "Signed out", "Continue");
+  if ((argc == 3 || argc == 4) && std::string_view(argv[1]) == "--warning") {
+    return ShowDialog(argv[2], argc == 4 ? argv[3] : "Signed out", "Continue");
   }
   if (argc == 6 && std::string_view(argv[1]) == "--question") {
     return AskQuestion(argv[2], argv[3], argv[4], argv[5]);

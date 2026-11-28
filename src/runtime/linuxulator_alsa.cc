@@ -1,5 +1,7 @@
 #include "runtime/linuxulator_alsa.h"
 
+#include "runtime/linuxulator_home.h"
+
 #include <unistd.h>
 
 #include <array>
@@ -30,11 +32,6 @@ constexpr std::array<const char*, 3> kOssPluginPaths = {
     "/usr/lib/x86_64-linux-gnu/alsa-lib/libasound_module_pcm_oss.so",
 };
 
-bool IsFreeBsdKernel(std::string_view version) {
-  return version.find("FreeBSD") != std::string_view::npos ||
-         version.find("freebsd.org") != std::string_view::npos;
-}
-
 bool HasSettings(std::string_view config) {
   std::size_t start = 0;
   while (start < config.size()) {
@@ -59,7 +56,7 @@ std::string ReadSmallFile(const std::filesystem::path& path) {
 }  // namespace
 
 LinuxulatorAlsaPlan PlanLinuxulatorAlsa(const LinuxulatorAlsaHost& host) {
-  if (!IsFreeBsdKernel(host.proc_version) || host.alsa_config_path_set ||
+  if (!IsFreeBsdKernelVersion(host.proc_version) || host.alsa_config_path_set ||
       host.user_asoundrc || HasSettings(host.system_asound_conf)) {
     return LinuxulatorAlsaPlan::kLeaveAlone;
   }
@@ -74,7 +71,7 @@ LinuxulatorAlsaPlan PlanLinuxulatorAlsa(const LinuxulatorAlsaHost& host) {
 LinuxulatorAlsaHost ReadLinuxulatorAlsaHost() {
   LinuxulatorAlsaHost host;
   host.proc_version = ReadSmallFile("/proc/version");
-  if (!IsFreeBsdKernel(host.proc_version)) return host;
+  if (!IsFreeBsdKernelVersion(host.proc_version)) return host;
   host.alsa_config_path_set = std::getenv("ALSA_CONFIG_PATH") != nullptr;
   if (const char* driver = std::getenv("SDL_AUDIO_DRIVER")) {
     host.sdl_audio_driver = driver;

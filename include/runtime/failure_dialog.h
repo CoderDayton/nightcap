@@ -15,8 +15,10 @@ bool FailureDialogsEnabled(const Environment& environment);
 
 bool ShowFailureDialog(const Environment& environment,
                        std::string_view message);
+// The heading defaults to "Signed out".
 bool ShowWarningDialog(const Environment& environment,
-                       std::string_view message);
+                       std::string_view message,
+                       std::string_view heading = {});
 std::optional<bool> AskYesNo(const Environment& environment,
                              std::string_view heading, std::string_view body,
                              std::string_view decline,
