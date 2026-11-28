@@ -315,6 +315,8 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_code_patch.cc
   src/runtime/roblox_cursor_hook.cc
   src/runtime/roblox_sky_hook.cc
+  src/runtime/roblox_http_failure_body_hook.cc
+  src/platform/log_redaction.cc
   src/runtime/roblox_mouse_behavior_query.cc
   src/runtime/runtime_config.cc
   src/runtime/runtime_config_bootstrap.cc
